@@ -151,8 +151,11 @@ async def test_action_cycle_source_noop_when_focused_input() -> None:
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         inp = screen.query_one("#catalog-search", Input)
-        inp.focus()
+        # set_focus is synchronous; inp.focus() schedules a message that
+        # may not flush in time on slower CI runners (ubuntu 3.13 in CI).
+        screen.set_focus(inp)
         await pilot.pause()
+        assert screen.focused is inp, "test setup precondition: filter Input is focused"
         before = screen._source_modes["chat"]
         screen.action_cycle_source()
         assert screen._source_modes["chat"] == before
@@ -194,6 +197,39 @@ def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
     assert _row_cache_signature(frontier) == ("gpt-4o", False)
     local = _row("Llama", installed=True)
     assert _row_cache_signature(local) == ("Llama", True)
+
+
+async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> None:
+    """Empty grid result + Enter submits a remote HF search via _trigger_remote_search.
+
+    Exercises the on_search_submitted fall-through path: in grid view, if
+    no ModelGrid has any rows, the search text is sent to HF via the
+    remote-search worker.
+    """
+    from unittest.mock import patch
+
+    from textual.widgets import Input as _Input
+
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = True
+        # Wipe rows from EVERY ModelGrid on the screen (per-task containers
+        # plus the three Discover rails) so on_search_submitted falls
+        # through past the _select_first_visible_grid_card early-return
+        # and reaches _trigger_remote_search.
+        for grid in screen.query(ModelGrid):
+            grid.set_rows([])
+        await pilot.pause()
+        inp = screen.query_one("#catalog-search", _Input)
+        inp.value = "qwen3-nonexistent"
+        with patch.object(screen, "_trigger_remote_search") as mock_trigger:
+            screen._on_search_submitted(_Input.Submitted(input=inp, value=inp.value))
+            mock_trigger.assert_called_once_with("qwen3-nonexistent")
 
 
 def test_local_lines_renders_remote_backend_pill() -> None:
