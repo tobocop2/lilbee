@@ -16,8 +16,13 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lilbee.core.security import validate_path_within
+
+if TYPE_CHECKING:
+    # circular: registry -> models -> registry via ModelRegistry
+    from lilbee.modelhub.models import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -83,9 +88,9 @@ class ModelManifest:
     hf_repo: str
     gguf_filename: str
     size_bytes: int
-    task: str  # use lilbee.models.ModelTask values
+    task: ModelTask
     downloaded_at: str  # ISO 8601
-    blob: str = ""  # SHA-256 hex of the blob in the HF cache
+    blob: str | None = None  # SHA-256 hex of the blob in the HF cache; None pre-install
 
     @property
     def ref(self) -> str:
@@ -120,6 +125,8 @@ class ModelRegistry:
         cache_path = self._root / f"models--{repo_to_dir(manifest.hf_repo)}"
         if not cache_path.exists():
             raise KeyError(f"Cache folder missing for {ref}: {cache_path.name}")
+        if manifest.blob is None:
+            raise KeyError(f"Manifest for {ref} has no blob hash; install incomplete")
         blob_file = cache_path / "blobs" / manifest.blob
         if not blob_file.exists():
             raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")

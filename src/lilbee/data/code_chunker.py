@@ -11,7 +11,7 @@ from typing import Any
 
 from tree_sitter_language_pack import (
     ProcessConfig,
-    detect_language,  # TODO: use public API once tree-sitter-language-pack >= 1.3.4
+    detect_language,
     has_language,
     init,
     process,
