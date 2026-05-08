@@ -317,8 +317,7 @@ async def models_installed() -> ModelsInstalledResponse:
     models = []
     for name in names:
         src = manager.get_source(name)
-        source_str = src.value if src is not None else ModelSource.REMOTE.value
-        models.append(InstalledModelEntry(name=name, source=source_str))
+        models.append(InstalledModelEntry(name=name, source=src or ModelSource.REMOTE))
     return ModelsInstalledResponse(models=models)
 
 

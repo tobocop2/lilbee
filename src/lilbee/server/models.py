@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.data.store import SearchScope
 
 _VALID_CHUNK_TYPES = frozenset({SearchScope.RAW.value, SearchScope.WIKI.value})
@@ -245,7 +246,7 @@ class CatalogEntryResponse(BaseModel):
 
     hf_repo: str
     gguf_filename: str
-    task: str
+    task: ModelTask
     display_name: str
     param_count: str
     size_gb: float
@@ -255,7 +256,7 @@ class CatalogEntryResponse(BaseModel):
     featured: bool
     downloads: int
     installed: bool
-    source: str
+    source: ModelSource
 
 
 class ModelsCatalogResponse(BaseModel):
@@ -272,7 +273,7 @@ class InstalledModelEntry(BaseModel):
     """A single installed model."""
 
     name: str
-    source: str
+    source: ModelSource
 
 
 class ModelsInstalledResponse(BaseModel):

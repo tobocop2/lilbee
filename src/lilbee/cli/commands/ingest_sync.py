@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import CopyResult, copy_files
 from lilbee.app.search import clean_result
@@ -106,14 +113,11 @@ def _crawl_urls_blocking(
     signal flows through as a clean cancel instead of asyncio.run's default
     KeyboardInterrupt-raising (which left browser contexts mid-teardown).
     """
-    import threading
-
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
         CrawlPageEvent,
-        DetailedProgressCallback,
         EventType,
         ProgressEvent,
     )
@@ -175,9 +179,9 @@ def _run_crawl_with_signal_cancel(
     *,
     depth: int | None,
     max_pages: int | None,
-    on_progress: object,
-    cancel_event: object,
-    crawl_and_save: object,
+    on_progress: DetailedProgressCallback,
+    cancel_event: threading.Event,
+    crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
 ) -> list[Path]:
     """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
@@ -197,7 +201,7 @@ def _run_crawl_with_signal_cancel(
         # Set the cancel event that crawl_recursive polls between pages, so
         # a Ctrl-C flows through as a clean cancel instead of asyncio.run's
         # default KeyboardInterrupt-raising dance.
-        cancel_event.set()  # type: ignore[attr-defined]
+        cancel_event.set()
 
     signal.signal(signal.SIGINT, _on_sigint)
     # Manage the event loop explicitly. In the CLI this runs once per process,
@@ -208,7 +212,7 @@ def _run_crawl_with_signal_cancel(
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        coro = crawl_and_save(  # type: ignore[operator]
+        coro = crawl_and_save(
             url,
             depth=depth,
             max_pages=max_pages,
