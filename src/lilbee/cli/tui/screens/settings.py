@@ -225,12 +225,14 @@ def _crawler_installed() -> bool:
     return crawler_available()
 
 
+def _wiki_enabled() -> bool:
+    return bool(cfg.wiki)
+
+
 _FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
-    # Late-binding lambdas: tests patch _litellm_installed / _crawler_installed
-    # at the module level, and the gate must observe the patched callable.
-    "API-Keys": lambda: _litellm_installed(),
-    "Crawling": lambda: _crawler_installed(),
-    "Wiki": lambda: bool(cfg.wiki),
+    "API-Keys": _litellm_installed,
+    "Crawling": _crawler_installed,
+    "Wiki": _wiki_enabled,
 }
 
 
