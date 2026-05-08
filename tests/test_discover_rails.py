@@ -113,7 +113,7 @@ async def test_action_focus_grid_handles_unparented_heading() -> None:
 
 async def test_set_rail_swallows_missing_grid() -> None:
     """_set_rail no-ops when the rail's grid id is gone (post-remount race)."""
-    from lilbee.cli.tui.widgets.discover_rails import DiscoverRails as _DR
+    from lilbee.cli.tui.widgets.discover_rails import DiscoverRails as DiscoverRailsCls
 
     class _Empty(App):
         def compose(self) -> ComposeResult:
@@ -123,7 +123,7 @@ async def test_set_rail_swallows_missing_grid() -> None:
         await pilot.pause()
         # Build a DiscoverRails outside the mounted DOM, then call _set_rail
         # — query_one will raise and the helper should swallow it cleanly.
-        rails = _DR()
+        rails = DiscoverRailsCls()
         rails._set_rail("for-you", [_row("Llama")])
 
 

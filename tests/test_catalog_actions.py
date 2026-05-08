@@ -218,7 +218,6 @@ def test_probe_available_memory_returns_none_on_failure(monkeypatch) -> None:
 
 def test_stamp_fit_no_op_without_probe() -> None:
     """When the host probe failed (memory bytes is None), _stamp_fit no-ops."""
-    from unittest.mock import MagicMock
 
     screen = CatalogScreen.__new__(CatalogScreen)
     screen._available_memory_bytes = None

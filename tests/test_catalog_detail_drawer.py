@@ -179,7 +179,6 @@ async def test_render_sizes_block_marks_each_fit_level() -> None:
 async def test_description_falls_back_to_family_when_no_catalog_model() -> None:
     """_description_text reads ModelFamily.description when catalog_model is absent."""
     from lilbee.catalog import ModelFamily, ModelVariant
-
     from lilbee.cli.tui.widgets.catalog_detail import _description_text
 
     family = ModelFamily(
