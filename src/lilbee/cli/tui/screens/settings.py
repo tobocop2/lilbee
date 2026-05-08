@@ -98,6 +98,28 @@ def _picker_scope_to_task(scope: PickerScope) -> ModelTask:
 _MODEL_PICKER_BUTTON_PREFIX = "model-pick-"
 
 
+def _set_widget_value(widget: Widget, value: object) -> None:
+    """Push *value* into a settings-row editor widget.
+
+    One isinstance ladder owned here means callers (`_refresh_editor`,
+    future bulk reset) don't redo the per-widget-type dispatch.
+    """
+    if isinstance(widget, Input):
+        widget.value = "" if value is None else str(value)
+    elif isinstance(widget, Checkbox):
+        widget.value = bool(value)
+    elif isinstance(widget, Select):
+        if value is None:
+            widget.clear()
+        else:
+            widget.value = str(value)
+    elif isinstance(widget, TextArea):  # future-proofing: list/multiline defaults
+        if isinstance(value, list):
+            widget.load_text("\n".join(value))
+        else:
+            widget.load_text("" if value is None else str(value))
+
+
 def _model_picker_label(key: str) -> str:
     """Render the picker button label as the human-friendly model name."""
     from lilbee.catalog.formatting import display_label_for_ref
@@ -872,20 +894,7 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
-        if isinstance(widget, Input):
-            widget.value = "" if value is None else str(value)
-        elif isinstance(widget, Checkbox):
-            widget.value = bool(value)
-        elif isinstance(widget, Select):
-            if value is None:
-                widget.clear()
-            else:
-                widget.value = str(value)
-        elif isinstance(widget, TextArea):  # future-proofing: list/multiline defaults
-            if isinstance(value, list):
-                widget.load_text("\n".join(value))
-            else:
-                widget.load_text("" if value is None else str(value))
+        _set_widget_value(widget, value)
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
