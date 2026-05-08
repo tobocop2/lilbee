@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RoleConfig, WorkerRole
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import WireKind
 
@@ -36,7 +36,7 @@ def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swa
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 
-def configure_worker_logging(role: str) -> None:
+def configure_worker_logging(role: WorkerRole) -> None:
     """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log`` if set."""
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
@@ -127,7 +127,7 @@ def run_worker(
         heartbeat.join(timeout=1.0)
 
 
-def _start_heartbeat_thread(health_conn: Any, role: str) -> threading.Thread:
+def _start_heartbeat_thread(health_conn: Any, role: WorkerRole) -> threading.Thread:
     """Spawn the daemon thread that owns the health pipe."""
     thread = threading.Thread(
         target=_heartbeat_loop,
@@ -139,7 +139,7 @@ def _start_heartbeat_thread(health_conn: Any, role: str) -> threading.Thread:
     return thread
 
 
-def _heartbeat_loop(health_conn: Any, role: str) -> None:
+def _heartbeat_loop(health_conn: Any, role: WorkerRole) -> None:
     """Respond to ping → pong on the health pipe until the parent closes it."""
     while True:
         try:
@@ -159,7 +159,7 @@ def _handle_data_frame(
     data_conn: Any,
     state: WorkerLoopState,
     kind_handlers: dict[WireKind, KindHandler],
-    role: str,
+    role: WorkerRole,
 ) -> bool:
     """Read and dispatch one data-pipe frame. Return False to stop the loop."""
     try:

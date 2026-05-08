@@ -633,50 +633,48 @@ class TestWorkerNotificationMessages:
 
     def test_worker_starting_title_cases_role_name(self) -> None:
         from lilbee.cli.tui.messages import worker_starting
+        from lilbee.providers.worker.transport import WorkerRole
 
-        assert worker_starting("chat") == "Starting Chat worker..."
-        assert worker_starting("vision") == "Starting Vision worker..."
-
-    def test_worker_starting_handles_underscored_role(self) -> None:
-        from lilbee.cli.tui.messages import worker_starting
-
-        assert worker_starting("vector_embed") == "Starting Vector Embed worker..."
+        assert worker_starting(WorkerRole.CHAT) == "Starting Chat worker..."
+        assert worker_starting(WorkerRole.VISION) == "Starting Vision worker..."
 
     def test_worker_ready_title_cases_role_name(self) -> None:
         from lilbee.cli.tui.messages import worker_ready
+        from lilbee.providers.worker.transport import WorkerRole
 
-        assert worker_ready("rerank") == "Rerank worker ready"
-        assert worker_ready("chat_v2") == "Chat V2 worker ready"
+        assert worker_ready(WorkerRole.RERANK) == "Rerank worker ready"
+        assert worker_ready(WorkerRole.EMBED) == "Embed worker ready"
 
 
 class TestServicesPoolListener:
     """``Services.add_pool_listener`` forwards to the underlying WorkerPool."""
 
     def test_forwards_both_callbacks_to_pool(self) -> None:
+        from lilbee.providers.worker.transport import WorkerRole
         from tests.conftest import make_mock_services
 
-        seen_spawning: list[str] = []
-        seen_spawned: list[str] = []
+        seen_spawning: list[WorkerRole] = []
+        seen_spawned: list[WorkerRole] = []
 
         class _RecordingPool:
-            registered_roles: tuple[str, ...] = ()
+            registered_roles: tuple[WorkerRole, ...] = ()
 
             def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
                 # Re-fire with a synthetic role to verify both callbacks routed.
                 if on_spawning is not None:
-                    on_spawning("embed")
-                    seen_spawning.append("embed")
+                    on_spawning(WorkerRole.EMBED)
+                    seen_spawning.append(WorkerRole.EMBED)
                 if on_spawned is not None:
-                    on_spawned("embed")
-                    seen_spawned.append("embed")
+                    on_spawned(WorkerRole.EMBED)
+                    seen_spawned.append(WorkerRole.EMBED)
 
         services = make_mock_services(worker_pool=_RecordingPool())
         services.add_pool_listener(
             on_spawning=lambda _r: None,
             on_spawned=lambda _r: None,
         )
-        assert seen_spawning == ["embed"]
-        assert seen_spawned == ["embed"]
+        assert seen_spawning == [WorkerRole.EMBED]
+        assert seen_spawned == [WorkerRole.EMBED]
 
     def test_either_callback_is_optional(self) -> None:
         from tests.conftest import make_mock_services

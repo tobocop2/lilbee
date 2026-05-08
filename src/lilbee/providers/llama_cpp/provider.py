@@ -7,7 +7,6 @@ import logging
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, cast, overload
 
@@ -43,22 +42,13 @@ from lilbee.providers.worker.transport import (
     RerankPayload,
     RoleConfig,
     VisionRequest,
+    WorkerRole,
 )
 from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.runtime.progress import EventType, ExtractEvent
 from lilbee.vision import PageText, PdfOcrChunk, pdf_page_count
-
-
-class WorkerRole(StrEnum):
-    """Worker pool role identifier; addresses one llama.cpp worker process."""
-
-    EMBED = "embed"
-    RERANK = "rerank"
-    CHAT = "chat"
-    VISION = "vision"
-
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +131,7 @@ class LlamaCppProvider(LLMProvider):
 
     def __init__(self) -> None:
         self._pool_lock = threading.Lock()
-        self._registered_roles: set[str] = set()
+        self._registered_roles: set[WorkerRole] = set()
 
     @staticmethod
     def _worker_error_message(role_label: str, exc: WorkerError) -> str:
@@ -164,7 +154,7 @@ class LlamaCppProvider(LLMProvider):
 
     def _get_pool_accessor(
         self,
-        role: str,
+        role: WorkerRole,
         worker_main: Any,
         config_factory: Callable[[], RoleConfig],
     ) -> RoleAccessor:

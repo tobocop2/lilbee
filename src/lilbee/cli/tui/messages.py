@@ -8,6 +8,7 @@ and ensures consistent messaging.
 from __future__ import annotations
 
 from lilbee.core.config import cfg
+from lilbee.providers.worker.transport import WorkerRole
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
@@ -334,11 +335,11 @@ MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
 
 
-def worker_starting(role: str) -> str:
+def worker_starting(role: WorkerRole) -> str:
     """User-facing notification text fired immediately before a worker spawn."""
-    return f"Starting {role.replace('_', ' ').title()} worker..."
+    return f"Starting {role.value.replace('_', ' ').title()} worker..."
 
 
-def worker_ready(role: str) -> str:
+def worker_ready(role: WorkerRole) -> str:
     """User-facing notification text fired once the spawned worker is live."""
-    return f"{role.replace('_', ' ').title()} worker ready"
+    return f"{role.value.replace('_', ' ').title()} worker ready"

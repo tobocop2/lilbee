@@ -25,6 +25,7 @@ from lilbee.providers.worker.transport import (
     WorkerChannel,
     WorkerEntrypoint,
     WorkerHandle,
+    WorkerRole,
 )
 from lilbee.providers.worker.wire_kinds import WireKind
 
@@ -64,7 +65,7 @@ class WorkerCrashError(WorkerError):
     signal info.
     """
 
-    def __init__(self, role: str, *, log_path: str | None = None) -> None:
+    def __init__(self, role: WorkerRole, *, log_path: str | None = None) -> None:
         suffix = f" See {log_path} for details." if log_path else ""
         super().__init__(
             "WorkerCrashError",
@@ -104,7 +105,7 @@ def _check_pickle_size(payload: Any, kind: WireKind, call_id: int) -> None:
         )
 
 
-def _worker_log_path(role: str) -> str | None:
+def _worker_log_path(role: WorkerRole) -> str | None:
     """Return the worker's log file path if ``LILBEE_DATA`` is set."""
     import os
 
@@ -126,7 +127,7 @@ class PipeChannel:
     def __init__(
         self,
         *,
-        role: str,
+        role: WorkerRole,
         process: multiprocessing.process.BaseProcess,
         parent_conn: Any,
         health_conn: Any,
@@ -154,8 +155,8 @@ class PipeChannel:
         self._call_id_lock = threading.Lock()
 
     @property
-    def role(self) -> str:
-        """Short identifier for this channel (``embed``, ``chat``, ...)."""
+    def role(self) -> WorkerRole:
+        """Worker role this channel addresses."""
         return self._role
 
     @property

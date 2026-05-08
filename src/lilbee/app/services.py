@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
+    from lilbee.providers.worker.transport import WorkerRole
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -77,8 +78,8 @@ class Services:
     def add_pool_listener(
         self,
         *,
-        on_spawning: Callable[[str], None] | None = None,
-        on_spawned: Callable[[str], None] | None = None,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
         """Subscribe to worker spawn lifecycle events.
 

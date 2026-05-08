@@ -20,6 +20,7 @@ from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -225,7 +226,7 @@ class LilbeeApp(App[None]):
         feedback during the 1-3 s cold-start window per role.
         """
 
-        def _on_spawning(role: str) -> None:
+        def _on_spawning(role: WorkerRole) -> None:
             self.call_from_thread(
                 self.notify,
                 msg.worker_starting(role),
@@ -233,7 +234,7 @@ class LilbeeApp(App[None]):
                 timeout=2,
             )
 
-        def _on_spawned(role: str) -> None:
+        def _on_spawned(role: WorkerRole) -> None:
             self.call_from_thread(
                 self.notify,
                 msg.worker_ready(role),

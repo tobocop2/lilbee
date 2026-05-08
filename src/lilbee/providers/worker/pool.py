@@ -22,6 +22,7 @@ from lilbee.providers.worker.transport import (
     RoleConfig,
     WorkerChannel,
     WorkerEntrypoint,
+    WorkerRole,
     WorkerSpawner,
 )
 from lilbee.providers.worker.transport_pipe import (
@@ -63,7 +64,7 @@ class PoolShutdownError(WorkerError):
 class RoleDegradedError(WorkerError):
     """Raised when a role has burned through its restart budget."""
 
-    def __init__(self, role: str, attempts: int, window_s: float) -> None:
+    def __init__(self, role: WorkerRole, attempts: int, window_s: float) -> None:
         super().__init__(
             "RoleDegradedError",
             (
@@ -80,7 +81,7 @@ class RoleDegradedError(WorkerError):
 class _Role:
     """Per-role registration: how to spawn it plus its live channel (if any)."""
 
-    name: str
+    name: WorkerRole
     worker_main: WorkerEntrypoint
     config_factory: Callable[[], RoleConfig]
     channel: WorkerChannel | None = None
@@ -100,7 +101,7 @@ class RoleAccessor:
     ``stream`` here.
     """
 
-    def __init__(self, pool: WorkerPool, role: str) -> None:
+    def __init__(self, pool: WorkerPool, role: WorkerRole) -> None:
         self._pool = pool
         self._role = role
 
@@ -164,7 +165,7 @@ class RoleAccessor:
 
 async def _spawn_and_stream(
     pool: WorkerPool,
-    role: str,
+    role: WorkerRole,
     kind: WireKind,
     payload: object,
 ) -> AsyncIterator[object]:
@@ -200,21 +201,21 @@ class WorkerPool:
         max_idle_s: float = _DEFAULT_MAX_IDLE_S,
     ) -> None:
         self._spawner: WorkerSpawner = spawner if spawner is not None else PipeSpawner()
-        self._roles: dict[str, _Role] = {}
+        self._roles: dict[WorkerRole, _Role] = {}
         self._shutdown = False
         self._shutdown_lock = asyncio.Lock()
         self._max_idle_s = max_idle_s
         # Listeners fire around every spawn, including respawns after a
         # crash. Both default to empty so headless callers (CLI, server,
         # tests) pay nothing.
-        self._on_role_spawning: list[Callable[[str], None]] = []
-        self._on_role_spawned: list[Callable[[str], None]] = []
+        self._on_role_spawning: list[Callable[[WorkerRole], None]] = []
+        self._on_role_spawned: list[Callable[[WorkerRole], None]] = []
 
     def add_listener(
         self,
         *,
-        on_spawning: Callable[[str], None] | None = None,
-        on_spawned: Callable[[str], None] | None = None,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
         """Register callbacks fired immediately before / after a role spawn.
 
@@ -229,7 +230,7 @@ class WorkerPool:
 
     def register(
         self,
-        role: str,
+        role: WorkerRole,
         worker_main: WorkerEntrypoint,
         config_factory: Callable[[], RoleConfig],
     ) -> RoleAccessor:
@@ -249,14 +250,14 @@ class WorkerPool:
         )
         return RoleAccessor(self, role)
 
-    def accessor(self, role: str) -> RoleAccessor:
+    def accessor(self, role: WorkerRole) -> RoleAccessor:
         """Return the :class:`RoleAccessor` for *role*; must already be registered."""
         if role not in self._roles:
             raise KeyError(f"Role {role!r} is not registered on this pool.")
         return RoleAccessor(self, role)
 
     @property
-    def registered_roles(self) -> tuple[str, ...]:
+    def registered_roles(self) -> tuple[WorkerRole, ...]:
         """Names of every role registered on this pool, in registration order."""
         return tuple(self._roles)
 
@@ -290,7 +291,7 @@ class WorkerPool:
             return_exceptions=True,
         )
 
-    async def _ensure_channel(self, role: str) -> WorkerChannel:
+    async def _ensure_channel(self, role: WorkerRole) -> WorkerChannel:
         """Return the role's live channel, spawning it on first use or after crash."""
         self._raise_if_shutdown()
         registration = self._roles.get(role)
@@ -319,7 +320,9 @@ class WorkerPool:
             log.info("Worker pool spawned role=%s pid=%s", role, channel.pid)
             return channel
 
-    def _fire_listeners(self, listeners: list[Callable[[str], None]], role: str) -> None:
+    def _fire_listeners(
+        self, listeners: list[Callable[[WorkerRole], None]], role: WorkerRole
+    ) -> None:
         """Invoke every registered listener; one bad listener does not break the pool."""
         for listener in listeners:
             try:
@@ -327,13 +330,13 @@ class WorkerPool:
             except Exception:
                 log.exception("Worker pool listener for role=%s raised", role)
 
-    def _stamp_used(self, role: str) -> None:
+    def _stamp_used(self, role: WorkerRole) -> None:
         """Update *role*'s ``last_used`` timestamp; called by the accessor."""
         registration = self._roles.get(role)
         if registration is not None:
             registration.last_used = time.monotonic()
 
-    def _channel_if_alive(self, role: str) -> WorkerChannel | None:
+    def _channel_if_alive(self, role: WorkerRole) -> WorkerChannel | None:
         """Return the role's live channel without spawning; None if absent or dead."""
         registration = self._roles.get(role)
         if registration is None or registration.channel is None:
@@ -342,7 +345,7 @@ class WorkerPool:
             return None
         return registration.channel
 
-    async def _on_crash(self, role: str) -> None:
+    async def _on_crash(self, role: WorkerRole) -> None:
         """Drop a crashed channel; mark degraded if the restart budget is exhausted."""
         registration = self._roles.get(role)
         if registration is None:
@@ -367,7 +370,7 @@ class WorkerPool:
             with contextlib.suppress(WorkerError):
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
 
-    def reset_role_failures(self, role: str) -> None:
+    def reset_role_failures(self, role: WorkerRole) -> None:
         """Clear *role*'s degraded mark and crash history.
 
         Used by an explicit "retry" UI affordance so the user can recover
@@ -380,12 +383,12 @@ class WorkerPool:
         registration.crash_history.clear()
         registration.degraded = False
 
-    def is_degraded(self, role: str) -> bool:
+    def is_degraded(self, role: WorkerRole) -> bool:
         """Return True iff *role* is currently disabled by the restart-budget rule."""
         registration = self._roles.get(role)
         return registration is not None and registration.degraded
 
-    async def reap_idle(self) -> tuple[str, ...]:
+    async def reap_idle(self) -> tuple[WorkerRole, ...]:
         """Close any role idle longer than ``max_idle_s`` with zero in-flight.
 
         Caller (typically a background async task) decides cadence; the
@@ -398,7 +401,7 @@ class WorkerPool:
         if self._max_idle_s <= 0.0:
             return ()
         now = time.monotonic()
-        reaped: list[str] = []
+        reaped: list[WorkerRole] = []
         for role_name, registration in list(self._roles.items()):
             channel = registration.channel
             if channel is None or not channel.is_alive:
@@ -428,7 +431,7 @@ class WorkerPool:
 
     async def ping_role(
         self,
-        role: str,
+        role: WorkerRole,
         *,
         timeout: float | None = None,
     ) -> None:
@@ -444,7 +447,7 @@ class WorkerPool:
         budget = timeout if timeout is not None else _HEALTH_TIMEOUT_S
         await accessor.ping(timeout=budget)
 
-    async def release(self, role: str) -> None:
+    async def release(self, role: WorkerRole) -> None:
         """Close *role*'s live worker and forget the registration entirely.
 
         Used by callers (notably ``LlamaCppProvider.invalidate_load_cache``)
