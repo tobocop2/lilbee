@@ -165,30 +165,6 @@ class TestChatInputCheckConsumeKey:
             assert inp.check_consume_key("a", "a") is True
 
 
-class TestStatusBarSwitch:
-    """`ViewTab.action_activate` calls `_switch`; under a non-LilbeeApp
-    test parent the isinstance gate skips ``switch_view`` but still
-    executes the binding wiring (line 62)."""
-
-    async def test_action_activate_runs_switch(self) -> None:
-        from textual.app import ComposeResult
-
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import ViewTab
-
-        class _Probe(LilbeeAppHost):
-            def compose(self) -> ComposeResult:
-                yield ViewTab(msg.DEFAULT_VIEW)
-
-        async with _Probe().run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            tab = pilot.app.query_one(ViewTab)
-            # Should not raise; LilbeeApp isinstance gate skips
-            # switch_view but ``_switch`` itself runs.
-            tab.action_activate()
-            tab.on_click()
-
-
 class TestCatalogUtilsFrontierFromRemote:
     """`frontier_row_from_remote` converts a RemoteModel into a
     FrontierCatalogRow. Direct unit call covers the constructor."""

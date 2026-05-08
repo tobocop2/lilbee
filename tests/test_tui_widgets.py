@@ -3246,19 +3246,6 @@ class LilbeeAppHostSettingWriter:
                 apply_setting(app, "chat_mode", "chat")
                 mock_set_setting.assert_called_once_with("chat_mode", "chat")
 
-    def test_apply_setting_falls_back_to_direct_write_when_not_lilbee_app(self) -> None:
-
-        from lilbee.cli.tui.app import apply_setting
-
-        cfg.chat_mode = "search"
-        plain_app = App()
-        with mock.patch("lilbee.core.settings.set_value") as mock_set:
-            apply_setting(plain_app, "chat_mode", "chat")
-        assert cfg.chat_mode == "chat"
-        assert mock_set.called
-        cfg.chat_mode = "search"
-
-
 class LilbeeAppHostViewTabs:
     async def test_screen_composes_status_bar(self) -> None:
         cfg.chat_model = TEST_LOCAL_REF

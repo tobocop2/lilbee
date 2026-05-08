@@ -807,14 +807,17 @@ async def test_settings_vim_keys():
 
 
 async def test_settings_pop_screen():
-    """Pressing q pops the settings screen."""
+    """Pressing q switches the host to the Chat view via SettingsScreen.action_go_back."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert isinstance(app.screen, SettingsScreen)
-        await pilot.press("q")
-        assert not isinstance(app.screen, SettingsScreen)
+        with patch.object(app, "switch_view") as switch:
+            await pilot.press("q")
+            switch.assert_called_once_with("Chat")
 
 
 async def test_settings_crawl_exclude_patterns_renders_collapsible():
@@ -1856,14 +1859,18 @@ async def test_status_tab_moves_focus_between_sections(mock_svc):
         assert app.focused is not initial
 
 
-async def test_status_screen_escape_pops():
+async def test_status_screen_escape_invokes_switch_view():
+    """Pressing Escape on Status switches the host to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.status import StatusScreen
 
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         assert isinstance(app.screen, StatusScreen)
-        await _pilot.press("escape")
-        assert not isinstance(app.screen, StatusScreen)
+        with patch.object(app, "switch_view") as switch:
+            await _pilot.press("escape")
+            switch.assert_called_once_with("Chat")
 
 
 def test_ocr_label_enabled():
@@ -2303,16 +2310,6 @@ async def test_chat_slash_theme_no_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme")
-            mock_notify.assert_called_once()
-            assert "Themes:" in mock_notify.call_args[0][0]
-
-
-async def test_chat_slash_theme_non_lilbee_app():
-    """Theme with arg on a non-LilbeeApp should just list themes."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._handle_slash("/theme dracula")
             mock_notify.assert_called_once()
             assert "Themes:" in mock_notify.call_args[0][0]
 
@@ -3282,7 +3279,10 @@ async def test_catalog_header_sort():
             assert screen._sort_column == "Name"
 
 
-async def test_catalog_pop_screen():
+async def test_catalog_action_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3293,12 +3293,10 @@ async def test_catalog_pop_screen():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            screen.action_go_back()
-            await _pilot.pause()
-            # action_go_back on non-LilbeeApp calls pop_screen
-            from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-            assert not isinstance(app.screen, CatalogScreen)
+            with patch.object(app, "switch_view") as switch:
+                screen.action_go_back()
+                await _pilot.pause()
+                switch.assert_called_once_with("Chat")
 
 
 async def test_catalog_vim_keys():
@@ -6876,14 +6874,15 @@ class TestWikiScreenSearch:
 
 
 class TestWikiScreenNavigation:
-    async def test_go_back_pops_screen(self):
-        """Pressing q pops the wiki screen in a non-LilbeeApp context."""
-        from lilbee.cli.tui.screens.wiki import WikiScreen
+    async def test_go_back_invokes_switch_view(self):
+        """Pressing q asks the host to switch to the Chat view."""
+        from unittest.mock import patch
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("q")
-            assert not isinstance(app.screen, WikiScreen)
+            with patch.object(app, "switch_view") as switch:
+                await pilot.press("q")
+                switch.assert_called_once_with("Chat")
 
     async def test_vim_keys(self):
         """Vim navigation keys work on the option list."""
@@ -7776,7 +7775,9 @@ class TestWikiCoverageEdgeCases:
             assert app.screen.query_one("#wiki-search", TextualInput).has_focus
 
     async def test_dismiss_or_back_empty_search(self, tmp_path):
-        """Escape with empty search calls go_back."""
+        """Escape with empty search invokes go_back, which switches to Chat."""
+        from unittest.mock import patch
+
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -7787,13 +7788,14 @@ class TestWikiCoverageEdgeCases:
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            # Search is empty, so dismiss_or_back should call go_back
-            screen.action_dismiss_or_back()
-            await pilot.pause()
+            with patch.object(app, "switch_view") as switch:
+                screen.action_dismiss_or_back()
+                await pilot.pause()
+                switch.assert_called_once_with("Chat")
 
-    async def test_go_back_pops_screen(self, tmp_path):
-        """action_go_back pops screen on non-LilbeeApp."""
-        from lilbee.cli.tui.screens.wiki import WikiScreen
+    async def test_go_back_invokes_switch_view(self, tmp_path):
+        """action_go_back asks the host to switch to the Chat view."""
+        from unittest.mock import patch
 
         cfg.wiki = True
         cfg.data_root = tmp_path
@@ -7801,9 +7803,10 @@ class TestWikiCoverageEdgeCases:
         wiki_root.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            app.screen.action_go_back()
-            await pilot.pause()
-            assert not isinstance(app.screen, WikiScreen)
+            with patch.object(app, "switch_view") as switch:
+                app.screen.action_go_back()
+                await pilot.pause()
+                switch.assert_called_once_with("Chat")
 
     async def test_go_back_switches_to_chat_on_lilbee_app(self, tmp_path):
         """action_go_back calls switch_view('Chat') on LilbeeApp."""
@@ -8598,26 +8601,6 @@ async def test_catalog_install_model_already_exists(tmp_path):
                 assert "already installed" in mock_notify.call_args[0][0]
 
 
-async def test_catalog_enqueue_download_non_lilbee_app():
-    """_enqueue_download notifies error when not LilbeeApp."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._active_tab_id_cache = "chat"
-            screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            m = _make_catalog_model(name="dl-model")
-            # CatalogTestApp is not LilbeeApp, so this should show error
-            with patch.object(screen, "notify") as mock_notify:
-                screen._enqueue_download(m)
-                mock_notify.assert_called_once()
-                assert "task bar" in mock_notify.call_args[0][0].lower()
-
-
 async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
@@ -9219,16 +9202,20 @@ async def test_settings_refresh_help_exception():
         screen._refresh_help("nonexistent_key_xyz", defn)
 
 
-async def test_settings_go_back_non_lilbee_app():
-    """action_go_back pops screen on non-LilbeeApp."""
+async def test_settings_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        screen.action_go_back()
-        await pilot.pause()
+        with patch.object(app, "switch_view") as switch:
+            screen.action_go_back()
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
 
 
 # ---------------------------------------------------------------------------
@@ -9291,16 +9278,20 @@ async def test_task_center_advance_tick_skips_when_stack_empty():
             screen._advance_tick()
 
 
-async def test_task_center_go_back_non_lilbee_app():
-    """action_go_back pops screen on non-LilbeeApp."""
+async def test_task_center_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.task_center import TaskCenter
 
     app = TaskCenterTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        app.screen.action_go_back()
-        await pilot.pause()
-        assert not isinstance(app.screen, TaskCenter)
+        assert isinstance(app.screen, TaskCenter)
+        with patch.object(app, "switch_view") as switch:
+            app.screen.action_go_back()
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
 
 
 async def test_app_action_quit_when_streaming():
@@ -9496,17 +9487,6 @@ async def test_app_switch_view_non_chat():
 # ---------------------------------------------------------------------------
 # commands.py coverage
 # ---------------------------------------------------------------------------
-
-
-async def test_command_provider_app_not_lilbee():
-    """_app property raises TypeError on non-LilbeeApp."""
-    from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)):
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with pytest.raises(TypeError, match="LilbeeApp"):
-            _ = provider._app
 
 
 async def test_command_provider_action_setup():
