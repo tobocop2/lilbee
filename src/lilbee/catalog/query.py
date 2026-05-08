@@ -9,7 +9,7 @@ from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.core.services import get_services
 from lilbee.modelhub.models import ModelTask
-from lilbee.modelhub.registry import format_native_gguf_ref
+from lilbee.modelhub.registry import format_native_gguf_ref, hf_repo_from_ref
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -82,7 +82,7 @@ def get_catalog(
 
     # A repo is "installed" if any of its quants has a manifest.
     if installed is not None and model_manager is not None:
-        installed_repos = {ref.rsplit("/", 1)[0] for ref in _get_installed_models(model_manager)}
+        installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
         if installed:
             all_models = [m for m in all_models if m.hf_repo in installed_repos]
         else:

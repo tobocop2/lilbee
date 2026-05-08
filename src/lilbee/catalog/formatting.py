@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.modelhub.model_manager import ModelSource
+from lilbee.modelhub.registry import hf_repo_from_ref
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
@@ -122,7 +123,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
     ``model_manager.list_installed()``. A repo is considered installed
     when at least one of its quants has a manifest.
     """
-    installed_repos = {ref.rsplit("/", 1)[0] for ref in installed_refs}
+    installed_repos = {hf_repo_from_ref(ref) for ref in installed_refs}
     enriched: list[EnrichedModel] = []
     for m in result.models:
         enriched.append(

@@ -25,6 +25,7 @@ from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import ModelSource
 from lilbee.modelhub.models import ModelTask
+from lilbee.modelhub.registry import hf_repo_from_ref
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
@@ -104,7 +105,7 @@ def _catalog_section(
     leading ``hf_repo`` segment. Bare ``hf_repo`` entries are accepted
     too (e.g. older clients that report just the repo).
     """
-    installed_repos = {ref.rsplit("/", 1)[0] if ref.endswith(".gguf") else ref for ref in installed}
+    installed_repos = {hf_repo_from_ref(ref) for ref in installed}
     return ModelCatalogSection(
         active=active,
         catalog=[
