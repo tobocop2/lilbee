@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from lilbee.providers.backend_names import REMOTE_BACKEND_NAME
+from lilbee.providers.backend_names import BackendName
 
 
 class ModelSource(Enum):
@@ -44,7 +44,7 @@ class RemoteModel:
     task: str  # "chat", "embedding", "vision", "rerank"
     family: str
     parameter_size: str
-    provider: str = REMOTE_BACKEND_NAME
+    provider: str = BackendName.REMOTE
 
 
 class ValidationResult(Enum):

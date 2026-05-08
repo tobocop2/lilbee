@@ -18,13 +18,7 @@ from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    ACK_KIND,
-    ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
-    SHUTDOWN_KIND,
-)
+from lilbee.providers.worker.wire_kinds import WireKind
 
 log = logging.getLogger(__name__)
 
@@ -152,9 +146,9 @@ def _heartbeat_loop(health_conn: Any, role: str) -> None:
             _call_id, kind, _ = health_conn.recv()
         except (EOFError, OSError):
             return
-        if kind == PING_KIND:
+        if kind == WireKind.PING:
             try:
-                health_conn.send((_CONTROL_CALL_ID, PONG_KIND, None))
+                health_conn.send((_CONTROL_CALL_ID, WireKind.PONG, None))
             except (BrokenPipeError, OSError):
                 return
             continue
@@ -172,8 +166,8 @@ def _handle_data_frame(
         call_id, kind, payload = data_conn.recv()
     except EOFError:
         return False
-    if kind == SHUTDOWN_KIND:
-        data_conn.send((call_id, ACK_KIND, None))
+    if kind == WireKind.SHUTDOWN:
+        data_conn.send((call_id, WireKind.ACK, None))
         return False
     reply = Reply(data_conn, call_id)
     handler = kind_handlers.get(kind)
@@ -183,7 +177,7 @@ def _handle_data_frame(
     try:
         raise ValueError(f"{role} worker received unknown kind {kind!r}")
     except ValueError as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
     return True
 
 

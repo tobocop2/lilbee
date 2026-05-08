@@ -26,15 +26,7 @@ from lilbee.providers.worker.transport import (
     WorkerEntrypoint,
     WorkerHandle,
 )
-from lilbee.providers.worker.wire_kinds import (
-    ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
-    RESULT_KIND,
-    SHUTDOWN_KIND,
-    STREAM_CHUNK_KIND,
-    STREAM_END_KIND,
-)
+from lilbee.providers.worker.wire_kinds import WireKind
 
 log = logging.getLogger(__name__)
 
@@ -254,9 +246,9 @@ class PipeChannel:
         try:
             await self._send(call_id, kind, payload)
             msg_kind, value = await asyncio.wait_for(self._recv_for(call_id), timeout=timeout)
-            if msg_kind == ERROR_KIND:
+            if msg_kind == WireKind.ERROR:
                 raise _deserialize_exception(value)
-            if msg_kind != RESULT_KIND:
+            if msg_kind != WireKind.RESULT:
                 raise WorkerError(
                     "ProtocolError",
                     f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
@@ -275,11 +267,11 @@ class PipeChannel:
         try:
             while True:
                 msg_kind, value = await self._recv_for(call_id)
-                if msg_kind == STREAM_CHUNK_KIND:
+                if msg_kind == WireKind.STREAM_CHUNK:
                     yield value
-                elif msg_kind == STREAM_END_KIND:
+                elif msg_kind == WireKind.STREAM_END:
                     return
-                elif msg_kind == ERROR_KIND:
+                elif msg_kind == WireKind.ERROR:
                     raise _deserialize_exception(value)
                 else:
                     raise WorkerError(
@@ -304,7 +296,7 @@ class PipeChannel:
                 await loop.run_in_executor(
                     self._executor,
                     self._health_conn.send,
-                    (_CONTROL_CALL_ID, PING_KIND, None),
+                    (_CONTROL_CALL_ID, WireKind.PING, None),
                 )
         except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
             raise self._crash() from exc
@@ -316,7 +308,7 @@ class PipeChannel:
                 )
             except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
                 raise self._crash() from exc
-        if msg_kind != PONG_KIND:
+        if msg_kind != WireKind.PONG:
             raise WorkerError(
                 "ProtocolError",
                 f"Worker '{self._role}' ping reply was {msg_kind!r}, want 'pong'.",
@@ -339,7 +331,7 @@ class PipeChannel:
             self._closed = True
         try:
             with contextlib.suppress(asyncio.TimeoutError, WorkerError):
-                await self._send(_CONTROL_CALL_ID, SHUTDOWN_KIND, None)
+                await self._send(_CONTROL_CALL_ID, WireKind.SHUTDOWN, None)
                 with contextlib.suppress(asyncio.TimeoutError, WorkerError):
                     await asyncio.wait_for(self._recv(), timeout=timeout)
             await asyncio.get_running_loop().run_in_executor(

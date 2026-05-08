@@ -7,7 +7,7 @@ from typing import Any
 
 from lilbee.providers.worker.transport import RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import EMBED_KIND, ERROR_KIND, RESULT_KIND
+from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
 
@@ -32,9 +32,9 @@ class _EmbedSession:
 
     def _load(self) -> Any:
         from lilbee.providers.llama_cpp.provider import load_llama
-        from lilbee.providers.model_cache import MODE_EMBED
+        from lilbee.providers.model_cache import LoaderMode
 
-        return load_llama(self._role_config.model_path, mode=MODE_EMBED)
+        return load_llama(self._role_config.model_path, mode=LoaderMode.EMBED)
 
     @staticmethod
     def _embed_batch(llm: Any, texts: list[str]) -> list[list[float]]:
@@ -60,15 +60,15 @@ def _handle_embed(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         try:
             raise TypeError(f"embed payload must be list[str], got {type(payload).__name__}")
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     session: _EmbedSession = state.session
     try:
         vectors = session.embed(payload)
     except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
-    reply.send(RESULT_KIND, vectors)
+    reply.send(WireKind.RESULT, vectors)
 
 
 def embed_worker_main(
@@ -81,7 +81,7 @@ def embed_worker_main(
         abort_flag,
         role_config,
         session_factory=lambda role_cfg, _abort: _EmbedSession(role_cfg),
-        kind_handlers={EMBED_KIND: _handle_embed},
+        kind_handlers={WireKind.EMBED: _handle_embed},
     )
 
 

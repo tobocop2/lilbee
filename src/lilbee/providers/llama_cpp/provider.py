@@ -7,6 +7,7 @@ import logging
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,9 +27,6 @@ from lilbee.providers.llama_cpp.log_dispatch import (
     suppress_native_stderr,
 )
 from lilbee.providers.model_cache import (
-    MODE_CHAT,
-    MODE_EMBED,
-    MODE_RERANK,
     LoaderMode,
     compute_dynamic_ctx,
     get_available_memory,
@@ -48,14 +46,18 @@ from lilbee.providers.worker.transport import (
 )
 from lilbee.providers.worker.transport_pipe import WorkerCrashError, WorkerError
 from lilbee.providers.worker.vision_worker import vision_worker_main
-from lilbee.providers.worker.wire_kinds import PDF_OCR_KIND
+from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.runtime.progress import EventType, ExtractEvent
 from lilbee.vision import PageText, PdfOcrChunk, pdf_page_count
 
-_EMBED_ROLE = "embed"
-_RERANK_ROLE = "rerank"
-_CHAT_ROLE = "chat"
-_VISION_ROLE = "vision"
+
+class WorkerRole(StrEnum):
+    """Worker pool role identifier; addresses one llama.cpp worker process."""
+
+    EMBED = "embed"
+    RERANK = "rerank"
+    CHAT = "chat"
+    VISION = "vision"
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +187,7 @@ class LlamaCppProvider(LLMProvider):
         the pool respawns the embed role lazily on the next call.
         """
         accessor = self._get_pool_accessor(
-            _EMBED_ROLE, embed_worker_main, _make_role_config_factory(_EMBED_ROLE)
+            WorkerRole.EMBED, embed_worker_main, _make_role_config_factory(WorkerRole.EMBED)
         )
         runtime = self._pool_runtime()
         try:
@@ -216,7 +218,7 @@ class LlamaCppProvider(LLMProvider):
         if not candidates:
             return []
         accessor = self._get_pool_accessor(
-            _RERANK_ROLE, rerank_worker_main, _make_role_config_factory(_RERANK_ROLE)
+            WorkerRole.RERANK, rerank_worker_main, _make_role_config_factory(WorkerRole.RERANK)
         )
         runtime = self._pool_runtime()
         try:
@@ -255,7 +257,7 @@ class LlamaCppProvider(LLMProvider):
     ) -> str:
         """Run vision OCR via the persistent pool worker."""
         accessor = self._get_pool_accessor(
-            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
+            WorkerRole.VISION, vision_worker_main, _make_role_config_factory(WorkerRole.VISION)
         )
         runtime = self._pool_runtime()
         budget = self._vision_call_budget(timeout)
@@ -307,7 +309,7 @@ class LlamaCppProvider(LLMProvider):
         ~6000 s + load, not 60 s for the whole document.
         """
         accessor = self._get_pool_accessor(
-            _VISION_ROLE, vision_worker_main, _make_role_config_factory(_VISION_ROLE)
+            WorkerRole.VISION, vision_worker_main, _make_role_config_factory(WorkerRole.VISION)
         )
         runtime = self._pool_runtime()
         budget = self._pdf_drain_budget(path, per_page_timeout_s)
@@ -321,7 +323,7 @@ class LlamaCppProvider(LLMProvider):
 
         async def _drain() -> list[PageText]:
             pages: list[PageText] = []
-            stream = cast(AsyncIterator[Any], accessor.stream(PDF_OCR_KIND, request))
+            stream = cast(AsyncIterator[Any], accessor.stream(WireKind.PDF_OCR, request))
             async for frame in stream:
                 if not isinstance(frame, PdfOcrChunk):
                     raise ProviderError(
@@ -377,7 +379,7 @@ class LlamaCppProvider(LLMProvider):
         drains cleanly. Non-streaming returns the assembled assistant text.
         """
         accessor = self._get_pool_accessor(
-            _CHAT_ROLE, chat_worker_main, _make_role_config_factory(_CHAT_ROLE)
+            WorkerRole.CHAT, chat_worker_main, _make_role_config_factory(WorkerRole.CHAT)
         )
         runtime = self._pool_runtime()
         accessor.clear_abort()  # honor mid-stream cancels from the previous turn
@@ -617,20 +619,20 @@ class _RoleSpec:
 
 
 _ROLE_SPECS: dict[str, _RoleSpec] = {
-    _EMBED_ROLE: _RoleSpec(cfg_attr="embedding_model", mode=MODE_EMBED),
-    _RERANK_ROLE: _RoleSpec(cfg_attr="reranker_model", mode=MODE_RERANK),
-    _CHAT_ROLE: _RoleSpec(cfg_attr="chat_model", mode=MODE_CHAT),
+    WorkerRole.EMBED: _RoleSpec(cfg_attr="embedding_model", mode=LoaderMode.EMBED),
+    WorkerRole.RERANK: _RoleSpec(cfg_attr="reranker_model", mode=LoaderMode.RERANK),
+    WorkerRole.CHAT: _RoleSpec(cfg_attr="chat_model", mode=LoaderMode.CHAT),
     # Vision uses a custom mtmd loader (not load_llama); the mode hint is
     # documentation only, the vision worker calls load_vision_llama directly.
-    _VISION_ROLE: _RoleSpec(cfg_attr="vision_model", mode="vision"),
+    WorkerRole.VISION: _RoleSpec(cfg_attr="vision_model", mode="vision"),
 }
 
 
 _ROLE_ENTRYPOINTS = {
-    _EMBED_ROLE: embed_worker_main,
-    _RERANK_ROLE: rerank_worker_main,
-    _CHAT_ROLE: chat_worker_main,
-    _VISION_ROLE: vision_worker_main,
+    WorkerRole.EMBED: embed_worker_main,
+    WorkerRole.RERANK: rerank_worker_main,
+    WorkerRole.CHAT: chat_worker_main,
+    WorkerRole.VISION: vision_worker_main,
 }
 
 
@@ -719,7 +721,7 @@ def load_llama(
     Llama = import_llama_cpp().Llama  # noqa: N806
 
     install_llama_log_handler()
-    embedding = mode in (MODE_EMBED, MODE_RERANK)
+    embedding = mode in (LoaderMode.EMBED, LoaderMode.RERANK)
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
         "embedding": embedding,
@@ -757,7 +759,7 @@ def load_llama(
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
 
-    if mode == MODE_RERANK:
+    if mode == LoaderMode.RERANK:
         from llama_cpp import LLAMA_POOLING_TYPE_RANK
 
         kwargs["pooling_type"] = LLAMA_POOLING_TYPE_RANK
