@@ -1015,6 +1015,18 @@ async def test_activate_initial_tab_skips_when_already_settled() -> None:
         assert screen._active_tab_id_cache == "library"
 
 
+async def test_activate_initial_tab_switches_to_chat() -> None:
+    """The first _activate_initial_tab call after mount activates Chat."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        screen._activation_settled = False
+        tabs.active = "discover"
+        screen._activate_initial_tab()
+        assert tabs.active == "chat"
+
+
 async def test_populate_library_renders_with_empty_frontier_when_attr_missing() -> None:
     """_populate_library_list still renders installed rows when frontier source is gone."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
