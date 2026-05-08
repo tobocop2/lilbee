@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from lilbee.providers.model_ref import ProviderModelRef
+if TYPE_CHECKING:
+    # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
+    from lilbee.providers.model_ref import ProviderModelRef
 
 # Single source of truth for per-provider API key configuration.
 # Maps (provider_name, config_field, env_var, display_label). Backend-agnostic:
