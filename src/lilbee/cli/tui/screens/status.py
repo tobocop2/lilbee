@@ -20,9 +20,9 @@ from textual.screen import Screen
 from textual.widgets import Collapsible, DataTable, Static
 from textual.worker import Worker, WorkerState
 
+from lilbee.app.services import get_services
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SourceRecord
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 

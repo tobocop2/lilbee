@@ -9,6 +9,7 @@ import typer
 
 from lilbee.app.ingest import CopyResult, copy_files
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -23,7 +24,6 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.crawler import is_url
 
 _ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")

@@ -9,9 +9,9 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
-from lilbee.core.services import get_services
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,

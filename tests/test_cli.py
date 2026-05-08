@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from typer.testing import CliRunner
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
 from lilbee.app.search import clean_result
 from lilbee.app.version import get_version
 from lilbee.cli import app

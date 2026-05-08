@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelRegistry
 

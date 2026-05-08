@@ -47,7 +47,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -447,7 +447,7 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
     so their notify() bodies execute against the live app."""
     import threading
 
-    from lilbee.core import services as services_mod
+    from lilbee.app import services as services_mod
     from tests.conftest import make_mock_services
 
     captured: dict[str, object] = {}

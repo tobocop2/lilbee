@@ -9,6 +9,7 @@ import typer
 from rich.table import Table
 
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -29,7 +30,6 @@ from lilbee.cli.helpers import (
     json_output,
 )
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 

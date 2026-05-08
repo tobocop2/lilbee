@@ -217,7 +217,7 @@ def validate_disk_and_pull(
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
     from lilbee.modelhub.model_manager import ModelSource
 
     if console is None:
@@ -249,7 +249,7 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     manager = get_services().model_manager
     try:

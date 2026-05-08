@@ -9,6 +9,7 @@ import pytest
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee import catalog
+from lilbee.app.services import get_services
 from lilbee.catalog import (
     FEATURED_ALL,
     FEATURED_CHAT,
@@ -48,7 +49,6 @@ from lilbee.catalog import (
 from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import HfPage
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 
 _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 
@@ -56,7 +56,7 @@ _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
 @pytest.fixture(autouse=True)
 def _clear_hf_cache():
     """Clear the HfClient TTL cache between tests."""
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     get_services().hf_client._cache.clear()
     yield

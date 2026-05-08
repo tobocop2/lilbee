@@ -16,8 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
-from lilbee.core.services import get_services
 from lilbee.data.chunk import chunk_text
 from lilbee.data.store import (
     CHUNK_TYPE_WIKI,

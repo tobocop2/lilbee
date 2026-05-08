@@ -19,6 +19,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
+from lilbee.app.services import get_services
 from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
@@ -65,7 +66,6 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import get_provider_api_key

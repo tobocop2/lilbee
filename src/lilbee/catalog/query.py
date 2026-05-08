@@ -5,9 +5,9 @@ from typing import Any, NamedTuple
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
+from lilbee.app.services import get_services
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.core.services import get_services
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import format_native_gguf_ref, hf_repo_from_ref
 

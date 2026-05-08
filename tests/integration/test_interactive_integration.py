@@ -19,10 +19,10 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
+from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
-from lilbee.core.services import reset_services as reset_provider
 from lilbee.core.system import canonical_models_dir
 
 pytestmark = pytest.mark.slow

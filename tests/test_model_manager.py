@@ -657,18 +657,18 @@ class TestServicesIntegration:
     """``ModelManager`` lifecycle inside the ``Services`` container."""
 
     def setup_method(self) -> None:
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 
     def teardown_method(self) -> None:
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 
     def test_services_holds_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -678,8 +678,8 @@ class TestServicesIntegration:
         assert mgr._remote_base_url == "http://localhost:11434"
 
     def test_services_returns_same_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -688,8 +688,8 @@ class TestServicesIntegration:
         assert mgr1 is mgr2
 
     def test_reset_services_creates_new_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services, reset_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services, reset_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -893,8 +893,8 @@ class TestDiscoverApiModels:
         # sys.modules["litellm"] patch these tests rely on can take effect.
         # Developers whose config.toml pins llm_provider="llama-cpp" would
         # otherwise see these tests fail locally while passing in CI.
+        from lilbee.app.services import reset_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import reset_services
 
         cfg.llm_provider = "auto"
         reset_services()

@@ -22,8 +22,8 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.data.store import SearchScope, scope_to_chunk_type

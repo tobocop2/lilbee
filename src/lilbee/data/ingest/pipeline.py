@@ -18,8 +18,8 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown

@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
+from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 
 log = logging.getLogger(__name__)
 

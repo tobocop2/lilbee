@@ -14,11 +14,11 @@ from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.app.services import set_services
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

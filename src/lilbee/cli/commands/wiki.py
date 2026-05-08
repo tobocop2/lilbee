@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.table import Table
 
+from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -18,7 +19,6 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.wiki.shared import (
     WikiSubdir,
 )

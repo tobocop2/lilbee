@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
+from lilbee.app.services import get_services
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -22,7 +23,6 @@ from lilbee.catalog import (
 from lilbee.core import settings
 from lilbee.core.config import cfg, validate_model_task_assignment
 from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
-from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import ModelSource
 from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import hf_repo_from_ref

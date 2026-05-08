@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.types import (
     MARKDOWN_OUTPUT,

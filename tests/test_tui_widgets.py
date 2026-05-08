@@ -2871,7 +2871,7 @@ class TestSetupWizard:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
             # Preselected chat+embed survive; action_cancel should return completed.
-            with mock.patch("lilbee.core.services.reset_services"):
+            with mock.patch("lilbee.app.services.reset_services"):
                 app.screen.action_cancel()
             await pilot.pause()
         assert "completed" in results
@@ -3273,6 +3273,7 @@ class LilbeeAppHostSettingWriter:
             with mock.patch.object(app, "set_setting") as mock_set_setting:
                 apply_setting(app, "chat_mode", "chat")
                 mock_set_setting.assert_called_once_with("chat_mode", "chat")
+
 
 class LilbeeAppHostViewTabs:
     async def test_screen_composes_status_bar(self) -> None:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import mimetypes
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
-from lilbee.core.services import get_services
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,

@@ -86,8 +86,8 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
     """
+    from lilbee.app.services import reset_services as reset_provider
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
@@ -146,8 +146,8 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     Session-scoped: downloads models once, creates documents + wiki dir,
     runs sync, yields pipeline data, then restores config.
     """
+    from lilbee.app.services import reset_services as reset_provider
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()

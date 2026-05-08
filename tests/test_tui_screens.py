@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.app.services import set_services
 from lilbee.catalog import (
     FEATURED_EMBEDDING,
     CatalogModel,
@@ -39,7 +40,6 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -3415,7 +3415,7 @@ async def test_catalog_install_new_model():
             mock_mgr.is_installed.return_value = False
             with (
                 patch(
-                    "lilbee.core.services.get_services",
+                    "lilbee.app.services.get_services",
                     return_value=MagicMock(model_manager=mock_mgr),
                 ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
@@ -5032,8 +5032,8 @@ def test_check_embedding_model_installed():
     """Cover _check_embedding_model_async lines 61-65 (model is installed)."""
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = True
-    with patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
-        from lilbee.core.services import get_services
+    with patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
+        from lilbee.app.services import get_services
 
         manager = get_services().model_manager
         assert manager.is_installed(cfg.embedding_model) is True
@@ -5044,13 +5044,13 @@ def test_check_embedding_model_remote_available():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
+        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch(
             "lilbee.modelhub.model_manager.detect_remote_embedding_models",
             return_value=[cfg.embedding_model],
         ),
     ):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         manager = get_services().model_manager
@@ -5065,10 +5065,10 @@ def test_check_embedding_model_not_found():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
+        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch("lilbee.modelhub.model_manager.detect_remote_embedding_models", return_value=[]),
     ):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         manager = get_services().model_manager
@@ -9343,7 +9343,7 @@ async def test_action_quit_calls_cancel_inference_before_exit():
         await pilot.pause()
         parent = MagicMock()
 
-        from lilbee.core.services import get_services, set_services
+        from lilbee.app.services import get_services, set_services
         from tests.conftest import make_mock_services
 
         # Build a stub Services whose cancel_inference is a MagicMock so we
@@ -9353,7 +9353,7 @@ async def test_action_quit_calls_cancel_inference_before_exit():
         original_services = get_services()
         stub = make_mock_services(provider=original_services.provider)
         # Replace the method with our mock at the class level temporarily.
-        from lilbee.core import services as services_mod
+        from lilbee.app import services as services_mod
 
         cancel_calls: list[str] = []
 

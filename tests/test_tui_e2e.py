@@ -70,7 +70,7 @@ def _mock_resolve():
 @pytest.fixture()
 def _mock_services():
     """Mock services to prevent real provider initialization."""
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -327,8 +327,8 @@ class TestDownloadProgressSlow:
         if not hf_token:
             pytest.skip("HF_TOKEN environment variable not set")
 
+        from lilbee.app.services import reset_services
         from lilbee.catalog import CatalogModel, download_model
-        from lilbee.core.services import reset_services
 
         snapshot = cfg.model_copy()
         try:
@@ -3215,8 +3215,8 @@ class TestChatEmbeddingReadyCoverage:
         (from /api/tags), so _embedding_ready must strip the prefix
         before substring-matching.
         """
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
@@ -3238,8 +3238,8 @@ class TestChatEmbeddingReadyCoverage:
         """ollama/ refs that don't appear in provider.list_models return False
         without falling through to the native registry probe.
         """
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"

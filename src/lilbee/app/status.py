@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 
 
 class StatusConfig(BaseModel):

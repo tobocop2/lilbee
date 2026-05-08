@@ -144,7 +144,7 @@ def _reset_services_after_test():
     yield
     from contextlib import suppress
 
-    from lilbee.core.services import peek_services, set_services
+    from lilbee.app.services import peek_services, set_services
     from lilbee.providers.worker.health_ticker import stop_health_ticker
 
     svc = peek_services()
@@ -281,8 +281,8 @@ def make_mock_services(**overrides):
     override either with a :class:`MagicMock` to skip the runtime thread
     cost.
     """
+    from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.services import CrawlerSyncState, Services
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool

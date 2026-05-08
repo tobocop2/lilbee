@@ -500,9 +500,9 @@ class TestStatusScreenAsync:
         mock_catalog.return_value = _EMPTY_CATALOG
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = []
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.core.services import set_services
 
         set_services(mock_svc)
         try:

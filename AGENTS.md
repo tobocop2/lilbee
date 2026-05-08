@@ -144,7 +144,7 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 **Never lazy-import the following:**
 
 - Stdlib modules (`os`, `struct`, `enum`, `io`, `fnmatch`, …) — zero cost.
-- Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.core.config`, `lilbee.core.services`, `lilbee.catalog`, `lilbee.modelhub.models`, `lilbee.modelhub.registry`, …).
+- Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.core.config`, `lilbee.app.services`, `lilbee.catalog`, `lilbee.modelhub.models`, `lilbee.modelhub.registry`, …).
 - Third-party libs already dragged in transitively by the module's top-level imports — re-importing them later is pure noise.
 - Project dependencies added explicitly to `pyproject.toml` that measure under 50 ms (`httpx`, `pydantic`, `tiktoken`, `numpy`, `pillow`, `gguf`, …).
 

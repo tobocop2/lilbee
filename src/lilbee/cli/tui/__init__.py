@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from lilbee.app.services import reset_services
 from lilbee.cli.tui.log_routing import setup_tui_log_file
-from lilbee.core.services import reset_services
 
 
 def _silence_stderr_log_handlers() -> None:

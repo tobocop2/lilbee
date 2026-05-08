@@ -28,6 +28,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
+from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -45,7 +46,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services
 from lilbee.modelhub.models import ModelTask, get_system_ram_gb
 
 log = logging.getLogger(__name__)

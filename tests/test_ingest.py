@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 
 

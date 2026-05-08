@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.core.services import reset_services
+    from lilbee.app.services import reset_services
 
     reset_services()
     yield
@@ -939,7 +939,7 @@ class TestFactory:
             create_provider(cfg)
 
     def test_services_singleton(self) -> None:
-        from lilbee.core.services import get_services, reset_services
+        from lilbee.app.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"
@@ -949,7 +949,7 @@ class TestFactory:
         reset_services()
 
     def test_services_reset_clears_singleton(self) -> None:
-        from lilbee.core.services import get_services, reset_services
+        from lilbee.app.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"

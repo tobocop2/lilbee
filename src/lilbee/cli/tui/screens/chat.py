@@ -28,6 +28,7 @@ from textual.widgets import Footer, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
@@ -42,7 +43,6 @@ from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
-from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
 from lilbee.providers.base import ClosableIterator

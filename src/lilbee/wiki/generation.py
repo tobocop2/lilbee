@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import TypedDict
 
+from lilbee.app.services import get_services
 from lilbee.core.config import Config, cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
