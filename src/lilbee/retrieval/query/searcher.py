@@ -28,7 +28,7 @@ from lilbee.retrieval.query.dedup import (
     filter_results,
     prepare_results,
 )
-from lilbee.retrieval.query.expansion import _EXPANSION_MAX_TOKENS, _EXPANSION_PROMPT
+from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
     _extract_cited_indices,
@@ -136,10 +136,10 @@ class Searcher:
 
     def _llm_expand(self, question: str, count: int) -> list[str]:
         """Call the LLM to produce ``count`` alternative phrasings."""
-        prompt = _EXPANSION_PROMPT.format(count=count, question=question)
+        prompt = EXPANSION_PROMPT.format(count=count, question=question)
         messages = [{"role": "user", "content": prompt}]
         response = self._provider.chat(
-            messages, stream=False, options={"num_predict": _EXPANSION_MAX_TOKENS}
+            messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
         )
         if not isinstance(response, str):
             return []
@@ -221,7 +221,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options={"num_predict": _EXPANSION_MAX_TOKENS},
+                options={"num_predict": EXPANSION_MAX_TOKENS},
             )
             if not isinstance(response, str) or not response.strip():
                 return []

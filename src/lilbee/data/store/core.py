@@ -33,7 +33,7 @@ from .lance_helpers import (
 from .ranking import mmr_rerank
 from .schema import _citations_schema, _meta_schema, _sources_schema
 from .types import (
-    _META_DELETE_ALL_PREDICATE,
+    META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
     CitationRecord,
@@ -166,7 +166,7 @@ class Store:
         """
         db = self.get_db()
         table = ensure_table(db, META_TABLE, _meta_schema())
-        _safe_delete_unlocked(table, _META_DELETE_ALL_PREDICATE)
+        _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
         table.add(
             [
                 {

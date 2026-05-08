@@ -15,10 +15,10 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.types import (
-    _MARKDOWN_OUTPUT,
-    _MIN_MEANINGFUL_CHARS,
-    _PDF_CONTENT_TYPE,
-    _TESSERACT_BACKEND,
+    MARKDOWN_OUTPUT,
+    MIN_MEANINGFUL_CHARS,
+    PDF_CONTENT_TYPE,
+    TESSERACT_BACKEND,
     ChunkRecord,
     ExtractMode,
 )
@@ -39,13 +39,13 @@ def _has_meaningful_text(result: Any) -> bool:
     chunks = getattr(result, "chunks", None)
     if chunks:
         total = sum(len(c.content.strip()) for c in chunks)
-        return total > _MIN_MEANINGFUL_CHARS
+        return total > MIN_MEANINGFUL_CHARS
     return False
 
 
 def content_type_to_mode(content_type: str) -> ExtractMode:
     """Map a content_type to the extraction mode."""
-    return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
+    return ExtractMode.PAGINATED if content_type == PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
 
 
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
@@ -54,14 +54,14 @@ def extraction_config(mode: ExtractMode) -> ExtractionConfig:
 
     chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
-    ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    ocr = OcrConfig(backend=TESSERACT_BACKEND)
     # Bound kreuzberg's internal pool to the same CPU budget as the
     # pipeline semaphore so the two stop competing for cores.
     concurrency = ConcurrencyConfig(max_threads=cpu_quota())
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking,
-            output_format=_MARKDOWN_OUTPUT,
+            output_format=MARKDOWN_OUTPUT,
             concurrency=concurrency,
         ),
         ExtractMode.PAGINATED: lambda: ExtractionConfig(
@@ -275,7 +275,7 @@ async def ingest_document(
     config = extraction_config(content_type_to_mode(content_type))
     result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
 
-    if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
+    if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         return await _handle_scanned_pdf_fallback(
             path,
             source_name,
