@@ -32,7 +32,6 @@ from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
-from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
@@ -68,8 +67,6 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
 log = logging.getLogger(__name__)
-
-_DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
@@ -316,6 +313,22 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
+
+    def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
+        """Bind every COMMANDS entry to its handler method on this instance.
+
+        Run once at construction so /handle_slash dispatches via direct method
+        reference (no per-call getattr-by-string-name reflection).
+        """
+        from lilbee.cli.tui.command_registry import COMMANDS
+
+        handlers: dict[str, Callable[[str], None]] = {}
+        for cmd in COMMANDS:
+            method = getattr(self, cmd.handler)
+            for name in (cmd.name, *cmd.aliases):
+                handlers[name] = method
+        return handlers
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -529,12 +542,12 @@ class ChatScreen(Screen[None]):
         self._send_message(text)
 
     def _handle_slash(self, text: str) -> None:
-        """Dispatch slash commands via the command registry."""
+        """Dispatch slash commands via the per-instance handler registry."""
         cmd = text.split()[0].lower()
         args = text[len(cmd) :].strip()
-        handler_name = _DISPATCH.get(cmd)
-        if handler_name:
-            getattr(self, handler_name)(args)
+        handler = self._command_handlers.get(cmd)
+        if handler is not None:
+            handler(args)
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
 
