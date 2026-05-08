@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
+from lilbee.core.text import make_slug
 from lilbee.data.store import CHUNK_TYPE_WIKI, SearchChunk, Store
 from lilbee.wiki.batch import (
     _group_chunks_by_page,
@@ -38,7 +39,6 @@ from lilbee.wiki.quality import (
 from lilbee.wiki.shared import (
     PageTarget,
     WikiSubdir,
-    make_slug,
 )
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
 

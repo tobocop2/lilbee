@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
+from lilbee.core.text import clean_label_for_display, is_valid_label, make_slug
 from lilbee.wiki.shared import (
     SUBDIR_TO_TYPE,
     WikiPageType,
     WikiSubdir,
-    clean_label_for_display,
-    is_valid_label,
-    make_slug,
     parse_frontmatter,
 )
 

@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from lilbee.core.config import Config
+from lilbee.core.text import clean_label_for_display, make_slug
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.reasoning import strip_reasoning
@@ -45,8 +46,6 @@ from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_PARSE,
     PendingKind,
     WikiSubdir,
-    clean_label_for_display,
-    make_slug,
 )
 
 log = logging.getLogger(__name__)

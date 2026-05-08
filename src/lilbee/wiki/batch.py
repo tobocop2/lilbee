@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.core.config import Config
+from lilbee.core.text import make_slug
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import (
@@ -40,7 +41,6 @@ from lilbee.wiki.shared import (
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
     WikiSubdir,
-    make_slug,
 )
 
 log = logging.getLogger(__name__)

@@ -1,5 +1,6 @@
 """Wiki layer: LLM-maintained synthesis pages with citation provenance."""
 
+from lilbee.core.text import make_slug
 from lilbee.wiki.browse import (
     WikiPageContent,
     WikiPageInfo,
@@ -31,7 +32,6 @@ from lilbee.wiki.prune import prune_wiki
 from lilbee.wiki.shared import (
     SUBDIR_TO_TYPE,
     PageTarget,
-    make_slug,
     parse_frontmatter,
 )
 
