@@ -210,21 +210,17 @@ async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> Non
 
     from textual.widgets import Input as _Input
 
-    from lilbee.cli.tui.widgets.model_grid import ModelGrid
-
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        # Wipe rows from EVERY ModelGrid on the screen (per-task containers
-        # plus the three Discover rails) so on_search_submitted falls
-        # through past the _select_first_visible_grid_card early-return
-        # and reaches _trigger_remote_search.
-        for grid in screen.query(ModelGrid):
-            grid.set_rows([])
-        await pilot.pause()
+        # Stub the grid query so _on_search_submitted's "any grid has rows"
+        # check sees no grids; without this stub the screen's mounted
+        # Discover rails / per-tab grids may have rows that trigger the
+        # _select_first_visible_grid_card early-return on slower CI runners.
+        screen.query = lambda *args, **kwargs: []  # type: ignore[method-assign]
         inp = screen.query_one("#catalog-search", _Input)
         inp.value = "qwen3-nonexistent"
         with patch.object(screen, "_trigger_remote_search") as mock_trigger:
