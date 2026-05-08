@@ -115,11 +115,11 @@ def self_check_cmd(
     Two legs:
 
     1. **Chat**: downloads ``Qwen3-0.6B-Q8_0.gguf`` (~500MB),
-       runs ``load_llama(..., mode=MODE_CHAT)`` so the dynamic-ctx picker /
+       runs ``load_llama(..., mode=LoaderMode.CHAT)`` so the dynamic-ctx picker /
        flash-attention default / KV cache mapping fire, then issues a tiny
        ``create_completion``.
     2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB),
-       runs ``load_llama(..., mode=MODE_EMBED)`` so the embed-mode ctx clamp
+       runs ``load_llama(..., mode=LoaderMode.EMBED)`` so the embed-mode ctx clamp
        fires, then issues ``create_embedding``. Catches the "Memory is not
        initialized" assert from llama-cpp-python <0.3.19, where BERT-style
        encoders trip ``kv_cache_clear`` on a context that never allocated
@@ -131,7 +131,7 @@ def self_check_cmd(
     from typing import cast
 
     from lilbee.providers.llama_cpp.provider import load_llama
-    from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
+    from lilbee.providers.model_cache import LoaderMode
 
     try:
         chat_path = chat_model_path or _download_self_check_model(
@@ -139,7 +139,7 @@ def self_check_cmd(
         )
         console.print(f"Loading chat model {chat_path}")
 
-        llm = load_llama(chat_path, mode=MODE_CHAT)
+        llm = load_llama(chat_path, mode=LoaderMode.CHAT)
         # stream=False (default) returns a dict, not an iterator, but
         # create_completion's return type is a union; cast to Any so the
         # indexing below type-checks without forcing llama_cpp to be a
@@ -161,7 +161,7 @@ def self_check_cmd(
                 _SELF_CHECK_EMBED_REPO, _SELF_CHECK_EMBED_FILE
             )
             console.print(f"Loading embedding model {embed_path}")
-            enc = load_llama(embed_path, mode=MODE_EMBED)
+            enc = load_llama(embed_path, mode=LoaderMode.EMBED)
             emb = cast(Any, enc.create_embedding(input=["test"]))
             vec = emb["data"][0]["embedding"]
         except Exception as exc:

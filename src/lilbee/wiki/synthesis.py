@@ -43,10 +43,9 @@ from lilbee.wiki.page import (
 )
 from lilbee.wiki.persistence import write_pending_marker
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
-    PENDING_KIND_PARSE,
     PENDING_MARKER_KEYWORD_PARSE,
-    SYNTHESIS_SUBDIR,
+    PendingKind,
+    WikiSubdir,
     clean_label_for_display,
     make_slug,
 )
@@ -107,7 +106,7 @@ def generate_synthesis_page(
         prompt=prompt,
         chunks=all_chunks,
         citation_resolver=resolver,
-        page_type=SYNTHESIS_SUBDIR,
+        page_type=WikiSubdir.SYNTHESIS,
         slug=slug,
         source_names=source_names,
         provider=provider,
@@ -283,7 +282,7 @@ def generate_source_batch(
     parsed = _split_batched_output(text, expected_entity_labels, expected_concepts)
 
     wiki_root = config.data_root / config.wiki_dir
-    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
     source_names = [source]
     source_hashes = hash_existing_sources(source_names, config.documents_dir)
     chunks_by_source = {source: budgeted}
@@ -336,7 +335,7 @@ def generate_source_batch(
                 {
                     "pending_source": source,
                     "pending_label": entity.label,
-                    "pending_kind": PENDING_KIND_PARSE,
+                    "pending_kind": PendingKind.PARSE.value,
                 },
                 sort_keys=False,
             )

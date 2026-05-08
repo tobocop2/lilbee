@@ -36,9 +36,8 @@ from lilbee.wiki.quality import (
     diff_summary,
 )
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    DRAFTS_SUBDIR,
     PageTarget,
+    WikiSubdir,
     make_slug,
 )
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
@@ -1126,7 +1125,7 @@ class TestWikiIndexing:
     """``index_wiki_page`` chunks, embeds and writes wiki page bodies."""
 
     @staticmethod
-    def _target(subdir: str = CONCEPTS_SUBDIR, slug: str = "brakes") -> PageTarget:
+    def _target(subdir: str = WikiSubdir.CONCEPTS, slug: str = "brakes") -> PageTarget:
         wiki_root = cfg.data_root / cfg.wiki_dir
         return PageTarget(
             wiki_root=wiki_root,
@@ -1193,7 +1192,7 @@ class TestWikiIndexing:
     def test_drafts_subdir_is_not_indexed(self):
         """Drafts never enter the search pool. No clear, no add."""
         store = MagicMock(spec=Store)
-        target = self._target(subdir=DRAFTS_SUBDIR)
+        target = self._target(subdir=WikiSubdir.DRAFTS)
 
         with (
             patch("lilbee.wiki.page.get_services", return_value=self._services_mock()),

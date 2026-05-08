@@ -59,6 +59,7 @@ class WorkerRole(StrEnum):
     CHAT = "chat"
     VISION = "vision"
 
+
 log = logging.getLogger(__name__)
 
 # Vision OCR sentinel used when no per-call timeout and no ``cfg.ocr_timeout``
@@ -618,7 +619,7 @@ class _RoleSpec:
     mode: str
 
 
-_ROLE_SPECS: dict[str, _RoleSpec] = {
+_ROLE_SPECS: dict[WorkerRole, _RoleSpec] = {
     WorkerRole.EMBED: _RoleSpec(cfg_attr="embedding_model", mode=LoaderMode.EMBED),
     WorkerRole.RERANK: _RoleSpec(cfg_attr="reranker_model", mode=LoaderMode.RERANK),
     WorkerRole.CHAT: _RoleSpec(cfg_attr="chat_model", mode=LoaderMode.CHAT),
@@ -628,7 +629,7 @@ _ROLE_SPECS: dict[str, _RoleSpec] = {
 }
 
 
-_ROLE_ENTRYPOINTS = {
+_ROLE_ENTRYPOINTS: dict[WorkerRole, Callable[..., None]] = {
     WorkerRole.EMBED: embed_worker_main,
     WorkerRole.RERANK: rerank_worker_main,
     WorkerRole.CHAT: chat_worker_main,
@@ -636,12 +637,12 @@ _ROLE_ENTRYPOINTS = {
 }
 
 
-def _is_role_configured(role: str) -> bool:
+def _is_role_configured(role: WorkerRole) -> bool:
     """True iff the cfg attribute for *role* holds a non-empty model name."""
     return bool(getattr(cfg, _ROLE_SPECS[role].cfg_attr))
 
 
-def _make_role_config_factory(role: str) -> Callable[[], RoleConfig]:
+def _make_role_config_factory(role: WorkerRole) -> Callable[[], RoleConfig]:
     """Return a factory that resolves the role's configured model at spawn time.
 
     The pool calls the factory on every spawn (lazy or restart) so model

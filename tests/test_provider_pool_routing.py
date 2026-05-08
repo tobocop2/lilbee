@@ -308,15 +308,9 @@ def test_make_role_config_factory_raises_when_unset(monkeypatch, role, cfg_attr,
 
 def test_role_specs_cover_every_pool_role() -> None:
     """The data table maps every role the provider routes through the pool."""
-    from lilbee.providers.llama_cpp.provider import (
-        _CHAT_ROLE,
-        _EMBED_ROLE,
-        _RERANK_ROLE,
-        _ROLE_SPECS,
-        _VISION_ROLE,
-    )
+    from lilbee.providers.llama_cpp.provider import _ROLE_SPECS, WorkerRole
 
-    assert set(_ROLE_SPECS) == {_EMBED_ROLE, _RERANK_ROLE, _CHAT_ROLE, _VISION_ROLE}
+    assert set(_ROLE_SPECS) == set(WorkerRole)
 
 
 def _patched_rerank_worker_main(

@@ -17,6 +17,7 @@ class LoaderMode(StrEnum):
     EMBED = "embed"
     RERANK = "rerank"
 
+
 # Fallback KV cache estimate when GGUF metadata can't be read.
 # 2048 bytes/token undershoots real KV size for modern models (Gemma3-4B is
 # ~640 KB/token f16) but is fine as a coarse pre-load eviction signal.

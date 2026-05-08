@@ -89,9 +89,8 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
     from lilbee.wiki import append_wiki_log, build_wiki, update_wiki_index
     from lilbee.wiki.entity_extractor import EntityKind, get_entity_extractor
     from lilbee.wiki.shared import (
-        CONCEPTS_SUBDIR,
-        ENTITIES_SUBDIR,
-        WIKI_LOG_ACTION_INGEST,
+        WikiLogAction,
+        WikiSubdir,
     )
 
     svc = get_services()
@@ -110,7 +109,7 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
         # intentionally not considered here. Keeping the dispatch
         # neutral guards against a future extractor that re-introduces
         # CONCEPT.
-        subdir = CONCEPTS_SUBDIR if entity.kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
+        subdir = WikiSubdir.CONCEPTS if entity.kind is EntityKind.CONCEPT else WikiSubdir.ENTITIES
         page_path = wiki_root / subdir / f"{entity.slug}.md"
         if not page_path.exists():
             touched.append(entity)
@@ -132,7 +131,7 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
             cfg.wiki_ingest_update_cap,
         )
         append_wiki_log(
-            WIKI_LOG_ACTION_INGEST,
+            WikiLogAction.INGEST,
             f"skipped: {len(touched)} pages exceeds cap {cfg.wiki_ingest_update_cap}",
         )
         return
@@ -145,7 +144,7 @@ async def _incremental_wiki_update(changed_sources: set[str]) -> None:
     )
     update_wiki_index()
     append_wiki_log(
-        WIKI_LOG_ACTION_INGEST,
+        WikiLogAction.INGEST,
         f"{len(pages)} pages regenerated for {', '.join(sorted(changed_sources))}",
     )
 

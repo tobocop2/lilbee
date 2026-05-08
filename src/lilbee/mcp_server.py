@@ -29,9 +29,8 @@ from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.runtime.crawl_task import get_task, start_crawl
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
-    SUMMARIES_SUBDIR,
     WIKI_DISABLED_ERROR,
+    WikiSubdir,
 )
 
 log = logging.getLogger(__name__)
@@ -345,16 +344,16 @@ def wiki_status() -> dict[str, Any]:
     if not wiki_root.exists():
         return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
 
-    summaries_dir = wiki_root / SUMMARIES_SUBDIR
-    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    summaries_dir = wiki_root / WikiSubdir.SUMMARIES
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
     report = lint_all(get_services().store)
     return {
         "wiki_enabled": cfg.wiki,
-        SUMMARIES_SUBDIR: len(summaries),
-        DRAFTS_SUBDIR: len(drafts),
+        WikiSubdir.SUMMARIES: len(summaries),
+        WikiSubdir.DRAFTS: len(drafts),
         "pages": len(summaries) + len(drafts),
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,

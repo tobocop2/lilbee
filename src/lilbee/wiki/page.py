@@ -46,9 +46,9 @@ from lilbee.wiki.persistence import (
 )
 from lilbee.wiki.quality import check_faithfulness, content_change_ratio, diff_summary
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
+    WikiSubdir,
 )
 
 log = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ def write_page(
         old_content = page_path.read_text(encoding="utf-8")
         ratio = content_change_ratio(old_content, full_content)
         if ratio > drift_threshold:
-            drafts_dir = wiki_root / DRAFTS_SUBDIR
+            drafts_dir = wiki_root / WikiSubdir.DRAFTS
             diff_text = diff_summary(old_content, full_content)
             return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
 
@@ -313,8 +313,8 @@ def generate_page(
     _emit("faithfulness_check")
     score = check_faithfulness(chunks, wiki_text, label, config)
     threshold = config.wiki_embedding_faithfulness_threshold
-    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
-    if subdir == DRAFTS_SUBDIR:
+    subdir = page_type if score >= threshold else WikiSubdir.DRAFTS
+    if subdir == WikiSubdir.DRAFTS:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     wiki_text = strip_citation_block(wiki_text)

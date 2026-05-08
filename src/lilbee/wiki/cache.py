@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from lilbee.data.store import SearchChunk
-from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, parse_frontmatter
+from lilbee.wiki.shared import WikiSubdir, parse_frontmatter
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -38,7 +38,7 @@ def _find_cached_leaf(wiki_root: Path, slug: str, leaf_hash: str) -> Path | None
     Checks both ``summaries/`` and ``drafts/`` so an unchanged draft stays in
     drafts rather than triggering a speculative regeneration.
     """
-    for subdir in (SUMMARIES_SUBDIR, DRAFTS_SUBDIR):
+    for subdir in (WikiSubdir.SUMMARIES, WikiSubdir.DRAFTS):
         candidate = wiki_root / subdir / f"{slug}.md"
         if not candidate.is_file():
             continue

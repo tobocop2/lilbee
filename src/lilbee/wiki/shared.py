@@ -12,12 +12,16 @@ import yaml
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
-SUMMARIES_SUBDIR = "summaries"
-SYNTHESIS_SUBDIR = "synthesis"
-CONCEPTS_SUBDIR = "concepts"
-ENTITIES_SUBDIR = "entities"
-DRAFTS_SUBDIR = "drafts"
-ARCHIVE_SUBDIR = "archive"
+
+class WikiSubdir(StrEnum):
+    """Filesystem subdirectory under ``$data_root/$wiki_dir/``."""
+
+    SUMMARIES = "summaries"
+    SYNTHESIS = "synthesis"
+    CONCEPTS = "concepts"
+    ENTITIES = "entities"
+    DRAFTS = "drafts"
+    ARCHIVE = "archive"
 
 
 class WikiPageType(StrEnum):
@@ -31,11 +35,11 @@ class WikiPageType(StrEnum):
     ARCHIVE = "archive"
 
 
-WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
+WIKI_CONTENT_SUBDIRS: tuple[WikiSubdir, ...] = (
+    WikiSubdir.SUMMARIES,
+    WikiSubdir.SYNTHESIS,
+    WikiSubdir.CONCEPTS,
+    WikiSubdir.ENTITIES,
 )
 
 WIKI_DISABLED_ERROR = "wiki not enabled"
@@ -48,33 +52,43 @@ WIKI_DISABLED_ERROR = "wiki not enabled"
 PENDING_MARKER_KEYWORD_PARSE = "PENDING: batch parse failed"
 PENDING_MARKER_KEYWORD_COLLISION = "PENDING: concept slug collision"
 
-# Values written into the ``pending_kind`` frontmatter field and
-# surfaced verbatim through ``DraftInfo.pending_kind`` to CLI / HTTP /
-# MCP callers. Kept as plain string constants (not an enum) because the
-# value round-trips through YAML and JSON without translation.
-PENDING_KIND_PARSE = "parse"
-PENDING_KIND_COLLISION = "collision"
-# Display-only default shown to users when a draft has no PENDING marker
-# (i.e. a regular drift draft). Never written into
-# ``DraftInfo.pending_kind`` on disk; consumers fall back to this
-# constant instead of hard-coding ``"drift"``.
-PENDING_KIND_DRIFT = "drift"
 
-# wiki/log.md action labels. Distinct from WIKI_STATUS_* (which are result
-# statuses returned to CLI/MCP/HTTP callers); these are internal audit trail
-# verbs written into the log file.
-WIKI_LOG_ACTION_GENERATED = "generated"
-WIKI_LOG_ACTION_BUILD = "build"
-WIKI_LOG_ACTION_INGEST = "ingest"
-WIKI_LOG_ACTION_LINT = "lint"
+class PendingKind(StrEnum):
+    """Reason a wiki draft is in ``drafts/`` instead of a published page.
+
+    The string value is what lands in the ``pending_kind`` YAML
+    frontmatter field and is surfaced verbatim through
+    ``DraftInfo.pending_kind`` to CLI / HTTP / MCP callers.
+    StrEnum members serialise as their string value, so the YAML/JSON
+    round-trip stays a plain string. ``DRIFT`` is display-only, never
+    written to disk, but exposed so consumers don't hard-code ``"drift"``.
+    """
+
+    PARSE = "parse"
+    COLLISION = "collision"
+    DRIFT = "drift"
+
+
+class WikiLogAction(StrEnum):
+    """Verbs written into ``wiki/log.md`` audit-trail entries.
+
+    Distinct from WIKI_STATUS_* (which are result statuses returned to
+    CLI/MCP/HTTP callers); these label internal audit-trail rows.
+    """
+
+    GENERATED = "generated"
+    BUILD = "build"
+    INGEST = "ingest"
+    LINT = "lint"
+
 
 SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
-    SUMMARIES_SUBDIR: WikiPageType.SUMMARY,
-    SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,
-    CONCEPTS_SUBDIR: WikiPageType.CONCEPT,
-    ENTITIES_SUBDIR: WikiPageType.ENTITY,
-    DRAFTS_SUBDIR: WikiPageType.DRAFT,
-    ARCHIVE_SUBDIR: WikiPageType.ARCHIVE,
+    WikiSubdir.SUMMARIES.value: WikiPageType.SUMMARY,
+    WikiSubdir.SYNTHESIS.value: WikiPageType.SYNTHESIS,
+    WikiSubdir.CONCEPTS.value: WikiPageType.CONCEPT,
+    WikiSubdir.ENTITIES.value: WikiPageType.ENTITY,
+    WikiSubdir.DRAFTS.value: WikiPageType.DRAFT,
+    WikiSubdir.ARCHIVE.value: WikiPageType.ARCHIVE,
 }
 
 # One source of truth for sidebar-style headings keyed by page type.
