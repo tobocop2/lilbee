@@ -575,7 +575,8 @@ class TestModelManagerRemove:
         model_file.write_text("fake model data")
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("llama3-8b.gguf", ModelSource.NATIVE) is True
+        removed = mgr.remove("llama3-8b.gguf", ModelSource.NATIVE)
+        assert removed is True
         assert not model_file.exists()
 
     def test_native_remove_nonexistent(self, tmp_path: Path) -> None:
@@ -583,14 +584,16 @@ class TestModelManagerRemove:
         models_dir.mkdir()
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("missing.gguf", ModelSource.NATIVE) is False
+        removed = mgr.remove("missing.gguf", ModelSource.NATIVE)
+        assert removed is False
 
     def test_native_remove_path_traversal_blocked(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("../../etc/passwd", ModelSource.NATIVE) is False
+        removed = mgr.remove("../../etc/passwd", ModelSource.NATIVE)
+        assert removed is False
 
     def test_litellm_remove_success(self) -> None:
         mock_response = mock.Mock()

@@ -248,7 +248,8 @@ class TestModelRegistryRemove:
         registry = ModelRegistry(tmp_path)
         src = _write_source(tmp_path)
         registry.install(_REPO, _FILENAME, src, _make_manifest())
-        assert registry.remove(_REF) is True
+        removed = registry.remove(_REF)
+        assert removed is True
         assert registry.list_installed() == []
 
     def test_remove_keeps_cached_blob(self, tmp_path: Path) -> None:
@@ -263,11 +264,13 @@ class TestModelRegistryRemove:
 
     def test_remove_missing(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        assert registry.remove(_REF) is False
+        removed = registry.remove(_REF)
+        assert removed is False
 
     def test_remove_invalid_ref(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        assert registry.remove("not-a-ref") is False
+        removed = registry.remove("not-a-ref")
+        assert removed is False
 
     def test_remove_cleans_empty_repo_dir(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
