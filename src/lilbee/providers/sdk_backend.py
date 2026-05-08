@@ -55,6 +55,7 @@ def get_provider_api_key(provider: str) -> str | None:
     value = getattr(cfg, field)
     return value or None
 
+
 _BACKEND_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
     ("localhost:11434", BackendName.OLLAMA),
     ("ollama", BackendName.OLLAMA),

@@ -1103,9 +1103,7 @@ class CatalogScreen(Screen[None]):
             sections = [s for s in _group_rows_for_grid(local_tab_rows) if s.rows]
         return sections, len(hf_rows)
 
-    def _extend_grid_sections_in_place(
-        self, sections: list[GridSection], hf_count: int
-    ) -> bool:
+    def _extend_grid_sections_in_place(self, sections: list[GridSection], hf_count: int) -> bool:
         """Update existing ModelGrids in place when section count matches.
 
         Returns True iff the in-place path applied; the caller falls

@@ -542,9 +542,7 @@ class Searcher:
         raw_stream = self._provider.chat(provider_messages, stream=True, options=opts or None)
         answer_parts: list[str] = []
         try:
-            for st in filter_reasoning(
-                raw_stream, show=self._config.show_reasoning
-            ):
+            for st in filter_reasoning(raw_stream, show=self._config.show_reasoning):
                 if st.content:
                     answer_parts.append(st.content)
                     yield st
