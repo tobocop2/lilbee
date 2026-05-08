@@ -37,6 +37,8 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
             else:
                 item.unlink()
         except OSError as exc:
+            # best-effort: reset is "delete as much as you can", and the
+            # caller surfaces the skipped list to the user verbatim.
             log.warning("Could not delete %s: %s", item, exc)
             skipped.append(str(item))
             continue
