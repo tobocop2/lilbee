@@ -11365,13 +11365,9 @@ async def test_catalog_get_highlighted_model_name_model_grid_out_of_range():
             app.push_screen(screen)
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
-            screen._families = []
-            screen._hf_models = []
-            screen._remote_models = []
-            screen._frontier_rows = []
+            screen._refresh_view = lambda: None  # type: ignore[method-assign]
             grid = ModelGrid(rows, id="vg-oob-test")
             await screen._grid_container.mount(grid)
-            # Highlight an index past the end of the dataset.
             grid.highlighted = 99
             grid.focus()
             await _pilot.pause()
