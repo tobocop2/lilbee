@@ -1577,7 +1577,7 @@ class CatalogScreen(Screen[None]):
 
     def _select_row(self, row: CatalogRow) -> None:
         """Handle row selection: install, switch model, or open settings."""
-        if isinstance(row, FrontierCatalogRow):  # sealed-union dispatch
+        if row.kind == "frontier":  # sealed-union dispatch
             self._select_frontier_row(row)
             return
         if row.variant and row.family:
@@ -1757,7 +1757,7 @@ class CatalogScreen(Screen[None]):
         if row is None:
             self.notify(msg.CATALOG_SELECT_FOR_INFO, severity="warning")
             return
-        if not isinstance(row, LocalCatalogRow):
+        if row.kind != "local":
             self.notify(msg.CATALOG_FRONTIER_NO_INFO, severity="warning")
             return
         from lilbee.cli.tui.screens.model_info import ModelInfoModal
@@ -2069,7 +2069,7 @@ def _row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
     if installed=False since each frontier entry is provider-managed
     rather than on-disk.
     """
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == "frontier":
         return (row.name, False)
     return (row.name, row.installed)
 

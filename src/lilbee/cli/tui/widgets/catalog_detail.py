@@ -60,7 +60,7 @@ class CatalogDetailDrawer(Vertical):
         if row is None:
             self._clear()
             return
-        if isinstance(row, FrontierCatalogRow):
+        if row.kind == "frontier":
             self._render_frontier(row)
             return
         self._render_local(row)

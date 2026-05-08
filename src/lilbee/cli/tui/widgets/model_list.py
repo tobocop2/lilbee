@@ -125,7 +125,7 @@ def _heading_option(heading: str, n: int) -> Option:
 
 
 def _render_row(row: CatalogRow) -> Content:
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == "frontier":
         return _render_frontier(row)
     return _render_local(row)
 

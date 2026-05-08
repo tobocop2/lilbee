@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
+from typing import Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
@@ -148,6 +149,7 @@ class LocalCatalogRow:
     remote_model: RemoteModel | None = None
     size_variants: list[SizeVariant] = field(default_factory=list)
     fit: FitChip | None = None
+    kind: Literal["local"] = "local"
 
 
 class KeyStatus(Enum):
@@ -172,10 +174,11 @@ class FrontierCatalogRow:
     provider: str  # Display label, e.g. "Gemini" / "OpenAI" / "Anthropic".
     provider_id: str  # Canonical id used for the API key field, e.g. "gemini".
     key_status: KeyStatus
+    kind: Literal["frontier"] = "frontier"
 
 
-# Sealed union: any catalog renderer dispatches on isinstance of these
-# two types and exhaustively handles both.
+# Sealed union discriminated on .kind. Pattern-match (or compare) on row.kind
+# to dispatch instead of isinstance, so adding a new row type is one place.
 CatalogRow = LocalCatalogRow | FrontierCatalogRow
 
 
@@ -358,7 +361,7 @@ def row_delete_id(row: CatalogRow) -> str | None:
     Ollama HTTP API keys models by bare name, while ``ref`` carries the
     canonical ``ollama/<name>`` chat_model form.
     """
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == "frontier":
         return row.ref or None
     if row.remote_model is not None:
         return row.remote_model.name or None
@@ -375,7 +378,7 @@ def matches_search(row: CatalogRow, search: str) -> bool:
     if not search:
         return True
     needle = _normalize_for_search(search)
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == "frontier":
         return any(
             needle in _normalize_for_search(field)
             for field in (row.name, row.provider, row.provider_id)

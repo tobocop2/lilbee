@@ -364,10 +364,7 @@ def _render_card_strip(
     The body is always panel-tinted so cards read as discrete tiles even on
     dark themes.
     """
-    if isinstance(row, FrontierCatalogRow):
-        body = _frontier_lines(row)
-    else:
-        body = _local_lines(row, selected=selected)
+    body = _frontier_lines(row) if row.kind == "frontier" else _local_lines(row, selected=selected)
 
     inner_width = max(3, width - _CARD_GUTTER)
     body_width = inner_width - 2  # subtract the two side-border columns

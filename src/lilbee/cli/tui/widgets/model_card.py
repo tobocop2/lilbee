@@ -59,7 +59,7 @@ class ModelCard(containers.VerticalGroup):
     def __init__(self, row: CatalogRow) -> None:
         self._row = row
         super().__init__()
-        if isinstance(row, FrontierCatalogRow):
+        if row.kind == "frontier":
             self.add_class("-frontier")
 
     @property
@@ -87,7 +87,7 @@ class ModelCard(containers.VerticalGroup):
 
 def _render(row: CatalogRow, *, selected: bool) -> Content:
     """Compose the full card content (name + pills + specs + status + hint)."""
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == "frontier":
         return _render_frontier(row)
     return _render_local(row, selected=selected)
 
