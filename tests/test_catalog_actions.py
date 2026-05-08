@@ -196,6 +196,17 @@ def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
     assert _row_cache_signature(local) == ("Llama", True)
 
 
+def test_local_lines_renders_remote_backend_pill() -> None:
+    """Non-native backends (ollama, etc.) get an explicit pill on the card."""
+    from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+    row = _row("Llama via Ollama")
+    row.backend = "ollama"
+    lines = _local_lines(row, selected=False)
+    pills_line = lines[1]
+    assert "ollama" in pills_line.plain
+
+
 def test_for_you_sort_key_orders_fit_levels_then_name() -> None:
     fits = _row("a-fits", fit=FitChip(level=FitLevel.FITS, headroom_gb=8.0))
     tight = _row("b-tight", fit=FitChip(level=FitLevel.TIGHT, headroom_gb=0.5))
