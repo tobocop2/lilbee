@@ -44,7 +44,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
     try:
         app.run()
     except KeyboardInterrupt:
-        pass
+        pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     finally:
         shutdown_executor()
         reset_services()

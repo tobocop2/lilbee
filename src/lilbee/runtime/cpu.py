@@ -35,7 +35,7 @@ def cpu_quota() -> int:
             if value > 0:
                 return value
         except ValueError:
-            pass
+            pass  # bad override falls through to the warning + default below
         log.warning(
             "Ignoring %s=%r: must be a positive integer; using default.",
             _ENV_VAR,

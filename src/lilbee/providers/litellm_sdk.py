@@ -140,7 +140,7 @@ class LitellmSdkBackend:
 
             litellm.suppress_debug_info = True
         except ImportError:
-            pass
+            pass  # debug-suppression is best-effort when the litellm extra is absent
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         """Run a single-shot completion through ``litellm.completion``."""
