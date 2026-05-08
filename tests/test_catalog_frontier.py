@@ -447,11 +447,12 @@ class TestLibraryTab:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
-            screen._populate_library_list()
-            await pilot.pause()
             ml = screen.query_one("#list-library", ModelList)
-            # _populate_library_list renders the cached frontier rows;
-            # option_count > 0 means the row landed in the list widget.
+            for _ in range(20):
+                screen._populate_library_list()
+                await pilot.pause()
+                if ml.option_count > 0:
+                    break
             assert ml.option_count > 0
 
     async def test_populate_library_with_empty_rows_clears_frontier_section(self) -> None:

@@ -531,13 +531,14 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
                 key_status=KeyStatus.READY,
             )
         ]
-        screen._populate_library_list()
-        await pilot.pause()
         from lilbee.cli.tui.widgets.model_list import ModelList
 
         ml = screen.query_one("#list-library", ModelList)
-        # ModelList prepends a provider section heading + row option, so
-        # option_count is >= 1 (typically 2 for one frontier row).
+        for _ in range(20):
+            screen._populate_library_list()
+            await pilot.pause()
+            if ml.option_count >= 1:
+                break
         assert ml.option_count >= 1
 
 

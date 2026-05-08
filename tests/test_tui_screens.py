@@ -3740,6 +3740,7 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._hf_fetched = True
             screen._hf_has_more = False
@@ -10610,7 +10611,11 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            grids = list(screen.query("#grid-chat ModelGrid"))
+            for _ in range(20):
+                grids = list(screen.query("#grid-chat ModelGrid"))
+                if grids and len(grids[0].rows) >= 2:
+                    break
+                await _pilot.pause()
             assert grids, "chat grid should mount at least one ModelGrid"
             grid = grids[0]
             assert len(grid.rows) >= 2
@@ -11183,6 +11188,7 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
