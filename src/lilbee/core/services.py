@@ -185,6 +185,15 @@ def set_services(services: Services | None) -> None:
     _svc = services
 
 
+def peek_services() -> Services | None:
+    """Return the cached Services container, or None if not yet initialized.
+
+    Public read-only accessor for test cleanup helpers that need to
+    inspect the singleton without forcing initialization.
+    """
+    return _svc
+
+
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
     global _svc

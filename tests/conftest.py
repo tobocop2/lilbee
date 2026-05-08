@@ -144,20 +144,15 @@ def _reset_services_after_test():
     yield
     from contextlib import suppress
 
-    import lilbee.core.services as services_mod
-    from lilbee.providers.worker.health_ticker import (
-        HealthTickerHandle,
-        stop_health_ticker,
-    )
+    from lilbee.core.services import peek_services, set_services
+    from lilbee.providers.worker.health_ticker import stop_health_ticker
 
-    svc = services_mod._svc
+    svc = peek_services()
     if svc is not None:
         # Stop the health ticker before draining the runtime so it cannot
         # schedule a fresh pool op against an already-stopped loop.
-        ticker = getattr(svc, "pool_health_ticker", None)
-        if isinstance(ticker, HealthTickerHandle):
-            with suppress(Exception):
-                stop_health_ticker(ticker, timeout=2.0)
+        with suppress(Exception):
+            stop_health_ticker(svc.pool_health_ticker, timeout=2.0)
         runtime = svc.pool_runtime
         pool = svc.worker_pool
         # Real pool/runtime have these methods. Mocks no-op safely.
@@ -166,7 +161,7 @@ def _reset_services_after_test():
                 runtime.run_sync(pool.shutdown(), timeout=5.0)
             with suppress(Exception):
                 runtime.shutdown(timeout=5.0)
-    services_mod.set_services(None)
+    set_services(None)
 
 
 @pytest.fixture(autouse=True)

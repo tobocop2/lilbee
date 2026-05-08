@@ -193,7 +193,7 @@ class TestResetStore:
 
             reset_store()
 
-            after = services_mod._svc
+            after = services_mod.peek_services()
             assert after is not None
             assert after.store is not old_store
             assert after.concepts is not old_concepts
@@ -213,9 +213,9 @@ class TestResetStore:
         from lilbee.core.services import reset_services, reset_store
 
         reset_services()
-        assert services_mod._svc is None
+        assert services_mod.peek_services() is None
         reset_store()
-        assert services_mod._svc is None
+        assert services_mod.peek_services() is None
 
 
 def test_reset_services_dependencies_load_eagerly():
