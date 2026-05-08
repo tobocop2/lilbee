@@ -145,6 +145,18 @@ uv run python -X importtime -c "import <lib>" 2>&1 | tail -5
 
 If the result is under 50 000 µs, it belongs at the module top.
 
+**Optional imports (libs that may not be installed in every deployment):**
+
+The codebase has a small set of `try: import X except ImportError:` patterns for libraries that ship as opt-in extras. The `is_X_available()` style helper is the documented way to gate downstream code on whether the lib loaded.
+
+| Library | Helper | Extra | Used by |
+|---|---|---|---|
+| `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[litellm]` | SDK provider, settings TUI |
+| `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
+| `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
+
+Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras (`cli/commands/setup.py`'s `self_check_extras_cmd`) likewise dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
+
 Other rules:
 
 - **Never use `importlib.reload`** — it's a sign of bad design. If you need different config in tests, mutate the `cfg` singleton.
