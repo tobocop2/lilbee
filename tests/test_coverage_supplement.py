@@ -485,6 +485,19 @@ class TestCatalogToggleViewWhileSwitching:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         screen._view_switching = True
         screen._grid_view = True
         # Should return without raising.
@@ -808,6 +821,19 @@ class TestCatalogActionShowInfoEarlyReturns:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         fake_input = mock.MagicMock(spec=Input)
         with (
             mock.patch.object(
@@ -1642,6 +1668,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         with mock.patch.object(screen, "query_one", side_effect=NoMatches("none")):
             assert screen._first_grid_or_none() is None
 
@@ -1651,6 +1690,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         target = mock.MagicMock(spec=ModelGrid)
         target.highlighted = 0
         target.columns_per_row = 1
@@ -1670,6 +1722,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         target = mock.MagicMock(spec=ModelGrid)
         target.highlighted = 0  # row 0
         target.columns_per_row = 1
@@ -1688,6 +1753,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         screen._grid_view = True
         screen._hf_has_more = True
         screen._loading_more = False
@@ -1789,6 +1867,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         screen._grid_view = True
         fake_container = mock.MagicMock()
         fake_container.scroll_y = 0
@@ -1890,6 +1981,19 @@ class TestCatalogSmallEdgeBranches:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         non_match = mock.MagicMock(spec=ModelGrid)
         non_match.name = "OtherName"
         match = mock.MagicMock(spec=ModelGrid)
@@ -1908,6 +2012,19 @@ class TestCatalogSmallEdgeBranches:
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         screen = CatalogScreen.__new__(CatalogScreen)
+        # __new__ bypasses __init__; pin minimum fields the screen reads.
+        screen._active_tab_id_cache = "chat"
+        screen._activation_settled = True
+        screen._tab_grid_cache = {}
+        screen._tab_list_cache = {}
+        screen._grid_cache_keys = {}
+        screen._list_cache_keys = {}
+        screen._source_modes = {
+            "chat": "local",
+            "embed": "local",
+            "vision": "local",
+            "rerank": "local",
+        }
         non_match = mock.MagicMock(spec=ModelGrid)
         non_match.name = "Other"
         fake_container = mock.MagicMock()
@@ -1932,6 +2049,8 @@ class TestCatalogSmallEdgeBranches:
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, CatalogScreen)
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
             screen._hf_fetched = False
             screen._grid_view = True
             with mock.patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
