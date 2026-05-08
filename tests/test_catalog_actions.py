@@ -376,6 +376,32 @@ async def test_reveal_scroll_hint_no_op_without_focused_grid() -> None:
         screen._reveal_scroll_hint_at_catalog_end()
 
 
+async def test_maybe_prefetch_on_grid_nav_no_op_when_focused_not_modelgrid() -> None:
+    """When grids exist but the focused widget isn't a ModelGrid, prefetch no-ops."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "chat"
+        screen._grid_view = True
+        screen._hf_has_more = True
+        screen._loading_more = False
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+        # Mount a ModelGrid in the chat container so the grids list is
+        # non-empty, but return a non-ModelGrid widget from _focused_grid
+        # to hit the isinstance False branch.
+        chat_container = screen.query_one("#grid-chat")
+        await chat_container.mount(ModelGrid())
+        await pilot.pause()
+        from textual.widgets import Static
+
+        non_grid = Static("not a model grid")
+        screen._focused_grid = lambda: non_grid  # type: ignore[method-assign]
+        screen._maybe_prefetch_on_grid_nav()
+        assert screen._loading_more is False
+
+
 async def test_maybe_prefetch_on_grid_nav_no_op_without_focused_grid() -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
