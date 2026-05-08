@@ -12,9 +12,10 @@ different sources, so they're separate types under a sealed
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
@@ -333,18 +334,17 @@ def frontier_row_from_remote(
     )
 
 
-# Column sort key extractors. Frontier rows fold into Name sort (the
-# only sort the picker exposes today); the other keys read fields that
-# only LocalCatalogRow carries, so the catalog screen sorts local and
-# frontier rows independently and concatenates them.
-SORT_KEYS = {
+# Column sort key extractors. Local-only because every column except
+# Name reads a field FrontierCatalogRow doesn't carry, and the catalog
+# screen sorts local and frontier rows independently before concat.
+SORT_KEYS: dict[str, Callable[[LocalCatalogRow], Any]] = {
     "Name": lambda r: r.name.lower(),
-    "Task": lambda r: getattr(r, "task", ""),
-    "Backend": lambda r: getattr(r, "backend", "").lower(),
-    "Params": lambda r: _param_sort_value(getattr(r, "params", "")),
-    "Size": lambda r: getattr(r, "sort_size", 0.0),
-    "Quant": lambda r: getattr(r, "quant", ""),
-    "Downloads": lambda r: getattr(r, "sort_downloads", 0),
+    "Task": lambda r: r.task,
+    "Backend": lambda r: r.backend.lower(),
+    "Params": lambda r: _param_sort_value(r.params),
+    "Size": lambda r: r.sort_size,
+    "Quant": lambda r: r.quant,
+    "Downloads": lambda r: r.sort_downloads,
 }
 
 
