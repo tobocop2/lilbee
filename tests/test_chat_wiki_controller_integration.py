@@ -124,7 +124,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
 
         from lilbee.data.ingest import SyncResult
 
@@ -138,7 +138,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                     ),
                 ):
                     screen._do_add(src, reporter)
-            except BaseException as e:  # pragma: no cover
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -172,7 +172,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
         mock_copy = MagicMock(return_value=copy_result)
 
         def _worker() -> None:
@@ -189,7 +189,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                     ),
                 ):
                     screen._do_add(src, reporter, force=True)
-            except BaseException as e:  # pragma: no cover
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -225,7 +225,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
         mock_copy = MagicMock(return_value=copy_result)
 
         def _worker() -> None:
@@ -242,7 +242,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                     ),
                 ):
                     screen._do_add(src, reporter)
-            except BaseException as e:  # pragma: no cover
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -283,14 +283,14 @@ def test_do_crawl_reports_setup_progress() -> None:
         )
         return []
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
                 screen._do_crawl("https://x", 0, 2, reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -319,14 +319,14 @@ def test_do_crawl_reports_page_progress() -> None:
         )
         return [Path("/tmp/a")]
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
                 screen._do_crawl("https://x", 0, 2, reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -357,13 +357,13 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         return SyncResult()
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -392,13 +392,13 @@ def test_do_sync_done_event_reports_completion() -> None:
         )
         return SyncResult()
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -431,13 +431,13 @@ def test_do_sync_raises_on_sync_failed() -> None:
     async def fake_sync(*, quiet, on_progress):
         return SyncResult(failed=["broken.pdf"])
 
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -462,13 +462,13 @@ def test_do_sync_translates_cancellation() -> None:
 
         raise _asyncio.CancelledError
 
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -715,7 +715,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
         )
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
@@ -725,7 +725,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
                 patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add(src, reporter)
-        except BaseException as e:  # pragma: no cover
+        except Exception as e:  # pragma: no cover
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -942,7 +942,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     from lilbee.app.ingest import CopyResult
 
     copy_result = CopyResult(copied=[str(src)], skipped=[])
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
@@ -956,7 +956,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
                 patch("lilbee.cli.tui.screens.chat._remove_copied_files"),
             ):
                 screen._do_add(src, reporter)
-        except BaseException as e:
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -997,13 +997,13 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover
+        except Exception as e:  # pragma: no cover
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)

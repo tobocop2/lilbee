@@ -5644,12 +5644,12 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
             return fake_result
 
         reporter = ProgressReporter(app.task_bar, "fake-id")
-        captured: dict[str, BaseException] = {}
+        captured: dict[str, Exception] = {}
 
         def _run_worker() -> None:
             try:
                 app.screen._do_add(test_file, reporter)
-            except BaseException as exc:
+            except Exception as exc:
                 captured["exc"] = exc
 
         with (
