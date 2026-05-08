@@ -1041,6 +1041,27 @@ class CatalogScreen(Screen[None]):
         the container down and re-mounting from scratch. Avoids a 100%
         CPU spike on every "Browse more" return.
         """
+        prep = self._prepare_grid_refresh()
+        if prep is None:
+            self._update_sort_label()
+            return
+        sections, hf_count = prep
+        if not sections:
+            self._grid_container.remove_children()
+            self._mount_grid_ctas(hf_count=hf_count)
+            self._update_sort_label()
+            return
+        if self._extend_grid_sections_in_place(sections, hf_count):
+            return
+        self._remount_grid_sections(sections, hf_count)
+        self._update_sort_label()
+
+    def _prepare_grid_refresh(self) -> tuple[list[GridSection], int] | None:
+        """Build sections + cache them. Returns None when the cache is hot.
+
+        On the None branch the caller refreshes the sort label so the
+        cached path still picks up sort-toggle clicks.
+        """
         search = self._get_search_text()
         family_rows = self._build_family_rows(search)
         remote_rows = self._build_remote_rows(search)
@@ -1064,8 +1085,7 @@ class CatalogScreen(Screen[None]):
         # is a no-op refresh; only sort-label refreshes. Keyed by
         # active_tab so other tabs' caches survive in-place.
         if self._grid_cache_keys.get(active_tab) == row_key:
-            self._update_sort_label()
-            return
+            return None
         self._grid_cache_keys[active_tab] = row_key
         if active_tab in TASK_TAB_IDS:
             task_label = TAB_ID_TO_TASK[active_tab].value.capitalize()
@@ -1081,52 +1101,57 @@ class CatalogScreen(Screen[None]):
                 sections.append(GridSection(heading="Cloud", rows=list(frontier_only)))
         else:
             sections = [s for s in _group_rows_for_grid(local_tab_rows) if s.rows]
-        if not sections:
-            container = self._grid_container
-            container.remove_children()
-            self._mount_grid_ctas(hf_count=len(hf_rows))
-            self._update_sort_label()
-            return
-        # Extend in-place when we already have a grid mounted. Each
-        # section heading is keyed by its text so we can match a new
-        # section to its existing ModelGrid without tearing down.
+        return sections, len(hf_rows)
+
+    def _extend_grid_sections_in_place(
+        self, sections: list[GridSection], hf_count: int
+    ) -> bool:
+        """Update existing ModelGrids in place when section count matches.
+
+        Returns True iff the in-place path applied; the caller falls
+        through to a teardown + remount on False.
+        """
         existing_grids = list(self._grid_container.query(ModelGrid))
         existing_headings = [
             w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
         ]
+        if not existing_grids or len(existing_grids) != len(sections):
+            return False
         # Heading + grid mounts each compose on their own frame, so a
         # partially-mounted state can land here with the heading list
         # one short of the grid list. Drop strict=True so we cleanly
         # update whatever pairs we have without forcing a full remount.
-        if existing_grids and len(existing_grids) == len(sections):
-            for grid, heading, section in zip(
-                existing_grids, existing_headings, sections, strict=False
-            ):
-                heading.update(section.heading)
-                grid.set_rows(section.rows)
-            self._refresh_grid_ctas(hf_count=len(hf_rows))
-            self._update_sort_label()
-            return
-        # Section count changed: teardown + remount. Capture the user's
-        # current cursor + scroll position so we can restore both after
-        # remount; otherwise the _focus_first_grid fallback snaps the
-        # cursor back to the top of the catalog mid-keypress, and the
-        # layout shift from extra sections drifts the visible window
-        # away from where the user was looking.
+        for grid, heading, section in zip(
+            existing_grids, existing_headings, sections, strict=False
+        ):
+            heading.update(section.heading)
+            grid.set_rows(section.rows)
+        self._refresh_grid_ctas(hf_count=hf_count)
+        self._update_sort_label()
+        return True
+
+    def _remount_grid_sections(self, sections: list[GridSection], hf_count: int) -> None:
+        """Teardown + remount the grid for a section-count change.
+
+        Captures the user's current cursor + scroll position before the
+        teardown so both can be restored after remount; otherwise the
+        ``_focus_first_grid`` fallback snaps the cursor back to the top
+        of the catalog mid-keypress, and the layout shift from extra
+        sections drifts the visible window away from where the user was
+        looking.
+        """
         focus_anchor = self._capture_focused_section()
         container = self._grid_container
         prior_scroll_y = container.scroll_y
         container.remove_children()
         self._mount_grid_section(sections[0])
-        rest = sections[1:]
         self.call_after_refresh(
             self._mount_remaining_grid_sections,
-            rest,
-            hf_count=len(hf_rows),
+            sections[1:],
+            hf_count=hf_count,
             focus_anchor=focus_anchor,
             prior_scroll_y=prior_scroll_y,
         )
-        self._update_sort_label()
 
     def _capture_focused_section(self) -> tuple[str, int | None] | None:
         """Return ``(heading, highlighted_index)`` for the focused grid.
