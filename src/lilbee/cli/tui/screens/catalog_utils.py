@@ -12,18 +12,108 @@ different sources, so they're separate types under a sealed
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from enum import Enum, StrEnum
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
 from lilbee.modelhub.model_manager import RemoteModel
+from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref
+from lilbee.runtime.hardware import FitChip
+
+# Tab IDs for the 6-tab catalog shell. Discover is the curated landing,
+# the four task tabs each render a single per-task grid, Library is the
+# personal-encyclopedia view of installed local + activated cloud APIs.
+TAB_DISCOVER = "discover"
+TAB_CHAT = "chat"
+TAB_EMBED = "embed"
+TAB_VISION = "vision"
+TAB_RERANK = "rerank"
+TAB_LIBRARY = "library"
+
+# Order matters: numbered shortcuts 1-6 follow this sequence.
+ALL_TAB_IDS: tuple[str, ...] = (
+    TAB_DISCOVER,
+    TAB_CHAT,
+    TAB_EMBED,
+    TAB_VISION,
+    TAB_RERANK,
+    TAB_LIBRARY,
+)
+TASK_TAB_IDS: tuple[str, ...] = (TAB_CHAT, TAB_EMBED, TAB_VISION, TAB_RERANK)
+
+# Maps ModelTask -> the per-task tab id that renders its rows. Featured
+# items still appear pinned at the top of their task tab; cross-task
+# discovery happens on the Discover landing.
+TASK_TO_TAB_ID: dict[ModelTask, str] = {
+    ModelTask.CHAT: TAB_CHAT,
+    ModelTask.EMBEDDING: TAB_EMBED,
+    ModelTask.VISION: TAB_VISION,
+    ModelTask.RERANK: TAB_RERANK,
+}
+TAB_ID_TO_TASK: dict[str, ModelTask] = {v: k for k, v in TASK_TO_TAB_ID.items()}
+
+
+class SourceMode(StrEnum):
+    """Per-task tab filter for which row source backs the visible cards.
+
+    LOCAL hides frontier rows (the default; mirrors the legacy mega-grid
+    behavior). CLOUD shows only frontier rows for the active task. BOTH
+    unions them so users can compare a local Llama with a cloud Llama
+    side by side. Cycled via the ``c`` keybinding.
+    """
+
+    LOCAL = "local"
+    CLOUD = "cloud"
+    BOTH = "both"
+
+
+_SOURCE_MODE_CYCLE: tuple[SourceMode, ...] = (SourceMode.LOCAL, SourceMode.CLOUD, SourceMode.BOTH)
+
+
+def next_source_mode(current: SourceMode) -> SourceMode:
+    """Return the next SourceMode in the LOCAL -> CLOUD -> BOTH -> LOCAL cycle."""
+    idx = _SOURCE_MODE_CYCLE.index(current)
+    return _SOURCE_MODE_CYCLE[(idx + 1) % len(_SOURCE_MODE_CYCLE)]
+
+
+def task_to_tab_id(task: ModelTask | str) -> str:
+    """Return the per-task tab id for a ModelTask or its string value.
+
+    Accepts the string form because catalog rows carry ``task`` as a
+    raw string (matching how HF API and the row builders return it),
+    while the routing tables are keyed on the enum.
+    """
+    if isinstance(task, ModelTask):
+        return TASK_TO_TAB_ID[task]
+    try:
+        return TASK_TO_TAB_ID[ModelTask(task)]
+    except (KeyError, ValueError) as exc:
+        raise KeyError(f"unknown task: {task!r}") from exc
+
 
 # SI thresholds for short download counts ("12.3M" / "456K") and binary
 # thresholds for sizes ("4.2 GB" / "768 MB").
 _DOWNLOADS_PER_M = 1_000_000
 _DOWNLOADS_PER_K = 1_000
 _MB_PER_GB = 1024
+
+
+@dataclass(frozen=True)
+class SizeVariant:
+    """One size/quant variant of a model family for the family-as-card strip.
+
+    ``label`` renders inline on the card (e.g. "8B Q4_K_M"). ``ref`` is
+    the canonical pull target for this specific variant. ``fit`` is the
+    fit chip computed against the host's available memory; ``None``
+    when the hardware probe has not yet run.
+    """
+
+    label: str
+    quant: str
+    size_gb: float
+    ref: str
+    fit: FitChip | None = None
 
 
 @dataclass
@@ -34,6 +124,10 @@ class LocalCatalogRow:
     ``ref`` is the canonical identifier used for config persistence:
     ``hf_repo`` for catalog rows, ``hf_repo/filename`` for installed
     native models, and the provider's ref shape for remote/API rows.
+    ``size_variants`` carries every quant for a family-aggregated row,
+    so the card can render an inline chip strip and the detail drawer
+    can list all sizes. ``fit`` is the chip for the row's primary
+    variant.
     """
 
     name: str
@@ -52,6 +146,8 @@ class LocalCatalogRow:
     family: ModelFamily | None = None
     catalog_model: CatalogModel | None = None
     remote_model: RemoteModel | None = None
+    size_variants: list[SizeVariant] = field(default_factory=list)
+    fit: FitChip | None = None
 
 
 class KeyStatus(Enum):
@@ -118,6 +214,32 @@ def format_size_gb(size_gb: float) -> str:
 def _is_param_count(label: str) -> bool:
     """True when label looks like a parameter count (e.g. '8B', '0.6B')."""
     return bool(PARAM_COUNT_RE.fullmatch(label))
+
+
+def family_to_size_variants(family: ModelFamily) -> list[SizeVariant]:
+    """Build the size-chip strip for a featured ModelFamily.
+
+    Variants are returned in increasing size order so the chip strip
+    reads compact-to-large left-to-right. ``fit`` is left ``None``;
+    the catalog screen fills it in once the hardware probe has run.
+    """
+    variants = sorted(family.variants, key=lambda v: v.size_mb)
+    return [
+        SizeVariant(
+            label=_size_variant_label(v),
+            quant=v.quant or "--",
+            size_gb=v.size_mb / 1024,
+            ref=v.hf_repo,
+            fit=None,
+        )
+        for v in variants
+    ]
+
+
+def _size_variant_label(v: ModelVariant) -> str:
+    """Render a compact label for a ModelVariant chip (e.g. '8B Q4_K_M')."""
+    pieces = [p for p in (v.param_count, v.quant) if p]
+    return " ".join(pieces) if pieces else "--"
 
 
 def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCatalogRow:

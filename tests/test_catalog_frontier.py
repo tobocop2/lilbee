@@ -37,7 +37,7 @@ def _frontier(
 async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int = 20) -> None:
     """Pace until ``CatalogScreen._active_tab_id()`` reports *expected*.
 
-    The bare ``tabs.active = "frontier"; await pilot.pause()`` pattern races
+    The bare ``tabs.active = "library"; await pilot.pause()`` pattern races
     on Windows: the assignment dispatches via a Textual message and a single
     pause does not always flush before the next read. Poll instead.
     """
@@ -134,12 +134,17 @@ class TestGroupFrontierRows:
 class TestFrontierTabBehavior:
     """Coverage for Frontier-tab UI plumbing: action gating + sort-label + dispatch."""
 
-    async def test_active_tab_id_falls_back_to_local_when_unmounted(self) -> None:
+    async def test_active_tab_id_default_is_chat(self) -> None:
+        """Pre-mount, _active_tab_id reads its cache field initialized in __init__.
+
+        The cache is set in __init__ (TAB_CHAT default) so even before
+        compose runs, callers reading _active_tab_id get a sane value
+        without doing a DOM walk.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        screen = CatalogScreen.__new__(CatalogScreen)
-        # No tabs mounted; the helper should swallow the lookup failure.
-        assert screen._active_tab_id() == "local"
+        screen = CatalogScreen()
+        assert screen._active_tab_id() == "chat"
 
     async def test_apply_search_filter_in_frontier_tab_repopulates_list(self, monkeypatch) -> None:
         from textual.app import App, ComposeResult
@@ -155,13 +160,13 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("gemini-2.0-flash")]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await _wait_for_active_tab(pilot, screen, "frontier")
+            screen.query_one("#catalog-tabs", TabbedContent).active = "library"
+            await _wait_for_active_tab(pilot, screen, "library")
             from unittest import mock
 
-            with mock.patch.object(screen, "_populate_frontier_list") as populate:
+            with mock.patch.object(screen, "_populate_library_list") as populate:
                 screen._apply_search_filter()
                 populate.assert_called_once()
 
@@ -179,10 +184,10 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("x")]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await _wait_for_active_tab(pilot, screen, "frontier")
+            screen.query_one("#catalog-tabs", TabbedContent).active = "library"
+            await _wait_for_active_tab(pilot, screen, "library")
             grid_before = screen._grid_view
             screen.action_toggle_view()
             assert screen._grid_view is grid_before
@@ -201,10 +206,10 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("x")]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await _wait_for_active_tab(pilot, screen, "frontier")
+            screen.query_one("#catalog-tabs", TabbedContent).active = "library"
+            await _wait_for_active_tab(pilot, screen, "library")
             sort_before = screen._sort_column
             screen.action_cycle_sort()
             assert screen._sort_column == sort_before
@@ -226,21 +231,21 @@ class TestFrontierTabBehavior:
                 _frontier("gemini-x", provider="Gemini"),
                 _frontier("gpt-x", provider="OpenAI"),
             ]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await _wait_for_active_tab(pilot, screen, "frontier")
+            screen.query_one("#catalog-tabs", TabbedContent).active = "library"
+            await _wait_for_active_tab(pilot, screen, "library")
             screen._update_sort_label()
             text = str(screen.query_one("#sort-label", Static).render())
             assert "2" in text  # 2 cloud models
             assert "providers" in text
 
-    async def test_populate_frontier_list_silently_returns_when_widget_missing(self) -> None:
+    async def test_populate_library_list_silently_returns_when_widget_missing(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
         screen._frontier_rows = []
-        screen._populate_frontier_list()
+        screen._populate_library_list()
 
     async def test_action_load_more_is_noop_on_frontier_tab(self) -> None:
         from textual.app import App, ComposeResult
@@ -256,25 +261,25 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("x")]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            screen.query_one("#catalog-tabs", TabbedContent).active = "frontier"
-            await _wait_for_active_tab(pilot, screen, "frontier")
+            screen.query_one("#catalog-tabs", TabbedContent).active = "library"
+            await _wait_for_active_tab(pilot, screen, "library")
             from unittest import mock
 
             with mock.patch.object(screen, "_load_more") as mock_load:
                 screen.action_load_more()
                 mock_load.assert_not_called()
 
-    async def test_sync_frontier_tab_swallows_lookup_failure(self) -> None:
-        """_sync_frontier_tab returns silently if catalog-tabs is gone."""
+    async def test_populate_library_list_swallows_lookup_failure(self) -> None:
+        """_populate_library_list returns silently if catalog-tabs is gone."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         screen = CatalogScreen.__new__(CatalogScreen)
         screen._frontier_rows = [_frontier("x")]
-        screen._sync_frontier_tab()
+        screen._populate_library_list()
 
-    async def test_sync_frontier_tab_repopulates_when_tab_already_present(self) -> None:
+    async def test_populate_library_list_repopulates_when_tab_already_present(self) -> None:
         from textual.app import App, ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -287,15 +292,15 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("x")]
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             # Two pauses: TabbedContent.add_pane returns AwaitComplete and
             # the mount lands on the next refresh tick, not the same one.
             await pilot.pause()
             await pilot.pause()
             from unittest import mock
 
-            with mock.patch.object(screen, "_populate_frontier_list") as populate:
-                screen._sync_frontier_tab()
+            with mock.patch.object(screen, "_populate_library_list") as populate:
+                screen._populate_library_list()
                 populate.assert_called_once()
 
 
@@ -405,10 +410,10 @@ class TestFrontierSelection:
         fake_app.switch_view.assert_called_once_with("Settings")
 
 
-class TestSyncFrontierTab:
-    """Frontier TabPane is mounted iff at least one frontier row is cached."""
+class TestLibraryTab:
+    """Library is statically mounted; _populate_library_list renders frontier rows."""
 
-    async def test_tab_absent_until_rows_arrive(self, monkeypatch) -> None:
+    async def test_library_tab_always_present(self) -> None:
         from textual.app import App, ComposeResult
         from textual.widgets import TabbedContent
 
@@ -422,18 +427,47 @@ class TestSyncFrontierTab:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
             tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            assert not tabs.query("#frontier")
+            # Library is in compose() so it exists from first paint, before
+            # any frontier_rows arrive. The dynamic add_pane choreography
+            # the legacy Frontier tab needed is gone.
+            assert tabs.query("#library")
+            assert tabs.query("#list-library")
+
+    async def test_populate_library_renders_frontier_rows_into_list_widget(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_list import ModelList
+
+        class _App(App):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
             screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
-            screen._sync_frontier_tab()
-            await pilot.pause()
-            await pilot.pause()
-            assert tabs.query("#frontier")
+            ml = screen.query_one("#list-library", ModelList)
+            for _ in range(20):
+                screen._tab_list_cache = {}
+                screen._populate_library_list()
+                await pilot.pause()
+                if ml.option_count > 0:
+                    break
+            assert ml.option_count > 0
 
-    async def test_tab_removed_when_rows_clear(self) -> None:
+    async def test_populate_library_with_empty_rows_clears_frontier_section(self) -> None:
+        """Frontier section disappears when frontier_rows clears.
+
+        Library now also surfaces installed local rows, so option_count
+        isn't necessarily 0; the cleared frontier rows must still drop
+        their provider section. We assert the frontier provider name no
+        longer appears in any option label.
+        """
         from textual.app import App, ComposeResult
-        from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_list import ModelList
 
         class _App(App):
             def compose(self) -> ComposeResult:
@@ -442,15 +476,15 @@ class TestSyncFrontierTab:
         async with _App().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
-            screen._frontier_rows = [_frontier("gemini-2.0-flash")]
-            screen._sync_frontier_tab()
+            screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
+            screen._populate_library_list()
             await pilot.pause()
-            tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            assert tabs.query("#frontier")
             screen._frontier_rows = []
-            screen._sync_frontier_tab()
+            screen._populate_library_list()
             await pilot.pause()
-            assert not tabs.query("#frontier")
+            ml = screen.query_one("#list-library", ModelList)
+            labels = " ".join(str(opt.prompt) for opt in ml._options if hasattr(opt, "prompt"))
+            assert "gemini-2.0-flash" not in labels
 
 
 class TestBuildFrontierRows:
