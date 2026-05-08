@@ -338,7 +338,7 @@ class ChatScreen(Screen[None]):
     @property
     def _task_bar(self) -> TaskBarController:
         """The app-level TaskBarController (always set by LilbeeApp)."""
-        return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
+        return self.app.task_bar
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
