@@ -120,6 +120,8 @@ class _RowCacheEntry:
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "catalog.tcss"
     AUTO_FOCUS = ""  # GridSelect is mounted dynamically; focused in on_mount
 
@@ -410,10 +412,9 @@ class CatalogScreen(Screen[None]):
         # task sections stream in as the worker completes.
         self._hf_fetched = True
         self._fetch_all_hf_models()
-        if isinstance(self.app, LilbeeApp):
-            self.app.provider_availability_changed_signal.subscribe(
-                self, self._on_provider_availability_changed
-            )
+        self.app.provider_availability_changed_signal.subscribe(
+            self, self._on_provider_availability_changed
+        )
         # Auto-load more HF rows when scrolled near the bottom in either view.
         # Watch every per-task tab's container plus the Library container.
         # Inactive tabs never scroll, so the handler runs only for the active
@@ -429,9 +430,8 @@ class CatalogScreen(Screen[None]):
                 )
 
     def on_unmount(self) -> None:
-        if isinstance(self.app, LilbeeApp):
-            with contextlib.suppress(Exception):
-                self.app.provider_availability_changed_signal.unsubscribe(self)
+        with contextlib.suppress(Exception):
+            self.app.provider_availability_changed_signal.unsubscribe(self)
         self._stop_spinner_timer()
 
     def on_screen_suspend(self) -> None:
@@ -1623,8 +1623,7 @@ class CatalogScreen(Screen[None]):
             severity="warning",
             timeout=10,
         )
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Settings")
+        self.app.switch_view("Settings")
 
     def _load_more(self) -> None:
         """Load next page of HF models, if any remain and no fetch is in flight."""
@@ -1731,9 +1730,6 @@ class CatalogScreen(Screen[None]):
         request and returns. Progress is visible from every screen and
         survives navigation.
         """
-        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
-            return
         self.app.task_bar.start_download(model)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
@@ -1746,10 +1742,7 @@ class CatalogScreen(Screen[None]):
             self._search_input.add_class("-hidden")
             self._focus_list_or_grid()
             return
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def action_dismiss_filter(self) -> None:
         """Esc: hide the filter Input + restore grid/list focus; never dismiss.

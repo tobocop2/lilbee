@@ -37,6 +37,7 @@ from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.model_picker import PickerScope
     from lilbee.cli.tui.widgets.model_bar import ModelOption
     from lilbee.modelhub.models import ModelTask
@@ -358,6 +359,8 @@ def _make_input(key: str, value: str) -> Input:
 class SettingsScreen(Screen[None]):
     """Interactive settings viewer with grouped, type-aware editors."""
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "settings.tcss"
     AUTO_FOCUS = "#settings-scroll"
     HELP = (
@@ -571,16 +574,8 @@ class SettingsScreen(Screen[None]):
         """Parse, apply, and persist a setting value."""
         try:
             parsed = self._parse_value(defn, raw)
-            from lilbee.cli.tui.app import LilbeeApp
-
-            if isinstance(self.app, LilbeeApp):
-                # set_setting handles theme live-apply, signal publish, etc.
-                self.app.set_setting(key, parsed)
-            else:
-                # Test harnesses where self.app isn't a LilbeeApp.
-                setattr(cfg, key, parsed)
-                persisted = self._stringify_for_toml(parsed)
-                settings.set_value(cfg.data_root, key, persisted)
+            # set_setting handles theme live-apply, signal publish, etc.
+            self.app.set_setting(key, parsed)
             if not quiet:
                 self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
@@ -848,10 +843,6 @@ class SettingsScreen(Screen[None]):
 
     def _publish_batch_signals(self, signal_payload: list[tuple[str, object]]) -> None:
         """Fan out settings_changed signals for every successfully-reset key."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            return
         for pub_key, pub_parsed in signal_payload:
             self.app.settings_changed_signal.publish((pub_key, pub_parsed))
 
@@ -897,12 +888,7 @@ class SettingsScreen(Screen[None]):
         _set_widget_value(widget, value)
 
     def action_go_back(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def action_scroll_down(self) -> None:
         self.query_one("#settings-scroll", VerticalScroll).scroll_down()

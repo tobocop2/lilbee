@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -39,6 +42,8 @@ class ViewTab(Label, can_focus=True):
     pseudo-classes.
     """
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "activate", "Switch view", show=False),
         Binding("space", "activate", "Switch view", show=False),
@@ -64,19 +69,13 @@ class ViewTab(Label, can_focus=True):
         self._switch()
 
     def _switch(self) -> None:
-        # Late-binding via getattr would hide the contract; we rely on
-        # ViewTab being mounted under a LilbeeApp where switch_view is
-        # always defined. Tests using a stub app patch switch_view onto
-        # the App instance, so accessing it as an attribute works there
-        # too.
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view(self.view_name)
+        self.app.switch_view(self.view_name)
 
 
 class ViewTabs(Widget):
     """View tab strip with mode and active-model indicator."""
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     # NOTE: no ``dock: bottom`` here. ViewTabs is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
@@ -102,17 +101,8 @@ class ViewTabs(Widget):
             yield Static(id="view-tabs-trailing")
 
     def on_mount(self) -> None:
-        # ViewTabs is mounted under any App in tests (ChatTestApp,
-        # CatalogTestApp, etc.) that don't carry the LilbeeApp signal
-        # set, so the wiring is gated on isinstance rather than asking
-        # for a duck-typed attribute.
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.active_view = self.app.active_view
-            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
-        else:
-            self.active_view = msg.DEFAULT_VIEW
+        self.active_view = self.app.active_view
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self._apply_wiki_visibility()
         # Defer the initial paint: update() during on_mount can no-op while
         # children are still completing their mount cycle.

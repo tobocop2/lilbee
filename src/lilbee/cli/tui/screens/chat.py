@@ -247,6 +247,11 @@ class PromptArea(Vertical):
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
+    # Lilbee always hosts screens on a LilbeeApp (production + LilbeeAppHost
+    # in tests), so narrowing the type lets the screen call set_theme /
+    # switch_view / task_bar without isinstance dance or # type: ignore.
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "chat.tcss"
     AUTO_FOCUS = "#chat-input"
 
@@ -364,8 +369,7 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        if isinstance(self.app, LilbeeApp):
-            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -413,8 +417,7 @@ class ChatScreen(Screen[None]):
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
         # Re-detect after setup so a freshly-set-up vault gets the hint.
-        if isinstance(self.app, LilbeeApp):
-            self.app.task_bar.start_detect_pending()
+        self.app.task_bar.start_detect_pending()
         self.refresh_model_bar()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
@@ -824,9 +827,7 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Catalog")
-            return
+        self.app.switch_view("Catalog")
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         self.app.push_screen(CatalogScreen())
@@ -991,12 +992,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Settings")
-            return
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        self.app.push_screen(SettingsScreen())
+        self.app.switch_view("Settings")
 
     def _cmd_setup(self, _args: str) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard
@@ -1004,15 +1000,10 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _cmd_status(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Status")
-            return
-        from lilbee.cli.tui.screens.status import StatusScreen
-
-        self.app.push_screen(StatusScreen())
+        self.app.switch_view("Status")
 
     def _cmd_theme(self, args: str) -> None:
-        if args and isinstance(self.app, LilbeeApp):
+        if args:
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:
@@ -1026,8 +1017,7 @@ class ChatScreen(Screen[None]):
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Wiki")
+        self.app.switch_view("Wiki")
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""

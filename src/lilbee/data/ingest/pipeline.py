@@ -45,7 +45,6 @@ log = logging.getLogger(__name__)
 _MAX_CONCURRENT = cpu_quota()
 
 
-
 async def _rebuild_concept_clusters() -> None:
     """Re-run Leiden clustering after sync. No-op if disabled."""
     if not cfg.concept_graph:

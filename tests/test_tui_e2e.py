@@ -12,12 +12,13 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +82,7 @@ def _mock_services():
         set_services(None)
 
 
-class ChatTestApp(App[None]):
+class ChatTestApp(LilbeeAppHost):
     """Minimal app that pushes ChatScreen for testing."""
 
     def compose(self) -> ComposeResult:
@@ -2710,7 +2711,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(6)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2739,7 +2740,7 @@ class TestGridSelectWidget:
 
         selections = []
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(4)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2763,7 +2764,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(6)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2786,7 +2787,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Input(f"Item {i}", classes="card") for i in range(4)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")

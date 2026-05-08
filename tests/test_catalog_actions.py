@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import contextlib
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
@@ -21,6 +21,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import FitChip, FitLevel
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _row(
@@ -43,7 +44,7 @@ def _row(
     )
 
 
-class _CatalogTestApp(App):
+class _CatalogTestApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield CatalogScreen()
 

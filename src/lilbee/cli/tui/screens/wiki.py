@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.wiki.browse import WikiPageInfo
 
 from textual import on
@@ -75,6 +76,8 @@ def _breadcrumb_for_slug(slug: str, title: str) -> str:
 
 class WikiScreen(Screen[None]):
     """Wiki page browser with a tree sidebar and markdown content viewer."""
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "wiki.tcss"
     AUTO_FOCUS = "#wiki-page-list"
@@ -322,12 +325,7 @@ class WikiScreen(Screen[None]):
         self.action_go_back()
 
     def action_go_back(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def _tree_or_none(self) -> Tree[str | None] | None:
         if isinstance(self.focused, Input):

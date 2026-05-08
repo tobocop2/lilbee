@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest import mock
 
 import pytest
-from textual.app import App
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
@@ -16,6 +15,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 _TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
@@ -176,7 +176,7 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
 # ---------------------------------------------------------------------------
 
 
-class _SetupHostApp(App[None]):
+class _SetupHostApp(LilbeeAppHost):
     """Minimal host app that pushes only the SetupWizard, no chat screen."""
 
     CSS = ""

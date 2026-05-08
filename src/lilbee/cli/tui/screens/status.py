@@ -6,7 +6,10 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual import work
 from textual.app import ComposeResult
@@ -123,6 +126,8 @@ def _build_arch_content(info: ModelArchInfo) -> Content:
 
 class StatusScreen(Screen[None]):
     """Knowledge base status view with collapsible sections."""
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "status.tcss"
     AUTO_FOCUS = "CollapsibleTitle"
@@ -314,12 +319,7 @@ class StatusScreen(Screen[None]):
             self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def action_cursor_down(self) -> None:
         self.query_one("#status-scroll", VerticalScroll).scroll_down()

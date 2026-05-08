@@ -11,17 +11,18 @@ Run with:
 from __future__ import annotations
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import DataTable, Footer
 
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = pytest.mark.slow
 
 
-class _IntegrationChatApp(App[None]):
+class _IntegrationChatApp(LilbeeAppHost):
     """Minimal app that pushes ChatScreen with real services."""
 
     CSS = ""
@@ -193,7 +194,7 @@ class TestStatusScreen:
 
         from lilbee.cli.tui.screens.status import StatusScreen
 
-        class _StatusApp(App[None]):
+        class _StatusApp(LilbeeAppHost):
             CSS = ""
 
             def compose(self) -> ComposeResult:
@@ -313,7 +314,7 @@ class TestCrawlAndSync:
             server.stop()
 
 
-class _WikiApp(App[None]):
+class _WikiApp(LilbeeAppHost):
     """Minimal app that pushes WikiScreen for integration tests."""
 
     CSS = ""

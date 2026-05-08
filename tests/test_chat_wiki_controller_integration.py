@@ -62,31 +62,6 @@ async def test_on_success_exception_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_catalog_enqueue_download_without_lilbee_app_notifies() -> None:
-    """When the host is not a LilbeeApp, catalog surfaces an error via notify."""
-    from textual.app import App, ComposeResult
-    from textual.widgets import Footer
-
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    class _PlainApp(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-    # Run under a plain app: CatalogScreen.app won't be a LilbeeApp.
-    with patch("lilbee.cli.tui.screens.catalog.get_catalog"):
-        app = _PlainApp()
-        async with app.run_test() as pilot:
-            screen = CatalogScreen()
-            await app.push_screen(screen)
-            await pilot.pause()
-            notified: list[str] = []
-            screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
-            screen._enqueue_download(_fake_model())
-            assert any("task" in n.lower() or "bar" in n.lower() for n in notified)
-
-
-@pytest.mark.asyncio
 async def test_queue_unsubscribe_removes_callback() -> None:
     """TaskQueue.unsubscribe removes a previously registered callback."""
     from lilbee.cli.tui.task_queue import TaskQueue

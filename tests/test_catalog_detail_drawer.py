@@ -17,6 +17,7 @@ from lilbee.cli.tui.widgets.catalog_detail import (
 )
 from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import FitChip, FitLevel
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _local_row(
@@ -41,7 +42,7 @@ def _local_row(
 
 
 async def _drawer_in_test_app() -> tuple[CatalogDetailDrawer, App]:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -50,7 +51,7 @@ async def _drawer_in_test_app() -> tuple[CatalogDetailDrawer, App]:
 
 
 async def test_initial_state_shows_empty_hint() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -62,7 +63,7 @@ async def test_initial_state_shows_empty_hint() -> None:
 
 
 async def test_update_for_row_renders_local_row_name() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -76,7 +77,7 @@ async def test_update_for_row_renders_local_row_name() -> None:
 
 
 async def test_update_for_row_with_none_clears_to_empty_hint() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -92,7 +93,7 @@ async def test_update_for_row_with_none_clears_to_empty_hint() -> None:
 
 
 async def test_update_for_row_lists_size_variants() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -111,7 +112,7 @@ async def test_update_for_row_lists_size_variants() -> None:
 
 
 async def test_update_for_row_renders_fit_chip_text() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 
@@ -240,7 +241,7 @@ async def test_license_text_returns_empty_placeholder() -> None:
 
 
 async def test_frontier_row_shows_provider_in_license_slot() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogDetailDrawer(id="catalog-detail-drawer")
 

@@ -42,6 +42,7 @@ from lilbee.core.config import cfg
 from lilbee.core.services import set_services
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -545,7 +546,7 @@ def _make_eager_settings_screen():
     return _EagerSettingsScreen
 
 
-class SettingsTestApp(App[None]):
+class SettingsTestApp(LilbeeAppHost):
     """Test fixture that pre-populates every Settings pane on mount."""
 
     CSS = ""
@@ -986,14 +987,13 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
 
 async def test_list_text_area_posts_blurred():
     """ListTextArea posts its Blurred message when focus moves away."""
-    from textual.app import App
     from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
     captured: list[ListTextArea.Blurred] = []
 
-    class _TestApp(App[None]):
+    class _TestApp(LilbeeAppHost):
         CSS = ""
 
         def compose(self) -> ComposeResult:
@@ -1715,7 +1715,7 @@ async def test_reset_all_action_opens_confirm_dialog():
         assert isinstance(pushed_screen, ConfirmDialog)
 
 
-class StatusTestApp(App[None]):
+class StatusTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -2131,7 +2131,7 @@ async def test_app_push_help():
         assert app.screen.query("HelpPanel")
 
 
-class ChatTestApp(App[None]):
+class ChatTestApp(LilbeeAppHost):
     CSS = ""
 
     def __init__(self) -> None:
@@ -2233,12 +2233,11 @@ async def test_chat_current_chunk_type_without_scope_chip_returns_none():
     """Test apps without a ScopeChip (e.g. mounting ChatScreen in isolation)
     must get ``None`` from the helper, not a ``NoMatches`` crash.
     """
-    from textual.app import App
 
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
-    class _BareChatApp(App):
+    class _BareChatApp(LilbeeAppHost):
         def on_mount(self) -> None:
             self.push_screen(ChatScreen())
 
@@ -3184,7 +3183,7 @@ async def test_command_provider_document_commands_empty_name(mock_svc):
         assert cmds == []
 
 
-class CatalogTestApp(App[None]):
+class CatalogTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -4769,7 +4768,7 @@ async def test_chat_needs_setup_true_pushes_wizard():
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
-    class SetupTestApp(App[None]):
+    class SetupTestApp(LilbeeAppHost):
         CSS = ""
 
         def compose(self) -> ComposeResult:
@@ -6603,7 +6602,7 @@ async def test_settings_group_titles_present():
         assert len(titles) >= 2
 
 
-class WikiTestApp(App[None]):
+class WikiTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -6945,7 +6944,7 @@ class TestWikiViewRegistration:
         assert "Wiki" not in get_nav_views()
 
 
-class WikiDraftsTestApp(App[None]):
+class WikiDraftsTestApp(LilbeeAppHost):
     """Bare app that pushes the drafts screen directly for isolated tests."""
 
     CSS = ""
@@ -7938,7 +7937,7 @@ def test_installed_name_to_row_creates_row():
     assert row.size == "--"
 
 
-class SetupTestApp(App[None]):
+class SetupTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -9237,7 +9236,7 @@ async def test_settings_go_back_non_lilbee_app():
 # ---------------------------------------------------------------------------
 
 
-class TaskCenterTestApp(App[None]):
+class TaskCenterTestApp(LilbeeAppHost):
     """Non-LilbeeApp for testing TaskCenter go_back fallback."""
 
     CSS = ""
@@ -10351,7 +10350,7 @@ async def test_task_bar_indeterminate_flag_propagated():
     from lilbee.cli.tui.task_queue import TaskStatus
     from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-    class _Harness(App[None]):
+    class _Harness(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
             from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -10387,7 +10386,7 @@ def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
     """Build a test app that pushes WikiScreen on mount."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
 
-    class _WikiApp(App[None]):
+    class _WikiApp(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
             if with_task_bar:

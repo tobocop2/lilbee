@@ -5,14 +5,15 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Label
 
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
-class _Harness(App[None]):
+class _Harness(LilbeeAppHost):
     def __init__(self) -> None:
         super().__init__()
         self.task_bar = TaskBarController(self)
@@ -149,7 +150,7 @@ async def test_taskbar_hint_becomes_esc_variant_when_input_focused() -> None:
     """With a chat-style Input focused, the hint should read 'Esc then t'."""
     from textual.widgets import Input
 
-    class _InputHarness(App[None]):
+    class _InputHarness(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
             self.task_bar = TaskBarController(self)

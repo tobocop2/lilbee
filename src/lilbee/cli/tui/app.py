@@ -6,7 +6,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -470,18 +470,10 @@ class LilbeeApp(App[None]):
 
 
 def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
-    """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
-    if isinstance(host_app, LilbeeApp):
-        host_app.set_active_model(key, value)
-        return
-    setattr(cfg, key, value)
-    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+    """Route model writes through LilbeeApp.set_active_model."""
+    cast(LilbeeApp, host_app).set_active_model(key, value)
 
 
 def apply_setting(host_app: App[Any], key: str, value: object) -> None:
-    """Route non-model settings writes through set_setting, falling back to direct writes."""
-    if isinstance(host_app, LilbeeApp):
-        host_app.set_setting(key, value)
-        return
-    setattr(cfg, key, value)
-    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+    """Route non-model settings writes through LilbeeApp.set_setting."""
+    cast(LilbeeApp, host_app).set_setting(key, value)

@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual import on
 from textual.app import ComposeResult
@@ -126,6 +129,8 @@ class SetupWizard(Screen[str | None]):
     Selections are persisted to settings eagerly (not at dismiss time),
     so Esc-ing out mid-wizard keeps your picks.
     """
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "setup.tcss"
 
@@ -273,8 +278,6 @@ class SetupWizard(Screen[str | None]):
         Called when the user presses Enter on a card. Saves the config
         fragment eagerly so Esc mid-wizard doesn't lose the pick.
         """
-        from lilbee.cli.tui.app import LilbeeApp
-
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
@@ -289,11 +292,7 @@ class SetupWizard(Screen[str | None]):
             apply_active_model(self.app, "embedding_model", ref)
 
         pending = _pending_download(card)
-        if (
-            pending is not None
-            and pending.ref not in self._submitted
-            and isinstance(self.app, LilbeeApp)
-        ):
+        if pending is not None and pending.ref not in self._submitted:
             self._submitted.add(pending.ref)
             self.app.task_bar.start_download(pending)
 

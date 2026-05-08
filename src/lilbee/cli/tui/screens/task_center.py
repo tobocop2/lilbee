@@ -65,7 +65,7 @@ class TaskCenter(Screen[None]):
     AUTO_FOCUS = "#task-rows"
     HELP = "Background task monitor.\n\nPress r to refresh, c to cancel the focused task."
 
-    app: LilbeeApp
+    app: LilbeeApp  # type: ignore[assignment]
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
@@ -98,13 +98,7 @@ class TaskCenter(Screen[None]):
             yield Footer()
 
     def action_go_back(self) -> None:
-        """Return to Chat (or pop if we're on a detached test app)."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def on_mount(self) -> None:
         self._tick: int = 0

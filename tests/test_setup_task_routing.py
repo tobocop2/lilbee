@@ -11,13 +11,14 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = None):
@@ -31,7 +32,7 @@ def _patch_setup_ram(ram_gb: float = 16.0):
     return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
 
 
-class _PlainApp(App[None]):
+class _PlainApp(LilbeeAppHost):
     """Minimal host so the wizard can mount without LilbeeApp's auto-wizard."""
 
     def compose(self) -> ComposeResult:

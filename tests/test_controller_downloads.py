@@ -17,7 +17,7 @@ import time
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
@@ -27,6 +27,7 @@ from lilbee.cli.tui.widgets.task_bar import (
     TaskBarController,
     TaskCancelledError,
 )
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
@@ -46,7 +47,7 @@ def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel
     )
 
 
-class _Host(App[None]):
+class _Host(LilbeeAppHost):
     """Minimal host so TaskBarController can bind to an App."""
 
     def compose(self) -> ComposeResult:

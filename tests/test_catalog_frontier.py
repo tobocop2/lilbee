@@ -16,6 +16,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     matches_search,
 )
 from lilbee.modelhub.models import ModelTask
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _frontier(
@@ -147,12 +148,12 @@ class TestFrontierTabBehavior:
         assert screen._active_tab_id() == "chat"
 
     async def test_apply_search_filter_in_frontier_tab_repopulates_list(self, monkeypatch) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -171,12 +172,12 @@ class TestFrontierTabBehavior:
                 populate.assert_called_once()
 
     async def test_action_toggle_view_is_noop_on_frontier_tab(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -193,12 +194,12 @@ class TestFrontierTabBehavior:
             assert screen._grid_view is grid_before
 
     async def test_action_cycle_sort_is_noop_on_frontier_tab(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -215,12 +216,12 @@ class TestFrontierTabBehavior:
             assert screen._sort_column == sort_before
 
     async def test_frontier_summary_label_uses_provider_count(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Static, TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -248,12 +249,12 @@ class TestFrontierTabBehavior:
         screen._populate_library_list()
 
     async def test_action_load_more_is_noop_on_frontier_tab(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -280,11 +281,11 @@ class TestFrontierTabBehavior:
         screen._populate_library_list()
 
     async def test_populate_library_list_repopulates_when_tab_already_present(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -359,11 +360,11 @@ class TestFrontierSelection:
     async def test_frontier_list_selected_dispatches_to_select_row(self) -> None:
         from unittest import mock
 
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -414,12 +415,12 @@ class TestLibraryTab:
     """Library is statically mounted; _populate_library_list renders frontier rows."""
 
     async def test_library_tab_always_present(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import TabbedContent
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -434,12 +435,12 @@ class TestLibraryTab:
             assert tabs.query("#list-library")
 
     async def test_populate_library_renders_frontier_rows_into_list_widget(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_list import ModelList
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 
@@ -464,12 +465,12 @@ class TestLibraryTab:
         their provider section. We assert the frontier provider name no
         longer appears in any option label.
         """
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_list import ModelList
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield CatalogScreen()
 

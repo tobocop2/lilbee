@@ -10,7 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
@@ -19,6 +19,7 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 from lilbee.core.config import cfg
 from lilbee.core.services import set_services
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +67,7 @@ def _patch_chat_setup():
         yield
 
 
-class _ControllerApp(App[None]):
+class _ControllerApp(LilbeeAppHost):
     """Test harness that installs a real TaskBarController + a single screen."""
 
     CSS = ""
