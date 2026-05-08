@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -504,7 +504,7 @@ class Searcher:
         opts = options if options is not None else self._config.generation_options()
         raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
         try:
-            for st in filter_reasoning(cast(Iterator[str], raw), show=self._config.show_reasoning):
+            for st in filter_reasoning(raw, show=self._config.show_reasoning):
                 if st.content:
                     yield st
         except (ConnectionError, OSError) as exc:
@@ -543,7 +543,7 @@ class Searcher:
         answer_parts: list[str] = []
         try:
             for st in filter_reasoning(
-                cast(Iterator[str], raw_stream), show=self._config.show_reasoning
+                raw_stream, show=self._config.show_reasoning
             ):
                 if st.content:
                     answer_parts.append(st.content)

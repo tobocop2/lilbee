@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
@@ -364,6 +364,26 @@ class LlamaCppProvider(LLMProvider):
             # parent doesn't kill a valid run on a probe failure.
             return _VISION_NO_CAP_TIMEOUT_S
         return float(pages) * per_page_timeout_s + cfg.vision_load_budget_s
+
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[False] = False,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[True],
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ClosableIterator[str]: ...
 
     def chat(
         self,

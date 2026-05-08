@@ -19,7 +19,6 @@ import functools
 import logging
 import re
 from pathlib import Path
-from typing import cast
 
 import yaml
 
@@ -268,7 +267,7 @@ def generate_source_batch(
     )
     try:
         response = provider.chat(messages, stream=False, options=options)
-        text = strip_reasoning(cast(str, response)).strip()
+        text = strip_reasoning(response).strip()
     except Exception as exc:
         log.warning("Batched LLM call failed for source %s: %s", source, exc)
         return []
