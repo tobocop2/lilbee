@@ -498,8 +498,6 @@ class TestSyncStream:
 
     async def test_timeout_continue_when_no_progress(self):
         """Sync with no progress events exercises the TimeoutError continue branch."""
-        import asyncio
-
         sync_result = SyncResult()
 
         async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):

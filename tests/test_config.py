@@ -1036,16 +1036,12 @@ class TestDefaultCrawlExcludePatterns:
     accidentally rejecting real content URLs."""
 
     def _matches_any(self, url: str) -> bool:
-        import re
-
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         return any(re.search(p, url) for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
     def test_every_pattern_compiles(self):
         """Every shipped default must be valid Python regex."""
-        import re
-
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         for pattern in DEFAULT_CRAWL_EXCLUDE_PATTERNS:
