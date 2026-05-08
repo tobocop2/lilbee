@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from textual.app import App
 
     from lilbee.catalog import CatalogModel
+    from lilbee.cli.tui.app import LilbeeApp
 
 log = logging.getLogger(__name__)
 
@@ -467,6 +468,8 @@ class TaskBar(Static):
     the Task Center screen, accessible via ``t``.
     """
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     # NOTE: no ``dock: bottom`` here. TaskBar is always mounted inside a
     # ``BottomBars`` container that owns the dock; multiple dock-bottom
     # siblings overlap at the same row in Textual (see BottomBars docstring).
@@ -515,15 +518,7 @@ class TaskBar(Static):
 
     @property
     def _controller(self) -> TaskBarController:
-        controller = getattr(self.app, "task_bar", None)
-        if not isinstance(controller, TaskBarController):
-            log.warning(
-                "TaskBar mounted on %s without a TaskBarController; creating one lazily",
-                type(self.app).__name__,
-            )
-            controller = TaskBarController(self.app)
-            self.app.task_bar = controller  # type: ignore[attr-defined]
-        return controller
+        return self.app.task_bar
 
     @property
     def queue(self) -> TaskQueue:
