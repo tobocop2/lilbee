@@ -15,12 +15,9 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 from lilbee.core.config import cfg
 from lilbee.core.services import set_services
-
-_EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
 
 @pytest.fixture(autouse=True)
