@@ -20,8 +20,9 @@ from lilbee.app.models import (
     RemoveResult,
     ShowModelResult,
 )
+from lilbee.catalog.types import ModelSource
 from lilbee.cli import app
-from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError
 from lilbee.modelhub.registry import ModelManifest
 
 runner = CliRunner()

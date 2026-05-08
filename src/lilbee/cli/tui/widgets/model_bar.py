@@ -19,13 +19,13 @@ from textual.widgets import Static
 
 from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model, apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.retrieval.embedder import is_model_available

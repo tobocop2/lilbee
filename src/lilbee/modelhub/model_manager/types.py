@@ -3,30 +3,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from lilbee.modelhub.models import ModelTask
+from lilbee.catalog.types import ModelTask
 from lilbee.providers.backend_names import BackendName
-
-
-class ModelSource(Enum):
-    """Where a model is stored."""
-
-    NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    REMOTE = "remote"  # Models managed by a remote SDK-backed service
-
-    @classmethod
-    def parse(cls, value: str | None) -> "ModelSource | None":
-        """Parse a user-supplied source string. Empty or None means 'all'.
-
-        Raises ValueError on any other non-empty input so callers get a
-        consistent error type regardless of entry point (CLI, MCP, server).
-        """
-        if value is None or value == "":
-            return None
-        try:
-            return cls(value)
-        except ValueError as exc:
-            valid = ", ".join(s.value for s in cls)
-            raise ValueError(f"invalid source {value!r}; expected one of: {valid}") from exc
 
 
 class ModelNotFoundError(RuntimeError):

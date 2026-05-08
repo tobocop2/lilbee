@@ -1356,9 +1356,9 @@ class TestValidateModelTaskAssignment:
 
     def test_task_mismatch_carries_structured_fields(self, _task_validation_enabled):
         """TaskMismatchError carries the structured fields each surface needs to format messages."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config import validate_model_task_assignment
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF"
         with pytest.raises(TaskMismatchError) as exc_info:

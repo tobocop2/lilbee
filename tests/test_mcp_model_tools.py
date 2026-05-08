@@ -17,6 +17,7 @@ from lilbee.app.models import (
     ShowModelResult,
 )
 from lilbee.catalog import DownloadProgress
+from lilbee.catalog.types import ModelSource
 from lilbee.mcp_server import (
     _log_progress_failure,
     model_list,
@@ -24,12 +25,12 @@ from lilbee.mcp_server import (
     model_rm,
     model_show,
 )
-from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError
 
 
 class TestMcpList:
     def test_native_source_forwarded(self):
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         expected = ListModelsResult(models=[], total=0)
         with patch("lilbee.app.models.list_models_data", return_value=expected) as fn:

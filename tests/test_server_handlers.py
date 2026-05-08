@@ -1072,7 +1072,7 @@ class TestModelsInstalled:
     async def test_returns_installed_models(self):
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["ollama/qwen3:8b", "ollama/mistral:7b"]
-        from lilbee.modelhub.model_manager import ModelSource
+        from lilbee.catalog.types import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.REMOTE
         with patch(
@@ -1679,8 +1679,8 @@ class TestSetVisionModel:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -1738,8 +1738,8 @@ class TestSetRerankerModel:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -1749,8 +1749,8 @@ class TestSetRerankerModel:
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_vision_model(self, mock_svc):
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -1761,8 +1761,8 @@ class TestSetRerankerModel:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
         """Embedding model in the reranker slot carries the structured task pair."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -1773,8 +1773,8 @@ class TestSetRerankerModel:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_reranker_in_vision_slot(self, mock_svc):
         """Reranker in the vision slot reports the rerank/vision task pair."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -1791,7 +1791,7 @@ class TestTaskEndpointPath:
     """
 
     def test_index_with_enum(self) -> None:
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask.CHAT] == "chat"
@@ -1801,7 +1801,7 @@ class TestTaskEndpointPath:
 
     def test_coerces_catalog_task_string(self) -> None:
         """Coercion via ``ModelTask(entry.task)`` resolves to the enum key."""
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
         from lilbee.server.handlers import TASK_ENDPOINT_PATH
 
         assert TASK_ENDPOINT_PATH[ModelTask("chat")] == "chat"

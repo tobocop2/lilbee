@@ -9,9 +9,9 @@ import pytest
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.validators import TaskMismatchError
-from lilbee.modelhub.models import ModelTask
 
 
 @pytest.fixture(autouse=True)

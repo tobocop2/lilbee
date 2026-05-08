@@ -6,9 +6,9 @@ import os
 import httpx
 
 from lilbee.app.services import get_services
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,

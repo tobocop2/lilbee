@@ -9,13 +9,13 @@ and the catalog rebuilds.
 
 from __future__ import annotations
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
     matches_search,
 )
-from lilbee.modelhub.models import ModelTask
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

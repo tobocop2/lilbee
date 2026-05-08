@@ -18,11 +18,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.refs import format_native_gguf_ref
+from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
 if TYPE_CHECKING:
-    # circular: registry -> models -> registry via ModelRegistry
-    from lilbee.modelhub.models import ModelTask
+    from lilbee.catalog.models import CatalogModel
+    from lilbee.catalog.types import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -56,24 +58,6 @@ def parse_hf_ref(ref: str) -> tuple[str, str]:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
     hf_repo, gguf_filename = ref.rsplit("/", 1)
     return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
-
-
-def hf_repo_from_ref(ref: str) -> str:
-    """Return the ``<org>/<repo>`` portion of a native GGUF ref.
-
-    Native GGUF refs have the form ``<org>/<repo>/<filename>.gguf``; the
-    repo is the prefix before the final slash. Provider-prefixed refs
-    (``openai/gpt-4``, ``ollama/llama3:8b``) and bare repos lack the
-    ``.gguf`` suffix and are returned unchanged.
-    """
-    if ref.endswith(".gguf") and "/" in ref:
-        return ref.rsplit("/", 1)[0]
-    return ref
-
-
-def format_native_gguf_ref(hf_repo: str, gguf_filename: str) -> str:
-    """Render the canonical ``<hf_repo>/<gguf_filename>`` native GGUF ref."""
-    return f"{hf_repo}/{gguf_filename}"
 
 
 def repo_to_dir(hf_repo: str) -> str:
@@ -243,3 +227,28 @@ class ModelRegistry:
         except (json.JSONDecodeError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
+
+
+def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
+    """Write a registry manifest for a freshly downloaded GGUF.
+
+    Used by :func:`lilbee.modelhub.model_manager.core.ModelManager.pull` as
+    the ``on_complete`` callback for :func:`lilbee.catalog.download_model`.
+    Failures are logged and swallowed so a manifest hiccup does not break
+    a successful download.
+    """
+    from datetime import UTC, datetime
+
+    registry = ModelRegistry(cfg.models_dir)
+    manifest = ModelManifest(
+        hf_repo=entry.hf_repo,
+        gguf_filename=file_path.name,
+        size_bytes=file_path.stat().st_size,
+        task=entry.task,
+        downloaded_at=datetime.now(UTC).isoformat(),
+    )
+    try:
+        registry.install(entry.hf_repo, file_path.name, file_path, manifest)
+        log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
+    except Exception:
+        log.warning("Failed to register manifest for %s", entry.hf_repo, exc_info=True)

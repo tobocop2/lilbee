@@ -138,7 +138,7 @@ async def test_enter_noop_outside_lilbee_app() -> None:
 @pytest.mark.asyncio
 async def test_commit_selection_with_no_ref_returns_early() -> None:
     """Defensive: _commit_selection bails out if _mark_selection left no ref."""
-    from lilbee.modelhub.models import ModelTask
+    from lilbee.catalog.types import ModelTask
 
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
@@ -175,7 +175,7 @@ async def test_escape_without_selection_dismisses_skipped() -> None:
             await pilot.pause()
             wizard = app.screen
             assert isinstance(wizard, SetupWizard)
-            from lilbee.modelhub.models import ModelTask
+            from lilbee.catalog.types import ModelTask
 
             wizard._selections[ModelTask.CHAT] = (None, None)
             wizard._selections[ModelTask.EMBEDDING] = (None, None)

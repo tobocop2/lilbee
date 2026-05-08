@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog_utils import (
     ALL_TAB_IDS,
     TAB_CHAT,
@@ -22,7 +23,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
     TASK_TO_TAB_ID,
     task_to_tab_id,
 )
-from lilbee.modelhub.models import ModelTask
 
 
 def test_all_tab_ids_in_keyboard_order() -> None:

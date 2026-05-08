@@ -9,15 +9,16 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.modelhub.models import ModelTask
 from lilbee.modelhub.registry import ModelRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource, RemoteModel
+    from lilbee.catalog.types import ModelSource
+    from lilbee.modelhub.model_manager import RemoteModel
     from lilbee.modelhub.registry import ModelManifest
 
 
@@ -62,7 +63,7 @@ class ModelEntry(BaseModel):
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
         # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
         from lilbee.catalog import clean_display_name
-        from lilbee.modelhub.model_manager import ModelSource
+        from lilbee.catalog.types import ModelSource
 
         return cls(
             name=ref,
@@ -75,7 +76,7 @@ class ModelEntry(BaseModel):
     @classmethod
     def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
         # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-        from lilbee.modelhub.model_manager import ModelSource
+        from lilbee.catalog.types import ModelSource
 
         return cls(
             name=ref,
@@ -201,7 +202,7 @@ def _resolve_native_path(ref: str) -> str | None:
 
 def _collect_native_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     manifests = _native_manifest_index()
     refs = get_services().model_manager.list_installed(source=ModelSource.NATIVE)
@@ -227,7 +228,7 @@ def list_models_data(
     so the command stays responsive when the backend is down.
     """
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:

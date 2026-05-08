@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog import (
     _PICKS_SECTION_HEADING,
     _group_task_rows_with_picks,
 )
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-from lilbee.modelhub.models import ModelTask
 
 
 def _row(name: str, *, featured: bool = False, installed: bool = False) -> LocalCatalogRow:

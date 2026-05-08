@@ -814,7 +814,7 @@ class TestListInstalledModels:
             assert result == [self._CHAT_REF]
 
     def test_excludes_non_chat_remote_tasks(self):
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,

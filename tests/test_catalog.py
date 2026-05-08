@@ -707,7 +707,7 @@ class TestFindCatalogEntry:
         """A featured entry with a concrete (non-glob) filename is reachable
         via the full ``hf_repo/filename`` ref.
         """
-        from lilbee.modelhub.registry import format_native_gguf_ref
+        from lilbee.catalog.refs import format_native_gguf_ref
 
         # Pick a featured entry whose gguf_filename is NOT a glob.
         concrete = next(m for m in FEATURED_ALL if "*" not in m.gguf_filename)
@@ -725,7 +725,7 @@ class TestFindCatalogEntry:
 
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
@@ -735,14 +735,14 @@ class TestBuildAdhocEntry:
         assert entry.task == ModelTask.CHAT
 
     def test_respects_task_override(self) -> None:
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
         assert entry.task == ModelTask.EMBEDDING
 
     def test_rerank_task_accepted(self) -> None:
         """Ad-hoc reranker entries preserve the RERANK task tag."""
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
         assert entry.task == ModelTask.RERANK
@@ -2016,16 +2016,11 @@ class TestDownloadProgressCallback:
         assert tracker.was_used is True
 
 
-class TestRegisterModelFailure:
-    def test_manifest_install_exception_is_logged(self, tmp_path: Path) -> None:
-        """When registry.install raises, _register_model logs but doesn't crash."""
-        from unittest.mock import patch
-
+class TestRegisterDownloadedModel:
+    def _entry(self) -> object:
         from lilbee.catalog import CatalogModel
-        from lilbee.catalog.download import _register_model
-        from lilbee.core.config import cfg
 
-        entry = CatalogModel(
+        return CatalogModel(
             hf_repo="user/test",
             gguf_filename="test.gguf",
             size_gb=1.0,
@@ -2035,6 +2030,33 @@ class TestRegisterModelFailure:
             downloads=0,
             task="chat",
         )
+
+    def test_writes_manifest_on_success(self, tmp_path: Path) -> None:
+        """register_downloaded_model writes a manifest readable via the registry."""
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
+
+        file_path = tmp_path / "test.gguf"
+        file_path.write_bytes(b"fake model bytes")
+
+        old = cfg.models_dir
+        cfg.models_dir = tmp_path
+        try:
+            register_downloaded_model(self._entry(), file_path)
+            installed = ModelRegistry(tmp_path).list_installed()
+        finally:
+            cfg.models_dir = old
+
+        refs = [m.ref for m in installed]
+        assert "user/test/test.gguf" in refs
+
+    def test_manifest_install_exception_is_logged(self, tmp_path: Path) -> None:
+        """When registry.install raises, register_downloaded_model logs but doesn't crash."""
+        from unittest.mock import patch
+
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import register_downloaded_model
+
         file_path = tmp_path / "test.gguf"
         file_path.write_bytes(b"fake")
 
@@ -2046,6 +2068,28 @@ class TestRegisterModelFailure:
                 side_effect=RuntimeError("disk full"),
             ):
                 # Should not raise
-                _register_model(entry, file_path)
+                register_downloaded_model(self._entry(), file_path)
         finally:
             cfg.models_dir = old_models_dir
+
+    def test_download_model_invokes_on_complete(self, tmp_path: Path) -> None:
+        """download_model calls on_complete(entry, file_path) after the bytes land."""
+        from lilbee.catalog.download import download_model
+        from lilbee.core.config import cfg
+
+        entry = self._entry()
+        existing = tmp_path / entry.gguf_filename
+        existing.write_bytes(b"fake")
+
+        old = cfg.models_dir
+        cfg.models_dir = tmp_path
+        captured: list[tuple[object, Path]] = []
+        try:
+            download_model(
+                entry,
+                on_complete=lambda e, p: captured.append((e, p)),
+            )
+        finally:
+            cfg.models_dir = old
+
+        assert captured == [(entry, existing)]

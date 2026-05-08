@@ -20,12 +20,11 @@ from lilbee.catalog import (
     find_catalog_entry,
     get_catalog,
 )
+from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.core import settings
 from lilbee.core.config import cfg, validate_model_task_assignment
 from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
-from lilbee.modelhub.model_manager import ModelSource
-from lilbee.modelhub.models import ModelTask
-from lilbee.modelhub.registry import hf_repo_from_ref
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_error, sse_event

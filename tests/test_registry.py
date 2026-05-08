@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.modelhub.registry import (
     ModelManifest,
     ModelRegistry,
     _sha256_file,
     _validate_gguf_filename,
     _validate_hf_repo,
-    format_native_gguf_ref,
     parse_hf_ref,
     repo_to_dir,
 )

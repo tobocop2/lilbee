@@ -2846,8 +2846,8 @@ class TestSetupWizard:
 
     async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
         """action_cancel returns 'skipped' only when the user picked nothing."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.modelhub.models import ModelTask
 
         app = _SetupApp()
         results: list[object] = []
@@ -2993,8 +2993,8 @@ class TestSetupWizard:
     def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
         """_scan_installed_models output must be usable as installed refs for the
         catalog grid so the same model never appears with a phantom download."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.setup import _scan_installed_models
-        from lilbee.modelhub.models import ModelTask
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()

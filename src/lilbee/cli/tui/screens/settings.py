@@ -37,10 +37,10 @@ from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 
 if TYPE_CHECKING:
+    from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.model_picker import PickerScope
     from lilbee.cli.tui.widgets.model_bar import ModelOption
-    from lilbee.modelhub.models import ModelTask
 
 _ROW_ID_PREFIX = "row-"
 _EDITOR_ID_PREFIX = "ed-"
@@ -86,7 +86,7 @@ def _model_field_to_picker_scope() -> dict[str, PickerScope]:
 
 def _picker_scope_to_task(scope: PickerScope) -> ModelTask:
     """Map a picker scope to the ``ModelTask`` bucket it discovers from."""
-    from lilbee.modelhub.models import ModelTask as _ModelTask
+    from lilbee.catalog.types import ModelTask as _ModelTask
 
     return {
         "chat": _ModelTask.CHAT,

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
 
 def _render_list(data: ListModelsResult) -> Table:
@@ -107,7 +107,7 @@ _yes_option = typer.Option(
 
 def _parse_source_or_bad_param(value: str | None) -> ModelSource | None:
     """Parse a CLI --source value, raising typer.BadParameter on bad input."""
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     try:
         return ModelSource.parse(value)
@@ -126,7 +126,7 @@ def list_cmd(
     use_global: bool = global_option,
 ) -> None:
     """List installed models across all sources."""
-    from lilbee.modelhub.models import ModelTask
+    from lilbee.catalog.types import ModelTask
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
     try:
@@ -234,7 +234,7 @@ def pull_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Download a model."""
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE

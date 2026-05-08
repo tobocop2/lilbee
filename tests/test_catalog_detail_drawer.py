@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
@@ -15,7 +16,6 @@ from lilbee.cli.tui.widgets.catalog_detail import (
     _EMPTY_HINT,
     CatalogDetailDrawer,
 )
-from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
 

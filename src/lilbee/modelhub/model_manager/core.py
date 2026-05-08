@@ -9,9 +9,10 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.catalog.types import ModelSource
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
-from lilbee.modelhub.model_manager.types import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class ModelManager:
         """Download a featured or ad-hoc HuggingFace model to the native GGUF directory."""
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
         from lilbee.catalog import download_model, resolve_pull_target
+        from lilbee.modelhub.registry import register_downloaded_model
 
         entry = resolve_pull_target(model)
         if entry is None:
@@ -177,7 +179,7 @@ class ModelManager:
                 f"Model '{model}' not recognized. "
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
-        path = download_model(entry, on_progress=on_bytes)
+        path = download_model(entry, on_progress=on_bytes, on_complete=register_downloaded_model)
         log.info("Downloaded %s to %s", model, path)
         return path
 

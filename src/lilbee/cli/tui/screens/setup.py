@@ -36,6 +36,7 @@ from lilbee.catalog import (
     display_label_for_ref,
     extract_quant,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -46,7 +47,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.core.config import cfg
-from lilbee.modelhub.models import ModelTask, get_system_ram_gb
+from lilbee.modelhub.models import get_system_ram_gb
 
 log = logging.getLogger(__name__)
 

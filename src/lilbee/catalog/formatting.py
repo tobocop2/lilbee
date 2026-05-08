@@ -4,8 +4,8 @@ import re
 from dataclasses import dataclass
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.modelhub.model_manager import ModelSource
-from lilbee.modelhub.registry import hf_repo_from_ref
+from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.types import ModelSource
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 

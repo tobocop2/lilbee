@@ -6,26 +6,16 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from lilbee.catalog.types import ModelTask
 from lilbee.core import settings
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
-
-
-class ModelTask(StrEnum):
-    """Task classification for models."""
-
-    CHAT = "chat"
-    EMBEDDING = "embedding"
-    VISION = "vision"
-    RERANK = "rerank"
-
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +43,6 @@ def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
     return tuple(
         ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in featured
     )
-
-
-# Lazy singletons: resolved on first access to break the circular import
-# between this module (imports ModelTask) and ``lilbee.catalog`` (imports
-# from this module).
 
 
 @functools.cache
@@ -218,7 +203,7 @@ def validate_disk_and_pull(
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
     from lilbee.app.services import get_services
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     if console is None:
         console = Console(file=sys.__stderr__ or sys.stderr)

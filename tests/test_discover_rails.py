@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
-from lilbee.modelhub.models import ModelTask
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

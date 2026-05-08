@@ -28,6 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -67,7 +68,6 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import get_provider_api_key
 from lilbee.runtime.hardware import compute_fit
 

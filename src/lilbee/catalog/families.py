@@ -10,7 +10,7 @@ from lilbee.catalog.featured import (
 )
 from lilbee.catalog.formatting import clean_display_name, extract_quant
 from lilbee.catalog.models import CatalogModel, ModelFamily, ModelVariant
-from lilbee.modelhub.models import ModelTask
+from lilbee.catalog.types import ModelTask
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 

@@ -9,6 +9,7 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog import (
     CatalogScreen,
     _for_you_sort_key,
@@ -19,7 +20,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
 )
-from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
 

@@ -449,7 +449,7 @@ def _download_target(reporter: ProgressReporter, model: CatalogModel) -> None:
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     def _on_progress(p: DownloadProgress) -> None:
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")

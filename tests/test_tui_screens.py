@@ -458,8 +458,8 @@ class TestGroupRowsForGrid:
         return catalog_to_row(model, installed=installed)
 
     def test_grid_contains_rerank_bucket(self) -> None:
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
 
         rows = [
             self._row(ModelTask.CHAT),
@@ -477,8 +477,8 @@ class TestGroupRowsForGrid:
 
     def test_featured_lives_at_top_of_task_section(self) -> None:
         """Featured rows merge into their task section with the pick first."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
 
         rows = [
             self._row(ModelTask.RERANK, featured=False),
@@ -493,9 +493,9 @@ class TestGroupRowsForGrid:
 
     def test_installed_still_has_its_own_section(self) -> None:
         """Installed rows are pulled out of task sections into their own bucket."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
 
         rows = [
             self._row(ModelTask.CHAT, installed=True),
@@ -640,9 +640,9 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     """Clicking the picker runs discovery in a worker, then pushes the modal."""
     from unittest.mock import patch
 
+    from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.screens.model_picker import ModelPickerModal
     from lilbee.cli.tui.widgets.model_bar import ModelOption
-    from lilbee.modelhub.models import ModelTask
 
     fake_buckets = {
         ModelTask.CHAT: [ModelOption(label="fake-chat", ref="fake/chat.gguf")],
@@ -10973,8 +10973,8 @@ def test_settings_model_field_to_picker_scope_returns_all_four():
 
 def test_settings_picker_scope_to_task_covers_all_branches():
     """_picker_scope_to_task maps every PickerScope to the right ModelTask."""
+    from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.screens.settings import _picker_scope_to_task
-    from lilbee.modelhub.models import ModelTask
 
     assert _picker_scope_to_task("chat") is ModelTask.CHAT
     assert _picker_scope_to_task("embed") is ModelTask.EMBEDDING

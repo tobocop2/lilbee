@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.modelhub.models import ModelTask
+from lilbee.catalog.types import ModelTask
 
 
 class HfGgufMeta(BaseModel):

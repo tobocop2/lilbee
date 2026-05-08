@@ -18,8 +18,8 @@ from enum import Enum, StrEnum
 from typing import Any, Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
+from lilbee.catalog.types import ModelTask
 from lilbee.modelhub.model_manager import RemoteModel
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
 

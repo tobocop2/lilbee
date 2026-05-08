@@ -170,13 +170,13 @@ class TestCatalogUtilsFrontierFromRemote:
     FrontierCatalogRow. Direct unit call covers the constructor."""
 
     def test_converts_remote_to_frontier_row(self) -> None:
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.catalog_utils import (
             FrontierCatalogRow,
             KeyStatus,
             frontier_row_from_remote,
         )
         from lilbee.modelhub.model_manager import RemoteModel
-        from lilbee.modelhub.models import ModelTask
 
         rm = RemoteModel(
             name="gemini-test",
@@ -1522,8 +1522,8 @@ class TestModelBarVisionSidecarPicker:
         from pathlib import Path
         from types import SimpleNamespace
 
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
-        from lilbee.modelhub.models import ModelTask
 
         manifest = SimpleNamespace(
             ref="acme/chat-with-vision",

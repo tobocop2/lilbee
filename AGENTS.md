@@ -124,6 +124,26 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - **Encapsulate module globals on a class.** Three or more module-level mutable variables sharing a concept (`_callback`, `_installed`, `_pending`, `_pending_level`, `_lock`) form an implicit object. Promote to `class _ThingDispatcher: ...` with named methods and a single module-level instance. Tests get a clean snapshot/restore seam; production code stops needing `global` declarations.
 - **No test-aware branches in production.** A production code path gated on `if isinstance(self.app, LilbeeApp)`, `if hasattr(self.app, "task_bar")`, or `if not _is_test_env()` is debt: it pollutes the production path with a fallback that exists only because tests mount differently. Fix tests to mount the production type (subclass with the heavy work skipped), and the production branch goes away entirely.
 
+### Layering & Inversion
+
+The package layers go bottom-up. A module may import from its own layer and any layer below; never above. New code must respect this.
+
+| Layer | Packages | What lives here |
+|---|---|---|
+| 0 (foundation) | `core/` | Config singleton, settings I/O, security helpers, results. No upward imports. |
+| 1 | `catalog/` | Featured catalog, HF ref helpers, downloads, **shared domain types** (`ModelTask`, `ModelSource`). |
+| 2 | `modelhub/`, `providers/`, `runtime/`, `data/` | Model registry, lifecycle, providers, ingest pipeline. May import catalog + core. |
+| 3 | `retrieval/`, `wiki/`, `crawler/` | Search, RAG, wiki generation, web crawl. May import any lower layer. |
+| 4 (surfaces) | `app/`, `cli/`, `server/`, `mcp_server.py` | Use-case orchestration and surfaces. May import anything below. |
+
+Concrete rules:
+
+- **Domain types live in the lowest layer that uses them.** If `ModelTask` is referenced by `catalog/` and `modelhub/`, it belongs in `catalog/`, not `modelhub/`. Moving a type *up* (to a layer that imports it) is wrong; moving *down* (to the layer that owns it) restores one-way flow.
+- **Side effects that cross layers go through callbacks, not upward imports.** When a Layer-N module needs to trigger a Layer-N+1 effect (catalog/download wants modelhub to write a manifest; data/ingest wants wiki to re-cluster after a sync), expose a `Callable` parameter (`on_complete=`, `on_indexed=`) and let the higher layer pass the function in. Layer-N stays unaware of Layer-N+1.
+- **No re-export shims when moving symbols.** When `ModelTask` moves from `modelhub/models.py` to `catalog/types.py`, every importer updates in the same commit. Do **not** add `from lilbee.catalog.types import ModelTask` back into `modelhub/models.py` to keep old paths working — that defers the cleanup forever and hides the layering fix.
+- **`TYPE_CHECKING` is for circular *annotations* only, not runtime workarounds.** A `TYPE_CHECKING` import that exists because runtime would cause a cycle is a sign the layering is wrong: fix the layer assignment instead of papering over with a string-typed annotation.
+- **Mock targets follow the symbol.** When a symbol moves between modules, `grep -rn '@patch("lilbee\.<old.path>"' tests/` must return zero in the same commit. Stale `@patch` targets silently no-op and let tests pass without exercising the real code.
+
 ### Configuration & State
 - **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.core.config import cfg`)
 - Never duplicate state across modules (e.g. no `store_mod.LANCEDB_DIR` mirroring `cfg.lancedb_dir`)
@@ -331,6 +351,8 @@ in the PR body.
 - `grep -cE "isinstance\(.*widget, (Input|Checkbox|Select|TextArea)\)" src/` followed by "if more than one site" — type-keyed widget routing. Replace with a `dict[type, Callable]`.
 - `grep -rnE "^\s*global \w+" src/` — module-level mutable globals. Encapsulate on a class.
 - `grep -rnE "def \w+\(.*\) -> .*:\s*$" src/ | xargs -I{} awk 'def_lines>20'` (proxy: scan modules >700 LOC) — functions over ~20 lines need a split into named sub-helpers.
+- `grep -rn "from lilbee\.\(modelhub\|providers\|data\|retrieval\|wiki\|crawler\)" src/lilbee/catalog src/lilbee/core` — upward imports from foundation layers. catalog and core never import from anything above them.
+- `grep -rn "from lilbee\.\(retrieval\|wiki\|crawler\|cli\|server\)" src/lilbee/data src/lilbee/modelhub src/lilbee/providers` — Layer-2 modules importing Layer-3+. Invert via callback or move the helper down.
 
 ### Self-Review Checklist (before every push)
 Run this mentally or explicitly before claiming work is done:

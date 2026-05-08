@@ -474,8 +474,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.app.models import list_models_data
-    from lilbee.modelhub.model_manager import ModelSource
-    from lilbee.modelhub.models import ModelTask
+    from lilbee.catalog.types import ModelSource, ModelTask
 
     try:
         src = ModelSource.parse(source)
@@ -527,7 +526,7 @@ async def model_pull(
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
@@ -561,7 +560,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.app.models import remove_model_data
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source)
