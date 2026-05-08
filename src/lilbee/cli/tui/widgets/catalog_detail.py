@@ -127,13 +127,13 @@ def _render_sizes_block(variants: list[SizeVariant]) -> str:
     return "\n".join(lines)
 
 
-def _license_text(row: LocalCatalogRow) -> str:
-    """Best-effort license line; the catalog model doesn't always carry one."""
-    if row.catalog_model is not None:
-        # description sometimes carries the license; cheap heuristic for now.
-        return ""
-    if row.family is not None:
-        return ""
+def _license_text(_row: LocalCatalogRow) -> str:
+    """License placeholder; CatalogModel/ModelFamily don't carry one yet.
+
+    Kept as a stub so callers have a stable seam: future plumbing for
+    per-row license strings (HF metadata fetch, family-level config) can
+    fill this in without touching the drawer's render path.
+    """
     return ""
 
 
