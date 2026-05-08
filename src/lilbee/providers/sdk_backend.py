@@ -35,6 +35,26 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 # Derived set of config field names (for checking which updates touch API keys).
 API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 
+# Provider name -> cfg attribute holding that provider's API key.
+PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
+
+
+def get_provider_api_key(provider: str) -> str | None:
+    """Return the configured API key for *provider*, or ``None`` if unknown / unset.
+
+    *provider* is the lowercase routing key from a parsed model ref (e.g.
+    ``"openai"``). Returns ``None`` for unknown providers AND for known
+    providers whose key is unconfigured; callers can distinguish via
+    :data:`PROVIDER_API_KEY_FIELD`.
+    """
+    from lilbee.core.config import cfg
+
+    field = PROVIDER_API_KEY_FIELD.get(provider.lower())
+    if field is None:
+        return None
+    value = getattr(cfg, field)
+    return value or None
+
 _BACKEND_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
     ("localhost:11434", BackendName.OLLAMA),
     ("ollama", BackendName.OLLAMA),

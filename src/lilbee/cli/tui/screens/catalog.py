@@ -68,6 +68,7 @@ from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.modelhub.models import ModelTask
+from lilbee.providers.sdk_backend import get_provider_api_key
 from lilbee.runtime.hardware import compute_fit
 
 log = logging.getLogger(__name__)
@@ -668,8 +669,7 @@ class CatalogScreen(Screen[None]):
         rows: list[FrontierCatalogRow] = []
         for display_name, models in groups.items():
             provider_id = display_name.lower()
-            key_field = f"{provider_id}_api_key"
-            has_key = bool(getattr(cfg, key_field, ""))
+            has_key = get_provider_api_key(provider_id) is not None
             status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
             for rm in models:
                 rows.append(
