@@ -122,7 +122,7 @@ async def test_set_rail_swallows_missing_grid() -> None:
     async with _Empty().run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         # Build a DiscoverRails outside the mounted DOM, then call _set_rail
-        # — query_one will raise and the helper should swallow it cleanly.
+        # query_one will raise and the helper should swallow it cleanly.
         rails = DiscoverRailsCls()
         rails._set_rail("for-you", [_row("Llama")])
 
