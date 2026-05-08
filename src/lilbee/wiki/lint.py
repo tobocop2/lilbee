@@ -208,7 +208,7 @@ def lint_changed_sources(
 
     Callable from tools that already know the set of changed sources
     (e.g. a future `lilbee wiki check <source>` command); the sync
-    pipeline uses `_incremental_wiki_update` instead, which runs full
+    pipeline uses `lilbee.wiki.ingest.incremental_update` instead, which runs full
     extraction rather than citation replay.
     """
     if config is None:
