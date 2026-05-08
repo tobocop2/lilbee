@@ -313,6 +313,15 @@ class CatalogScreen(Screen[None]):
     def _list_widget(self) -> ModelList:
         return self._list_for_tab(self._active_tab_id_cache)
 
+    @property
+    def _search_focused(self) -> bool:
+        """True when the search Input widget owns focus.
+
+        Used to short-circuit digit / single-character action handlers so the
+        keystroke lands in the search field instead of activating a tab.
+        """
+        return isinstance(self.focused, Input)
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
 
@@ -1289,7 +1298,7 @@ class CatalogScreen(Screen[None]):
         triggers ``action_select_tab``, and stops further dispatch so the
         digit doesn't bleed into the search Input or another widget.
         """
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         digit_to_index = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5}
         index = digit_to_index.get(event.key)
@@ -1303,7 +1312,7 @@ class CatalogScreen(Screen[None]):
         """Activate the tab at *index* in ALL_TAB_IDS (0..5)."""
         from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
 
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if not 0 <= index < len(ALL_TAB_IDS):
             return
@@ -1324,7 +1333,7 @@ class CatalogScreen(Screen[None]):
         by source). Per-tab mode means flipping Chat to BOTH doesn't drag
         Embed along; users can keep different views per task.
         """
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         active = self._active_tab_id_cache
         if active not in TASK_TAB_IDS:
@@ -1548,7 +1557,7 @@ class CatalogScreen(Screen[None]):
 
     def action_cycle_sort(self) -> None:
         """Cycle the list-view sort column ascending: Name, Downloads, Size, Params."""
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._active_tab_id() not in TASK_TAB_IDS:
             return
@@ -1709,7 +1718,7 @@ class CatalogScreen(Screen[None]):
         # Escape from a focused filter input collapses the input back to
         # hidden and restores focus to the grid/list, so screen-level
         # keys (s / v) reach the screen instead of the (now-hidden) input.
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             self._search_input.value = ""
             self._search_input.add_class("-hidden")
             self._focus_list_or_grid()
@@ -1728,7 +1737,7 @@ class CatalogScreen(Screen[None]):
         Input on the next screen. Esc now only handles the filter; the
         dismiss path is `q` (action_go_back) which still does both.
         """
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             self._search_input.value = ""
             self._search_input.add_class("-hidden")
             self._focus_list_or_grid()
@@ -1742,7 +1751,7 @@ class CatalogScreen(Screen[None]):
 
     def action_show_info(self) -> None:
         """Pop up an info modal for the highlighted catalog row."""
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         row = self._highlighted_row()
         if row is None:
@@ -1773,7 +1782,7 @@ class CatalogScreen(Screen[None]):
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         model_name = self._get_highlighted_model_name()
         if model_name is None:
@@ -1970,7 +1979,7 @@ class CatalogScreen(Screen[None]):
         return _GRID_PAGE_ROWS if self._grid_view else _LIST_PAGE_ROWS
 
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             if (grid := self._focused_grid()) is not None:
@@ -1980,7 +1989,7 @@ class CatalogScreen(Screen[None]):
             self._nudge_list(self._page_rows())
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             if (grid := self._focused_grid()) is not None:
@@ -1990,7 +1999,7 @@ class CatalogScreen(Screen[None]):
             self._nudge_list(-self._page_rows())
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             grid = self._focused_grid() or self._first_grid_or_none()
@@ -2001,7 +2010,7 @@ class CatalogScreen(Screen[None]):
             self._nudge_list(1)
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             grid = self._focused_grid() or self._first_grid_or_none()
@@ -2021,7 +2030,7 @@ class CatalogScreen(Screen[None]):
             return None
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             if (grid := self._focused_grid()) is not None:
@@ -2030,7 +2039,7 @@ class CatalogScreen(Screen[None]):
             self._focus_list_item(0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input):
+        if self._search_focused:
             return
         if self._grid_view:
             if (grid := self._focused_grid()) is not None:
