@@ -11232,9 +11232,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
                 mock_patch.object(CatalogScreen, "_refresh_view", lambda self: None),
                 mock_patch.object(CatalogScreen, "_refresh_grid", lambda self: None),
             ):
-                await screen._grid_container.mount(
-                    Static("seed", classes="grid-cta scroll-hint")
-                )
+                await screen._grid_container.mount(Static("seed", classes="grid-cta scroll-hint"))
                 await _pilot.pause()
                 screen._loading_more = True
                 screen._tick_loading_spinner()
