@@ -381,21 +381,15 @@ class CatalogScreen(Screen[None]):
         self.add_class("-grid-view")
 
     def _activate_initial_tab(self) -> None:
-        if self._activation_settled:
-            return
         try:
             tabs = self.query_one("#catalog-tabs", TabbedContent)
         except Exception:
             self._activation_settled = True
             return
-        if tabs.active != TAB_CHAT:
+        if self._active_tab_id_cache == TAB_CHAT and tabs.active != TAB_CHAT:
             tabs.active = TAB_CHAT
-        self._active_tab_id_cache = TAB_CHAT
-        self._activation_settled = True
-        # Defer the card mount so the catalog frame paints first, then the
-        # cards stream in on the next refresh tick. With ~30 ModelCards the
-        # synchronous mount adds ~600 ms of stylesheet work; deferring drops
-        # perceived "frozen" time on Catalog open by half.
+        if not self._activation_settled:
+            self._activation_settled = True
         self.call_after_refresh(self._refresh_grid)
         self.call_after_refresh(self._initial_focus_first_grid)
         self._fetch_remote_models()

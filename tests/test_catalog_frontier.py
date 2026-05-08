@@ -449,6 +449,7 @@ class TestLibraryTab:
             screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
             ml = screen.query_one("#list-library", ModelList)
             for _ in range(20):
+                screen._tab_list_cache = {}
                 screen._populate_library_list()
                 await pilot.pause()
                 if ml.option_count > 0:

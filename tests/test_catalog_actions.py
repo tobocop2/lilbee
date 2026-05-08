@@ -538,6 +538,7 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
             except Exception:
                 await pilot.pause()
         for _ in range(20):
+            screen._tab_list_cache = {}
             screen._populate_library_list()
             await pilot.pause()
             if ml.option_count >= 1:
