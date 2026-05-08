@@ -934,3 +934,67 @@ async def test_action_cursor_down_stays_on_active_tab() -> None:
         focused = screen.focused
         if isinstance(focused, ModelGrid):
             assert any(focused is g for g in screen.query("#grid-chat ModelGrid"))
+
+
+async def test_apply_search_filter_no_op_on_discover() -> None:
+    """Search filter on the Discover tab is a no-op (rails are curated)."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "discover"
+        screen._apply_search_filter()
+
+
+async def test_apply_worker_result_repaints_discover_rails() -> None:
+    """When the user is parked on Discover, an HF worker result repaints rails."""
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._active_tab_id_cache = "discover"
+        called = {"n": 0}
+
+        def fake_populate() -> None:
+            called["n"] += 1
+
+        screen._populate_discover_rails = fake_populate  # type: ignore[method-assign]
+
+        from lilbee.cli.tui.screens.catalog import _WORKER_FETCH_HF
+
+        screen._apply_worker_result(_WORKER_FETCH_HF, [])
+        assert called["n"] >= 1
+
+
+async def test_render_library_list_swallows_missing_widget() -> None:
+    """_render_library_list returns silently if the list widget can't be found."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._tab_list_cache = {}
+    screen._render_library_list([], [])
+
+
+async def test_render_library_grid_swallows_missing_container() -> None:
+    """_render_library_grid returns silently if the grid container can't be found."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._tab_grid_cache = {}
+    screen._render_library_grid([], [])
+
+
+async def test_all_family_rows_skips_families_with_no_variants() -> None:
+    """Families with empty variants tuples are skipped during row construction."""
+    from lilbee.catalog import ModelFamily
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._families = [
+            ModelFamily(slug="empty", name="Empty", task="chat", description="x", variants=())
+        ]
+        screen._family_rows_cache = None
+        rows = screen._all_family_rows()
+        assert all(r.name != "Empty" for r in rows)
