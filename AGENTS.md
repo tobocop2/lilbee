@@ -98,7 +98,10 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Type hints on all public functions
 - Dataclasses for structured return types (not raw dicts)
 - **Named constants for magic numbers AND magic strings** — never use raw string literals when a constant exists. Grep globally for the raw value of any new constant to ensure no duplicates remain.
-- **Closed value sets use `StrEnum` / `IntEnum`, not parallel module constants.** Two or more named values for the same field (status, mode, role, kind, event tag) is a sign of an enum. Define `class FooStatus(StrEnum)` so the field type can be `FooStatus` (Pydantic validates, mypy narrows, IDEs autocomplete) and the variants live in one namespace. Examples already in repo: `EventType`, `SseEvent`, `BatchStatus`, `WikiEntityMode`, `ChatMode`. A bare module-level constant is only correct when the value stands alone (sentinel like `CRAWL_TOTAL_UNKNOWN = -1`) — not when it's one of a small fixed set.
+- **Closed value sets use `StrEnum` / `IntEnum`, not parallel module constants.** Two or more named values for the same field (status, mode, role, kind, event tag) is a sign of an enum. Define `class FooStatus(StrEnum)` so the field type can be `FooStatus` (Pydantic validates, mypy narrows, IDEs autocomplete) and the variants live in one namespace. Examples already in repo: `EventType`, `SseEvent`, `BatchStatus`, `WikiEntityMode`, `ChatMode`, `WireKind`, `ModelTask`, `BackendName`, `WorkerRole`. A bare module-level constant is only correct when the value stands alone (sentinel like `CRAWL_TOTAL_UNKNOWN = -1`) — not when it's one of a small fixed set.
+- **String-typed parameters for closed sets are a smell.** A `task: str`, `kind: str`, `role: str`, `event_type: str` parameter signals the type system isn't carrying the constraint. Convert to the corresponding StrEnum at the boundary and let mypy enforce exhaustiveness on every dispatch site. HTTP / IPC boundaries decode the string into the enum (`ModelTask(value)` raises `ValueError` on bad input), production code never sees the bare string.
+- **Sealed unions dispatch on a `kind` discriminator, not isinstance.** When you have a small, closed set of dataclasses sharing a common shape, give them a `kind: Literal["foo"]` field and dispatch on `row.kind == "foo"` (or `match row.kind`). The Literal makes mypy enforce exhaustiveness; isinstance chains scattered across many call sites do not.
+- **Polymorphic getattr-with-default is a contract leak.** `getattr(row, "field", default)` only makes sense when the field genuinely doesn't exist on some union members. If every member should expose the field, declare it. If not, the dispatch dict is mistyped: tighten the type so the helper only sees members that carry the field, and split per-variant helpers when needed. The `getattr` fallback hides what the type should already say.
 - **No positional array indexes** — use named constants or membership checks, not `array[0]`
 - Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`
@@ -108,9 +111,18 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-ti
 - Type checking: `mypy` with strict settings
 - **No em dashes (—)** — use periods or commas instead
 - **No divider comments** (`# ------`) for grouping — use modules or classes instead
-- **Annotate `isinstance` guards** with a comment explaining why the check is needed (e.g. untyped frontmatter, test compatibility)
+- **Annotate `isinstance` guards** with a comment explaining why the check is needed (e.g. untyped frontmatter, untyped SDK response). NEVER use `isinstance(self.app, LilbeeApp)` style host-narrowing in production: if a screen / widget needs LilbeeApp-specific access, declare `app: LilbeeApp  # type: ignore[assignment]` at the class scope (mypy narrows; runtime is unchanged). Tests host via `tests/_lilbee_app_test_host.LilbeeAppHost` (a LilbeeApp subclass with `_test_skip_auto_init = True`), never `App[None]` / `class _PlainApp(App)`.
 - Use literal unicode chars (`★`) not escapes (`\u2605`); extract to named constants
 - **No filterwarnings** without explicit user approval; fix warnings at the source
+
+### Type-System Hygiene
+- **Don't fight the type system with `# type: ignore` for owned attributes.** A `# type: ignore[attr-defined]` on `self.app.task_bar` means mypy can't see `task_bar`. Fix the source: declare `app: LilbeeApp` on the host class, declare `task_bar: TaskBarController` on LilbeeApp's `__init__`, and the ignore goes away. The ignore was the symptom; the missing declaration was the bug.
+- **Adapter classes for SDK shape isolation.** When you find yourself reading the same external library response with `getattr(chunk, "field", default)` in three places, wrap the SDK shape once in a small `_LibFooView` adapter at the import boundary. All callers consume the typed adapter, the SDK shape lives in one file, and SDK drift breaks the adapter (a sharp signal) instead of silently degrading every caller.
+- **`@overload` for stream / mode-narrowed returns.** A method that returns `str | Iterator[str]` based on a `stream: bool` flag is unhelpful: every caller `cast()`s away the union. Add `@overload` signatures for `Literal[True]` and `Literal[False]`; the body still accepts `bool`. Callers consuming `stream=True` get `Iterator[str]`, `stream=False` get `str`, and the `cast()` calls disappear from the call sites.
+- **Module-level registries over `fn._marker = True`.** When a decorator marks functions for later lookup (e.g. read-only route handlers), keep the marker as a module-level `set[Callable]` and provide an `is_marked(fn)` predicate. The `fn._marker = True` pattern requires `# type: ignore[attr-defined]` everywhere it's read and is invisible to grep.
+- **Bound-method dispatch dicts beat `getattr(self, name)` reflection.** When mapping command names / event types to handler methods, build a `dict[str, Callable]` in `__init__` from real bound methods (or a class-level registry decorator). `getattr(self, handler_name)(args)` reflection means mypy can't tell which methods exist, and a typo in `handler_name` becomes an `AttributeError` at runtime instead of a type error.
+- **Encapsulate module globals on a class.** Three or more module-level mutable variables sharing a concept (`_callback`, `_installed`, `_pending`, `_pending_level`, `_lock`) form an implicit object. Promote to `class _ThingDispatcher: ...` with named methods and a single module-level instance. Tests get a clean snapshot/restore seam; production code stops needing `global` declarations.
+- **No test-aware branches in production.** A production code path gated on `if isinstance(self.app, LilbeeApp)`, `if hasattr(self.app, "task_bar")`, or `if not _is_test_env()` is debt: it pollutes the production path with a fallback that exists only because tests mount differently. Fix tests to mount the production type (subclass with the heavy work skipped), and the production branch goes away entirely.
 
 ### Configuration & State
 - **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.core.config import cfg`)
@@ -301,6 +313,25 @@ correctness depends on updating multiple parallel dispatch / validation sites.
   sweeps to their own commit at the end of a series, after architecture is
   frozen.
 
+### Code-Smell Triggers (PR review must flag)
+Each of these is a fast-grep that surfaces the patterns we've burned cycles
+on in past reviews. A reviewer (and the author, before requesting review)
+runs them. A non-empty result is either fixed or has a written justification
+in the PR body.
+
+- `grep -rnE "isinstance\(self\.app, LilbeeApp\)" src/` — production host-narrowing for tests. Fix via `app: LilbeeApp` declaration + LilbeeAppHost in tests.
+- `grep -rn "getattr(self, \"" src/` — getattr-by-name for owned attributes. Declare in `__init__`.
+- `grep -rn "getattr(.*, \".*\", " src/ | grep -v "__"` — getattr-with-default on dataclass / object fields. If union member doesn't have the field, tighten the type instead of papering with the default.
+- `grep -rn "# type: ignore\[attr-defined\]" src/` — owned-attribute ignore. Declare the attribute on the class.
+- `grep -rn "# type: ignore\[arg-type\]\|cast(.*self\.app" src/` — host-cast paper trail; same fix as the isinstance rule above.
+- `grep -rnE "\b(task|kind|role|event_type|status|mode): str\b" src/` — string-typed closed sets. Convert to StrEnum.
+- `grep -rn "\.fn\._\|fn\._lilbee\|fn\._marker" src/` — `fn._attr = True` decorator marking. Use a module-level registry set + `is_marked(fn)` predicate.
+- `grep -rn "isinstance(.*, FrontierCatalogRow)\|isinstance(.*, LocalCatalogRow)" src/` — dispatch on a sealed-union variant. Use the `.kind` Literal discriminator.
+- `grep -rn "App\[None\]\|class _PlainApp\b\|class _BareApp\b" tests/` — test host that bypasses LilbeeApp. Migrate to LilbeeAppHost.
+- `grep -cE "isinstance\(.*widget, (Input|Checkbox|Select|TextArea)\)" src/` followed by "if more than one site" — type-keyed widget routing. Replace with a `dict[type, Callable]`.
+- `grep -rnE "^\s*global \w+" src/` — module-level mutable globals. Encapsulate on a class.
+- `grep -rnE "def \w+\(.*\) -> .*:\s*$" src/ | xargs -I{} awk 'def_lines>20'` (proxy: scan modules >700 LOC) — functions over ~20 lines need a split into named sub-helpers.
+
 ### Self-Review Checklist (before every push)
 Run this mentally or explicitly before claiming work is done:
 1. **Trace consumers** — for every changed file, grep for who imports it. Go 2-3 levels deep for shared modules (types, constants, config).
@@ -312,6 +343,9 @@ Run this mentally or explicitly before claiming work is done:
 7. **Type changes** — field added/removed? All constructors, factories, serializers updated?
 8. **Export changes** — new export actually needed? Removed export has no dangling imports?
 9. **No back-compat scaffolding** — `grep -rni "historical\|backwards compat\|legacy mock\|preserves the.*api\|so existing imports keep working\|for backward compat" src/ tests/`. Every hit is either real legacy data-migration code (allowed) or refactor scaffolding (delete). If a comment justifies the existence of code, the code is probably the scaffolding.
+10. **No new test-aware production branches** — `grep -rnE "isinstance\(self\.app, LilbeeApp\)\|test apps aren't" src/` must return zero new sites in your diff. The escape hatch was rip-and-replaced; new occurrences are regressions.
+11. **No new owned-attribute reflection** — `git diff` for added `getattr(self, "X"` and `# type: ignore[attr-defined]` lines. Each must have a written justification in the PR body or be removed.
+12. **Run the Code-Smell Triggers section grep set** — every entry above. Compare counts vs `main`. The number must not increase.
 
 ### Behavior Learning (floop)
 - `floop` captures corrections and learned behaviors across sessions
