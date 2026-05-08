@@ -232,10 +232,8 @@ class ModelRegistry:
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
-    Used by :func:`lilbee.modelhub.model_manager.core.ModelManager.pull` as
-    the ``on_complete`` callback for :func:`lilbee.catalog.download_model`.
-    Failures are logged and swallowed so a manifest hiccup does not break
-    a successful download.
+    Best-effort: a failed manifest write logs and swallows so the
+    pulled bytes still count as a successful download.
     """
     from datetime import UTC, datetime
 

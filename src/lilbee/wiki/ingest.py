@@ -1,11 +1,4 @@
-"""Wiki post-ingest hook: regenerate pages touched by a recent sync.
-
-This module is the wiki layer's response to a completed
-``lilbee.data.ingest.pipeline.sync()`` run. The pipeline doesn't know
-the wiki rules; it just calls :func:`incremental_update` once the
-ingest has settled. The function bails out early when the wiki feature
-is off or the touched-page set exceeds ``cfg.wiki_ingest_update_cap``.
-"""
+"""Wiki post-ingest hook: regenerate pages touched by a recent sync."""
 
 from __future__ import annotations
 

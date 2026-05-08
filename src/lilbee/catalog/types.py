@@ -1,9 +1,4 @@
-"""Domain enums shared by catalog, modelhub, and surfaces.
-
-These types live in catalog/ so the layering stays one-way: catalog is the
-foundation, modelhub queries catalog, and surfaces (CLI/server/MCP/TUI)
-import from either layer.
-"""
+"""Domain enums for model task and source classification."""
 
 from __future__ import annotations
 

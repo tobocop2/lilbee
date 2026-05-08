@@ -1,9 +1,4 @@
-"""Pure label/slug helpers shared across wiki and retrieval layers.
-
-These functions know nothing about the wiki page layout; they exist
-here so retrieval/concepts and wiki can both call them without
-introducing an upward layer dependency.
-"""
+"""Label sanity checks and slug formatting."""
 
 from __future__ import annotations
 

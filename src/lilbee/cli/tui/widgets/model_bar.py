@@ -182,7 +182,7 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             # doesn't render an empty " (Ollama)" row.
             if not model.name.strip():
                 continue
-            ref = format_remote_ref(model)
+            ref = format_remote_ref(model.name, model.provider)
             if ref in seen or _is_mmproj(model.name):
                 continue
             bucket = _lookup_bucket(buckets, model.task, ref)
@@ -208,7 +208,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         # expose embedding/vision/rerank.
         for display_name, models in discover_api_models().items():
             for model in models:
-                qualified = format_remote_ref(model)
+                qualified = format_remote_ref(model.name, model.provider)
                 if qualified in seen:
                     continue
                 seen.add(qualified)

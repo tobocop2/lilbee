@@ -1,10 +1,4 @@
-"""HuggingFace ref helpers shared by catalog and modelhub.
-
-Native GGUF refs have the form ``<org>/<repo>/<filename>.gguf``. Provider-
-prefixed refs (``openai/gpt-4``, ``ollama/llama3:8b``) and bare repos are
-left unchanged. These helpers are the only place that knows the canonical
-shape; both catalog and modelhub call into them.
-"""
+"""HuggingFace ref helpers: parse and format ``<org>/<repo>/<file>.gguf`` strings."""
 
 from __future__ import annotations
 

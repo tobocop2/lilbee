@@ -91,7 +91,8 @@ def _first_available_api_chat_ref() -> str | None:
         return None
     for _provider, models in groups.items():
         if models:
-            return format_remote_ref(models[0])
+            first = models[0]
+            return format_remote_ref(first.name, first.provider)
     return None
 
 

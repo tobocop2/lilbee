@@ -127,7 +127,7 @@ def _require_litellm() -> Any:
 
 def _cache_ollama_defaults(model: str, params_text: str) -> None:
     """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.modelhub.model_defaults import parse_kv_parameters, set_defaults
+    from lilbee.providers.model_defaults import parse_kv_parameters, set_defaults
 
     defaults = parse_kv_parameters(params_text)
     set_defaults(model, defaults)

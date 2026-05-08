@@ -310,7 +310,7 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
         installed=True,
         sort_downloads=0,
         sort_size=0.0,
-        ref=format_remote_ref(rm),
+        ref=format_remote_ref(rm.name, rm.provider),
         backend=rm.provider.lower(),
         remote_model=rm,
     )
@@ -326,7 +326,7 @@ def frontier_row_from_remote(
     """
     return FrontierCatalogRow(
         name=rm.name,
-        ref=format_remote_ref(rm),
+        ref=format_remote_ref(rm.name, rm.provider),
         task=rm.task,
         provider=rm.provider,
         provider_id=provider_id,
