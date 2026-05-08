@@ -406,9 +406,7 @@ async def test_capture_focused_section_returns_none_when_no_focused_grid() -> No
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
-        # No grid focused; helper returns None.
-        screen.set_focus(None)
-        await pilot.pause()
+        screen._focused_grid = lambda: None  # type: ignore[method-assign]
         assert screen._capture_focused_section() is None
 
 

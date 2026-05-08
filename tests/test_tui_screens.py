@@ -8422,16 +8422,17 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
             screen._hf_has_more = False
-            # Re-query grids right before exercising LeaveDown so a slow
-            # Windows worker that mounts more grids between push and pause
-            # still sees the truly-last grid, not a stale snapshot.
-            grids = list(screen.query(ModelGrid))
+            for _ in range(20):
+                grids = list(screen.query("#grid-chat ModelGrid"))
+                if grids:
+                    break
+                await pilot.pause()
             if not grids:
                 pytest.skip("test requires at least one grid mounted")
             last = grids[-1]
             last.focus()
             await pilot.pause()
-            grids = list(screen.query(ModelGrid))
+            grids = list(screen.query("#grid-chat ModelGrid"))
             last = grids[-1]
             last.focus()
             await pilot.pause()
