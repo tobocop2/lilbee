@@ -90,6 +90,18 @@ class Services:
 
 
 _svc: Services | None = None
+"""Cached singleton, set on first ``get_services()`` call.
+
+Concurrency contract: lilbee runs the asyncio loop on a single worker
+thread + Textual's main thread. ``get_services()`` is idempotent (the
+``if _svc is not None: return`` early-out covers re-entry from a
+background thread). Tests that need a custom container call
+``set_services(make_mock_services(...))`` explicitly; ``peek_services()``
+is the read-only inspector for cleanup fixtures. The Services dataclass
+itself is logically immutable post-construction (its fields are
+references to long-lived service objects), so concurrent reads are safe
+without a lock.
+"""
 
 
 def get_services() -> Services:
