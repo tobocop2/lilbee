@@ -24,6 +24,7 @@ from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -43,15 +44,6 @@ log = logging.getLogger(__name__)
 # can't starve the TUI's asyncio main thread on macOS.
 _MAX_CONCURRENT = cpu_quota()
 
-# Concurrent.futures raises this exact RuntimeError message when submitting to
-# a shutdown executor (Python 3.11+). There is no dedicated exception class to
-# catch, so callers have to string-match the message.
-_EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
-
-
-def _is_executor_shutdown(exc: BaseException) -> bool:
-    """True if ``exc`` is the concurrent.futures shutdown-race RuntimeError."""
-    return isinstance(exc, RuntimeError) and _EXECUTOR_SHUTDOWN_MSG in str(exc)
 
 
 async def _rebuild_concept_clusters() -> None:
@@ -382,7 +374,7 @@ async def ingest_batch(
                 # as ingest failures. Detect via the cancel flag (source of
                 # truth) or the executor's well-known shutdown message as a
                 # fallback when cancel was set after the submit race.
-                if (cancel and cancel.is_set()) or _is_executor_shutdown(exc):
+                if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
                     raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,

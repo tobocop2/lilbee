@@ -10,6 +10,7 @@ from rich.console import Console
 
 from lilbee.cli import theme
 from lilbee.data.ingest import sync
+from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.progress import (
     EventType,
     ExtractEvent,
@@ -88,7 +89,7 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
         return
     if isinstance(exc, asyncio.CancelledError):
         return
-    if isinstance(exc, RuntimeError) and "cannot schedule new futures" in str(exc):
+    if is_executor_shutdown(exc):
         return
     if chat_mode:
         print(f"Background sync error: {exc}")
