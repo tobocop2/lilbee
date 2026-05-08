@@ -20,6 +20,7 @@ from textual.widgets.option_list import Option
 
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
+    CatalogRowKind,
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
@@ -125,7 +126,7 @@ def _heading_option(heading: str, n: int) -> Option:
 
 
 def _render_row(row: CatalogRow) -> Content:
-    if row.kind == "frontier":
+    if row.kind == CatalogRowKind.FRONTIER:
         return _render_frontier(row)
     return _render_local(row)
 

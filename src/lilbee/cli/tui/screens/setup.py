@@ -40,6 +40,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
+    CatalogRowKind,
     LocalCatalogRow,
     catalog_to_row,
     parse_param_label,
@@ -102,16 +103,11 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
-    """Return the CatalogModel to download for a non-installed card, or None.
-
-    Setup wizard only renders local rows; the isinstance guard narrows
-    the union (CatalogRow = LocalCatalogRow | FrontierCatalogRow) so
-    the .installed / .catalog_model reads are typecheck-clean.
-    """
+    """Return the CatalogModel to download for a non-installed local card, or None."""
     if card is None:
         return None
     row = card.row
-    if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+    if row.kind != CatalogRowKind.LOCAL:  # setup never shows frontier rows
         return None
     if row.installed:
         return None
@@ -255,8 +251,8 @@ class SetupWizard(Screen[str | None]):
                 continue
             for card in cards:
                 row = card.row
-                if not isinstance(
-                    row, LocalCatalogRow
+                if (
+                    row.kind != CatalogRowKind.LOCAL
                 ):  # pragma: no cover - setup never mounts frontier
                     continue
                 cm = row.catalog_model

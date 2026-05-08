@@ -42,6 +42,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     TAB_VISION,
     TASK_TAB_IDS,
     CatalogRow,
+    CatalogRowKind,
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
@@ -1074,7 +1075,7 @@ class CatalogScreen(Screen[None]):
         # Frontier rows render in their own Cloud section but don't count
         # toward the local-row tally.
         local_tab_rows: list[LocalCatalogRow] = [
-            r for r in tab_rows if isinstance(r, LocalCatalogRow)
+            r for r in tab_rows if r.kind == CatalogRowKind.LOCAL
         ]
         self._rows = local_tab_rows
         row_key = (
@@ -1093,7 +1094,7 @@ class CatalogScreen(Screen[None]):
             # only sees LocalCatalogRow (it reads .featured / .installed
             # which FrontierCatalogRow doesn't carry). Frontier rows land
             # under their own "Cloud" section appended below.
-            frontier_only = [r for r in tab_rows if isinstance(r, FrontierCatalogRow)]
+            frontier_only = [r for r in tab_rows if r.kind == CatalogRowKind.FRONTIER]
             sections = [
                 s for s in _group_task_rows_with_picks(local_tab_rows, task_label) if s.rows
             ]
@@ -1600,7 +1601,7 @@ class CatalogScreen(Screen[None]):
 
     def _select_row(self, row: CatalogRow) -> None:
         """Handle row selection: install, switch model, or open settings."""
-        if row.kind == "frontier":  # sealed-union dispatch
+        if row.kind == CatalogRowKind.FRONTIER:  # sealed-union dispatch
             self._select_frontier_row(row)
             return
         if row.variant and row.family:
@@ -1773,7 +1774,7 @@ class CatalogScreen(Screen[None]):
         if row is None:
             self.notify(msg.CATALOG_SELECT_FOR_INFO, severity="warning")
             return
-        if row.kind != "local":
+        if row.kind != CatalogRowKind.LOCAL:
             self.notify(msg.CATALOG_FRONTIER_NO_INFO, severity="warning")
             return
         from lilbee.cli.tui.screens.model_info import ModelInfoModal
@@ -2085,7 +2086,7 @@ def _row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
     if installed=False since each frontier entry is provider-managed
     rather than on-disk.
     """
-    if row.kind == "frontier":
+    if row.kind == CatalogRowKind.FRONTIER:
         return (row.name, False)
     return (row.name, row.installed)
 

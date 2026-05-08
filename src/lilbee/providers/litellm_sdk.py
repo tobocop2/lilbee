@@ -43,12 +43,10 @@ _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 class _LitellmResponseView:
     """Typed read-only view over a litellm completion-response object.
 
-    ``litellm.completion(...)`` returns a response object whose shape is
-    not in the SDK's type stubs, so every read site previously did a
-    chain of ``getattr(obj, "field", default)`` calls. Centralise the
-    extraction here so the SDK shape lives in one place; if the upstream
-    response shape ever drifts (or starts publishing types), only this
-    class needs updating.
+    The litellm response shape is not in the SDK's type stubs. This
+    adapter is the one place that knows how to pull ``model``, ``choices``,
+    ``message_content`` and the streaming chunk fields out; SDK drift
+    breaks here rather than across every caller.
     """
 
     def __init__(self, response: Any) -> None:

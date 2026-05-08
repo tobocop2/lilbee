@@ -23,6 +23,14 @@ from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
 
+
+class CatalogRowKind(StrEnum):
+    """Discriminator for the sealed CatalogRow union."""
+
+    LOCAL = "local"
+    FRONTIER = "frontier"
+
+
 # Tab IDs for the 6-tab catalog shell. Discover is the curated landing,
 # the four task tabs each render a single per-task grid, Library is the
 # personal-encyclopedia view of installed local + activated cloud APIs.
@@ -150,7 +158,7 @@ class LocalCatalogRow:
     remote_model: RemoteModel | None = None
     size_variants: list[SizeVariant] = field(default_factory=list)
     fit: FitChip | None = None
-    kind: Literal["local"] = "local"
+    kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
 
 
 class KeyStatus(Enum):
@@ -175,7 +183,7 @@ class FrontierCatalogRow:
     provider: str  # Display label, e.g. "Gemini" / "OpenAI" / "Anthropic".
     provider_id: str  # Canonical id used for the API key field, e.g. "gemini".
     key_status: KeyStatus
-    kind: Literal["frontier"] = "frontier"
+    kind: Literal[CatalogRowKind.FRONTIER] = CatalogRowKind.FRONTIER
 
 
 # Sealed union discriminated on .kind. Pattern-match (or compare) on row.kind
@@ -361,7 +369,7 @@ def row_delete_id(row: CatalogRow) -> str | None:
     Ollama HTTP API keys models by bare name, while ``ref`` carries the
     canonical ``ollama/<name>`` chat_model form.
     """
-    if row.kind == "frontier":
+    if row.kind == CatalogRowKind.FRONTIER:
         return row.ref or None
     if row.remote_model is not None:
         return row.remote_model.name or None
@@ -378,7 +386,7 @@ def matches_search(row: CatalogRow, search: str) -> bool:
     if not search:
         return True
     needle = _normalize_for_search(search)
-    if row.kind == "frontier":
+    if row.kind == CatalogRowKind.FRONTIER:
         return any(
             needle in _normalize_for_search(field)
             for field in (row.name, row.provider, row.provider_id)
