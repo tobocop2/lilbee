@@ -15,6 +15,16 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+# Display names for the active backend the SDK is talking to. The
+# adapter's own identity is exposed separately via provider_name.
+from lilbee.providers.backend_names import (
+    ANTHROPIC_BACKEND_NAME,
+    GEMINI_BACKEND_NAME,
+    OLLAMA_BACKEND_NAME,
+    OPENAI_BACKEND_NAME,
+    REMOTE_BACKEND_NAME,
+)
+
 if TYPE_CHECKING:
     # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
     from lilbee.providers.model_ref import ProviderModelRef
@@ -30,14 +40,6 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 
 # Derived set of config field names (for checking which updates touch API keys).
 API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
-
-# Display names for the active backend the SDK is talking to. The
-# adapter's own identity is exposed separately via provider_name.
-OLLAMA_BACKEND_NAME = "Ollama"
-OPENAI_BACKEND_NAME = "OpenAI"
-ANTHROPIC_BACKEND_NAME = "Anthropic"
-GEMINI_BACKEND_NAME = "Gemini"
-REMOTE_BACKEND_NAME = "Remote"
 
 _BACKEND_URL_PATTERNS: tuple[tuple[str, str], ...] = (
     ("localhost:11434", OLLAMA_BACKEND_NAME),

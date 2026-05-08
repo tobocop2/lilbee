@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from lilbee.providers.sdk_backend import REMOTE_BACKEND_NAME
+from lilbee.providers.backend_names import REMOTE_BACKEND_NAME
 
 
 class ModelSource(Enum):
