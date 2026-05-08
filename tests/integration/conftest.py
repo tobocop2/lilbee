@@ -13,7 +13,6 @@ from lilbee.core.system import canonical_models_dir
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
-_CI_CHAT_MODEL = _CI_CHAT_REPO
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"

@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 
 # Tree node data carries the full wiki-page slug when present. Group folders
 # (page-type headings, per-source branches, inner-section branches) use None.
-_LEAF_SUFFIX = ""
 _INDEX_STEM = "index"
 # Wiki slugs of the form ``<subdir>/<name>`` carry a meaningful page type;
 # bare slugs (no slash) do not.

@@ -21,7 +21,6 @@ from lilbee.core.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
-_HASH_ALGORITHM = "sha256"
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
 _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 _FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.gguf$")
