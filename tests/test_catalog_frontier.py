@@ -97,10 +97,10 @@ class TestGroupRowsForGrid:
     def test_grid_groups_only_local_rows(self) -> None:
         """Featured rows live at the top of their task section; no separate
         "Our picks" bucket. Installed rows still get their own section."""
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         local = [_local("Qwen3", featured=True), _local("Llama", installed=True)]
-        sections = _group_rows_for_grid(local)
+        sections = group_rows_for_grid(local)
         non_empty = [s for s in sections if s.rows]
         headings = [s.heading for s in non_empty]
         assert "Our picks" not in headings
@@ -114,22 +114,22 @@ class TestGroupRowsForGrid:
 
 class TestGroupFrontierRows:
     def test_provider_sections_alphabetical_within_group(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_frontier_rows
+        from lilbee.cli.tui.screens.catalog_grouping import group_frontier_rows
 
         rows = [
             _frontier("gpt-4o", provider="OpenAI"),
             _frontier("gemini-2.0-flash", provider="Gemini"),
             _frontier("gemini-1.5-pro", provider="Gemini"),
         ]
-        sections = _group_frontier_rows(rows)
+        sections = group_frontier_rows(rows)
         assert [s.heading for s in sections] == ["Gemini", "OpenAI"]
         assert [r.name for r in sections[0].rows] == ["gemini-1.5-pro", "gemini-2.0-flash"]
         assert [r.name for r in sections[1].rows] == ["gpt-4o"]
 
     def test_empty_input_returns_empty_list(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_frontier_rows
+        from lilbee.cli.tui.screens.catalog_grouping import group_frontier_rows
 
-        assert _group_frontier_rows([]) == []
+        assert group_frontier_rows([]) == []
 
 
 class TestFrontierTabBehavior:

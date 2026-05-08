@@ -459,7 +459,7 @@ class TestGroupRowsForGrid:
 
     def test_grid_contains_rerank_bucket(self) -> None:
         from lilbee.catalog.types import ModelTask
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.CHAT),
@@ -467,7 +467,7 @@ class TestGroupRowsForGrid:
             self._row(ModelTask.VISION),
             self._row(ModelTask.RERANK),
         ]
-        sections = _group_rows_for_grid(rows)
+        sections = group_rows_for_grid(rows)
         headings = [s.heading for s in sections]
         assert ModelTask.RERANK.capitalize() in headings
 
@@ -478,13 +478,13 @@ class TestGroupRowsForGrid:
     def test_featured_lives_at_top_of_task_section(self) -> None:
         """Featured rows merge into their task section with the pick first."""
         from lilbee.catalog.types import ModelTask
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.RERANK, featured=False),
             self._row(ModelTask.RERANK, featured=True),
         ]
-        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        sections = {s.heading: s.rows for s in group_rows_for_grid(rows)}
         assert "Our picks" not in sections
         rerank = sections[ModelTask.RERANK.capitalize()]
         assert len(rerank) == 2
@@ -495,23 +495,23 @@ class TestGroupRowsForGrid:
         """Installed rows are pulled out of task sections into their own bucket."""
         from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.CHAT, installed=True),
             self._row(ModelTask.CHAT),
         ]
-        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        sections = {s.heading: s.rows for s in group_rows_for_grid(rows)}
         assert len(sections[msg.HEADING_INSTALLED]) == 1
         assert len(sections[ModelTask.CHAT.capitalize()]) == 1
 
     def test_unknown_task_gets_its_own_section(self) -> None:
-        """A row whose task is outside _TASK_BUCKET_ORDER still appears,
+        """A row whose task is outside TASK_BUCKET_ORDER still appears,
         in a section after the known buckets: never silently dropped."""
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         row = self._row("experimental")  # type: ignore[arg-type]
-        sections = _group_rows_for_grid([row])
+        sections = group_rows_for_grid([row])
         headings = [s.heading for s in sections]
         assert "Experimental" in headings
         experimental = next(s for s in sections if s.heading == "Experimental")

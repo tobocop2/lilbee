@@ -10,11 +10,8 @@ from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
 from lilbee.catalog.types import ModelTask
-from lilbee.cli.tui.screens.catalog import (
-    CatalogScreen,
-    _for_you_sort_key,
-    _row_cache_signature,
-)
+from lilbee.cli.tui.screens.catalog import CatalogScreen
+from lilbee.cli.tui.screens.catalog_grouping import for_you_sort_key, row_cache_signature
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
@@ -202,9 +199,9 @@ def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
         provider_id="openai",
         key_status=KeyStatus.READY,
     )
-    assert _row_cache_signature(frontier) == ("gpt-4o", False)
+    assert row_cache_signature(frontier) == ("gpt-4o", False)
     local = _row("Llama", installed=True)
-    assert _row_cache_signature(local) == ("Llama", True)
+    assert row_cache_signature(local) == ("Llama", True)
 
 
 async def test_handle_worker_more_hf_in_list_view_appends_to_list() -> None:
@@ -283,7 +280,7 @@ def test_for_you_sort_key_orders_fit_levels_then_name() -> None:
     tight = _row("b-tight", fit=FitChip(level=FitLevel.TIGHT, headroom_gb=0.5))
     wont = _row("c-wont", fit=FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0))
     none = _row("d-none")
-    ordered = sorted([none, wont, tight, fits], key=_for_you_sort_key)
+    ordered = sorted([none, wont, tight, fits], key=for_you_sort_key)
     assert [r.name for r in ordered] == ["a-fits", "b-tight", "c-wont", "d-none"]
 
 
