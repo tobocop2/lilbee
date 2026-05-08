@@ -1177,7 +1177,11 @@ class TestAuthMiddleware:
         auth_mod.session_manager.token = "secret"
         try:
             handler = mock.MagicMock()
-            handler.fn._lilbee_read_only = True
+
+            @auth_mod.read_only
+            def _ro_route() -> None: ...
+
+            handler.fn = _ro_route
             scope = {"type": "http", "method": "GET", "headers": [], "route_handler": handler}
             await middleware(scope, AsyncMock(), AsyncMock())
             middleware.app.assert_awaited_once()
