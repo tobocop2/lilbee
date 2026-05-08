@@ -114,11 +114,11 @@ def _settings_gates_open():
     installed in the test environment."""
     with (
         patch(
-            "lilbee.cli.tui.screens.settings._litellm_installed",
+            "lilbee.providers.litellm_sdk.litellm_available",
             return_value=True,
         ),
         patch(
-            "lilbee.cli.tui.screens.settings._crawler_installed",
+            "lilbee.crawler.crawler_available",
             return_value=True,
         ),
     ):
