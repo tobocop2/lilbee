@@ -531,7 +531,12 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
         ]
         from lilbee.cli.tui.widgets.model_list import ModelList
 
-        ml = screen.query_one("#list-library", ModelList)
+        for _ in range(20):
+            try:
+                ml = screen.query_one("#list-library", ModelList)
+                break
+            except Exception:
+                await pilot.pause()
         for _ in range(20):
             screen._populate_library_list()
             await pilot.pause()

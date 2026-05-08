@@ -3744,12 +3744,14 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
             screen._activation_settled = True
             screen._hf_fetched = True
             screen._hf_has_more = False
-            screen._mount_grid_ctas(hf_count=12)
-            await _pilot.pause()
-            ctas = list(screen.query(".scroll-hint"))
-            assert any(
-                msg_module.CATALOG_GRID_ALL_LOADED.format(count=12) in str(c.render()) for c in ctas
-            )
+            wanted = msg_module.CATALOG_GRID_ALL_LOADED.format(count=12)
+            for _ in range(20):
+                screen._mount_grid_ctas(hf_count=12)
+                await _pilot.pause()
+                ctas = list(screen.query(".scroll-hint"))
+                if any(wanted in str(c.render()) for c in ctas):
+                    break
+            assert any(wanted in str(c.render()) for c in ctas)
 
 
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
@@ -11193,6 +11195,10 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
+            for _ in range(20):
+                if grid.children:
+                    break
+                await _pilot.pause()
             grid.highlighted = 0
             grid.focus()
             await _pilot.pause()
