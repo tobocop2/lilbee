@@ -6,7 +6,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Button, Static
 
 from conftest import (
@@ -3114,6 +3114,34 @@ class TestViewTabs:
             await pilot.pause()
             bar = app.query_one(ViewTabs)
             assert bar is not None
+
+    async def test_view_tab_on_click_invokes_switch_view(self) -> None:
+        """Clicking a ViewTab dispatches to the host's switch_view."""
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        app = _ViewTabsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tab = next(iter(app.query(ViewTab)))
+            with patch.object(app, "switch_view") as switch:
+                tab.on_click()
+                switch.assert_called_once_with(tab.view_name)
+
+    async def test_view_tab_action_activate_invokes_switch_view(self) -> None:
+        """The keyboard binding (Enter / Space) lands on the same dispatch."""
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        app = _ViewTabsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tab = next(iter(app.query(ViewTab)))
+            with patch.object(app, "switch_view") as switch:
+                tab.action_activate()
+                switch.assert_called_once_with(tab.view_name)
 
     async def test_default_active_view_is_chat(self) -> None:
         from lilbee.cli.tui.widgets.status_bar import ViewTabs

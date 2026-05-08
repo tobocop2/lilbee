@@ -251,6 +251,11 @@ class TestListCmd:
         assert "error" in data
         assert "bogus" in data["error"]
 
+    def test_invalid_task_raises_bad_param(self, fake_manager):
+        result = runner.invoke(app, ["model", "list", "--task", "bogus"])
+        assert result.exit_code != 0
+        assert "ModelTask" in result.output
+
 
 class TestShowModelData:
     def test_catalog_and_installed_merged(self, fake_manager, native_manifests):

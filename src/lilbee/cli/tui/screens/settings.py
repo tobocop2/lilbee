@@ -593,15 +593,6 @@ class SettingsScreen(Screen[None]):
         return defn.type(raw)
 
     @staticmethod
-    def _stringify_for_toml(parsed: object) -> str:
-        """Serialize a parsed value for the TOML settings store."""
-        if parsed is None:
-            return ""
-        if isinstance(parsed, list):
-            return "\n".join(parsed)
-        return str(parsed)
-
-    @staticmethod
     def _validate_regex_list(lines: list[str]) -> tuple[int, str] | None:
         """Return the 1-indexed line number and error for the first bad regex, or None."""
         for i, line in enumerate(lines, 1):

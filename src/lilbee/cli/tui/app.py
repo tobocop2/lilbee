@@ -302,8 +302,6 @@ class LilbeeApp(App[None]):
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         # settings.set_value persists into TOML, which only accepts strings.
-        # Mirror SettingsScreen._stringify_for_toml's contract: None -> "",
-        # list[str] -> newline-joined, everything else -> str().
         if normalized is None:
             persisted: str = ""
         elif isinstance(normalized, list):
