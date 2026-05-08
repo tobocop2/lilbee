@@ -100,10 +100,6 @@ class TestDoAddCancelCleanup:
         class _Cancelled(Exception):
             pass
 
-        # Stub sync to be a plain function so no coroutine is ever created.
-        def _stub_sync(*a, **kw):
-            raise _Cancelled("cancelled by user")
-
         def _run(coro):
             coro.close()
             raise _Cancelled("cancelled by user")

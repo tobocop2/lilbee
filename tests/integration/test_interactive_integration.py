@@ -150,8 +150,6 @@ def isolated_env(tmp_path, real_models):
     """Redirect config to temp dirs, configure real llama-cpp models."""
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
 
-    _chat_path, _embed_path = real_models
-
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
