@@ -740,31 +740,22 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp import log_dispatch, provider
 
-        prior_installed = log_dispatch._llama_log_installed
-        prior_callback = log_dispatch._llama_log_callback
-        prior_pending = dict(log_dispatch._llama_log_pending)
-        prior_pending_level = log_dispatch._llama_log_pending_level
-        log_dispatch._llama_log_installed = False
-        log_dispatch._llama_log_callback = None
-        log_dispatch._llama_log_pending.clear()
+        snap = log_dispatch._dispatcher.snapshot()
+        log_dispatch._dispatcher.reset()
         try:
             with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
                 provider.load_llama(models_dir / "test-model.gguf", mode="chat")
-                assert log_dispatch._llama_log_installed is True
+                assert log_dispatch._dispatcher.installed is True
                 mock_set.assert_called_once()
 
             with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
-                log_dispatch._llama_log_dispatch(2, b"init: embeddings required\n", None)
+                log_dispatch._dispatcher.dispatch(2, b"init: embeddings required\n", None)
             records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
             assert records, "no lilbee.llama_cpp records captured"
             assert records[-1].levelno == logging.INFO
             assert "embeddings required" in records[-1].message
         finally:
-            log_dispatch._llama_log_installed = prior_installed
-            log_dispatch._llama_log_callback = prior_callback
-            log_dispatch._llama_log_pending.clear()
-            log_dispatch._llama_log_pending.update(prior_pending)
-            log_dispatch._llama_log_pending_level = prior_pending_level
+            log_dispatch._dispatcher.restore(snap)
 
     def testllama_log_dispatch_promotes_errors(self) -> None:
         """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
@@ -772,21 +763,19 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp import log_dispatch
 
-        prior_pending = dict(log_dispatch._llama_log_pending)
-        prior_pending_level = log_dispatch._llama_log_pending_level
-        log_dispatch._llama_log_pending.clear()
+        snap = log_dispatch._dispatcher.snapshot()
+        log_dispatch._dispatcher.pending.clear()
+        log_dispatch._dispatcher.pending_level = 1  # _GGML_LOG_LEVEL_INFO
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
         handler.emit = records.append  # type: ignore[method-assign]
         logger.addHandler(handler)
         try:
-            log_dispatch._llama_log_dispatch(3, b"fatal: out of memory\n", None)
+            log_dispatch._dispatcher.dispatch(3, b"fatal: out of memory\n", None)
         finally:
             logger.removeHandler(handler)
-            log_dispatch._llama_log_pending.clear()
-            log_dispatch._llama_log_pending.update(prior_pending)
-            log_dispatch._llama_log_pending_level = prior_pending_level
+            log_dispatch._dispatcher.restore(snap)
         assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
 
     def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
@@ -795,9 +784,8 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp import log_dispatch
 
-        prior_pending = dict(log_dispatch._llama_log_pending)
-        prior_pending_level = log_dispatch._llama_log_pending_level
-        log_dispatch._llama_log_pending.clear()
+        snap = log_dispatch._dispatcher.snapshot()
+        log_dispatch._dispatcher.pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
@@ -807,29 +795,27 @@ class TestLlamaCppProvider:
         logger.setLevel(logging.DEBUG)
         try:
             # WARN starts a record
-            log_dispatch._llama_log_dispatch(2, b"loading model:", None)
+            log_dispatch._dispatcher.dispatch(2, b"loading model:", None)
             # CONT extends it (no newline yet -> still buffered)
-            log_dispatch._llama_log_dispatch(5, b" qwen3-0.6b", None)
+            log_dispatch._dispatcher.dispatch(5, b" qwen3-0.6b", None)
             assert records == []
             # CONT with newline -> flush
-            log_dispatch._llama_log_dispatch(5, b" Q4_K_M\n", None)
+            log_dispatch._dispatcher.dispatch(5, b" Q4_K_M\n", None)
             assert records, "newline should have flushed buffer"
             assert "loading model: qwen3-0.6b Q4_K_M" in records[-1].message
             records.clear()
 
             # Buffered chunk without newline; a new non-CONT message must
             # flush the prior buffer before starting fresh.
-            log_dispatch._llama_log_dispatch(2, b"first line", None)
-            log_dispatch._llama_log_dispatch(2, b"second line\n", None)
+            log_dispatch._dispatcher.dispatch(2, b"first line", None)
+            log_dispatch._dispatcher.dispatch(2, b"second line\n", None)
             messages = [r.message for r in records]
             assert "first line" in messages
             assert "second line" in messages
         finally:
             logger.removeHandler(handler)
             logger.setLevel(prior_level)
-            log_dispatch._llama_log_pending.clear()
-            log_dispatch._llama_log_pending.update(prior_pending)
-            log_dispatch._llama_log_pending_level = prior_pending_level
+            log_dispatch._dispatcher.restore(snap)
 
     def testllama_log_demotes_known_advisory_errors_to_warning(self) -> None:
         """Tokenizer / KV-cache advisories emit at GGML ERROR but aren't load failures."""
@@ -837,9 +823,8 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp import log_dispatch as prov
 
-        prior_pending = dict(prov._llama_log_pending)
-        prior_pending_level = prov._llama_log_pending_level
-        prov._llama_log_pending.clear()
+        snap = prov._dispatcher.snapshot()
+        prov._dispatcher.pending.clear()
         logger = logging.getLogger("lilbee.llama_cpp")
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
@@ -852,14 +837,12 @@ class TestLlamaCppProvider:
                 b"llama_context: n_ctx_seq (3072) > n_ctx_train (2048)\n",
             )
             for line in advisories:
-                prov._llama_log_dispatch(3, line, None)
+                prov._dispatcher.dispatch(3, line, None)
             for r in records:
                 assert r.levelno == logging.WARNING, f"advisory '{r.message}' kept at ERROR"
         finally:
             logger.removeHandler(handler)
-            prov._llama_log_pending.clear()
-            prov._llama_log_pending.update(prior_pending)
-            prov._llama_log_pending_level = prior_pending_level
+            prov._dispatcher.restore(snap)
 
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
