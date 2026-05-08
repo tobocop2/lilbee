@@ -22,11 +22,8 @@ from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
-from lilbee.cli.tui.widgets.task_bar import (
-    ProgressReporter,
-    TaskBarController,
-    TaskCancelledError,
-)
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+from lilbee.runtime.cancellation import TaskCancelledError
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

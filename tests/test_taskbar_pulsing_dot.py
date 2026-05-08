@@ -9,7 +9,8 @@ from textual.app import ComposeResult
 from textual.widgets import Label
 
 from lilbee.cli.tui.task_queue import TaskType
-from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

@@ -15,7 +15,7 @@ import pytest
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
-from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBarController
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 
 
 def _fake_model() -> CatalogModel:
@@ -607,7 +607,10 @@ async def test_start_crawl_submits_task_to_controller() -> None:
         screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         assert screen is not None
         with (
-            patch("lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True),
+            patch(
+                "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                return_value=True,
+            ),
             patch.object(app.task_bar, "start_task", return_value="tid") as mock_start,
         ):
             screen._start_crawl("https://x", 0, 5)

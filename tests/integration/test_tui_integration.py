@@ -29,7 +29,7 @@ class _IntegrationChatApp(LilbeeAppHost):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 

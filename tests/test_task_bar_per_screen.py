@@ -16,7 +16,8 @@ from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
-from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost
 

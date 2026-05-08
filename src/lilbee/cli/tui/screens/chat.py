@@ -39,7 +39,8 @@ from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
@@ -64,8 +65,7 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
+    from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
 
 _MAX_HISTORY_MESSAGES = 200

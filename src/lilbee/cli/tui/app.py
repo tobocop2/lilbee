@@ -178,7 +178,7 @@ class LilbeeApp(App[None]):
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 

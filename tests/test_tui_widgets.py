@@ -404,7 +404,7 @@ class TestHelpPanel:
 class _TaskBarApp(LilbeeAppHost):
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -545,7 +545,8 @@ class TestTaskBar:
 
     async def test_app_task_bar_ref(self) -> None:
         """TaskBarController is accessible via app.task_bar from other screens."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
@@ -4379,7 +4380,8 @@ class TestEnsureChromium:
         async with app.run_test() as pilot:
             await pilot.pause()
             with mock.patch(
-                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+                "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                return_value=True,
             ):
                 fired = _threading.Event()
                 app.task_bar.ensure_chromium(fired.set)
@@ -4402,7 +4404,8 @@ class TestEnsureChromium:
             on_ready = mock.Mock()
             with (
                 mock.patch(
-                    "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=False
+                    "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                    return_value=False,
                 ),
                 mock.patch.object(app.task_bar, "start_task") as mock_start,
             ):
@@ -4420,7 +4423,7 @@ class TestChromiumBootstrapTarget:
     def test_forwards_setup_progress_with_known_total(self) -> None:
         """With total_bytes set, the target formats 'chromium: N/M MB'."""
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets import task_bar
+        from lilbee.cli.tui.widgets import task_bar_controller
         from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupProgressEvent
 
         reporter = mock.MagicMock()
@@ -4453,8 +4456,8 @@ class TestChromiumBootstrapTarget:
                 ),
             )
 
-        with mock.patch.object(task_bar, "bootstrap_chromium", new=_fake_bootstrap):
-            task_bar._chromium_bootstrap_target(reporter)
+        with mock.patch.object(task_bar_controller, "bootstrap_chromium", new=_fake_bootstrap):
+            task_bar_controller._chromium_bootstrap_target(reporter)
 
         pct_detail_calls = [call.args for call in reporter.update.call_args_list]
         assert (25, msg.SETUP_CHROMIUM_DETAIL.format(done=10, total=40)) in pct_detail_calls
@@ -4489,7 +4492,7 @@ class TestTaskBarIndeterminate:
 
     async def test_controller_add_task_indeterminate(self) -> None:
         """TaskBarController.add_task passes indeterminate through to queue."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:

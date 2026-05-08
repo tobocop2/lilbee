@@ -2143,7 +2143,7 @@ class ChatTestApp(LilbeeAppHost):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -5677,7 +5677,7 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
     from unittest.mock import MagicMock
 
     from lilbee.cli.tui.screens.chat import _build_add_progress_callback
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EmbedEvent, EventType
 
     reporter = MagicMock(spec=ProgressReporter)
@@ -5700,7 +5700,7 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
     from unittest.mock import MagicMock
 
     from lilbee.cli.tui.screens.chat import _build_sync_progress_callback
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EventType, ExtractEvent
 
     reporter = MagicMock(spec=ProgressReporter)
@@ -5727,7 +5727,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     from unittest.mock import MagicMock
 
     from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.ingest import SyncResult
     from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
 
@@ -5785,7 +5785,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
     """
     import threading
 
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.ingest import SyncResult
 
     app = ChatTestApp()
@@ -9230,7 +9230,7 @@ class TaskCenterTestApp(LilbeeAppHost):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -10333,7 +10333,7 @@ async def test_task_bar_indeterminate_flag_propagated():
     class _Harness(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+            from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
             self.task_bar = TaskBarController(self)
 
@@ -10370,7 +10370,7 @@ def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
         def __init__(self) -> None:
             super().__init__()
             if with_task_bar:
-                from lilbee.cli.tui.widgets.task_bar import TaskBarController
+                from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
                 self.task_bar = TaskBarController(self)
 

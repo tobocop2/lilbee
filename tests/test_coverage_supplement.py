@@ -282,7 +282,7 @@ class TestTaskCenterOnHide:
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.task_center import TaskCenter
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         class _Probe(LilbeeAppHost):
             def __init__(self) -> None:
