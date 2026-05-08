@@ -1205,7 +1205,6 @@ class TestCatalogInteractions:
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1225,7 +1224,7 @@ class TestCatalogInteractions:
                 search.value = "test"
                 await search.action_submit()
                 await pilot.pause()
-                grid = app.screen.query_one(ModelGrid)
+                grid = app.screen.query("#grid-chat ModelGrid").first()
                 assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
@@ -2923,7 +2922,6 @@ class TestCatalogGridFocus:
     async def test_grid_focus_auto_highlights_first_card(self, _mock_resolve):
         """A focused ModelGrid must auto-highlight a card so users see Tab feedback."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -2932,15 +2930,9 @@ class TestCatalogGridFocus:
                 app.switch_view("Catalog")
                 for _ in range(20):
                     await pilot.pause()
-                    if app.screen.query(ModelGrid):
+                    if app.screen.query("#grid-chat ModelGrid"):
                         break
-                grid = app.screen.query(ModelGrid).first()
-                # Simulate the state after Tab moves focus away then back: clear
-                # highlight, blur, then focus and assert the on_focus auto-highlight.
-                # The catalog's focus-restore can re-focus the grid asynchronously
-                # on slow runners, so the precondition (highlighted is None after
-                # blur) isn't guaranteed; the assertion that matters is what
-                # happens AFTER the explicit grid.focus() call.
+                grid = app.screen.query("#grid-chat ModelGrid").first()
                 grid.highlighted = None
                 app.set_focus(None)
                 await pilot.pause()

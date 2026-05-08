@@ -10600,7 +10600,6 @@ async def test_catalog_search_submit_installs_first_visible_match():
     from unittest.mock import patch
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -10611,8 +10610,8 @@ async def test_catalog_search_submit_installs_first_visible_match():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            grids = list(screen.query(ModelGrid))
-            assert grids, "catalog should mount at least one ModelGrid"
+            grids = list(screen.query("#grid-chat ModelGrid"))
+            assert grids, "chat grid should mount at least one ModelGrid"
             grid = grids[0]
             assert len(grid.rows) >= 2
             # ModelGrid filters at the dataset level: set_rows replaces

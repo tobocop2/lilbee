@@ -458,10 +458,10 @@ class CatalogScreen(Screen[None]):
         )
 
     def _focus_first_grid(self) -> None:
-        """Focus the first grid widget (ModelGrid in grid view) if any."""
+        """Focus the first grid widget in the active tab's container."""
         for cls in (ModelGrid, GridSelect):
             with contextlib.suppress(Exception):
-                self.query_one(cls).focus()
+                self._grid_container.query(cls).first().focus()
                 return
 
     def _initial_focus_first_grid(self) -> None:
@@ -574,7 +574,7 @@ class CatalogScreen(Screen[None]):
         """Enter installs the first visible match; falls through to a remote
         HF search when nothing matches locally."""
         if self._grid_view:
-            if any(grid.rows for grid in self.query(ModelGrid)):
+            if any(grid.rows for grid in self._grid_container.query(ModelGrid)):
                 self._select_first_visible_grid_card()
                 return
         elif self._list_widget.option_count:
@@ -607,7 +607,7 @@ class CatalogScreen(Screen[None]):
         install fires on what the user can actually see.
         """
         with contextlib.suppress(Exception):
-            for grid in self.query(ModelGrid):
+            for grid in self._grid_container.query(ModelGrid):
                 if grid.rows:
                     grid.focus()
                     grid.highlighted = 0
@@ -790,33 +790,70 @@ class CatalogScreen(Screen[None]):
         return True
 
     def _populate_library_list(self) -> None:
-        """Render the Library tab: installed local + activated cloud APIs.
+        """Render the Library tab: installed local + activated cloud APIs in both views."""
+        try:
+            search = self._get_search_text()
+            installed_rows = [r for r in self._all_family_rows() if r.installed]
+            installed_rows.extend(r for r in self._all_hf_rows() if r.installed)
+            installed_rows.extend(r for r in self._all_remote_rows() if r.installed)
+            if search:
+                installed_rows = [r for r in installed_rows if matches_search(r, search)]
+            frontier = self._build_frontier_rows(search)
+        except Exception:
+            return
+        self._render_library_list(installed_rows, frontier)
+        self._render_library_grid(installed_rows, frontier)
 
-        Library is the personal-encyclopedia view: every model the user
-        has on disk plus every cloud provider they've activated. Static
-        in compose (no dynamic add_pane choreography). The ModelList
-        lookup is memoized via ``_list_for_tab``.
-        """
+    def _render_library_list(
+        self,
+        installed_rows: list[LocalCatalogRow],
+        frontier: list[FrontierCatalogRow],
+    ) -> None:
         try:
             ml = self._list_for_tab(TAB_LIBRARY)
         except Exception:
             return
-        search = self._get_search_text()
-        # Installed local rows: surface every variant/HF model the user
-        # has pulled. Filter both source caches by .installed so the
-        # Library reads as 'what I own', not 'what's available'.
-        installed_rows = [r for r in self._all_family_rows() if r.installed]
-        installed_rows.extend(r for r in self._all_hf_rows() if r.installed)
-        installed_rows.extend(r for r in self._all_remote_rows() if r.installed)
-        if search:
-            installed_rows = [r for r in installed_rows if matches_search(r, search)]
         sections: list[ModelListSection] = []
         if installed_rows:
             sections.append(
                 ModelListSection(heading=msg.HEADING_INSTALLED, rows=list(installed_rows))
             )
-        sections.extend(_group_frontier_rows(self._build_frontier_rows(search)))
+        sections.extend(_group_frontier_rows(frontier))
         ml.set_rows(sections)
+
+    def _render_library_grid(
+        self,
+        installed_rows: list[LocalCatalogRow],
+        frontier: list[FrontierCatalogRow],
+    ) -> None:
+        try:
+            container = self._grid_for_tab(TAB_LIBRARY)
+        except Exception:
+            return
+        sections: list[GridSection] = []
+        if installed_rows:
+            sections.append(GridSection(heading=msg.HEADING_INSTALLED, rows=list(installed_rows)))
+        if frontier:
+            sections.append(GridSection(heading="Cloud", rows=list(frontier)))
+        existing_grids = list(container.query(ModelGrid))
+        existing_headings = [
+            w for w in container.query(".section-heading") if isinstance(w, Static)
+        ]
+        if existing_grids and len(existing_grids) == len(sections):
+            for grid, heading, section in zip(
+                existing_grids, existing_headings, sections, strict=False
+            ):
+                heading.update(section.heading)
+                grid.set_rows(section.rows)
+            return
+        container.remove_children()
+        for section in sections:
+            container.mount_all(
+                [
+                    Static(section.heading, classes="section-heading"),
+                    ModelGrid(section.rows, name=section.heading, classes="catalog-section"),
+                ]
+            )
 
     def _get_search_text(self) -> str:
         # Deferred refresh callbacks can land while the screen is between
@@ -1259,13 +1296,7 @@ class CatalogScreen(Screen[None]):
         self.action_select_tab(index)
 
     def action_select_tab(self, index: int) -> None:
-        """Activate the tab at *index* in ALL_TAB_IDS (0..5).
-
-        Bound to numeric keys 1-6. Out-of-range index is a no-op so a
-        future shortcut press doesn't crash if ALL_TAB_IDS shrinks.
-        Skipped if focus is in the search Input so digits typed into the
-        filter aren't swallowed as tab jumps.
-        """
+        """Activate the tab at *index* in ALL_TAB_IDS (0..5)."""
         from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
 
         if isinstance(self.focused, Input):
@@ -1279,6 +1310,8 @@ class CatalogScreen(Screen[None]):
             return
         if tabs.active != target:
             tabs.active = target
+        self._active_tab_id_cache = target
+        self.set_focus(None)
 
     def action_cycle_source(self) -> None:
         """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.
@@ -1581,8 +1614,6 @@ class CatalogScreen(Screen[None]):
         per-render overhead stays constant regardless of tab count.
         """
         new_tab = event.pane.id or TAB_CHAT
-        # Suppress cache updates from the initial-mount race so the cache
-        # stays at its TAB_CHAT default until _activate_initial_tab settles.
         if not self._activation_settled:
             return
         self._active_tab_id_cache = new_tab
@@ -1977,16 +2008,11 @@ class CatalogScreen(Screen[None]):
             self._nudge_list(-1)
 
     def _first_grid_or_none(self) -> ModelGrid | None:
-        """Return the first ModelGrid mounted on the screen, or None.
-
-        Lets ``cursor_down`` / ``cursor_up`` proceed even when nothing
-        is focused yet (e.g. the user pressed an arrow before focus
-        landed on a grid after a cold catalog mount).
-        """
+        """Return the first ModelGrid in the active tab's container, or None."""
         from textual.css.query import NoMatches
 
         try:
-            return self.query_one(ModelGrid)
+            return self._grid_container.query(ModelGrid).first()
         except NoMatches:
             return None
 

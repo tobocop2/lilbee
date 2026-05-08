@@ -252,11 +252,11 @@ async def test_search_submit_falls_through_to_hf_search_when_no_matches() -> Non
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        # Stub the grid query so _on_search_submitted's "any grid has rows"
-        # check sees no grids; without this stub the screen's mounted
-        # Discover rails / per-tab grids may have rows that trigger the
-        # _select_first_visible_grid_card early-return on slower CI runners.
-        screen.query = lambda *args, **kwargs: []  # type: ignore[method-assign]
+        from unittest.mock import MagicMock
+
+        empty_container = MagicMock()
+        empty_container.query.return_value = []
+        screen._grid_for_tab = lambda *_args, **_kw: empty_container  # type: ignore[method-assign]
         inp = screen.query_one("#catalog-search", _Input)
         inp.value = "qwen3-nonexistent"
         with patch.object(screen, "_trigger_remote_search") as mock_trigger:
@@ -877,3 +877,60 @@ async def test_populate_library_list_renders_combined_rows() -> None:
 
         ml = screen.query_one("#list-library", ModelList)
         assert ml.option_count > 0
+
+
+async def test_library_grid_renders_installed_rows() -> None:
+    """Library tab grid view shows installed rows, not just the list view."""
+    from textual.containers import VerticalScroll
+
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        installed = _row("Llama 3 8B", installed=True)
+        screen._all_family_rows = lambda: [installed]  # type: ignore[method-assign]
+        screen._all_hf_rows = lambda: []  # type: ignore[method-assign]
+        screen._all_remote_rows = lambda: []  # type: ignore[method-assign]
+        screen._frontier_rows = []
+        screen._populate_library_list()
+        await pilot.pause()
+        container = screen.query_one("#grid-library", VerticalScroll)
+        grids = list(container.query(ModelGrid))
+        assert grids
+        assert any(installed in g.rows for g in grids)
+
+
+async def test_action_select_tab_does_not_revert_after_focus_loss() -> None:
+    """Pressing 6 (Library) must keep the active tab on Library, never auto-revert."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen.action_select_tab(5)
+        for _ in range(5):
+            await pilot.pause()
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        assert tabs.active == "library"
+        assert screen._active_tab_id_cache == "library"
+
+
+async def test_action_cursor_down_stays_on_active_tab() -> None:
+    """Down on Chat must focus a chat-tab grid, not bounce to Discover rails."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen.action_select_tab(1)
+        for _ in range(5):
+            await pilot.pause()
+        screen.action_cursor_down()
+        await pilot.pause()
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        assert tabs.active == "chat"
+        focused = screen.focused
+        if isinstance(focused, ModelGrid):
+            assert any(focused is g for g in screen.query("#grid-chat ModelGrid"))
