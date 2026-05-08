@@ -193,7 +193,7 @@ class LlamaCppProvider(LLMProvider):
         runtime = self._pool_runtime()
         try:
             result = runtime.run_sync(
-                accessor.call("embed", texts, timeout=cfg.worker_pool_call_timeout_s),
+                accessor.call(WireKind.EMBED, texts, timeout=cfg.worker_pool_call_timeout_s),
                 timeout=cfg.worker_pool_call_timeout_s,
             )
             if not isinstance(result, list):
@@ -225,7 +225,7 @@ class LlamaCppProvider(LLMProvider):
         try:
             result = runtime.run_sync(
                 accessor.call(
-                    "rerank",
+                    WireKind.RERANK,
                     RerankPayload(query=query, candidates=candidates),
                     timeout=cfg.worker_pool_call_timeout_s,
                 ),
@@ -265,7 +265,7 @@ class LlamaCppProvider(LLMProvider):
         request = VisionRequest(png_bytes=png_bytes, prompt=prompt, model=model or None)
         try:
             result = runtime.run_sync(
-                accessor.call("vision_ocr", request, timeout=budget),
+                accessor.call(WireKind.VISION, request, timeout=budget),
                 timeout=budget,
             )
             if not isinstance(result, str):
@@ -394,11 +394,11 @@ class LlamaCppProvider(LLMProvider):
             return _PoolChatStreamIterator(
                 runtime=runtime,
                 accessor=accessor,
-                async_iter=accessor.stream("chat", request),
+                async_iter=accessor.stream(WireKind.CHAT, request),
             )
         try:
             result = runtime.run_sync(
-                accessor.call("chat", request, timeout=cfg.worker_pool_call_timeout_s),
+                accessor.call(WireKind.CHAT, request, timeout=cfg.worker_pool_call_timeout_s),
                 timeout=cfg.worker_pool_call_timeout_s,
             )
             if not isinstance(result, str):

@@ -90,7 +90,7 @@ def _deserialize_exception(payload: _SerializedException) -> WorkerError:
     return WorkerError(payload.type_name, payload.message, payload.traceback_str)
 
 
-def _check_pickle_size(payload: Any, kind: str, call_id: int) -> None:
+def _check_pickle_size(payload: Any, kind: WireKind, call_id: int) -> None:
     """Raise ``ValueError`` early if *payload* would exceed the pipe send cap."""
     try:
         size = len(pickle.dumps((call_id, kind, payload)))
@@ -194,7 +194,7 @@ class PipeChannel:
     def _crash(self) -> WorkerCrashError:
         return WorkerCrashError(self._role, log_path=_worker_log_path(self._role))
 
-    async def _send(self, call_id: int, kind: str, payload: Any) -> None:
+    async def _send(self, call_id: int, kind: WireKind, payload: Any) -> None:
         """Pickle-pre-check + thread-bounded ``conn.send`` under the send lock."""
         _check_pickle_size(payload, kind, call_id)
         loop = asyncio.get_running_loop()
@@ -211,7 +211,7 @@ class PipeChannel:
         with self._recv_thread_lock:
             return self._conn.recv()
 
-    async def _recv(self) -> tuple[int, str, Any]:
+    async def _recv(self) -> tuple[int, WireKind, Any]:
         """Thread-bounded ``conn.recv`` under the recv lock; raises on EOF/crash."""
         loop = asyncio.get_running_loop()
         async with self._recv_lock:
@@ -220,7 +220,7 @@ class PipeChannel:
             except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
                 raise self._crash() from exc
 
-    async def _recv_for(self, expected_call_id: int) -> tuple[str, Any]:
+    async def _recv_for(self, expected_call_id: int) -> tuple[WireKind, Any]:
         """Read frames until one matches *expected_call_id*; drain stale ones."""
         while True:
             call_id, kind, value = await self._recv()
@@ -234,7 +234,7 @@ class PipeChannel:
                 expected_call_id,
             )
 
-    async def call(self, kind: str, payload: Any, *, timeout: float) -> Any:
+    async def call(self, kind: WireKind, payload: Any, *, timeout: float) -> Any:
         """Send one request, await one reply on the data pipe.
 
         Frames carry a per-call id; leftover frames from a cancelled prior
@@ -258,7 +258,7 @@ class PipeChannel:
         finally:
             self._bump_in_flight(-1)
 
-    async def stream(self, kind: str, payload: Any) -> AsyncIterator[Any]:
+    async def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
         """Send one request, yield streamed chunks on the data pipe."""
         self._ensure_open()
         call_id = self._next_call_id()

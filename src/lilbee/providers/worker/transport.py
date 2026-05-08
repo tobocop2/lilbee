@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from lilbee.providers.worker.wire_kinds import WireKind
+
 OcrBackend = Literal["vision"]
 """Backends supported by the PDF-OCR worker. Tesseract runs inline, not pooled."""
 
@@ -167,11 +169,11 @@ class WorkerChannel(Protocol):
         """
         ...
 
-    def call(self, kind: str, payload: Any, *, timeout: float) -> Awaitable[Any]:
+    def call(self, kind: WireKind, payload: Any, *, timeout: float) -> Awaitable[Any]:
         """Send one request, await one reply. Raises on worker error or timeout."""
         ...
 
-    def stream(self, kind: str, payload: Any) -> AsyncIterator[Any]:
+    def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
         """Send one request, yield streamed chunks until the worker terminates the stream."""
         ...
 

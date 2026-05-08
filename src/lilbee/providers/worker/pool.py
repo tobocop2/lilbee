@@ -29,6 +29,7 @@ from lilbee.providers.worker.transport_pipe import (
     WorkerCrashError,
     WorkerError,
 )
+from lilbee.providers.worker.wire_kinds import WireKind
 
 if TYPE_CHECKING:
     # circular: health_ticker -> pool via WorkerPool/PoolRuntime
@@ -105,7 +106,7 @@ class RoleAccessor:
 
     async def call(
         self,
-        kind: str,
+        kind: WireKind,
         payload: object,
         *,
         timeout: float = _DEFAULT_CALL_TIMEOUT_S,
@@ -120,7 +121,7 @@ class RoleAccessor:
         self._pool._stamp_used(self._role)
         return result
 
-    def stream(self, kind: str, payload: object) -> object:
+    def stream(self, kind: WireKind, payload: object) -> object:
         """Lazy-spawn (synchronously async) and return the channel's async iterator.
 
         The returned object is the ``stream`` async iterator from the
@@ -164,7 +165,7 @@ class RoleAccessor:
 async def _spawn_and_stream(
     pool: WorkerPool,
     role: str,
-    kind: str,
+    kind: WireKind,
     payload: object,
 ) -> AsyncIterator[object]:
     """Async generator that spawns the worker on first iteration, then streams."""

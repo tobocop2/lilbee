@@ -64,7 +64,7 @@ class Reply:
         self._conn = conn
         self._call_id = call_id
 
-    def send(self, kind: str, payload: Any) -> None:
+    def send(self, kind: WireKind, payload: Any) -> None:
         """Send one response frame tagged with this Reply's call_id."""
         self._conn.send((self._call_id, kind, payload))
 
@@ -95,7 +95,7 @@ def run_worker(
     role_config: RoleConfig,
     *,
     session_factory: Callable[[RoleConfig, Any], Any],
-    kind_handlers: dict[str, KindHandler],
+    kind_handlers: dict[WireKind, KindHandler],
 ) -> None:
     """Bootstrap stdio + logging, then run the recv loop until shutdown.
 
@@ -158,7 +158,7 @@ def _heartbeat_loop(health_conn: Any, role: str) -> None:
 def _handle_data_frame(
     data_conn: Any,
     state: WorkerLoopState,
-    kind_handlers: dict[str, KindHandler],
+    kind_handlers: dict[WireKind, KindHandler],
     role: str,
 ) -> bool:
     """Read and dispatch one data-pipe frame. Return False to stop the loop."""
