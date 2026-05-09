@@ -86,8 +86,8 @@ class TaskBar(Static):
         # this, a screen push/pop cycle leaves the previous TaskBar's
         # interval firing against a detached widget, racing with the new
         # TaskBar and occasionally setting ``display=False`` on the live
-        # instance (bb-3uzp). Start at the idle cadence; the first tick
-        # re-arms at 10 Hz if work is already in flight.
+        # instance. Start at the idle cadence; the first tick re-arms at
+        # 10 Hz if work is already in flight.
         self._interval = self.set_interval(_POLL_INTERVAL_IDLE_S, self._tick)
 
     def on_unmount(self) -> None:
