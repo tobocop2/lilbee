@@ -802,14 +802,17 @@ async def test_catalog_cycle_tab_unknown_active_starts_from_zero():
 
     screen = CatalogScreen.__new__(CatalogScreen)
     screen._active_tab_id_cache = "not-a-real-tab-id"
-    # ``_search_focused`` is a property; bypass with a raw attribute.
-    type(screen)._search_focused = property(lambda self: False)
-    try:
-        with patch.object(CatalogScreen, "action_select_tab") as mock_select:
-            CatalogScreen.action_cycle_tab(screen, 1)
-        mock_select.assert_called_with(1)
-    finally:
-        del type(screen)._search_focused
+    with (
+        patch.object(
+            CatalogScreen,
+            "_search_focused",
+            new_callable=PropertyMock,
+            return_value=False,
+        ),
+        patch.object(CatalogScreen, "action_select_tab") as mock_select,
+    ):
+        CatalogScreen.action_cycle_tab(screen, 1)
+    mock_select.assert_called_with(1)
 
 
 async def test_settings_cycle_pane_handles_missing_tabs():
