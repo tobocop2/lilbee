@@ -379,7 +379,7 @@ class LilbeeApp(App[None]):
         else:
             self.action_show_help_panel()
 
-    async def action_command_palette(self) -> None:
+    def action_command_palette(self) -> None:
         """Ctrl+P: cycle the chat completion dropdown if visible, else open palette.
 
         The chat screen's slash-command dropdown reuses Ctrl+P for vim-style
@@ -399,7 +399,7 @@ class LilbeeApp(App[None]):
             if overlay is not None and overlay.is_visible:
                 overlay.cycle_prev()
                 return
-        await super().action_command_palette()
+        super().action_command_palette()
 
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.
