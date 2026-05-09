@@ -122,6 +122,12 @@ class LilbeeApp(App[None]):
     TITLE = "lilbee"
     CSS_PATH = Path(__file__).parent / "app.tcss"
     ENABLE_COMMAND_PALETTE = True
+    # Move the command palette off Ctrl+P so the chat screen's vim-style
+    # ``ctrl+p`` binding (cycle dropdown highlight backward) wins. Ctrl+\ is
+    # the classic alternative; Ctrl+P alone in the chat is far more useful
+    # for completion-prev than for the palette, which most users reach via
+    # the slash-command catalog (F2) or the keybinding panel (F1).
+    COMMAND_PALETTE_BINDING = "ctrl+backslash"
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     _NAV_GROUP = Binding.Group("Navigate")

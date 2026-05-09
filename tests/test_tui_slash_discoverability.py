@@ -619,6 +619,103 @@ class TestDiscoveryBindingsAsync:
         assert ctrl_p.action == "complete_prev"
 
 
+class TestDropdownNavigationAsync:
+    """Ctrl+N / Ctrl+P / Down / Up cycle the visible dropdown without
+    disturbing the input value or collapsing the option list."""
+
+    async def test_ctrl_n_moves_highlight_without_touching_input(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            first = overlay.get_current()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            second = overlay.get_current()
+            # Input is untouched; highlight moved to the next option;
+            # dropdown stays open with the same option list.
+            assert inp.value == "/"
+            assert overlay.is_visible
+            assert second != first
+
+    async def test_ctrl_p_moves_highlight_back(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            first = overlay.get_current()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            assert overlay.get_current() == first
+            assert inp.value == "/"
+            assert overlay.is_visible
+
+    async def test_down_navigates_dropdown_when_visible(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            first = overlay.get_current()
+            await pilot.press("down")
+            await pilot.pause()
+            assert overlay.get_current() != first
+            assert inp.value == "/"
+            assert overlay.is_visible
+
+    async def test_up_navigates_dropdown_when_visible(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            mid = overlay.get_current()
+            await pilot.press("up")
+            await pilot.pause()
+            assert overlay.get_current() != mid
+            assert inp.value == "/"
+            assert overlay.is_visible
+
+
 class TestEnterAcceptsHighlightAsync:
     """Pressing Enter on a visible dropdown must accept the highlighted command."""
 

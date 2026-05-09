@@ -1294,9 +1294,20 @@ class ChatScreen(Screen[None]):
         inp.insert("\t")
 
     def action_complete_next(self) -> None:
-        """Ctrl+N: show completions or cycle forward."""
+        """Ctrl+N: move highlight DOWN in the visible dropdown.
+
+        Highlight-only navigation (vim ``<C-n>`` semantics): does not change
+        the input value, so the dropdown's options/index stay stable across
+        repeated presses. If no dropdown is open, fall through to the
+        original Tab-style "show + insert" behavior so Ctrl+N still works
+        as a one-key trigger from a bare slash.
+        """
         inp = self._chat_input
         if not inp.has_focus:
+            return
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
             return
         self._cycle_completion_forward(inp)
 
@@ -1332,18 +1343,17 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Ctrl+P: cycle backward through completions."""
+        """Ctrl+P: move highlight UP in the visible dropdown.
+
+        Highlight-only navigation (vim ``<C-p>`` semantics). Mirror of
+        :meth:`action_complete_next`.
+        """
         overlay = self._completion_overlay
         inp = self._chat_input
-
+        if not inp.has_focus:
+            return
         if overlay.is_visible:
-            selection = overlay.cycle_prev()
-            if selection:
-                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
-                self._completing = True
-                inp.value = cmd_prefix + selection
-                self._completing = False
-                inp.action_end()
+            overlay.cycle_prev()
             return
 
         options = get_completions(inp.value)
@@ -1361,11 +1371,19 @@ class ChatScreen(Screen[None]):
             self._completing = False
 
     def action_history_prev(self) -> None:
-        """Up arrow: recall previous input history entry."""
+        """Up arrow: cycle the dropdown if visible, else recall previous history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or not self._input_history:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Up navigates the dropdown
+        # (vim/Emacs-style) rather than recalling history.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_prev()
+            return
+        if not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
             self._history_index = len(self._input_history) - 1
@@ -1377,11 +1395,18 @@ class ChatScreen(Screen[None]):
         inp.action_end()
 
     def action_history_next(self) -> None:
-        """Down arrow: recall next input history entry."""
+        """Down arrow: cycle the dropdown if visible, else recall next history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or self._history_index == -1:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Down navigates the dropdown.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
+            return
+        if self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
             self._history_index += 1
