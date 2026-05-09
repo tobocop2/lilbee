@@ -6658,9 +6658,7 @@ async def test_action_command_palette_falls_through_when_overlay_missing():
         # native palette behaviour.
         with (
             patch.object(app.screen, "query_one", side_effect=NoMatches("test")),
-            patch.object(
-                LilbeeApp.__bases__[0], "action_command_palette"
-            ) as super_palette,
+            patch.object(LilbeeApp.__bases__[0], "action_command_palette") as super_palette,
         ):
             _ = Static  # silence "imported but unused"
             app.action_command_palette()
