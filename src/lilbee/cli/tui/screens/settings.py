@@ -173,9 +173,16 @@ class SettingsScreen(Screen[None]):
                 self._eagerly_populate = pane_id
 
     def on_mount(self) -> None:
-        """Populate the active pane's body so first paint shows content."""
+        """Defer first-pane content mount until after the screen has painted.
+
+        ``_populate_pane`` calls ``mount_all`` for ~25 editor widgets which
+        triggers a full Textual layout pass; running it inside ``on_mount``
+        adds that pass to the screen-switch latency budget. ``call_after_refresh``
+        moves it to the next event-loop tick so the user sees the empty pane
+        skeleton immediately and the rows hydrate one frame later.
+        """
         if self._eagerly_populate is not None:
-            self._populate_pane(self._eagerly_populate)
+            self.call_after_refresh(self._populate_pane, self._eagerly_populate)
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:

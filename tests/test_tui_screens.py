@@ -711,6 +711,59 @@ async def test_settings_persist_on_change():
         assert cfg.top_k == 20
 
 
+async def test_settings_first_pane_populate_is_deferred():
+    """The first-pane content build must be queued via call_after_refresh,
+    not invoked from on_mount. Running mount_all for ~25 editor widgets
+    inline with on_mount adds the layout pass to the screen-switch latency
+    budget; deferring lets the screen paint empty first.
+
+    Uses a stub instead of the eager test fixture because the fixture's
+    ``populate_all_panes`` would itself call ``_populate_pane`` and mask
+    the production code path under inspection.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._eagerly_populate = "settings-tab-models"
+    with (
+        patch.object(SettingsScreen, "_populate_pane") as mock_populate,
+        patch.object(SettingsScreen, "call_after_refresh", MagicMock()) as mock_defer,
+    ):
+        SettingsScreen.on_mount(screen)
+        assert not mock_populate.called, (
+            "on_mount must defer first-pane populate via call_after_refresh"
+        )
+        mock_defer.assert_called_once()
+        args = mock_defer.call_args.args
+        assert args[1] == "settings-tab-models"
+
+
+async def test_settings_pane_body_owns_horizontal_padding():
+    """Padding on the inner pane VerticalScroll (not the outer Container)
+    keeps column 0 stable on rapid wheel-up; putting padding on the
+    Container leaked stale glyphs into the leftmost column when the
+    inner scroll repainted (filed bug bb-...-tear)."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import TabbedContent
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        # Outer Container must NOT carry left/right padding any more.
+        outer = app.screen.query_one("#settings-scroll")
+        assert outer.styles.padding.left == 0
+        assert outer.styles.padding.right == 0
+        # Each pane body's VerticalScroll owns the 1-char gutter instead.
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        for pane in tabs.query("TabPane"):
+            body = pane.query(VerticalScroll).first()
+            assert body.styles.padding.left == 1, (
+                f"{pane.id} body lost left padding; column-0 tear will return"
+            )
+            assert body.styles.padding.right == 1
+
+
 async def test_settings_outer_container_does_not_double_scroll():
     """bb-e1e2: Settings tearing on Wiki tab scroll-up was caused by two
     VerticalScrolls on the same column (outer #settings-scroll wrapping

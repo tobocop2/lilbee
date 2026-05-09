@@ -3,7 +3,6 @@ SettingsScreen {
     #settings-scroll {
         height: 1fr;
         min-height: 0;
-        padding: 0 1;
     }
 
     #settings-tabs {
@@ -21,6 +20,17 @@ SettingsScreen {
     #settings-tabs TabPane {
         height: 1fr;
         min-height: 0;
+    }
+
+    /* Pane body owns its own horizontal padding so column 0 of the inner
+     * VerticalScroll always paints from the screen edge. Putting the
+     * padding on the outer Container instead (#settings-scroll) interacted
+     * badly with the inner scroll on rapid wheel-up: the compositor
+     * leaked stale glyphs into column 0 because the outer's padding box
+     * and the inner's scroll viewport disagreed about where row 0 starts.
+     */
+    #settings-tabs TabPane > VerticalScroll {
+        padding: 0 1;
     }
 
     /* Settings sub-tabs adopt the same look as the top ViewTabs strip:
