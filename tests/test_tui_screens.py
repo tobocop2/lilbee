@@ -791,20 +791,25 @@ async def test_catalog_cycle_tab_skipped_while_search_focused():
 
 
 async def test_catalog_cycle_tab_unknown_active_starts_from_zero():
-    """If _active_tab_id_cache is not in ALL_TAB_IDS, cycle starts at 0."""
+    """If _active_tab_id_cache is not in ALL_TAB_IDS, cycle starts at 0.
+
+    Constructs a bare CatalogScreen via ``__new__`` instead of running
+    inside an app: with a real app the bogus tab id propagates through
+    on_worker_state_changed -> _refresh_grid -> _grid_for_tab and
+    the framework explodes before action_cycle_tab even runs.
+    """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._activation_settled = True
-            screen._active_tab_id_cache = "not-a-real-tab-id"
-            with patch.object(screen, "action_select_tab") as mock_select:
-                screen.action_cycle_tab(1)
-                mock_select.assert_called_with(1)
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._active_tab_id_cache = "not-a-real-tab-id"
+    # ``_search_focused`` is a property; bypass with a raw attribute.
+    type(screen)._search_focused = property(lambda self: False)
+    try:
+        with patch.object(CatalogScreen, "action_select_tab") as mock_select:
+            CatalogScreen.action_cycle_tab(screen, 1)
+        mock_select.assert_called_with(1)
+    finally:
+        del type(screen)._search_focused
 
 
 async def test_settings_cycle_pane_handles_missing_tabs():

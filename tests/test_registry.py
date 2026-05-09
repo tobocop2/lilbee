@@ -461,12 +461,14 @@ class TestModelRegistryGCBlobPathGuard:
         from lilbee.modelhub import registry as registry_mod
 
         registry = ModelRegistry(tmp_path)
-        with caplog.at_level(logging.WARNING, logger=registry_mod.__name__), mock.patch(
-            "lilbee.modelhub.registry.validate_path_within",
-            side_effect=ValueError("outside root"),
+        with (
+            caplog.at_level(logging.WARNING, logger=registry_mod.__name__),
+            mock.patch(
+                "lilbee.modelhub.registry.validate_path_within",
+                side_effect=ValueError("outside root"),
+            ),
         ):
             registry._gc_blob(_REPO, "deadbeef")
         assert any(
-            "Refusing to remove cache outside models_dir" in r.message
-            for r in caplog.records
+            "Refusing to remove cache outside models_dir" in r.message for r in caplog.records
         )
