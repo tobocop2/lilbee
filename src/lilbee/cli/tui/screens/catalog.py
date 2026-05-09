@@ -1848,12 +1848,11 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _row_is_installed(self, model_name: str) -> bool:
-        """Match a catalog row's identity against the installed set.
+        """True if *model_name* names an installed native or remote model.
 
-        Catalog rows store ``ref`` as either the bare hf_repo (HF browse
-        and featured rows) or the canonical full ref (Library entries),
-        and remote rows carry the SDK-side bare name. The native cache
-        already holds both ref shapes; remote presence is asked of the
+        ``_installed_names`` carries both the full ``<repo>/<file>.gguf``
+        ref and the bare ``hf_repo`` for every installed native model,
+        so it answers either ref shape; remote presence is asked of the
         manager directly.
         """
         if model_name in self._installed_names:
@@ -1861,15 +1860,12 @@ class CatalogScreen(Screen[None]):
         return get_services().model_manager.is_installed(model_name, ModelSource.REMOTE)
 
     def _resolve_delete_ref(self, identity: str) -> str:
-        """Resolve a catalog row's identity to the single ref to delete.
+        """Pick the single registry ref that deleting *identity* maps to.
 
-        Featured and HF browse rows surface the bare hf_repo, while the
-        registry deletes by ``<hf_repo>/<filename>.gguf``. Pick the one
-        installed manifest under that repo. Full refs and remote names
-        pass through unchanged. Multi-quant repos are an unlikely state
-        for these grids, but if encountered the lexicographically-first
-        match is chosen so a second D press still removes a single
-        model.
+        Featured / HF browse rows surface a bare hf_repo while the
+        registry deletes by ``<hf_repo>/<file>.gguf``. Bare repos
+        resolve to the lexicographically-first matching installed
+        manifest; full refs and remote names pass through.
         """
         if "/" in identity and identity.endswith(".gguf"):
             return identity
