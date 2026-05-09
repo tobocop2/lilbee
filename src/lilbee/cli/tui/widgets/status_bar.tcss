@@ -1,7 +1,11 @@
 ViewTabs {
     height: 1;
     width: 100%;
-    background: $surface;
+    /* No strip background: inherit the screen's $background so the
+     * active tab's $surface pill pops against it the same way Settings
+     * sub-tabs do. With background: $surface here the active pill would
+     * be invisible against the strip. */
+    background: transparent;
 }
 
 ViewTabs > Horizontal {
@@ -22,18 +26,22 @@ ViewTabs Static {
     text-style: bold;
 }
 
-/* Active tab gets a $boost-on-$primary pill. Mirrors the Settings sub-tab
- * aesthetic (#settings-tabs Tab.-active in screens/settings.tcss) so both
- * navigation levels read as the same highlighted pill, not a thin
- * underline + bare text. */
+/* Active tab gets the same highlighted pill as Settings sub-tabs
+ * (#settings-tabs Tab.-active in screens/settings.tcss). Only the active
+ * tab is highlighted; tab-cycling keyboard focus does NOT add a competing
+ * underline on a non-active tab. The active tab is the single source of
+ * "where am I" truth. */
 .view-tab.-active {
-    background: $boost;
+    background: $surface;
 }
 
-/* Visible focus ring when keyboard reaches a view tab via Tab. */
-.view-tab:focus {
-    text-style: bold underline;
+/* When focus lands on the already-active tab, mirror Settings sub-tab's
+ * focused-active state: $accent + bold underline. Focus on a non-active
+ * tab is intentionally invisible -- the active tab stays the only
+ * highlighted one. */
+.view-tab.-active:focus {
     color: $accent;
+    text-style: bold underline;
 }
 
 .view-tab-sep {
