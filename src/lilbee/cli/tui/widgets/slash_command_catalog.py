@@ -30,6 +30,13 @@ class CatalogGroup:
     members: tuple[str, ...]
 
 
+# Visual layout constants for ``_render_row``: align the command name +
+# args column at this width, with at least this much gutter before the
+# help text starts. Picked to fit the longest /set <key> <value> entry.
+_ROW_NAME_COLUMN_WIDTH = 28
+_ROW_HELP_GUTTER_MIN = 2
+
+
 CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     CatalogGroup(
         "CHAT & SESSION",
@@ -177,8 +184,7 @@ def _render_header(title: str) -> Content:
 def _render_row(cmd: SlashCommand) -> Content:
     name_part = Content.styled(f"  {cmd.name}", "$success bold")
     args_part = Content.styled(f" {cmd.args_hint}", "$text-muted") if cmd.args_hint else Content("")
-    pad_target = 28
     visible_len = len(f"  {cmd.name}") + (len(f" {cmd.args_hint}") if cmd.args_hint else 0)
-    pad = " " * max(2, pad_target - visible_len)
+    pad = " " * max(_ROW_HELP_GUTTER_MIN, _ROW_NAME_COLUMN_WIDTH - visible_len)
     help_part = Content.styled(f"{pad}{cmd.help_text}", "$text-muted")
     return Content.assemble(name_part, args_part, help_part)
