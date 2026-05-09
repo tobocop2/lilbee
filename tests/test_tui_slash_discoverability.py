@@ -755,7 +755,7 @@ class TestOverlayBackoutAsync:
 
 class TestArgCompletionsNotAutoShownAsync:
     """Once the user has entered arg-completion mode (typed a space), the
-    overlay must NOT auto-show — paths and other long lists are intrusive
+    overlay must NOT auto-show. Paths and other long lists are intrusive
     and should stay Tab-triggered."""
 
     async def test_typing_arg_partial_does_not_auto_show(
