@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 _CSS_FILE = Path(__file__).parent / "task_bar.tcss"
 
 _DONE_FLASH_SECONDS = 2.0
-_POLL_INTERVAL_SECONDS = 0.1
+_POLL_INTERVAL_ACTIVE_S = 0.1
+_POLL_INTERVAL_IDLE_S = 1.0
 
 # Pulsing-dot cadence: on/off flip at half of this tick count.
 # 10 Hz poll x 5 = 500 ms per half cycle, which is a 1 Hz dot pulse,
@@ -71,6 +72,10 @@ class TaskBar(Static):
         # Poll handle. Set in on_mount and cleared in on_unmount; declared
         # here so on_unmount can read it directly without a getattr fallback.
         self._interval: Timer | None = None
+        # True when no work is visible: the timer drops to 1 Hz here since
+        # the fingerprint cache short-circuits the render path. Flips
+        # back on the first non-idle event.
+        self._idle_mode: bool = True
 
     def compose(self) -> ComposeResult:
         yield Label("", id="task-status-label")
@@ -81,8 +86,9 @@ class TaskBar(Static):
         # this, a screen push/pop cycle leaves the previous TaskBar's
         # interval firing against a detached widget, racing with the new
         # TaskBar and occasionally setting ``display=False`` on the live
-        # instance (bb-3uzp).
-        self._interval = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        # instance. Start at the idle cadence; the first tick re-arms at
+        # 10 Hz if work is already in flight.
+        self._interval = self.set_interval(_POLL_INTERVAL_IDLE_S, self._tick)
 
     def on_unmount(self) -> None:
         if self._interval is not None:
@@ -129,9 +135,19 @@ class TaskBar(Static):
         self._controller.cancel_task(task_id)
 
     def _tick(self) -> None:
-        """Poll the shared queue at 10 Hz and re-render."""
+        """Poll the shared queue and re-render."""
         self._tick_count += 1
         self._refresh_display()
+
+    def _sync_poll_cadence(self, fully_idle: bool) -> None:
+        """Re-arm the poll timer at idle/active cadence on state transitions."""
+        if fully_idle == self._idle_mode:
+            return
+        self._idle_mode = fully_idle
+        if self._interval is not None:
+            self._interval.stop()
+        interval = _POLL_INTERVAL_IDLE_S if fully_idle else _POLL_INTERVAL_ACTIVE_S
+        self._interval = self.set_interval(interval, self._tick)
 
     def _refresh_display(self) -> None:
         """Rebuild the 1-line status label from the shared queue.
@@ -174,14 +190,16 @@ class TaskBar(Static):
                 ):
                     self._flashed_ids.add(last.task_id)
                     self._flash_until_tick = self._tick_count + int(
-                        _DONE_FLASH_SECONDS / _POLL_INTERVAL_SECONDS
+                        _DONE_FLASH_SECONDS / _POLL_INTERVAL_ACTIVE_S
                     )
                     self._flash_outcome = last.status
 
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
         spawning_roles = sorted(self._controller.spawning_roles) if idle else []
-        if idle and pending == 0 and not spawning_roles:
+        fully_idle = idle and pending == 0 and not spawning_roles
+        self._sync_poll_cadence(fully_idle)
+        if fully_idle:
             self.display = False
             self._last_render_fingerprint = None
             return
