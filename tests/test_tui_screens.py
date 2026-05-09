@@ -3202,7 +3202,7 @@ async def test_model_bar_refreshes_on_embedding_model_signal():
             mock_refresh.assert_called()
 
 
-async def test_chat_input_changed_hides_overlay():
+async def test_chat_input_changed_auto_shows_overlay_for_slash():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -3211,6 +3211,22 @@ async def test_chat_input_changed_hides_overlay():
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
+        await _pilot.pause()
+        assert overlay.is_visible
+
+
+async def test_chat_input_changed_hides_overlay_for_prose():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.focus()
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/he"
+        await _pilot.pause()
+        assert overlay.is_visible
+        inp.value = "hello"
         await _pilot.pause()
         assert not overlay.is_visible
 

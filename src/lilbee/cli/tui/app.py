@@ -131,7 +131,7 @@ class LilbeeApp(App[None]):
         # mode) can swallow it and type the literal character. F1 / Ctrl+H
         # remain priority routes that always open help, even mid-typing.
         Binding("question_mark", "push_help", "Help", show=True),
-        Binding("f1", "push_help", "Help", show=False, priority=True),
+        Binding("f1", "push_help", "Help", show=True, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),

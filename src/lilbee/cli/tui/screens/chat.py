@@ -163,6 +163,7 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
+        Binding("f2", "show_command_catalog", "Catalog", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -1345,14 +1346,26 @@ class ChatScreen(Screen[None]):
 
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
-        """Hide completion overlay on manual edits and refresh the arg-hint row."""
+        """Refresh arg-hint and auto-show or hide the completion dropdown."""
         if self._completing:
+            # Tab-completion is mid-flight; the cycler manages overlay state.
             self._refresh_arg_hint()
             return
-        overlay = self._completion_overlay
-        if overlay.is_visible:
-            overlay.hide()
+        self._refresh_completion_overlay()
         self._refresh_arg_hint()
+
+    def _refresh_completion_overlay(self) -> None:
+        """Auto-show the completion dropdown when the input has matching options.
+
+        Toad-parity: typing ``/`` immediately reveals the command set; typing
+        ``/m`` filters live; typing prose hides the overlay.
+        """
+        overlay = self._completion_overlay
+        options = get_completions(self._chat_input.value)
+        if options:
+            overlay.show_completions(options)
+        elif overlay.is_visible:
+            overlay.hide()
 
     def _refresh_arg_hint(self) -> None:
         """Push the current input value into the ArgHintLine."""

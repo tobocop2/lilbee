@@ -504,7 +504,99 @@ class TestChatScreenIntegrationAsync:
 
 
 class TestPlaceholderCopy:
-    def test_placeholder_mentions_both_slash_and_question(self) -> None:
+    def test_placeholder_advertises_three_discovery_keys(self) -> None:
         text = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
         assert "/" in text
-        assert "?" in text
+        assert "F1" in text
+        assert "F2" in text
+
+
+class TestAutoShowOverlayAsync:
+    """The act of typing ``/`` must reveal the command set immediately."""
+
+    async def test_typing_slash_auto_shows_overlay(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+            assert not overlay.is_visible
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+
+    async def test_overlay_filters_live_as_user_types(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            full = list(overlay._options)
+            inp.value = "/m"
+            await pilot.pause()
+            assert overlay.is_visible
+            filtered = list(overlay._options)
+            assert filtered != full
+            for opt in filtered:
+                assert opt.startswith("/m")
+            assert filtered == get_completions("/m")
+
+    async def test_typing_prose_keeps_overlay_hidden(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "hello world"
+            await pilot.pause()
+            assert not overlay.is_visible
+
+    async def test_clearing_slash_hides_overlay(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            inp.value = ""
+            await pilot.pause()
+            assert not overlay.is_visible
+
+
+class TestDiscoveryBindingsAsync:
+    """The keys that open the discovery surfaces must be visible and live."""
+
+    def test_f1_visible_in_app_bindings(self) -> None:
+        from textual.binding import Binding
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        f1 = next(b for b in LilbeeApp.BINDINGS if isinstance(b, Binding) and b.key == "f1")
+        assert f1.show is True
+        assert f1.priority is True
+        assert f1.action == "push_help"
+
+    async def test_f2_opens_catalog(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.press("f2")
+            await pilot.pause()
+            assert isinstance(app.screen, SlashCommandCatalog)
+
+    async def test_f2_visible_in_chat_footer(self, _mock_resolve, _mock_services) -> None:
+        from textual.binding import Binding
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        f2 = next(b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "f2")
+        assert f2.show is True
+        assert f2.priority is True
+        assert f2.action == "show_command_catalog"

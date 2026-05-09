@@ -2684,8 +2684,8 @@ class TestChatCompletions:
             await pilot.pause()
             assert app.screen.is_current
 
-    async def test_input_change_hides_overlay(self, _mock_resolve):
-        """Changing input manually hides the completion overlay."""
+    async def test_input_change_keeps_slash_overlay_then_hides_on_prose(self, _mock_resolve):
+        """Overlay stays visible while text starts with '/'; hides once it stops."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -2698,8 +2698,12 @@ class TestChatCompletions:
             await pilot.pause()
 
             overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-            # Changing input should dismiss overlay
+            # Editing to a still-slashy value re-filters but keeps the overlay open.
             inp.value = "/h"
+            await pilot.pause()
+            assert overlay.is_visible
+            # Editing to plain prose hides it.
+            inp.value = "hello"
             await pilot.pause()
             assert overlay.display is False
 
