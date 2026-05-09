@@ -779,7 +779,9 @@ async def test_catalog_cycle_tab_skipped_while_search_focused():
             screen._activation_settled = True
             with (
                 patch.object(
-                    type(screen), "_search_focused", new_callable=PropertyMock,
+                    type(screen),
+                    "_search_focused",
+                    new_callable=PropertyMock,
                     return_value=True,
                 ),
                 patch.object(screen, "action_select_tab") as mock_select,
@@ -811,10 +813,98 @@ async def test_settings_cycle_pane_handles_missing_tabs():
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     screen = SettingsScreen.__new__(SettingsScreen)
-    screen._pane_groups = {}  # No panes yet.
-    # query_one would fail, but no panes also short-circuits cleanly.
+    screen._pane_groups = {}
     with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
-        SettingsScreen.action_cycle_pane(screen, 1)  # must not raise
+        SettingsScreen.action_cycle_pane(screen, 1)
+
+
+async def test_settings_cycle_pane_no_panes_short_circuits():
+    """When ``_pane_groups`` is empty (compose hasn't run), cycle_pane returns
+    cleanly without indexing an empty list."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {}
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "settings-tab-models"
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+        SettingsScreen.action_cycle_pane(screen, 1)
+
+
+async def test_settings_cycle_pane_unknown_active_starts_from_zero():
+    """ValueError fallback: if tabs.active isn't in ``_pane_groups`` (stale id
+    from a hot-reload / refactor), cycle starts from index 0."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen, _PaneGroup
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {
+        "settings-tab-models": _PaneGroup(
+            pane_id="settings-tab-models", group_name="Models", items=[]
+        ),
+        "settings-tab-ingest": _PaneGroup(
+            pane_id="settings-tab-ingest", group_name="Ingest", items=[]
+        ),
+    }
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "not-in-pane-groups"
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+        SettingsScreen.action_cycle_pane(screen, 1)
+    # Fell through to index 0 + delta 1 -> second pane.
+    assert fake_tabs.active == "settings-tab-ingest"
+
+
+async def test_settings_active_pane_body_handles_missing_tabs():
+    """``_active_pane_body`` returns None on every error path: TabbedContent
+    not queryable, no active pane, and body widget not yet mounted."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not mounted")):
+        assert screen._active_pane_body() is None
+    fake_empty_tabs = MagicMock(spec=TabbedContent)
+    fake_empty_tabs.active = ""
+    with patch.object(SettingsScreen, "query_one", return_value=fake_empty_tabs):
+        assert screen._active_pane_body() is None
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "settings-tab-models"
+    calls = {"n": 0}
+
+    def _fake_query_one(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return fake_tabs
+        raise Exception("body not yet mounted")
+
+    with patch.object(SettingsScreen, "query_one", side_effect=_fake_query_one):
+        assert screen._active_pane_body() is None
+
+
+async def test_catalog_mouse_scroll_no_more_pages_short_circuits():
+    """on_mouse_scroll_down early-returns when there's nothing more to fetch."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            screen._grid_view = True
+            screen._hf_has_more = False  # nothing left to fetch
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
 
 
 async def test_settings_persist_value_does_not_toast_on_success():
