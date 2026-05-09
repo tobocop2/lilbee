@@ -134,8 +134,8 @@ class ChatScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
-        Binding("ctrl+n", "complete_next", "^n next", show=False),
-        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
+        Binding("ctrl+n", "complete_next", "^n next", show=False, priority=True),
+        Binding("ctrl+p", "complete_prev", "^p prev", show=False, priority=True),
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
         Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
@@ -393,6 +393,12 @@ class ChatScreen(Screen[None]):
             # they want to redirect the model.
             self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
             return
+        # Enter when the completion dropdown is showing a different
+        # selection than the input itself: accept the highlight first
+        # (matches Tab's cycle-and-insert behavior) instead of submitting
+        # whatever bare prefix the user typed.
+        if self._accept_overlay_selection_on_enter():
+            return
         text = event.value.strip()
         if not text:
             return
@@ -404,6 +410,36 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _accept_overlay_selection_on_enter(self) -> bool:
+        """Accept the highlighted completion if it differs from the input.
+
+        Returns True when the keystroke was consumed (input replaced, dropdown
+        hidden) and the caller should NOT submit. Returns False when the
+        selection already matches the input (or the overlay is empty), so the
+        normal submit path runs.
+
+        Inserts a trailing space after the accepted selection so the user can
+        immediately type arguments. This also flips the input out of the
+        "starts with /" command-prefix mode into the args-completion mode,
+        which keeps the auto-show overlay from re-popping with related
+        commands like /models when the user just picked /model.
+        """
+        overlay = self._completion_overlay
+        if not overlay.is_visible:
+            return False
+        selection = overlay.get_current()
+        inp = self._chat_input
+        if not selection or selection == inp.value.rstrip():
+            overlay.hide()
+            return False
+        cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+        self._completing = True
+        inp.value = f"{cmd_prefix}{selection} "
+        self._completing = False
+        inp.action_end()
+        overlay.hide()
+        return True
 
     def _handle_slash(self, text: str) -> None:
         """Dispatch slash commands via the per-instance handler registry."""

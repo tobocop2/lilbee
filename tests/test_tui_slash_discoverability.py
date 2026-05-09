@@ -600,3 +600,94 @@ class TestDiscoveryBindingsAsync:
         assert f2.show is True
         assert f2.priority is True
         assert f2.action == "show_command_catalog"
+
+    def test_ctrl_n_p_are_priority_for_dropdown_navigation(self) -> None:
+        """Vim-style nav keys must beat the app-level Ctrl+P palette binding."""
+        from textual.binding import Binding
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        ctrl_n = next(
+            b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "ctrl+n"
+        )
+        ctrl_p = next(
+            b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "ctrl+p"
+        )
+        assert ctrl_n.priority is True
+        assert ctrl_n.action == "complete_next"
+        assert ctrl_p.priority is True
+        assert ctrl_p.action == "complete_prev"
+
+
+class TestEnterAcceptsHighlightAsync:
+    """Pressing Enter on a visible dropdown must accept the highlighted command."""
+
+    async def test_enter_accepts_highlight_when_input_differs(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            highlighted = overlay.get_current()
+            assert highlighted is not None and highlighted.startswith("/")
+            await pilot.press("enter")
+            await pilot.pause()
+            # Input now holds "<command> " (trailing space invites args), and
+            # the message was NOT submitted because Enter was consumed by the
+            # accept-on-overlay path.
+            assert inp.value == f"{highlighted} "
+
+    async def test_enter_submits_when_selection_matches_input(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            with mock.patch.object(screen, "_handle_slash") as dispatch:
+                inp.value = "/clear"
+                await pilot.pause()
+                # /clear has no completions when text == one of the names
+                # exactly (autocomplete excludes the exact match), so the
+                # overlay may or may not be visible. Force-set to a state
+                # where the highlighted equals the input to drive the
+                # "selection matches input -> submit" branch.
+                overlay.show_completions(["/clear"])
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            dispatch.assert_called_once_with("/clear")
+            assert not overlay.is_visible
+
+    async def test_enter_with_empty_overlay_submits_normally(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            with mock.patch.object(screen, "_send_message") as send:
+                inp.value = "hello"
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            send.assert_called_once_with("hello")
