@@ -14,14 +14,12 @@ from textual import events
 from textual.content import Content
 from textual.widgets import Static
 
+from lilbee.cli.tui import messages as msg
+
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.chat import ChatScreen
 
 _CSS_FILE = Path(__file__).parent / "help_hint.tcss"
-
-HELP_HINT_COMMANDS = "/ commands"
-HELP_HINT_KEYS = "? keys"
-HELP_HINT_SEPARATOR = "  ·  "
 
 
 class HelpHint(Static):
@@ -31,9 +29,9 @@ class HelpHint(Static):
 
     def __init__(self, *, id: str | None = None) -> None:
         body = Content.assemble(
-            Content.styled(HELP_HINT_COMMANDS, "$success bold"),
-            Content.styled(HELP_HINT_SEPARATOR, "$text-muted"),
-            Content.styled(HELP_HINT_KEYS, "$primary bold"),
+            Content.styled(msg.HELP_HINT_COMMANDS, "$success bold"),
+            Content.styled(msg.HELP_HINT_SEPARATOR, "$text-muted"),
+            Content.styled(msg.HELP_HINT_KEYS, "$primary bold"),
         )
         super().__init__(body, id=id)
 

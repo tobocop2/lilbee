@@ -18,6 +18,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand
 
 
@@ -47,11 +48,6 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
         ("/settings", "/set", "/theme", "/reset", "/remove", "/login", "/version"),
     ),
 )
-
-CATALOG_TITLE = "Slash Commands"
-CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
-CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"
-CATALOG_NO_MATCH = "No commands match"
 
 
 def _by_name() -> dict[str, SlashCommand]:
@@ -86,10 +82,10 @@ class SlashCommandCatalog(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="catalog-root"):
-            yield Static(CATALOG_TITLE, id="catalog-title")
-            yield Input(placeholder=CATALOG_FILTER_PLACEHOLDER, id="catalog-filter")
+            yield Static(msg.SLASH_CATALOG_TITLE, id="catalog-title")
+            yield Input(placeholder=msg.SLASH_CATALOG_FILTER_PLACEHOLDER, id="catalog-filter")
             yield OptionList(id="catalog-list")
-            yield Static(CATALOG_FOOTER_HINT, id="catalog-hint")
+            yield Static(msg.SLASH_CATALOG_FOOTER_HINT, id="catalog-hint")
 
     def on_mount(self) -> None:
         self._rebuild("")
@@ -138,32 +134,40 @@ class SlashCommandCatalog(ModalScreen[str | None]):
     def _rebuild(self, query: str) -> None:
         ol = self.query_one("#catalog-list", OptionList)
         ol.clear_options()
-        registry = _by_name()
-        any_added = False
-        first_runnable_index: int | None = None
+        groups = _filter_groups(query)
+        if not groups:
+            ol.add_option(Option(msg.SLASH_CATALOG_NO_MATCH, id=None, disabled=True))
+            return
+        first_runnable = _populate_options(ol, groups)
+        if first_runnable is not None:
+            ol.highlighted = first_runnable
 
-        for group in CATALOG_GROUPS:
-            visible: list[SlashCommand] = []
-            for name in group.members:
-                cmd = registry.get(name)
-                if cmd is None:
-                    continue
-                if _matches(cmd, query):
-                    visible.append(cmd)
-            if not visible:
-                continue
-            ol.add_option(Option(_render_header(group.title), id=None, disabled=True))
-            for cmd in visible:
-                if first_runnable_index is None:
-                    first_runnable_index = ol.option_count
-                ol.add_option(Option(_render_row(cmd), id=cmd.name))
-            any_added = True
 
-        if not any_added:
-            ol.add_option(Option(CATALOG_NO_MATCH, id=None, disabled=True))
+def _filter_groups(query: str) -> list[tuple[str, list[SlashCommand]]]:
+    """Each ``CatalogGroup`` paired with its filtered (non-empty) command list."""
+    registry = _by_name()
+    out: list[tuple[str, list[SlashCommand]]] = []
+    for group in CATALOG_GROUPS:
+        matching = [
+            cmd
+            for name in group.members
+            if (cmd := registry.get(name)) is not None and _matches(cmd, query)
+        ]
+        if matching:
+            out.append((group.title, matching))
+    return out
 
-        if first_runnable_index is not None:
-            ol.highlighted = first_runnable_index
+
+def _populate_options(ol: OptionList, groups: list[tuple[str, list[SlashCommand]]]) -> int | None:
+    """Add header + command rows for each group, return the first runnable row index."""
+    first_runnable: int | None = None
+    for title, commands in groups:
+        ol.add_option(Option(_render_header(title), id=None, disabled=True))
+        for cmd in commands:
+            if first_runnable is None:
+                first_runnable = ol.option_count
+            ol.add_option(Option(_render_row(cmd), id=cmd.name))
+    return first_runnable
 
 
 def _render_header(title: str) -> Content:

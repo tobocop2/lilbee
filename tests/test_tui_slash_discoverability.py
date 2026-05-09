@@ -19,10 +19,9 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine, _hint_for
-from lilbee.cli.tui.widgets.help_hint import HELP_HINT_COMMANDS, HELP_HINT_KEYS, HelpHint
+from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.slash_command_catalog import (
     CATALOG_GROUPS,
-    CATALOG_NO_MATCH,
     SlashCommandCatalog,
 )
 from lilbee.core.config import cfg
@@ -238,7 +237,7 @@ class TestSlashCommandCatalogAsync:
             assert ol.option_count == 1
             only = ol.get_option_at_index(0)
             assert only.id is None
-            assert CATALOG_NO_MATCH in str(only.prompt)
+            assert msg.SLASH_CATALOG_NO_MATCH in str(only.prompt)
 
     async def test_escape_dismisses_with_none(self) -> None:
         app = _CatalogOnlyApp()
@@ -474,8 +473,8 @@ class TestChatScreenIntegrationAsync:
         async with app.run_test():
             chip = app.screen.query_one("#help-hint", HelpHint)
             rendered = str(chip.render())
-            assert HELP_HINT_COMMANDS in rendered
-            assert HELP_HINT_KEYS in rendered
+            assert msg.HELP_HINT_COMMANDS in rendered
+            assert msg.HELP_HINT_KEYS in rendered
 
     async def test_arg_hint_widget_mounted_in_chat(self, _mock_resolve, _mock_services) -> None:
         app = _ChatHostApp()
@@ -492,11 +491,11 @@ class TestChatScreenIntegrationAsync:
             assert isinstance(app.screen, SlashCommandCatalog)
 
     async def test_help_hint_click_no_op_off_chat_screen(self) -> None:
-        class _BareApp(LilbeeAppHost):
+        class _NonChatHost(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield HelpHint(id="help-hint")
 
-        bare = _BareApp()
+        bare = _NonChatHost()
         async with bare.run_test() as pilot:
             await pilot.click("#help-hint")
             await pilot.pause()

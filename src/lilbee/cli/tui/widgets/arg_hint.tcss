@@ -6,7 +6,3 @@ ArgHintLine {
     color: $text-muted;
     text-style: italic;
 }
-
-ArgHintLine.-hidden {
-    display: none;
-}
