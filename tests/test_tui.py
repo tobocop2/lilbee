@@ -910,10 +910,13 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
+        # F2 Catalog is intentionally visible so the slash-command catalog
+        # has a discoverable keybinding in the footer alongside / Commands.
+        assert any(d == "Catalog" for d in visible)
         # Footer shows the small discoverable set: slash commands, Tab
-        # completion, the dual-purpose Esc dispatch, and Models. Hidden
-        # helpers (history, scope cycle, F-keys) stay show=False.
-        assert len(visible) <= 5
+        # completion, the dual-purpose Esc dispatch, Models, and F2 Catalog.
+        # Hidden helpers (history, scope cycle, other F-keys) stay show=False.
+        assert len(visible) <= 6
 
     def test_catalog_numeric_tab_bindings(self) -> None:
         """1-6 jump to the corresponding tab in the 6-tab catalog shell.
