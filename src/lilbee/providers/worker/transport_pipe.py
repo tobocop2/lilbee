@@ -38,6 +38,9 @@ _PICKLE_MAX_BYTES = 32 * 1024 * 1024
 _CONTROL_CALL_ID = 0
 """Sentinel call-id for shutdown/ack frames not associated with a user call."""
 
+_READER_EOF: object = object()
+"""Sentinel pushed to the frame queue when the reader thread exits."""
+
 
 @dataclass(frozen=True)
 class _SerializedException:
@@ -143,8 +146,6 @@ class PipeChannel:
             thread_name_prefix=f"pipechan-{role}",
         )
         self._send_lock = asyncio.Lock()
-        self._recv_lock = asyncio.Lock()
-        self._recv_thread_lock = threading.Lock()
         self._health_send_lock = asyncio.Lock()
         self._health_recv_lock = asyncio.Lock()
         self._in_flight = 0
@@ -153,6 +154,12 @@ class PipeChannel:
         self._closed_lock = threading.Lock()
         self._call_ids = itertools.count(start=1)
         self._call_id_lock = threading.Lock()
+        # Dedicated reader thread state. Lazy-started on first _recv so
+        # the thread captures the running asyncio loop for its bridge.
+        self._reader_thread: threading.Thread | None = None
+        self._frame_queue: asyncio.Queue[Any] | None = None
+        self._reader_loop: asyncio.AbstractEventLoop | None = None
+        self._reader_started = threading.Event()
 
     @property
     def role(self) -> WorkerRole:
@@ -207,19 +214,45 @@ class PipeChannel:
             except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
                 raise self._crash() from exc
 
-    def _conn_recv_serialized(self) -> Any:
-        """Serialize ``conn.recv`` across executor threads with a threading lock."""
-        with self._recv_thread_lock:
-            return self._conn.recv()
+    def _ensure_reader(self) -> None:
+        """Lazy-start the dedicated reader thread bound to the current loop."""
+        if self._reader_started.is_set():
+            return
+        self._reader_loop = asyncio.get_running_loop()
+        self._frame_queue = asyncio.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._reader_main,
+            name=f"pipe-reader-{self._role}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        self._reader_started.set()
+
+    def _reader_main(self) -> None:
+        """Pump frames from the data pipe into the asyncio frame queue."""
+        loop = self._reader_loop
+        queue = self._frame_queue
+        if loop is None or queue is None:
+            return
+        while True:
+            try:
+                frame = self._conn.recv()
+            except (EOFError, OSError, ConnectionResetError, BrokenPipeError):
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(queue.put_nowait, _READER_EOF)
+                return
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(queue.put_nowait, frame)
 
     async def _recv(self) -> tuple[int, WireKind, Any]:
-        """Thread-bounded ``conn.recv`` under the recv lock; raises on EOF/crash."""
-        loop = asyncio.get_running_loop()
-        async with self._recv_lock:
-            try:
-                return await loop.run_in_executor(self._executor, self._conn_recv_serialized)
-            except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
-                raise self._crash() from exc
+        """Await the next frame from the reader thread; raise on EOF/crash."""
+        self._ensure_reader()
+        queue = self._frame_queue
+        assert queue is not None  # _ensure_reader sets it  # noqa: S101
+        frame = await queue.get()
+        if frame is _READER_EOF:
+            raise self._crash()
+        return frame  # type: ignore[no-any-return]
 
     async def _recv_for(self, expected_call_id: int) -> tuple[WireKind, Any]:
         """Read frames until one matches *expected_call_id*; drain stale ones."""
@@ -344,6 +377,8 @@ class PipeChannel:
             with contextlib.suppress(Exception):
                 self._health_conn.close()
             self._executor.shutdown(wait=False, cancel_futures=True)
+            if self._reader_thread is not None:
+                self._reader_thread.join(timeout=timeout)
 
     def _join_process(self, timeout: float) -> None:
         """Wait *timeout* seconds for the process; terminate if still alive.
