@@ -79,15 +79,16 @@ def _mock_services():
 
 
 class _CatalogOnlyApp(LilbeeAppHost):
+    last_pick: str | None = "<unset>"
+
     def compose(self) -> ComposeResult:
         yield from ()
 
     def on_mount(self) -> None:
         self.push_screen(SlashCommandCatalog(), self._on_pick)
-        self.last_pick: str | None = "<unset>"  # type: ignore[attr-defined]
 
     def _on_pick(self, name: str | None) -> None:
-        self.last_pick = name  # type: ignore[attr-defined]
+        self.last_pick = name
 
 
 class _ChatHostApp(LilbeeAppHost):
@@ -245,7 +246,7 @@ class TestSlashCommandCatalogAsync:
             await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
-            assert app.last_pick is None  # type: ignore[attr-defined]
+            assert app.last_pick is None
 
     async def test_filter_match_by_alias(self) -> None:
         app = _CatalogOnlyApp()
@@ -274,7 +275,7 @@ class TestSlashCommandCatalogAsync:
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
-            assert app.last_pick == "/wiki"  # type: ignore[attr-defined]
+            assert app.last_pick == "/wiki"
 
     async def test_enter_with_no_match_stays_open(self) -> None:
         app = _CatalogOnlyApp()
@@ -286,7 +287,7 @@ class TestSlashCommandCatalogAsync:
             await pilot.press("enter")
             await pilot.pause()
             # No runnable match means dismissal does not fire.
-            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+            assert app.last_pick == "<unset>"
 
     async def test_action_select_picks_highlighted(self) -> None:
         app = _CatalogOnlyApp()
@@ -304,7 +305,7 @@ class TestSlashCommandCatalogAsync:
             picked = ol.get_option_at_index(target).id
             app.screen.action_select()
             await pilot.pause()
-            assert app.last_pick == picked  # type: ignore[attr-defined]
+            assert app.last_pick == picked
 
     async def test_option_list_message_dismisses_with_command(self) -> None:
         app = _CatalogOnlyApp()
@@ -325,7 +326,7 @@ class TestSlashCommandCatalogAsync:
             event = OptionList.OptionSelected(option_list=ol, option=target_opt, index=target_index)
             app.screen.on_option_list_option_selected(event)
             await pilot.pause()
-            assert app.last_pick == target_opt.id  # type: ignore[attr-defined]
+            assert app.last_pick == target_opt.id
 
     async def test_option_list_message_with_disabled_header_no_op(self) -> None:
         app = _CatalogOnlyApp()
@@ -345,7 +346,7 @@ class TestSlashCommandCatalogAsync:
             app.screen.on_option_list_option_selected(event)
             await pilot.pause()
             # Header rows have no command id, so dismissal must not fire.
-            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+            assert app.last_pick == "<unset>"
 
     async def test_input_changed_for_unrelated_input_ignored(self) -> None:
         # Synthesize an Input.Changed for a different widget to drive the
@@ -373,7 +374,7 @@ class TestSlashCommandCatalogAsync:
             await pilot.pause()
             await other.remove()
             # Should not have dismissed.
-            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+            assert app.last_pick == "<unset>"
 
     async def test_action_select_swallows_indexerror(self) -> None:
         # Defensive guard: if the highlighted index races with a list
@@ -386,7 +387,7 @@ class TestSlashCommandCatalogAsync:
             with mock.patch.object(ol, "get_option_at_index", side_effect=IndexError):
                 app.screen.action_select()
             await pilot.pause()
-            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+            assert app.last_pick == "<unset>"
 
     async def test_action_select_with_no_highlight_falls_through(self) -> None:
         app = _CatalogOnlyApp()
@@ -397,8 +398,8 @@ class TestSlashCommandCatalogAsync:
             app.screen.action_select()
             await pilot.pause()
             # First runnable option fires.
-            assert app.last_pick is not None  # type: ignore[attr-defined]
-            assert str(app.last_pick).startswith("/")  # type: ignore[attr-defined]
+            assert app.last_pick is not None
+            assert str(app.last_pick).startswith("/")
 
     async def test_unknown_group_member_is_skipped(self, monkeypatch) -> None:
         # If CATALOG_GROUPS lists a name that vanished from the registry,
