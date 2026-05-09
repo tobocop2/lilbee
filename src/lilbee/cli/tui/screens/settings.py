@@ -97,7 +97,11 @@ class SettingsScreen(Screen[None]):
     app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "settings.tcss"
-    AUTO_FOCUS = "#settings-scroll"
+    # Target the TabbedContent's inner Tabs strip rather than the outer
+    # #settings-scroll Container -- Container can't accept focus, so on
+    # mount focus would otherwise stay at None and downstream Tab-cycling
+    # has nowhere to start. The Tabs widget is the canonical entry point.
+    AUTO_FOCUS = "#settings-tabs Tabs"
     HELP = (
         "Browse and edit configuration.\n\n"
         "Use / to search, Enter to confirm, Escape to return to the list."

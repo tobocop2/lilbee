@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum, StrEnum
+from enum import StrEnum
 
 
 class ModelTask(StrEnum):
@@ -14,8 +14,14 @@ class ModelTask(StrEnum):
     RERANK = "rerank"
 
 
-class ModelSource(Enum):
-    """Where a model is stored."""
+class ModelSource(StrEnum):
+    """Where a model is stored.
+
+    StrEnum (not Enum) so ``ModelSource.NATIVE == "native"`` is True at
+    runtime. Pre-existing tests, JSON-decoded payloads from older clients,
+    and server handler comparisons against bare strings keep working
+    without an explicit ``.value`` lookup or enum import.
+    """
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
     REMOTE = "remote"  # Models managed by a remote SDK-backed service

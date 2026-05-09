@@ -765,6 +765,58 @@ async def test_catalog_cycle_tab_wraps_through_strip():
                 mock_select.assert_called_with(0)
 
 
+async def test_catalog_cycle_tab_skipped_while_search_focused():
+    """While the catalog search input has focus, > / < must not cycle.
+    Prevents the user from accidentally jumping tabs while typing a filter."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            with (
+                patch.object(
+                    type(screen), "_search_focused", new_callable=PropertyMock,
+                    return_value=True,
+                ),
+                patch.object(screen, "action_select_tab") as mock_select,
+            ):
+                screen.action_cycle_tab(1)
+                assert not mock_select.called
+
+
+async def test_catalog_cycle_tab_unknown_active_starts_from_zero():
+    """If _active_tab_id_cache is not in ALL_TAB_IDS, cycle starts at 0."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            screen._active_tab_id_cache = "not-a-real-tab-id"
+            with patch.object(screen, "action_select_tab") as mock_select:
+                screen.action_cycle_tab(1)
+                mock_select.assert_called_with(1)
+
+
+async def test_settings_cycle_pane_handles_missing_tabs():
+    """If TabbedContent isn't queryable (mid-mount), action_cycle_pane is a no-op
+    rather than raising."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {}  # No panes yet.
+    # query_one would fail, but no panes also short-circuits cleanly.
+    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
+        SettingsScreen.action_cycle_pane(screen, 1)  # must not raise
+
+
 async def test_settings_persist_value_does_not_toast_on_success():
     """Saving a setting (Input.Blurred / Input.Submitted / Checkbox.Changed
     etc.) must NOT pop a success toast. The editor already shows the new

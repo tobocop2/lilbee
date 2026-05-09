@@ -3126,9 +3126,14 @@ class TestSetupWizardGrid:
                 # The focus rule paints a visible color; baseline is transparent.
                 assert focused_border[1] != baseline_border[1]
 
-    async def test_setup_focused_selected_card_keeps_green_bar(self, _mock_resolve):
-        """A card that is both selected and focused keeps its green left bar.
-        Guards against the focus border shorthand clobbering border-left."""
+    async def test_setup_focused_selected_card_uses_accent_border(self, _mock_resolve):
+        """A focused + selected wizard card uses the full $accent border that
+        catalog model cards do, not the older thick-left-only treatment.
+
+        After bb-2rzb the wizard is required to share its card styling
+        with the catalog browser; the focused + selected state therefore
+        collapses into the same ``border: tall $accent`` rule the catalog
+        uses on hover/highlight."""
         from lilbee.cli.tui.screens.setup import SetupWizard
         from lilbee.cli.tui.widgets.grid_select import GridSelect
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -3150,9 +3155,9 @@ class TestSetupWizardGrid:
                 await pilot.pause()
                 assert cards[0].has_class("-highlight")
                 assert cards[0].has_class("-selected")
-                border_left = cards[0].styles.border_left
-                assert border_left is not None
-                assert border_left[0] == "thick"
+                border_top = cards[0].styles.border_top
+                assert border_top is not None
+                assert border_top[0] == "tall"
 
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""

@@ -937,7 +937,8 @@ class TestMinimalFooter:
         assert any("Search" in d for d in visible)
         assert any("Delete" in d for d in visible)
         assert any("Info" in d for d in visible)
-        assert len(visible) <= 6
+        # 5 baseline + 2 visible tab-cycling bindings (Next tab / Prev tab).
+        assert len(visible) <= 7
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
@@ -953,7 +954,9 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         # Search binding was removed when the settings filter was dropped.
         assert not any("Search" in d for d in visible)
-        assert len(visible) <= 4
+        # 4 baseline (Back, Next field, Prev field, Reset all) + 2 visible
+        # tab-cycling bindings (Next tab / Prev tab) shared with Catalog.
+        assert len(visible) <= 6
 
 
 class TestNavBindings:
