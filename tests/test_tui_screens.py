@@ -3945,6 +3945,49 @@ async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
                 assert load_more.called
 
 
+async def test_catalog_mouse_scroll_with_no_overflow_loads_more():
+    """When initial render fits the viewport (max_scroll_y == 0) wheel events
+    produce no scroll delta either, so the watcher never fires. The bottom-CTA
+    'keep scrolling for more' must still respond to the first wheel down by
+    fetching the next page directly."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._activation_settled = True
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert load_more.called
+
+
 async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
     """When scroll_y < max_scroll_y the wheel handler must NOT fire so the
     scroll watcher's threshold logic stays in charge."""

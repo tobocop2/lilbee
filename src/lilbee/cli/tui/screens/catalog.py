@@ -1962,18 +1962,20 @@ class CatalogScreen(Screen[None]):
         self._load_more()
 
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
-        """Force pagination when wheeling at max_scroll_y.
+        """Force pagination when wheeling beyond what the grid can scroll.
 
-        At ``scroll_y == max_scroll_y`` further wheel events produce no
-        ``scroll_y`` delta, so ``_on_grid_scrolled`` never fires and the user
-        appears stuck. This handler re-checks at the bottom and respects the
-        same cooldown.
+        Two cases collapse into one trigger: (1) content already fits the
+        viewport so ``max_scroll_y == 0`` and wheel events produce no scroll
+        delta, (2) the user has wheeled to ``scroll_y == max_scroll_y`` and
+        further wheels produce no delta. Either way, ``_on_grid_scrolled``
+        never fires so we re-check here and fetch the next page directly.
+        Cooldown prevents a runaway cascade as new rows shift max_scroll_y.
         """
         if not self._grid_view or not self._hf_has_more or self._loading_more:
             return
         container = self._grid_container
         max_y = container.max_scroll_y
-        if max_y <= 0 or container.scroll_y < max_y:
+        if max_y > 0 and container.scroll_y < max_y:
             return
         if self._scroll_prefetch_armed_at:
             elapsed = time.monotonic() - self._scroll_prefetch_armed_at
