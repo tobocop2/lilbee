@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.modelhub.registry import ModelRegistry
 
 from textual import events, work
@@ -420,6 +421,7 @@ class ChatModeToggle(Widget, can_focus=False):
 class ModelBar(Widget, can_focus=False):
     """Compact bar with picker buttons for active model assignments + mode toggle."""
 
+    app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, id: str | None = None) -> None:
@@ -443,10 +445,10 @@ class ModelBar(Widget, can_focus=False):
         self._scan_models()
         # External activation paths (Catalog screen, /model setting, settings UI)
         # publish on this signal but don't reach this widget's _refresh otherwise.
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        # ``app: LilbeeApp`` is declared on the class; test hosts inherit
+        # LilbeeAppHost so the signal attribute always exists. No isinstance
+        # guard needed (AGENTS.md "no test-aware production branches").
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _ = payload
