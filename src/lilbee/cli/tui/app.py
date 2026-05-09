@@ -122,12 +122,6 @@ class LilbeeApp(App[None]):
     TITLE = "lilbee"
     CSS_PATH = Path(__file__).parent / "app.tcss"
     ENABLE_COMMAND_PALETTE = True
-    # Move the command palette off Ctrl+P so the chat screen's vim-style
-    # ``ctrl+p`` binding (cycle dropdown highlight backward) wins. Ctrl+\ is
-    # the classic alternative; Ctrl+P alone in the chat is far more useful
-    # for completion-prev than for the palette, which most users reach via
-    # the slash-command catalog (F2) or the keybinding panel (F1).
-    COMMAND_PALETTE_BINDING = "ctrl+backslash"
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     _NAV_GROUP = Binding.Group("Navigate")
@@ -384,6 +378,28 @@ class LilbeeApp(App[None]):
             self.action_hide_help_panel()
         else:
             self.action_show_help_panel()
+
+    async def action_command_palette(self) -> None:
+        """Ctrl+P: cycle the chat completion dropdown if visible, else open palette.
+
+        The chat screen's slash-command dropdown reuses Ctrl+P for vim-style
+        backward navigation only WHEN it's visible. Everywhere else (and on
+        every other screen), Ctrl+P keeps its default behavior of opening
+        Textual's command palette.
+        """
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            try:
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            except NoMatches:
+                overlay = None
+            if overlay is not None and overlay.is_visible:
+                overlay.cycle_prev()
+                return
+        await super().action_command_palette()
 
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.

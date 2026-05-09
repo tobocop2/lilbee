@@ -135,7 +135,12 @@ class ChatScreen(Screen[None]):
         Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Complete", show=True, priority=True),
         Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
-        Binding("ctrl+p", "complete_prev", "Prev match", show=False, priority=True),
+        # Ctrl+P stays bound to the app's command palette by default. The
+        # chat screen only intercepts it WHEN the dropdown is visible, via
+        # LilbeeApp.action_command_palette overriding to call
+        # ChatScreen.action_complete_prev. Action is exposed for direct
+        # callers / tests; not bound here so the app-level priority binding
+        # for ctrl+p (palette) wins by default.
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
         Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
@@ -1343,17 +1348,24 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Ctrl+P: move highlight UP in the visible dropdown.
+        """Ctrl+P: move highlight UP in the visible dropdown, else open the palette.
 
-        Highlight-only navigation (vim ``<C-p>`` semantics). Mirror of
-        :meth:`action_complete_next`.
+        Ctrl+P is normally Textual's command-palette key. The chat screen
+        only steals it while the completion dropdown is up so the user can
+        page backward (vim ``<C-p>`` semantics). With nothing to navigate,
+        Ctrl+P falls through to the app's palette so the global behavior
+        is preserved everywhere else.
         """
         overlay = self._completion_overlay
         inp = self._chat_input
+        if overlay.is_visible and inp.has_focus:
+            overlay.cycle_prev()
+            return
         if not inp.has_focus:
             return
-        if overlay.is_visible:
-            overlay.cycle_prev()
+        # No dropdown to page through; behave like the default Ctrl+P.
+        if self.app.ENABLE_COMMAND_PALETTE:
+            self.app.action_command_palette()
             return
 
         options = get_completions(inp.value)

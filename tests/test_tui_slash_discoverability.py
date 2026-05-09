@@ -601,8 +601,8 @@ class TestDiscoveryBindingsAsync:
         assert f2.priority is True
         assert f2.action == "show_command_catalog"
 
-    def test_ctrl_n_p_are_priority_for_dropdown_navigation(self) -> None:
-        """Vim-style nav keys must beat the app-level Ctrl+P palette binding."""
+    def test_ctrl_n_is_priority_for_dropdown_navigation(self) -> None:
+        """Ctrl+N stays a priority screen binding for vim-style cycle-next."""
         from textual.binding import Binding
 
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -610,13 +610,22 @@ class TestDiscoveryBindingsAsync:
         ctrl_n = next(
             b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "ctrl+n"
         )
-        ctrl_p = next(
-            b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "ctrl+p"
-        )
         assert ctrl_n.priority is True
         assert ctrl_n.action == "complete_next"
-        assert ctrl_p.priority is True
-        assert ctrl_p.action == "complete_prev"
+
+    def test_ctrl_p_handled_via_app_palette_override(self) -> None:
+        """Ctrl+P stays the app-level palette binding; the chat screen does NOT
+        register its own ``ctrl+p`` binding (so palette opens by default).
+        Cycle-prev only fires when the dropdown is visible, via
+        :meth:`LilbeeApp.action_command_palette` override."""
+        from textual.binding import Binding
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen_ctrl_p = [
+            b for b in ChatScreen.BINDINGS if isinstance(b, Binding) and b.key == "ctrl+p"
+        ]
+        assert screen_ctrl_p == []
 
 
 class TestDropdownNavigationAsync:
@@ -692,6 +701,24 @@ class TestDropdownNavigationAsync:
             assert overlay.get_current() != first
             assert inp.value == "/"
             assert overlay.is_visible
+
+    async def test_ctrl_p_opens_palette_when_overlay_hidden(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            assert not overlay.is_visible
+            with mock.patch.object(app, "action_command_palette") as palette:
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+            palette.assert_called_once()
 
     async def test_up_navigates_dropdown_when_visible(self, _mock_resolve, _mock_services) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
