@@ -711,6 +711,57 @@ async def test_settings_persist_on_change():
         assert cfg.top_k == 20
 
 
+async def test_settings_outer_container_does_not_double_scroll():
+    """bb-e1e2: Settings tearing on Wiki tab scroll-up was caused by two
+    VerticalScrolls on the same column (outer #settings-scroll wrapping
+    the inner _LazyGroupBody per pane). Drop the outer to a Container so
+    only the active pane scrolls; this test pins that invariant."""
+    from textual.containers import Container, VerticalScroll
+
+    from lilbee.cli.tui.screens.settings import _LazyGroupBody
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        outer = app.screen.query_one("#settings-scroll")
+        assert isinstance(outer, Container)
+        assert not isinstance(outer, VerticalScroll), (
+            "#settings-scroll regressed to a VerticalScroll; nested-scroll "
+            "tearing on Settings → Wiki will return."
+        )
+        # Every pane body is itself a VerticalScroll, and from any pane body
+        # to the screen root there must be exactly one VerticalScroll on
+        # the chain (the body itself).
+        for body in app.screen.query(_LazyGroupBody):
+            scroll_ancestors = sum(
+                1 for n in body.ancestors_with_self if isinstance(n, VerticalScroll)
+            )
+            assert scroll_ancestors == 1, (
+                f"{body.id}: {scroll_ancestors} VerticalScroll ancestors, expected 1"
+            )
+
+
+async def test_settings_wiki_pane_scroll_clamps_past_top():
+    """Wheeling the Wiki settings pane up past its top edge must clamp at
+    scroll_y=0 cleanly. With the previous nested-scroll layout, this is
+    where Textual reflow tore the screen and lost the tab strip."""
+    from textual.widgets import TabbedContent
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        tabs.active = "settings-tab-wiki"
+        await pilot.pause()
+        body = app.screen.query_one("#settings-tab-wiki-body")
+        body.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        body.scroll_relative(y=-50, animate=False)
+        await pilot.pause()
+        assert body.scroll_y == 0.0
+        # Tabs strip must still be queryable -- the visual symptom of the
+        # original bug was that the strip vanished entirely on scroll-up.
+        assert app.screen.query_one("#settings-tabs", TabbedContent) is not None
+
+
 async def test_settings_exposes_wiki_fields():
     """Settings screen renders an editor for every wiki config field."""
     app = SettingsTestApp()
