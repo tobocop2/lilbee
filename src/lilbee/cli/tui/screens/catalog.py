@@ -28,7 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
@@ -1836,8 +1836,7 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_SELECT_TO_DELETE, severity="warning")
             return
 
-        mgr = get_services().model_manager
-        if not mgr.is_installed(model_name):
+        if not self._row_is_installed(model_name):
             self.notify(msg.CATALOG_NOT_INSTALLED.format(name=model_name), severity="warning")
             return
 
@@ -1847,6 +1846,19 @@ class CatalogScreen(Screen[None]):
         else:
             self._pending_delete = model_name
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
+
+    def _row_is_installed(self, model_name: str) -> bool:
+        """Match a catalog row's identity against the installed set.
+
+        Catalog rows store ``ref`` as either the bare hf_repo (HF browse
+        and featured rows) or the canonical full ref (Library entries),
+        and remote rows carry the SDK-side bare name. The native cache
+        already holds both ref shapes; remote presence is asked of the
+        manager directly.
+        """
+        if model_name in self._installed_names:
+            return True
+        return get_services().model_manager.is_installed(model_name, ModelSource.REMOTE)
 
     def _get_highlighted_model_name(self) -> str | None:
         """Return the registry-compatible model ref for the focused/highlighted row."""

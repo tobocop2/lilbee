@@ -766,26 +766,14 @@ class TestRemoveNativeRegistry:
         assert not registry.is_installed(ref)
 
 
-class TestBareRepoIdentity:
-    """is_installed/remove must accept the bare hf_repo, not just the full GGUF ref.
+class TestRemoveByBareHfRepo:
+    """Remove must resolve a bare hf_repo to every installed quant of that repo.
 
-    The TUI catalog stores ``row.ref = hf_repo`` (e.g. ``Qwen/Qwen3-0.6B-GGUF``)
-    while the registry resolves manifests by ``<hf_repo>/<filename>.gguf``. Without
-    bare-repo support, pressing D in the TUI gates off with "not installed" and
-    ``lilbee model rm <hf_repo>`` (the form shown in catalog browse) returns 1.
+    HF browse rows and featured catalog rows surface a bare ``hf_repo`` to
+    the user, while the registry keys manifests by
+    ``<hf_repo>/<filename>.gguf``. A delete request for the bare repo
+    should clear every quant the registry holds under that repo.
     """
-
-    def test_is_installed_accepts_bare_hf_repo(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-        repo = "Qwen/Qwen3-0.6B-GGUF"
-        _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q8_0.gguf", b"data" * 64, repo=repo
-        )
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.is_installed(repo) is True
-        assert mgr.is_installed(repo, ModelSource.NATIVE) is True
 
     def test_remove_with_bare_hf_repo_removes_all_matching_manifests(self, tmp_path: Path) -> None:
         from lilbee.modelhub.registry import ModelRegistry
@@ -821,16 +809,24 @@ class TestBareRepoIdentity:
         assert mgr.remove(repo, ModelSource.NATIVE) is True
         assert repo not in mgr.list_native_identities()
 
-    def test_get_source_resolves_bare_hf_repo(self, tmp_path: Path) -> None:
+    def test_remove_unknown_bare_repo_returns_false(self, tmp_path: Path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        assert mgr.remove("Qwen/Qwen3-0.6B-GGUF", ModelSource.NATIVE) is False
+
+    def test_is_installed_stays_strict_for_pull_idempotency(self, tmp_path: Path) -> None:
+        """``is_installed`` keeps the exact-ref contract so ``model pull``
+        of a bare repo with a different quant already installed proceeds
+        instead of short-circuiting as ALREADY_INSTALLED."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         repo = "Qwen/Qwen3-0.6B-GGUF"
         _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q8_0.gguf", b"data" * 64, repo=repo
+            models_dir, tmp_path, "qwen3-0.6b-q4_k_m.gguf", b"q4data" * 64, repo=repo
         )
-
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.get_source(repo) is ModelSource.NATIVE
+        assert mgr.is_installed(repo, ModelSource.NATIVE) is False
 
 
 class TestDetectProvider:

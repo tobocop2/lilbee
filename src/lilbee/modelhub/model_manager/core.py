@@ -120,12 +120,6 @@ class ModelManager:
     def _is_native(self, model: str) -> bool:
         if self._registry.is_installed(model):
             return True
-        # Bare hf_repo (e.g. "Qwen/Qwen3-0.6B-GGUF"): TUI catalog rows
-        # carry only the repo identity, but the registry resolves by
-        # full <hf_repo>/<filename>.gguf. Fall back to the identities
-        # cache so is_installed agrees with what the catalog displays.
-        if model in self.list_native_identities():
-            return True
         try:
             validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:
