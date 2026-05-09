@@ -2912,6 +2912,26 @@ async def test_chat_slash_add_multi_path(tmp_path):
             assert [p.name for p in paths_arg] == ["a.md", "b.md", "c.md"]
 
 
+async def test_chat_slash_add_strips_quotes_on_windows(tmp_path):
+    """On Windows, /add uses shlex(posix=False) so backslash paths survive,
+    but quote characters stay attached to tokens. Verify the quote-stripping
+    pass keeps Path resolution intact. Mocks os.name to avoid platform-gated
+    coverage gaps."""
+    src = tmp_path / "doc.md"
+    src.write_text("hello")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.chat.os") as mock_os,
+            patch.object(app.screen, "_submit_add") as mock_submit,
+        ):
+            mock_os.name = "nt"
+            app.screen._cmd_add(f'"{src}"')
+        mock_submit.assert_called_once()
+        paths_arg = mock_submit.call_args.args[0]
+        assert [p.name for p in paths_arg] == ["doc.md"]
+
+
 async def test_chat_slash_add_unbalanced_quote_notifies():
     """An unmatched quote in /add args is a shlex.split ValueError; surface
     it as an error toast rather than crashing."""

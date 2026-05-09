@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -441,3 +442,31 @@ class TestModelRegistryGetManifest:
     def test_get_manifest_invalid_ref(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         assert registry.get_manifest("not-a-ref") is None
+
+
+class TestModelRegistryGCBlobPathGuard:
+    """``_gc_blob`` refuses to delete cache trees outside ``models_dir``.
+
+    A repo argument whose resolved path falls outside the registry's
+    ``_root`` (symlink trickery, ``..`` traversal) hits the
+    ``validate_path_within`` guard and the function logs + returns
+    instead of removing arbitrary directories.
+    """
+
+    def test_refuses_path_outside_models_dir(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        from lilbee.modelhub import registry as registry_mod
+
+        registry = ModelRegistry(tmp_path)
+        with caplog.at_level(logging.WARNING, logger=registry_mod.__name__), mock.patch(
+            "lilbee.modelhub.registry.validate_path_within",
+            side_effect=ValueError("outside root"),
+        ):
+            registry._gc_blob(_REPO, "deadbeef")
+        assert any(
+            "Refusing to remove cache outside models_dir" in r.message
+            for r in caplog.records
+        )

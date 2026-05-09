@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import shlex
 import threading
 import time
 from collections.abc import Callable
@@ -435,9 +437,6 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
-        import os
-        import shlex
-
         # Platform-aware shell parsing: POSIX rules treat backslashes as
         # escapes, so a Windows path like C:\Users\foo gets mangled to
         # C:Usersfoo. shlex(posix=False) keeps backslashes literal but
