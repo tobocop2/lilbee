@@ -6681,15 +6681,20 @@ async def test_app_nav_switches_all_views():
         assert app.active_view == "Catalog"
 
 
-async def test_chat_ctrl_n_p_bindings_exist():
-    """Ctrl+N and Ctrl+P bindings exist on ChatScreen."""
+async def test_chat_ctrl_n_binding_exists():
+    """Ctrl+N is bound on ChatScreen for vim-style cycle-next.
+
+    Ctrl+P is intentionally NOT a screen binding any more; it stays on
+    the app-level command palette and dispatches through
+    LilbeeApp.action_command_palette only when the dropdown is visible.
+    """
     from textual.binding import Binding as B
 
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
     assert "ctrl+n" in keys
-    assert "ctrl+p" in keys
+    assert "ctrl+p" not in keys
 
 
 async def test_chat_input_history_tracking():

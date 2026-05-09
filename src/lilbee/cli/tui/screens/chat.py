@@ -1348,24 +1348,20 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Ctrl+P: move highlight UP in the visible dropdown, else open the palette.
+        """Move highlight UP in the visible dropdown, mirror of complete_next.
 
-        Ctrl+P is normally Textual's command-palette key. The chat screen
-        only steals it while the completion dropdown is up so the user can
-        page backward (vim ``<C-p>`` semantics). With nothing to navigate,
-        Ctrl+P falls through to the app's palette so the global behavior
-        is preserved everywhere else.
+        Production dispatch goes through :meth:`LilbeeApp.action_command_palette`
+        (which steals Ctrl+P only when the dropdown is visible) and from there
+        directly to the overlay. This method stays addressable for direct
+        callers / tests that want the full show-or-cycle behavior symmetric
+        with :meth:`action_complete_next`.
         """
-        overlay = self._completion_overlay
         inp = self._chat_input
-        if overlay.is_visible and inp.has_focus:
-            overlay.cycle_prev()
-            return
         if not inp.has_focus:
             return
-        # No dropdown to page through; behave like the default Ctrl+P.
-        if self.app.ENABLE_COMMAND_PALETTE:
-            self.app.action_command_palette()
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_prev()
             return
 
         options = get_completions(inp.value)
