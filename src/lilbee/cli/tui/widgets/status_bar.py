@@ -56,9 +56,11 @@ class ViewTab(Label, can_focus=True):
     def set_active(self, active: bool) -> None:
         self.set_class(active, "-active")
         if active:
-            # Bold + accent + underline reads as a clear border-like
-            # marker without the inverted/black-looking pill background.
-            self.update(Content.styled(f"  {self.view_name}  ", "bold underline $accent"))
+            # Bold $primary on a $surface background pill, mirroring the
+            # Settings sub-tab aesthetic (#settings-tabs Tab.-active in
+            # screens/settings.tcss). Background comes from the .-active
+            # CSS class so the pill fills the padded label region.
+            self.update(Content.styled(f"  {self.view_name}  ", "bold $primary"))
         else:
             self.update(Content.assemble((f"  {self.view_name}  ", "dim")))
 

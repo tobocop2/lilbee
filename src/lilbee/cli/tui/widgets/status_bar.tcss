@@ -22,6 +22,14 @@ ViewTabs Static {
     text-style: bold;
 }
 
+/* Active tab gets a $boost-on-$primary pill. Mirrors the Settings sub-tab
+ * aesthetic (#settings-tabs Tab.-active in screens/settings.tcss) so both
+ * navigation levels read as the same highlighted pill, not a thin
+ * underline + bare text. */
+.view-tab.-active {
+    background: $boost;
+}
+
 /* Visible focus ring when keyboard reaches a view tab via Tab. */
 .view-tab:focus {
     text-style: bold underline;

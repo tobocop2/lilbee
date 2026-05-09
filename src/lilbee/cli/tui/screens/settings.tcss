@@ -33,26 +33,25 @@ SettingsScreen {
         padding: 0 1;
     }
 
-    /* Settings sub-tabs adopt the same look as the top ViewTabs strip:
-     * active tab is bold + underlined in $accent regardless of focus,
-     * inactive tabs stay dim. Two navigation levels speak the same
-     * dialect, no separate "focused vs unfocused active" treatment.
+    /* Settings sub-tabs: bold $primary text on a $surface background pill
+     * for the active tab, dim text for inactive. Top-level ViewTabs share
+     * this aesthetic so navigation reads the same at both levels.
      */
     #settings-tabs Tab {
         padding: 0 2;
         color: $text-muted;
     }
     #settings-tabs Tab.-active {
-        color: $accent;
-        text-style: bold underline;
-        background: transparent;
+        color: $primary;
+        text-style: bold;
+        background: $surface;
     }
     #settings-tabs Tabs:focus Tab.-active {
         color: $accent;
         text-style: bold underline;
     }
     #settings-tabs Underline {
-        color: $accent;
+        color: $primary;
     }
 
     .api-keys-warning {
