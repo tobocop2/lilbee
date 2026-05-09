@@ -56,8 +56,8 @@ def _hint_for(text: str) -> Content | None:
     cmd = _REGISTRY.get(head)
     if cmd is None:
         return None
-    if " " not in text and not cmd.args_hint:
-        return None
+    # No trailing space yet means the user is still composing the command
+    # name itself; do not crowd them with the hint until they advance.
     if " " not in text:
         return None
 

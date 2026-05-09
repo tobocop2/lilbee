@@ -1,18 +1,21 @@
 """Always-visible chip that points new users at the slash-command catalog and the keybinding panel.
 
-Sits above the Footer in BottomBars. Clicking it opens the
-:class:`SlashCommandCatalog` modal; the chip is otherwise passive (it reflects
-state, not stores it).
+Sits above the Footer in BottomBars. Clicking it asks the chat screen to open
+the catalog modal; the chip is otherwise passive (it reflects state, not
+stores it).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import events
 from textual.content import Content
 from textual.widgets import Static
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
 _CSS_FILE = Path(__file__).parent / "help_hint.tcss"
 
@@ -35,17 +38,13 @@ class HelpHint(Static):
         super().__init__(body, id=id)
 
     def on_click(self, event: events.Click) -> None:
+        # Defer to the hosting screen so the chip stays UI-only and the
+        # screen owns the modal-push + insert flow that already exists for
+        # the /help slash command.
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen: ChatScreen = self.screen  # type: ignore[assignment]
+        if not isinstance(screen, ChatScreen):
+            return
         event.stop()
-        from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
-
-        from_screen = self.screen
-        catalog_screen = SlashCommandCatalog()
-
-        def _on_pick(name: str | None) -> None:
-            if name is None:
-                return
-            handler = getattr(from_screen, "insert_slash_command", None)
-            if callable(handler):
-                handler(name)
-
-        self.app.push_screen(catalog_screen, _on_pick)
+        screen.action_show_command_catalog()

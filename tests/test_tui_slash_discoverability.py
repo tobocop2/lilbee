@@ -248,6 +248,178 @@ class TestSlashCommandCatalogAsync:
             await pilot.pause()
             assert app.last_pick is None  # type: ignore[attr-defined]
 
+    async def test_filter_match_by_alias(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            filter_input = app.screen.query_one("#catalog-filter", Input)
+            # "exit" is an alias of /quit but does NOT appear in any command
+            # name; filtering by it must surface /quit via the alias-match
+            # branch (not the name-match branch).
+            filter_input.value = "exit"
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            ids = [
+                ol.get_option_at_index(i).id
+                for i in range(ol.option_count)
+                if ol.get_option_at_index(i).id is not None
+            ]
+            assert "/quit" in ids
+
+    async def test_enter_in_filter_picks_first_match(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            filter_input = app.screen.query_one("#catalog-filter", Input)
+            filter_input.value = "wiki"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.last_pick == "/wiki"  # type: ignore[attr-defined]
+
+    async def test_enter_with_no_match_stays_open(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            filter_input = app.screen.query_one("#catalog-filter", Input)
+            filter_input.value = "xxxnotacommandxxx"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # No runnable match means dismissal does not fire.
+            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+
+    async def test_action_select_picks_highlighted(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            # Highlight the first runnable option (0 is a header).
+            target = None
+            for i in range(ol.option_count):
+                if ol.get_option_at_index(i).id is not None:
+                    target = i
+                    break
+            assert target is not None
+            ol.highlighted = target
+            picked = ol.get_option_at_index(target).id
+            app.screen.action_select()
+            await pilot.pause()
+            assert app.last_pick == picked  # type: ignore[attr-defined]
+
+    async def test_option_list_message_dismisses_with_command(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            # Find a runnable option and synthesize the OptionSelected message
+            # the way OptionList itself would on click/enter.
+            target_opt = None
+            target_index = None
+            for i in range(ol.option_count):
+                opt = ol.get_option_at_index(i)
+                if opt.id is not None:
+                    target_opt = opt
+                    target_index = i
+                    break
+            assert target_opt is not None and target_index is not None
+            event = OptionList.OptionSelected(option_list=ol, option=target_opt, index=target_index)
+            app.screen.on_option_list_option_selected(event)
+            await pilot.pause()
+            assert app.last_pick == target_opt.id  # type: ignore[attr-defined]
+
+    async def test_option_list_message_with_disabled_header_no_op(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            header_opt = None
+            header_index = None
+            for i in range(ol.option_count):
+                opt = ol.get_option_at_index(i)
+                if opt.id is None:
+                    header_opt = opt
+                    header_index = i
+                    break
+            assert header_opt is not None and header_index is not None
+            event = OptionList.OptionSelected(option_list=ol, option=header_opt, index=header_index)
+            app.screen.on_option_list_option_selected(event)
+            await pilot.pause()
+            # Header rows have no command id, so dismissal must not fire.
+            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+
+    async def test_input_changed_for_unrelated_input_ignored(self) -> None:
+        # Synthesize an Input.Changed for a different widget to drive the
+        # early-return guard in on_input_changed.
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            other = Input(id="not-the-filter")
+            await app.screen.mount(other)
+            await pilot.pause()
+            # Triggering on_input_changed for a foreign id must not crash
+            # or rebuild the list (we just confirm the call returns cleanly).
+            app.screen.on_input_changed(Input.Changed(input=other, value="hello"))
+            await pilot.pause()
+            await other.remove()
+
+    async def test_input_submitted_for_unrelated_input_ignored(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            other = Input(id="not-the-filter")
+            await app.screen.mount(other)
+            await pilot.pause()
+            app.screen.on_input_submitted(Input.Submitted(input=other, value="hello"))
+            await pilot.pause()
+            await other.remove()
+            # Should not have dismissed.
+            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+
+    async def test_action_select_swallows_indexerror(self) -> None:
+        # Defensive guard: if the highlighted index races with a list
+        # rebuild and goes stale, action_select must not crash.
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            ol.highlighted = 0  # set to anything; we'll force the lookup to fail
+            with mock.patch.object(ol, "get_option_at_index", side_effect=IndexError):
+                app.screen.action_select()
+            await pilot.pause()
+            assert app.last_pick == "<unset>"  # type: ignore[attr-defined]
+
+    async def test_action_select_with_no_highlight_falls_through(self) -> None:
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            ol.highlighted = None
+            app.screen.action_select()
+            await pilot.pause()
+            # First runnable option fires.
+            assert app.last_pick is not None  # type: ignore[attr-defined]
+            assert str(app.last_pick).startswith("/")  # type: ignore[attr-defined]
+
+    async def test_unknown_group_member_is_skipped(self, monkeypatch) -> None:
+        # If CATALOG_GROUPS lists a name that vanished from the registry,
+        # the unknown row is silently skipped (defensive, no crash).
+        from lilbee.cli.tui.widgets import slash_command_catalog as scc
+
+        bogus = scc.CatalogGroup("BOGUS", ("/this-does-not-exist",))
+        monkeypatch.setattr(scc, "CATALOG_GROUPS", (*scc.CATALOG_GROUPS, bogus))
+        app = _CatalogOnlyApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            # No option carries the bogus id.
+            ids = [
+                ol.get_option_at_index(i).id
+                for i in range(ol.option_count)
+                if ol.get_option_at_index(i).id is not None
+            ]
+            assert "/this-does-not-exist" not in ids
+
 
 class TestChatScreenIntegrationAsync:
     async def test_help_command_opens_catalog(self, _mock_resolve, _mock_services) -> None:
@@ -285,6 +457,25 @@ class TestChatScreenIntegrationAsync:
         async with app.run_test():
             hint = app.screen.query_one("#arg-hint", ArgHintLine)
             assert hint is not None
+
+    async def test_help_hint_click_opens_catalog(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.click("#help-hint")
+            await pilot.pause()
+            assert isinstance(app.screen, SlashCommandCatalog)
+
+    async def test_help_hint_click_no_op_off_chat_screen(self) -> None:
+        class _BareApp(LilbeeAppHost):
+            def compose(self) -> ComposeResult:
+                yield HelpHint(id="help-hint")
+
+        bare = _BareApp()
+        async with bare.run_test() as pilot:
+            await pilot.click("#help-hint")
+            await pilot.pause()
+            assert not isinstance(bare.screen, SlashCommandCatalog)
 
 
 class TestPlaceholderCopy:
