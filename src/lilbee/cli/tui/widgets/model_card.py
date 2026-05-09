@@ -110,8 +110,9 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
     parts: list[Content] = [name, pill_line, specs]
     if status is not None:
         parts.append(status)
-    if selected and not row.installed:
-        parts.append(Content.styled(msg.SETUP_CARD_HINT, "$text-muted 40% italic"))
+    if selected:
+        hint = msg.INSTALLED_CARD_HINT if row.installed else msg.SETUP_CARD_HINT
+        parts.append(Content.styled(hint, "$text-muted 40% italic"))
     return Content("\n").join(parts)
 
 

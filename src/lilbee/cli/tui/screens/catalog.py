@@ -67,6 +67,7 @@ from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
+from lilbee.modelhub.model_manager.types import ModelSource
 from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import compute_fit
 
@@ -133,7 +134,7 @@ class CatalogScreen(Screen[None]):
         "## Actions\n"
         "- Enter: install the highlighted model (or activate, if cloud).\n"
         "- Space: toggle select.\n"
-        "- d / x: delete an installed model (two presses to confirm).\n"
+        "- d / Backspace / x: delete an installed model (two presses to confirm).\n"
         "- i: open the info modal for the highlighted card.\n"
         "- Right Arrow: expand a family card to show its size variants.\n\n"
         "## Filters and views\n"
@@ -161,7 +162,12 @@ class CatalogScreen(Screen[None]):
         Binding("escape", "dismiss_filter", "", show=False),
         Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
-        Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
+        # Delete sits outside _ACTION_GROUP so the footer renders it as
+        # its own "D Delete" entry rather than collapsing it into the
+        # compact "qv/di Actions" pill. Removing an installed model
+        # needs to be obvious, not buried.
+        Binding("d", "delete_model", "Delete", show=True),
+        Binding("backspace", "delete_model", "Delete", show=False),
         Binding("x", "delete_model", "Delete", show=False),
         Binding("i", "show_info", "Info", show=True, group=_ACTION_GROUP),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
@@ -1780,8 +1786,7 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_SELECT_TO_DELETE, severity="warning")
             return
 
-        mgr = get_services().model_manager
-        if not mgr.is_installed(model_name):
+        if not self._row_is_installed(model_name):
             self.notify(msg.CATALOG_NOT_INSTALLED.format(name=model_name), severity="warning")
             return
 
@@ -1791,6 +1796,34 @@ class CatalogScreen(Screen[None]):
         else:
             self._pending_delete = model_name
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
+
+    def _row_is_installed(self, model_name: str) -> bool:
+        """True if *model_name* names an installed native or remote model.
+
+        ``_installed_names`` carries both the full ``<repo>/<file>.gguf``
+        ref and the bare ``hf_repo`` for every installed native model,
+        so it answers either ref shape; remote presence is asked of the
+        manager directly.
+        """
+        if model_name in self._installed_names:
+            return True
+        return get_services().model_manager.is_installed(model_name, ModelSource.REMOTE)
+
+    def _resolve_delete_ref(self, identity: str) -> str:
+        """Pick the single registry ref that deleting *identity* maps to.
+
+        Featured / HF browse rows surface a bare hf_repo while the
+        registry deletes by ``<hf_repo>/<file>.gguf``. Bare repos
+        resolve to the lexicographically-first matching installed
+        manifest; full refs and remote names pass through.
+        """
+        if "/" in identity and identity.endswith(".gguf"):
+            return identity
+        prefix = identity + "/"
+        matches = sorted(n for n in self._installed_names if n.startswith(prefix))
+        if matches:
+            return matches[0]
+        return identity
 
     def _get_highlighted_model_name(self) -> str | None:
         """Return the registry-compatible model ref for the focused/highlighted row."""
@@ -1815,8 +1848,9 @@ class CatalogScreen(Screen[None]):
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
+        delete_ref = self._resolve_delete_ref(model_name)
         try:
-            removed = get_services().model_manager.remove(model_name)
+            removed = get_services().model_manager.remove(delete_ref)
             if removed:
                 call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
                 call_from_thread(self, self._refresh_after_delete)
