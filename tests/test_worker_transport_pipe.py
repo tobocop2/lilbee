@@ -643,6 +643,20 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
             child_health.close()
 
 
+def test_reader_main_short_circuits_when_async_setup_incomplete() -> None:
+    """``_reader_main`` returns immediately when ``_reader_loop`` /
+    ``_frame_queue`` haven't been wired up yet. Without this guard a thread
+    would spin on a recv() against the data pipe with no consumer."""
+
+    class _DummyChannel:
+        _reader_loop: Any = None
+        _frame_queue: Any = None
+        _conn: Any = None  # never read because we early-return
+
+    # Bind the real method to the dummy via descriptor protocol.
+    PipeChannel._reader_main(_DummyChannel())  # must return cleanly
+
+
 def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
     """Without LILBEE_DATA the log path resolver returns None."""
     from lilbee.providers.worker.transport_pipe import _worker_log_path

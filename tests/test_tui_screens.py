@@ -2912,6 +2912,17 @@ async def test_chat_slash_add_multi_path(tmp_path):
             assert [p.name for p in paths_arg] == ["a.md", "b.md", "c.md"]
 
 
+async def test_chat_slash_add_unbalanced_quote_notifies():
+    """An unmatched quote in /add args is a shlex.split ValueError; surface
+    it as an error toast rather than crashing."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_add('"unclosed')
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.kwargs.get("severity") == "error"
+
+
 async def test_chat_slash_add_quoted_path_with_spaces(tmp_path):
     """Quoted paths with spaces survive shlex parsing."""
     spaced_dir = tmp_path / "with space"

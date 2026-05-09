@@ -415,6 +415,41 @@ class _TaskBarApp(LilbeeAppHost):
 
 
 class TestTaskBar:
+    async def test_spawning_workers_template_singular(self) -> None:
+        """Single role -> 'Starting <role> worker...'."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert bar._spawning_workers_template(["chat"]) == "Starting chat worker..."
+
+    async def test_spawning_workers_template_plural(self) -> None:
+        """Multiple roles -> 'Starting <a>, <b> workers...'."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            out = bar._spawning_workers_template(["chat", "embed"])
+            assert out == "Starting chat, embed workers..."
+
+    async def test_renders_spawning_summary_when_idle_with_spawn(self) -> None:
+        """When idle except for in-flight worker spawns, the bar surfaces the
+        'Starting <role> worker...' summary instead of hiding."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app.task_bar.mark_role_spawning("chat")
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
     async def test_hidden_when_empty(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
