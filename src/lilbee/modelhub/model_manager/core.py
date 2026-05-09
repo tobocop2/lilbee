@@ -120,6 +120,12 @@ class ModelManager:
     def _is_native(self, model: str) -> bool:
         if self._registry.is_installed(model):
             return True
+        # Bare hf_repo (e.g. "Qwen/Qwen3-0.6B-GGUF"): TUI catalog rows
+        # carry only the repo identity, but the registry resolves by
+        # full <hf_repo>/<filename>.gguf. Fall back to the identities
+        # cache so is_installed agrees with what the catalog displays.
+        if model in self.list_native_identities():
+            return True
         try:
             validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:
@@ -228,6 +234,18 @@ class ModelManager:
         if self._registry.remove(model):
             log.info("Removed native model %s from registry", model)
             return True
+        # Bare hf_repo: remove every installed manifest under that repo.
+        # Catalog rows are keyed by hf_repo, so D in the TUI passes the
+        # bare form here even when one or more quants are installed.
+        repo_refs = [m.ref for m in self._registry.list_installed() if m.hf_repo == model]
+        if repo_refs:
+            removed_any = False
+            for ref in repo_refs:
+                if self._registry.remove(ref):
+                    log.info("Removed native model %s from registry", ref)
+                    removed_any = True
+            if removed_any:
+                return True
         try:
             path = validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:
