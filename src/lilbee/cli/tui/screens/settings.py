@@ -318,14 +318,20 @@ class SettingsScreen(Screen[None]):
         self._persist_value(name, defn, value)
 
     def _persist_value(self, key: str, defn: SettingDef, raw: str, *, quiet: bool = False) -> None:
-        """Parse, apply, and persist a setting value."""
+        """Parse, apply, and persist a setting value.
+
+        No success toast: the editor already shows the new value and the
+        write is silently persisted. Tab-cycling between sub-tabs blurs
+        the focused input, which fires Input.Blurred -> _on_input_save
+        en masse; one toast per blur is just noise. Errors still toast
+        so the user sees why a value didn't take.
+        """
         try:
             parsed = self._parse_value(defn, raw)
             # set_setting handles theme live-apply, signal publish, etc.
             self.app.set_setting(key, parsed)
-            if not quiet:
-                self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
+            _ = quiet  # accepted for API compatibility; success path is now always silent
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
 

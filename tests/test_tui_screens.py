@@ -711,6 +711,47 @@ async def test_settings_persist_on_change():
         assert cfg.top_k == 20
 
 
+async def test_settings_persist_value_does_not_toast_on_success():
+    """Saving a setting (Input.Blurred / Input.Submitted / Checkbox.Changed
+    etc.) must NOT pop a success toast. The editor already shows the new
+    value and the write is persisted; the toast is noise that fires en
+    masse when a user pages through tabs and blurs the prior pane's
+    inputs. Errors still toast."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-top_k", Input)
+        editor.focus()
+        editor.value = "21"
+        with patch.object(app.screen, "notify") as mock_notify:
+            await pilot.press("enter")
+            await pilot.pause()
+        # Persist must have happened (cfg updated)...
+        assert cfg.top_k == 21
+        # ...but no success toast.
+        assert mock_notify.call_count == 0, (
+            f"unexpected toast on settings save: {mock_notify.call_args_list}"
+        )
+
+
+async def test_settings_persist_value_still_toasts_on_error():
+    """Error path keeps its toast: the user has to know why a value didn't take."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        from lilbee.cli.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["top_k"]
+        with patch.object(screen, "notify") as mock_notify:
+            screen._persist_value("top_k", defn, "not_an_int")
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.kwargs.get("severity") == "error"
+
+
 async def test_settings_first_pane_populate_is_deferred():
     """The first-pane content build must be queued via call_after_refresh,
     not invoked from on_mount. Running mount_all for ~25 editor widgets
