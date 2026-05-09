@@ -940,6 +940,35 @@ class TestMinimalFooter:
         # 5 baseline + 2 visible tab-cycling bindings (Next tab / Prev tab).
         assert len(visible) <= 7
 
+    def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
+        """D, Backspace, and the legacy X all delete an installed model.
+
+        Backspace is the natural reach on every keyboard; D is the
+        documented hotkey; X stays as a hidden alias for muscle memory.
+        """
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        delete_keys = {
+            b.key
+            for b in CatalogScreen.BINDINGS
+            if isinstance(b, Binding) and b.action == "delete_model"
+        }
+        assert delete_keys == {"d", "backspace", "x"}
+
+    def test_catalog_delete_binding_is_ungrouped(self) -> None:
+        """The D Delete entry stands alone in the footer instead of
+        collapsing into the compact Actions group, so users see a
+        labelled delete affordance at all times."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        d_binding = next(
+            b
+            for b in CatalogScreen.BINDINGS
+            if isinstance(b, Binding) and b.key == "d" and b.action == "delete_model"
+        )
+        assert d_binding.show is True
+        assert d_binding.group is None
+
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 

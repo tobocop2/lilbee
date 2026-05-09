@@ -145,7 +145,7 @@ class CatalogScreen(Screen[None]):
         "## Actions\n"
         "- Enter: install the highlighted model (or activate, if cloud).\n"
         "- Space: toggle select.\n"
-        "- d / x: delete an installed model (two presses to confirm).\n"
+        "- d / Backspace / x: delete an installed model (two presses to confirm).\n"
         "- i: open the info modal for the highlighted card.\n"
         "- Right Arrow: expand a family card to show its size variants.\n\n"
         "## Filters and views\n"
@@ -173,7 +173,12 @@ class CatalogScreen(Screen[None]):
         Binding("escape", "dismiss_filter", "", show=False),
         Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
-        Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
+        # Delete sits outside _ACTION_GROUP so the footer renders it as
+        # its own "D Delete" entry rather than collapsing it into the
+        # compact "qv/di Actions" pill. Removing an installed model
+        # needs to be obvious, not buried.
+        Binding("d", "delete_model", "Delete", show=True),
+        Binding("backspace", "delete_model", "Delete", show=False),
         Binding("x", "delete_model", "Delete", show=False),
         Binding("i", "show_info", "Info", show=True, group=_ACTION_GROUP),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),

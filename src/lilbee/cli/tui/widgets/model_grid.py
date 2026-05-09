@@ -442,8 +442,9 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     status = _build_local_status(row)
     lines: list[Content] = [name, pill_line, specs]
     lines.append(status if status is not None else Content(""))
-    if selected and not row.installed:
-        lines.append(Content.styled(msg.SETUP_CARD_HINT, "$text-muted 40% italic"))
+    if selected:
+        hint = msg.INSTALLED_CARD_HINT if row.installed else msg.SETUP_CARD_HINT
+        lines.append(Content.styled(hint, "$text-muted 40% italic"))
     else:
         lines.append(Content(""))
     return lines

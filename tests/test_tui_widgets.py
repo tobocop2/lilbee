@@ -5735,6 +5735,19 @@ class TestModelGridCardRendering:
         rendered = "\n".join(str(line) for line in out.lines)
         assert "installed" in rendered
 
+    def test_installed_row_selected_paints_delete_hint(self) -> None:
+        """Highlighting an installed card surfaces the D / Backspace
+        delete affordance so removing a model is discoverable from the
+        card itself, not just the footer."""
+        from lilbee.cli.tui.widgets.model_grid import _render_card_strip
+
+        row = _vgrid_row("phi-3")
+        row.installed = True
+        out = _render_card_strip(row, selected=True, width=40, border_style=_dummy_border_style())
+        rendered = "\n".join(str(line) for line in out.lines)
+        assert "delete" in rendered
+        assert "D" in rendered
+
     def test_frontier_row_renders_provider_and_key_status(self) -> None:
         from lilbee.cli.tui.widgets.model_grid import _render_card_strip
 
