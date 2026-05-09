@@ -109,9 +109,13 @@ class SettingsScreen(Screen[None]):
         # Tab cycles editors inside the active pane and rolls over to the
         # next group tab when you Tab past the last editor (and the
         # previous group tab on shift+Tab past the first editor). Use
-        # ←/→ to switch tabs while focus is on the strip.
+        # > / < to jump straight to the next / previous group tab.
         Binding("tab", "next_field_or_pane", "Next field", show=True),
         Binding("shift+tab", "prev_field_or_pane", "Prev field", show=True),
+        # Direct tab cycling, mirrored from CatalogScreen. priority=True
+        # so the bindings win when an editor input has focus.
+        Binding("greater_than_sign", "cycle_pane(1)", "Next tab", show=True, priority=True),
+        Binding("less_than_sign", "cycle_pane(-1)", "Prev tab", show=True, priority=True),
         Binding("ctrl+r", "reset_focused", "Reset field", show=False),
         Binding("ctrl+shift+r", "reset_all", "Reset all", show=True),
         Binding("j", "scroll_down", "Down", show=False),
@@ -676,6 +680,27 @@ class SettingsScreen(Screen[None]):
     def action_prev_field_or_pane(self) -> None:
         """Shift+Tab inside a pane; on underflow retreat to the previous group tab."""
         self._move_focus_within_pane(direction=-1)
+
+    def action_cycle_pane(self, delta: int) -> None:
+        """Step the active settings tab by *delta*, wrapping around the strip.
+
+        Shortcut for users who don't want to Tab through every field to
+        reach the next group. Mirrors CatalogScreen.action_cycle_tab.
+        """
+        try:
+            tabs = self.query_one("#settings-tabs", TabbedContent)
+        except Exception:
+            return
+        pane_ids = list(self._pane_groups)
+        if not pane_ids:
+            return
+        try:
+            current = pane_ids.index(tabs.active)
+        except ValueError:
+            current = 0
+        next_id = pane_ids[(current + delta) % len(pane_ids)]
+        if tabs.active != next_id:
+            tabs.active = next_id
 
     def _move_focus_within_pane(self, *, direction: int) -> None:
         focused = self.app.focused

@@ -209,6 +209,13 @@ class CatalogScreen(Screen[None]):
         Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
         Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
         Binding("6", "select_tab(5)", "Library", show=False, priority=True),
+        # Discoverable tab cycling. The numeric jumps (1-6) above are quick
+        # but hidden; > / < show in the footer so users learn the affordance.
+        # ctrl+arrow conflicts with macOS desktop-space shortcuts, hence
+        # vim-style angle brackets. priority=True so the active ModelGrid's
+        # own focus cycling doesn't swallow them.
+        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=True, priority=True),
+        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=True, priority=True),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -1356,6 +1363,23 @@ class CatalogScreen(Screen[None]):
             tabs.active = target
         self._active_tab_id_cache = target
 
+    def action_cycle_tab(self, delta: int) -> None:
+        """Step the active tab by *delta*, wrapping around the strip.
+
+        ctrl+right -> next, ctrl+left -> prev. Wraps so the user can spin
+        either direction without hitting an end stop.
+        """
+        from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+        if self._search_focused:
+            return
+        try:
+            current = ALL_TAB_IDS.index(self._active_tab_id_cache)
+        except ValueError:
+            current = 0
+        next_index = (current + delta) % len(ALL_TAB_IDS)
+        self.action_select_tab(next_index)
+
     def action_cycle_source(self) -> None:
         """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.
 
@@ -1962,18 +1986,20 @@ class CatalogScreen(Screen[None]):
         self._load_more()
 
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
-        """Force pagination when wheeling beyond what the grid can scroll.
+        """Force pagination when wheeling beyond what the active scroll can scroll.
 
-        Two cases collapse into one trigger: (1) content already fits the
+        Three collapsed triggers, both views: (1) content already fits the
         viewport so ``max_scroll_y == 0`` and wheel events produce no scroll
         delta, (2) the user has wheeled to ``scroll_y == max_scroll_y`` and
-        further wheels produce no delta. Either way, ``_on_grid_scrolled``
-        never fires so we re-check here and fetch the next page directly.
-        Cooldown prevents a runaway cascade as new rows shift max_scroll_y.
+        further wheels produce no delta, (3) list view has the same problem
+        as grid view -- the scroll watcher only fires on scroll_y changes,
+        so a wheel at max_y is invisible to ``_on_list_scrolled`` /
+        ``_on_grid_scrolled``. Re-check here and fetch the next page
+        directly. Cooldown prevents a cascade as new rows shift max_scroll_y.
         """
-        if not self._grid_view or not self._hf_has_more or self._loading_more:
+        if not self._hf_has_more or self._loading_more:
             return
-        container = self._grid_container
+        container = self._grid_container if self._grid_view else self._list_widget
         max_y = container.max_scroll_y
         if max_y > 0 and container.scroll_y < max_y:
             return

@@ -711,6 +711,58 @@ async def test_settings_persist_on_change():
         assert cfg.top_k == 20
 
 
+async def test_settings_cycle_pane_wraps_through_strip():
+    """> / < jump straight to the next/previous group tab; wraps off either end."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        tabs = screen.query_one("#settings-tabs", TabbedContent)
+        pane_ids = list(screen._pane_groups)
+        assert len(pane_ids) >= 2
+        # Start on the first pane.
+        first = pane_ids[0]
+        tabs.active = first
+        await pilot.pause()
+        # > moves to the next pane.
+        screen.action_cycle_pane(1)
+        await pilot.pause()
+        assert tabs.active == pane_ids[1]
+        # < wraps back when called from the first pane.
+        tabs.active = first
+        await pilot.pause()
+        screen.action_cycle_pane(-1)
+        await pilot.pause()
+        assert tabs.active == pane_ids[-1]
+
+
+async def test_catalog_cycle_tab_wraps_through_strip():
+    """Catalog > / < cycle across model categories with wrap-around."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            screen._active_tab_id_cache = ALL_TAB_IDS[0]
+            with patch.object(screen, "action_select_tab") as mock_select:
+                screen.action_cycle_tab(1)
+                mock_select.assert_called_with(1)
+                # Wrap from last back to first.
+                screen._active_tab_id_cache = ALL_TAB_IDS[-1]
+                mock_select.reset_mock()
+                screen.action_cycle_tab(1)
+                mock_select.assert_called_with(0)
+
+
 async def test_settings_persist_value_does_not_toast_on_success():
     """Saving a setting (Input.Blurred / Input.Submitted / Checkbox.Changed
     etc.) must NOT pop a success toast. The editor already shows the new
@@ -4174,8 +4226,11 @@ async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
                 assert not load_more.called
 
 
-async def test_catalog_mouse_scroll_skipped_in_list_view():
-    """List view must not pirate the wheel trigger from the list watcher."""
+async def test_catalog_mouse_scroll_loads_more_in_list_view_at_max():
+    """List view + scroll_y == max_scroll_y must fire _load_more, same as
+    grid view. Earlier the handler returned early on ``not self._grid_view``,
+    so a wheel at the bottom of the list silently did nothing -- user had
+    to press 'n' to paginate."""
     from textual.events import MouseScrollDown
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -4192,10 +4247,26 @@ async def test_catalog_mouse_scroll_skipped_in_list_view():
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._list_widget)
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
-            with patch.object(screen, "_load_more") as load_more:
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
                 screen.on_mouse_scroll_down(event)
-                assert not load_more.called
+                assert load_more.called
 
 
 async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
@@ -4240,8 +4311,11 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
                 assert not load_more.called
 
 
-async def test_catalog_mouse_scroll_in_list_view_is_ignored():
-    """on_mouse_scroll_down is a no-op outside grid view (list view paginates separately)."""
+async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
+    """List view + scroll_y < max_scroll_y must NOT fire _load_more from
+    the wheel handler. The list scroll watcher (_on_list_scrolled)
+    handles the prefetch threshold while there's still scroll budget;
+    the wheel handler is the safety net for the scroll_y == max_y case."""
     from textual.events import MouseScrollDown
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -4258,8 +4332,24 @@ async def test_catalog_mouse_scroll_in_list_view_is_ignored():
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._list_widget)
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
-            with patch.object(screen, "_load_more") as load_more:
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=50.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
                 screen.on_mouse_scroll_down(event)
                 assert not load_more.called
 
