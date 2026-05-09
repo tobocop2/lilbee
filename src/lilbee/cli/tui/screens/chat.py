@@ -41,10 +41,13 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remove_copied_files,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
@@ -126,6 +129,7 @@ class ChatScreen(Screen[None]):
     _chat_input = getters.query_one("#chat-input", ChatInput)
     _chat_log = getters.query_one("#chat-log", VerticalScroll)
     _completion_overlay = getters.query_one("#completion-overlay", CompletionOverlay)
+    _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
@@ -213,8 +217,10 @@ class ChatScreen(Screen[None]):
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
                 )
+                yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
+            yield HelpHint(id="help-hint")
             yield Footer()
 
     def on_mount(self) -> None:
@@ -736,7 +742,23 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
-        self.app.action_show_help_panel()
+        self.action_show_command_catalog()
+
+    def action_show_command_catalog(self) -> None:
+        """Push the slash-command catalog modal; selected name is inserted into the input."""
+        self.app.push_screen(SlashCommandCatalog(), self._on_catalog_pick)
+
+    def insert_slash_command(self, name: str) -> None:
+        """Drop ``name + ' '`` into the chat input and focus it for argument entry."""
+        self._enter_insert_mode()
+        inp = self._chat_input
+        inp.value = f"{name} "
+        inp.action_end()
+
+    def _on_catalog_pick(self, name: str | None) -> None:
+        if name is None:
+            return
+        self.insert_slash_command(name)
 
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
@@ -1323,12 +1345,21 @@ class ChatScreen(Screen[None]):
 
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
-        """Hide completion overlay when input changes manually."""
+        """Hide completion overlay on manual edits and refresh the arg-hint row."""
         if self._completing:
+            self._refresh_arg_hint()
             return
         overlay = self._completion_overlay
         if overlay.is_visible:
             overlay.hide()
+        self._refresh_arg_hint()
+
+    def _refresh_arg_hint(self) -> None:
+        """Push the current input value into the ArgHintLine."""
+        try:
+            self._arg_hint.update_for_input(self._chat_input.value)
+        except NoMatches:
+            return
 
     def refresh_model_bar(self) -> None:
         """Re-scan installed models and refresh the dropdowns."""
