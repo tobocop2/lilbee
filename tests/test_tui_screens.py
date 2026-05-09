@@ -2547,6 +2547,40 @@ async def test_chat_slash_add_blocked_by_sync(tmp_path):
             assert "Sync in progress" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_add_multi_path(tmp_path):
+    """bb-n7mx: /add must accept multiple space-separated paths and submit them
+    as a single batch (one task, one sync), not silently drop everything past
+    the first token."""
+    a = tmp_path / "a.md"
+    a.write_text("alpha")
+    b = tmp_path / "b.md"
+    b.write_text("beta")
+    c = tmp_path / "c.md"
+    c.write_text("gamma")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_submit_add") as mock_submit:
+            app.screen._cmd_add(f"{a} {b} {c}")
+            mock_submit.assert_called_once()
+            paths_arg = mock_submit.call_args.args[0]
+            assert [p.name for p in paths_arg] == ["a.md", "b.md", "c.md"]
+
+
+async def test_chat_slash_add_quoted_path_with_spaces(tmp_path):
+    """Quoted paths with spaces survive shlex parsing."""
+    spaced_dir = tmp_path / "with space"
+    spaced_dir.mkdir()
+    inner = spaced_dir / "doc.md"
+    inner.write_text("content")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_submit_add") as mock_submit:
+            app.screen._cmd_add(f'"{inner}"')
+            mock_submit.assert_called_once()
+            paths_arg = mock_submit.call_args.args[0]
+            assert [p.name for p in paths_arg] == ["doc.md"]
+
+
 async def test_chat_slash_cancel():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2757,6 +2791,36 @@ async def test_chat_refresh_model_bar():
         with patch.object(bar, "refresh_models") as mock_refresh:
             app.screen.refresh_model_bar()
             mock_refresh.assert_called_once()
+
+
+async def test_model_bar_refreshes_on_chat_model_signal():
+    """bb-q6zh: external activations (Catalog, /set chat_model, settings UI) publish on
+    settings_changed_signal; the bottom model-bar button must repaint without a
+    manual refresh."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        chat_btn = bar.query_one("#chat-model-button", ModelPickerButton)
+        with patch.object(chat_btn, "_refresh") as mock_refresh:
+            app.settings_changed_signal.publish(("chat_model", "qwen3:0.6b"))
+            await _pilot.pause()
+            mock_refresh.assert_called()
+
+
+async def test_model_bar_refreshes_on_embedding_model_signal():
+    """Embedding-model picker button mirrors chat-button signal handling."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        embed_btn = bar.query_one("#embed-model-button", ModelPickerButton)
+        with patch.object(embed_btn, "_refresh") as mock_refresh:
+            app.settings_changed_signal.publish(("embedding_model", "nomic-embed-text:latest"))
+            await _pilot.pause()
+            mock_refresh.assert_called()
 
 
 async def test_chat_input_changed_hides_overlay():
@@ -5759,7 +5823,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
 
             def _run_worker() -> None:
-                app.screen._do_add(test_file, reporter)
+                app.screen._do_add([test_file], reporter)
 
             thread = threading.Thread(target=_run_worker)
             thread.start()
@@ -5803,7 +5867,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
 
         def _run_worker() -> None:
             try:
-                app.screen._do_add(test_file, reporter)
+                app.screen._do_add([test_file], reporter)
             except Exception as exc:
                 captured["exc"] = exc
 
@@ -7729,6 +7793,23 @@ class TestWikiDisplayPageMissing:
 
 
 class TestWikiCoverageEdgeCases:
+    async def test_on_show_reloads_pages(self, tmp_path):
+        """bb-rfa6: out-of-band wiki builds (`lilbee wiki build` from another shell)
+        and incremental wiki updates must surface in the TUI without a restart;
+        on_show triggers a fresh sidebar scan."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch.object(screen, "_load_pages") as mock_load:
+                screen.on_show()
+                mock_load.assert_called_once_with()
+            await pilot.pause()
+
     async def test_load_pages_exception_path(self, tmp_path):
         """Exception in list_pages falls back to empty list."""
         cfg.wiki = True

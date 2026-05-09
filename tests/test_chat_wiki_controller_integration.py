@@ -112,7 +112,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                         "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
                     ),
                 ):
-                    screen._do_add(src, reporter)
+                    screen._do_add([src], reporter)
             except Exception as e:  # pragma: no cover
                 exc.append(e)
 
@@ -163,7 +163,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                         ),
                     ),
                 ):
-                    screen._do_add(src, reporter, force=True)
+                    screen._do_add([src], reporter, force=True)
             except Exception as e:  # pragma: no cover
                 exc.append(e)
 
@@ -216,7 +216,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                         ),
                     ),
                 ):
-                    screen._do_add(src, reporter)
+                    screen._do_add([src], reporter)
             except Exception as e:  # pragma: no cover
                 exc.append(e)
 
@@ -702,7 +702,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
                 patch("lilbee.app.ingest.copy_files", return_value=copy_result),
                 patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
-                screen._do_add(src, reporter)
+                screen._do_add([src], reporter)
         except Exception as e:  # pragma: no cover
             exc.append(e)
 
@@ -769,7 +769,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
             # which may not be primed inside this worker thread (Windows CI).
             patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
-            screen._do_add(src, reporter)
+            screen._do_add([src], reporter)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -845,7 +845,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
             patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
-            screen._do_add(src, reporter)
+            screen._do_add([src], reporter)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -933,7 +933,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
                 ),
                 patch("lilbee.cli.tui.screens.chat.remove_copied_files"),
             ):
-                screen._do_add(src, reporter)
+                screen._do_add([src], reporter)
         except Exception as e:
             captured.append(e)
 

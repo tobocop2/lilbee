@@ -109,7 +109,7 @@ class TestDoAddCancelCleanup:
             patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(_Cancelled),
         ):
-            screen._do_add(target, reporter)
+            screen._do_add([target], reporter)
 
         # File copied into documents/ must be gone after cancel.
         assert not target.exists()
@@ -148,6 +148,6 @@ class TestDoAddCancelCleanup:
             patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
             pytest.raises(RuntimeError, match="Sync failed"),
         ):
-            screen._do_add(target, reporter)
+            screen._do_add([target], reporter)
 
         assert not target.exists()

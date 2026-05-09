@@ -441,6 +441,23 @@ class ModelBar(Widget, can_focus=False):
     def on_mount(self) -> None:
         self._refresh_cloud_warning()
         self._scan_models()
+        # External activation paths (Catalog screen, /model setting, settings UI)
+        # publish on this signal but don't reach this widget's _refresh otherwise.
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        key, _ = payload
+        if key == "chat_model":
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
+            self._refresh_cloud_warning()
+            self._refresh_chat_mode_toggle()
+        elif key == "embedding_model":
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
 
     @work(thread=True)
     def _scan_models(self) -> None:

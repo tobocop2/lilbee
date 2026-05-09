@@ -138,6 +138,12 @@ class WikiScreen(Screen[None]):
     def on_mount(self) -> None:
         self._load_pages()
 
+    def on_show(self) -> None:
+        """Re-scan on focus so out-of-band builds (`lilbee wiki build` from a
+        sibling shell) and incremental wiki updates land without a TUI restart.
+        """
+        self._load_pages()
+
     def reload(self) -> None:
         """Refresh the sidebar from disk. Public entry point for external callers."""
         self._load_pages()

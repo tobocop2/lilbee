@@ -435,59 +435,76 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
-        path = Path(args).expanduser()
-        if not path.exists():
-            self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
+        import shlex
+
+        try:
+            tokens = shlex.split(args)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        paths = [Path(token).expanduser() for token in tokens]
+        missing = [p for p in paths if not p.exists()]
+        if missing:
+            self.notify(
+                msg.CMD_ADD_NOT_FOUND.format(path=", ".join(str(p) for p in missing)),
+                severity="error",
+            )
             return
         # Directory adds are whole-tree copies handled by copy_files'
         # recursion; a same-named subdir in documents_dir is not a clean
         # "duplicate file" signal, so skip the prompt there and let
         # copy_files emit its per-file skipped notices.
-        dest = cfg.documents_dir / path.name
-        if path.is_file() and dest.exists():
-            self._prompt_overwrite(path)
+        duplicates = [p for p in paths if p.is_file() and (cfg.documents_dir / p.name).exists()]
+        if duplicates:
+            self._prompt_overwrite(paths, duplicates)
             return
-        self._submit_add(path, force=False)
+        self._submit_add(paths, force=False)
 
-    def _prompt_overwrite(self, path: Path) -> None:
-        """Ask to overwrite an existing copy before re-syncing."""
+    def _prompt_overwrite(self, paths: list[Path], duplicates: list[Path]) -> None:
+        """Ask to overwrite existing copies before re-syncing."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        names = ", ".join(p.name for p in duplicates)
 
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
-                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=path.name))
+                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=names))
                 return
-            self._submit_add(path, force=True)
+            self._submit_add(paths, force=True)
 
         self.app.push_screen(
             ConfirmDialog(
                 msg.CMD_ADD_DUPLICATE_TITLE,
-                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=path.name),
+                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=names),
             ),
             _on_confirm,
         )
 
-    def _submit_add(self, path: Path, *, force: bool) -> None:
+    def _submit_add(self, paths: list[Path], *, force: bool) -> None:
         """Spawn the add worker. Separated so overwrite confirm can reuse it."""
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
+        label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_add(path, reporter, force=force)
+                self._do_add(paths, reporter, force=force)
             finally:
                 self._sync_active = False
 
-        self._task_bar.start_task(f"Add {path.name}", TaskType.ADD, _target, indeterminate=True)
+        self._task_bar.start_task(f"Add {label}", TaskType.ADD, _target, indeterminate=True)
 
-    def _do_add(self, path: Path, reporter: ProgressReporter, *, force: bool = False) -> None:
+    def _do_add(
+        self, paths: list[Path], reporter: ProgressReporter, *, force: bool = False
+    ) -> None:
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
 
-        reporter.update(0, f"Copying {path.name}...", indeterminate=True)
-        copy_result = copy_files([path], force=force)
+        label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
+        reporter.update(0, f"Copying {label}...", indeterminate=True)
+        copy_result = copy_files(paths, force=force)
         copied = copy_result.copied
         for name in copy_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
