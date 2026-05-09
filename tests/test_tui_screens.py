@@ -3923,6 +3923,12 @@ async def test_catalog_action_load_more_triggers_fetch():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._hf_has_more = True
+            # Explicit reset: the auto-fired _fetch_all_hf_models on mount can
+            # set _loading_more=True transiently; under xdist, depending on
+            # event-loop scheduling it may still be True when this test
+            # runs action_load_more, causing _load_more to early-return and
+            # the fetch mock to never be called.
+            screen._loading_more = False
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen.action_load_more()
                 assert fetch.called

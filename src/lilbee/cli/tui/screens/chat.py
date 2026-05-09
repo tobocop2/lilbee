@@ -435,13 +435,21 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
+        import os
         import shlex
 
+        # Platform-aware shell parsing: POSIX rules treat backslashes as
+        # escapes, so a Windows path like C:\Users\foo gets mangled to
+        # C:Usersfoo. shlex(posix=False) keeps backslashes literal but
+        # leaves surrounding quotes attached to tokens, so trim those
+        # before constructing Path objects.
         try:
-            tokens = shlex.split(args)
+            tokens = shlex.split(args, posix=os.name != "nt")
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
+        if os.name == "nt":
+            tokens = [t.strip('"').strip("'") for t in tokens]
         paths = [Path(token).expanduser() for token in tokens]
         missing = [p for p in paths if not p.exists()]
         if missing:
