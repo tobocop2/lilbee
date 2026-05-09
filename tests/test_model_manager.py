@@ -766,69 +766,6 @@ class TestRemoveNativeRegistry:
         assert not registry.is_installed(ref)
 
 
-class TestRemoveByBareHfRepo:
-    """Remove must resolve a bare hf_repo to every installed quant of that repo.
-
-    HF browse rows and featured catalog rows surface a bare ``hf_repo`` to
-    the user, while the registry keys manifests by
-    ``<hf_repo>/<filename>.gguf``. A delete request for the bare repo
-    should clear every quant the registry holds under that repo.
-    """
-
-    def test_remove_with_bare_hf_repo_removes_all_matching_manifests(self, tmp_path: Path) -> None:
-        from lilbee.modelhub.registry import ModelRegistry
-
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-        repo = "Qwen/Qwen3-0.6B-GGUF"
-        ref_q4 = _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q4_k_m.gguf", b"q4data" * 64, repo=repo
-        )
-        ref_q8 = _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q8_0.gguf", b"q8data" * 64, repo=repo
-        )
-
-        registry = ModelRegistry(models_dir)
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-
-        removed = mgr.remove(repo, ModelSource.NATIVE)
-        assert removed is True
-        assert not registry.is_installed(ref_q4)
-        assert not registry.is_installed(ref_q8)
-
-    def test_remove_with_bare_hf_repo_invalidates_cache(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-        repo = "Qwen/Qwen3-0.6B-GGUF"
-        _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q8_0.gguf", b"data" * 64, repo=repo
-        )
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert repo in mgr.list_native_identities()
-        assert mgr.remove(repo, ModelSource.NATIVE) is True
-        assert repo not in mgr.list_native_identities()
-
-    def test_remove_unknown_bare_repo_returns_false(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("Qwen/Qwen3-0.6B-GGUF", ModelSource.NATIVE) is False
-
-    def test_is_installed_stays_strict_for_pull_idempotency(self, tmp_path: Path) -> None:
-        """``is_installed`` keeps the exact-ref contract so ``model pull``
-        of a bare repo with a different quant already installed proceeds
-        instead of short-circuiting as ALREADY_INSTALLED."""
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-        repo = "Qwen/Qwen3-0.6B-GGUF"
-        _install_registry_model(
-            models_dir, tmp_path, "qwen3-0.6b-q4_k_m.gguf", b"q4data" * 64, repo=repo
-        )
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.is_installed(repo, ModelSource.NATIVE) is False
-
-
 class TestDetectProvider:
     def test_localhost_ollama(self) -> None:
         assert detect_backend_name("http://localhost:11434") == "Ollama"

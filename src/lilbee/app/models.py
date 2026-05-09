@@ -328,12 +328,7 @@ def remove_model_data(
     """Remove *ref* and return a typed result with freed size."""
     manager = get_services().model_manager
     manifests = _native_manifest_index()
-    if ref in manifests:
-        size_bytes = manifests[ref].size_bytes
-    else:
-        # Bare hf_repo: a single delete call removes every quant under
-        # that repo, so freed bytes is the sum of those manifests.
-        size_bytes = sum(m.size_bytes for m in manifests.values() if m.hf_repo == ref)
+    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
     removed = manager.remove(ref, source=source)
     return RemoveResult(
         model=ref,

@@ -228,18 +228,6 @@ class ModelManager:
         if self._registry.remove(model):
             log.info("Removed native model %s from registry", model)
             return True
-        # Bare hf_repo: remove every installed manifest under that repo.
-        # Catalog rows are keyed by hf_repo, so D in the TUI passes the
-        # bare form here even when one or more quants are installed.
-        repo_refs = [m.ref for m in self._registry.list_installed() if m.hf_repo == model]
-        if repo_refs:
-            removed_any = False
-            for ref in repo_refs:
-                if self._registry.remove(ref):
-                    log.info("Removed native model %s from registry", ref)
-                    removed_any = True
-            if removed_any:
-                return True
         try:
             path = validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:

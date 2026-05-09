@@ -1860,6 +1860,25 @@ class CatalogScreen(Screen[None]):
             return True
         return get_services().model_manager.is_installed(model_name, ModelSource.REMOTE)
 
+    def _resolve_delete_ref(self, identity: str) -> str:
+        """Resolve a catalog row's identity to the single ref to delete.
+
+        Featured and HF browse rows surface the bare hf_repo, while the
+        registry deletes by ``<hf_repo>/<filename>.gguf``. Pick the one
+        installed manifest under that repo. Full refs and remote names
+        pass through unchanged. Multi-quant repos are an unlikely state
+        for these grids, but if encountered the lexicographically-first
+        match is chosen so a second D press still removes a single
+        model.
+        """
+        if "/" in identity and identity.endswith(".gguf"):
+            return identity
+        prefix = identity + "/"
+        matches = sorted(n for n in self._installed_names if n.startswith(prefix))
+        if matches:
+            return matches[0]
+        return identity
+
     def _get_highlighted_model_name(self) -> str | None:
         """Return the registry-compatible model ref for the focused/highlighted row."""
         if not self._grid_view and self._list_widget.has_focus:
@@ -1883,8 +1902,9 @@ class CatalogScreen(Screen[None]):
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
+        delete_ref = self._resolve_delete_ref(model_name)
         try:
-            removed = get_services().model_manager.remove(model_name)
+            removed = get_services().model_manager.remove(delete_ref)
             if removed:
                 call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
                 call_from_thread(self, self._refresh_after_delete)

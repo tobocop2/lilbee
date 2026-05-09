@@ -479,22 +479,6 @@ class TestRemoveModelData:
         assert result.deleted is True
         assert result.freed_gb == 0.0
 
-    def test_bare_hf_repo_sums_freed_across_quants(self, fake_manager):
-        """Removing by bare hf_repo reports the total freed bytes across
-        every installed quant under that repo."""
-        manifests = {
-            f"{_CHAT_REPO}/Qwen3-0.6B-Q4_K_M.gguf": _manifest(
-                _CHAT_REPO, "Qwen3-0.6B-Q4_K_M.gguf", size=4 * 1024**3, task="chat"
-            ),
-            f"{_CHAT_REPO}/Qwen3-0.6B-Q8_0.gguf": _manifest(
-                _CHAT_REPO, "Qwen3-0.6B-Q8_0.gguf", size=6 * 1024**3, task="chat"
-            ),
-        }
-        with patch("lilbee.app.models._native_manifest_index", return_value=manifests):
-            result = model_mod.remove_model_data(_CHAT_REPO)
-        assert result.freed_gb == 10.0
-        assert fake_manager.remove_calls == [(_CHAT_REPO, None)]
-
 
 class TestRmCmd:
     def test_confirm_declined(self, fake_manager, native_manifests):

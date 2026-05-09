@@ -5931,6 +5931,39 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 # Gate passed: confirmation armed for the bare repo.
                 assert screen._pending_delete == repo
 
+                # Resolver maps the bare repo to the single installed full ref.
+                full_ref = f"{repo}/{filename}"
+                assert screen._resolve_delete_ref(repo) == full_ref
+
+
+async def test_catalog_resolve_delete_ref_picks_one_quant():
+    """Multi-quant repos resolve to a single full ref so a D press
+    deletes one model, never the whole repo."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            repo = "Qwen/Qwen3-0.6B-GGUF"
+            full_q4 = f"{repo}/Qwen3-0.6B-Q4_K_M.gguf"
+            full_q8 = f"{repo}/Qwen3-0.6B-Q8_0.gguf"
+            screen._installed_names = {repo, full_q4, full_q8}
+
+            # Bare repo resolves to one of the installed quants, never both.
+            assert screen._resolve_delete_ref(repo) == full_q4
+            # Full ref passes through unchanged.
+            assert screen._resolve_delete_ref(full_q8) == full_q8
+            # Remote SDK names pass through unchanged.
+            assert screen._resolve_delete_ref("qwen3:0.6b") == "qwen3:0.6b"
+
 
 async def test_catalog_delete_not_installed():
     """Pressing d on a model that is not installed shows warning."""
