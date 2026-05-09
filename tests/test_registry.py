@@ -251,15 +251,63 @@ class TestModelRegistryRemove:
         assert registry.remove(_REF) is True
         assert registry.list_installed() == []
 
-    def test_remove_keeps_cached_blob(self, tmp_path: Path) -> None:
+    def test_remove_deletes_cached_blob(self, tmp_path: Path) -> None:
+        """Manifest and its backing GGUF blob both go away on remove,
+        otherwise the user sees no disk space freed when they delete a
+        model from the catalog."""
         registry = ModelRegistry(tmp_path)
         src = _write_source(tmp_path)
         registry.install(_REPO, _FILENAME, src, _make_manifest())
-        blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
-        blobs_before = list(blob_dir.iterdir())
+        cache_path = tmp_path / f"models--{repo_to_dir(_REPO)}"
+        assert any((cache_path / "blobs").iterdir())
         registry.remove(_REF)
-        # Blob is intentionally left in HF cache; only the manifest is dropped.
-        assert list(blob_dir.iterdir()) == blobs_before
+        # Blob file is gone and the per-repo cache directory is pruned.
+        assert not cache_path.exists()
+
+    def test_remove_wipes_huggingface_cache_cruft(self, tmp_path: Path) -> None:
+        """HF's refs/main and snapshots/<rev>/<filename> live alongside
+        our blob under models--<repo>/. They have to go away too,
+        otherwise the user keeps seeing the per-repo folder after a
+        delete and rightly assumes nothing was freed."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        cache_path = tmp_path / f"models--{repo_to_dir(_REPO)}"
+        # Simulate the structure huggingface_hub leaves behind.
+        (cache_path / "refs").mkdir(parents=True, exist_ok=True)
+        (cache_path / "refs" / "main").write_text("deadbeef")
+        snapshot_dir = cache_path / "snapshots" / "deadbeef"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        (snapshot_dir / _FILENAME).write_text("symlink stand-in")
+        registry.remove(_REF)
+        assert not cache_path.exists()
+
+    def test_remove_keeps_blob_when_another_manifest_references_it(self, tmp_path: Path) -> None:
+        """Two manifests pointing at the same blob digest is rare but
+        must not free the blob until both manifests are gone."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        # Second manifest sharing the same blob digest. install() rehashes
+        # the source so re-using the same source produces the same digest.
+        second_filename = "Qwen3-0.6B-Q8_0-alias.gguf"
+        registry.install(_REPO, second_filename, src, _make_manifest(gguf_filename=second_filename))
+        blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        registry.remove(_REF)
+        assert any(blob_dir.iterdir())  # blob survives because the alias references it
+
+    def test_remove_multi_quant_keeps_other_quants_blob(self, tmp_path: Path) -> None:
+        """Removing one quant must not delete a sibling quant's blob.
+        Each quant has its own digest so the GC keys on digest equality."""
+        registry = ModelRegistry(tmp_path)
+        q4_src = tmp_path / "q4.gguf"
+        q4_src.write_bytes(b"GGUF" + b"\x01" * 50)
+        q8_src = tmp_path / "q8.gguf"
+        q8_src.write_bytes(b"GGUF" + b"\x02" * 100)
+        registry.install(_REPO, "Q4.gguf", q4_src, _make_manifest(gguf_filename="Q4.gguf"))
+        registry.install(_REPO, "Q8.gguf", q8_src, _make_manifest(gguf_filename="Q8.gguf"))
+        registry.remove(f"{_REPO}/Q4.gguf")
+        assert registry.is_installed(f"{_REPO}/Q8.gguf")
 
     def test_remove_missing(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)

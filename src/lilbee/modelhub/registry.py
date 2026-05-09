@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -151,20 +152,57 @@ class ModelRegistry:
         return blob_path
 
     def remove(self, ref: str) -> bool:
-        """Remove a manifest. Does not delete the cached blob."""
+        """Remove a manifest and its backing blob.
+
+        The blob is shared via SHA-256 digest, so it only goes away
+        when no other installed manifest references the same digest.
+        Empty cache directories (``blobs/``, the per-repo ``models--``
+        folder, and the per-repo manifest folder) are pruned so a
+        deleted model leaves no orphan bytes behind.
+        """
         try:
             hf_repo, gguf_filename = parse_hf_ref(ref)
         except ValueError:
             return False
-        manifest_path = self._manifest_path(hf_repo, gguf_filename)
-        if not manifest_path.exists():
+        manifest = self._read_manifest(hf_repo, gguf_filename)
+        if manifest is None:
             return False
+        manifest_path = self._manifest_path(hf_repo, gguf_filename)
         manifest_path.unlink()
         repo_dir = manifest_path.parent
         if repo_dir.exists() and not any(repo_dir.iterdir()):
             repo_dir.rmdir()
-        log.info("Removed manifest for %s (cache file untouched)", ref)
+        if manifest.blob is not None:
+            self._gc_blob(manifest.hf_repo, manifest.blob)
+        log.info("Removed model %s", ref)
         return True
+
+    def _gc_blob(self, hf_repo: str, digest: str) -> None:
+        """Drop blob bytes and HuggingFace cache cruft now that *digest*
+        and possibly the whole repo are unused.
+
+        When the per-repo ``models--<repo>/`` directory has no installed
+        manifests left, the whole directory is wiped so HF's ``refs/``,
+        ``snapshots/``, and stale ``blobs/`` all go with it. Otherwise
+        only the specific blob file is removed when no remaining
+        manifest still references its digest.
+        """
+        cache_path = self._root / f"models--{repo_to_dir(hf_repo)}"
+        try:
+            validate_path_within(cache_path, self._root)
+        except ValueError:
+            log.warning("Refusing to remove cache outside models_dir: %s", cache_path)
+            return
+        siblings = [m for m in self.list_installed() if m.hf_repo == hf_repo]
+        if not siblings:
+            if cache_path.exists():
+                shutil.rmtree(cache_path)
+            return
+        if any(m.blob == digest for m in siblings):
+            return
+        blob_file = cache_path / "blobs" / digest
+        if blob_file.exists():
+            blob_file.unlink()
 
     def list_installed(self) -> list[ModelManifest]:
         """Return manifests for all installed models."""
