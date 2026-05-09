@@ -2968,11 +2968,13 @@ async def test_chat_slash_cancel():
 
 
 async def test_chat_slash_help():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/help")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_models():
@@ -3238,11 +3240,13 @@ async def test_chat_slash_exit():
 
 
 async def test_chat_slash_h():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/h")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_m():

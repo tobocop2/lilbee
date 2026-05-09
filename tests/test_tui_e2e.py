@@ -843,13 +843,15 @@ class TestChatInteractions:
             assert inp.value.startswith("/")
 
     async def test_slash_command_help_opens_panel(self, _mock_resolve):
-        """Typing /help dispatches to the help handler."""
+        """Typing /help opens the slash-command catalog modal."""
+        from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._handle_slash("/help")
             await pilot.pause()
-            assert app.screen.query("HelpPanel")
+            assert isinstance(app.screen, SlashCommandCatalog)
 
     async def test_slash_command_unknown_notifies(self, _mock_resolve):
         """Unknown slash command shows a warning notification."""
