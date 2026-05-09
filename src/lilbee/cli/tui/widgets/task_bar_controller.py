@@ -125,6 +125,11 @@ class TaskBarController:
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
+        # Roles whose worker is currently in the spawn window (1-3 s cold
+        # start). Surfaced as a single TaskBar hint instead of one toast
+        # per role so the chat screen isn't drowned in implementation
+        # detail on first prompt.
+        self.spawning_roles: set[str] = set()
 
     def add_task(
         self,
@@ -198,6 +203,14 @@ class TaskBarController:
     def clear_pending_sync(self) -> None:
         """Drop the pending hint. Called when sync starts so the bar shows live progress instead."""
         self.pending_sync_count = 0
+
+    def mark_role_spawning(self, role: str) -> None:
+        """Add *role* to the set of workers whose pool process is starting."""
+        self.spawning_roles.add(role)
+
+    def mark_role_spawned(self, role: str) -> None:
+        """Drop *role* from the spawn-in-progress set; harmless if already absent."""
+        self.spawning_roles.discard(role)
 
     def start_detect_pending(self) -> None:
         """Run the cheap sync-detection (filesystem walk + hash compare) on a daemon thread.

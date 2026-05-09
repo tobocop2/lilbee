@@ -8,7 +8,6 @@ and ensures consistent messaging.
 from __future__ import annotations
 
 from lilbee.core.config import cfg
-from lilbee.providers.worker.transport import WorkerRole
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
@@ -279,6 +278,11 @@ TASKBAR_HINT_INPUT = "Esc then t for Tasks"
 CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
 CHAT_SOURCES_LABEL = "sources"
 
+STATUS_DOCS_LOAD_FAILED = "(unable to read store)"
+STATUS_DOCS_EMPTY = "(no documents yet)"
+TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
+TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
+
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
 TASK_CENTER_HINT = "r refresh   c cancel   C clear done   q back   j/k navigate"
@@ -333,13 +337,3 @@ MODEL_PICKER_EMBED_TOOLTIP = (
 )
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
-
-
-def worker_starting(role: WorkerRole) -> str:
-    """User-facing notification text fired immediately before a worker spawn."""
-    return f"Starting {role.value.replace('_', ' ').title()} worker..."
-
-
-def worker_ready(role: WorkerRole) -> str:
-    """User-facing notification text fired once the spawned worker is live."""
-    return f"{role.value.replace('_', ' ').title()} worker ready"

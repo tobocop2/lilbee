@@ -403,6 +403,67 @@ class TestStatusArchWorkerError:
         assert isinstance(result, ModelArchInfo)
 
 
+class TestTaskBarSpawningRoles:
+    """``mark_role_spawning`` / ``mark_role_spawned`` route worker spawn
+    lifecycle into the bottom TaskBar instead of toasting on each event.
+    Replaces the prior toast-per-role behaviour."""
+
+    def test_spawning_roles_set_grows_and_shrinks(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+
+        controller = TaskBarController(mock.MagicMock())
+        assert controller.spawning_roles == set()
+        controller.mark_role_spawning("chat")
+        controller.mark_role_spawning("embed")
+        assert controller.spawning_roles == {"chat", "embed"}
+        controller.mark_role_spawned("chat")
+        assert controller.spawning_roles == {"embed"}
+        controller.mark_role_spawned("embed")
+        assert controller.spawning_roles == set()
+
+    def test_spawned_unknown_role_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+
+        controller = TaskBarController(mock.MagicMock())
+        # ``discard`` is the spec; should not raise even if the spawning
+        # event for the role was never seen (e.g. listener registered
+        # after a worker already finished).
+        controller.mark_role_spawned("rerank")
+        assert controller.spawning_roles == set()
+
+
+class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
+    """``_fetch_sources_worker`` returns None on read failure and ``[]``
+    when the store opened cleanly with no documents -- the docs table can
+    then choose between the error placeholder and the routine empty hint."""
+
+    def test_returns_none_on_failure(self) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        screen = StatusScreen.__new__(StatusScreen)
+        services = mock.MagicMock()
+        services.store.get_sources.side_effect = RuntimeError("disk error")
+        with mock.patch(
+            "lilbee.cli.tui.screens.status.get_services",
+            return_value=services,
+        ):
+            result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
+        assert result is None
+
+    def test_returns_empty_list_on_clean_empty_store(self) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        screen = StatusScreen.__new__(StatusScreen)
+        services = mock.MagicMock()
+        services.store.get_sources.return_value = []
+        with mock.patch(
+            "lilbee.cli.tui.screens.status.get_services",
+            return_value=services,
+        ):
+            result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
+        assert result == []
+
+
 class TestAppCanonicalizeFallbackNotice:
     """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
     when canonicalize returns a different effective ref."""
@@ -626,24 +687,6 @@ class TestSettingsPopulatePaneBodyMissing:
                 pane_id="settings-tab-fake", group_name="Fake", items=[]
             )
             screen._populate_pane("settings-tab-fake")
-
-
-class TestWorkerNotificationMessages:
-    """Helpers for spawn-lifecycle notifications route through messages.py."""
-
-    def test_worker_starting_title_cases_role_name(self) -> None:
-        from lilbee.cli.tui.messages import worker_starting
-        from lilbee.providers.worker.transport import WorkerRole
-
-        assert worker_starting(WorkerRole.CHAT) == "Starting Chat worker..."
-        assert worker_starting(WorkerRole.VISION) == "Starting Vision worker..."
-
-    def test_worker_ready_title_cases_role_name(self) -> None:
-        from lilbee.cli.tui.messages import worker_ready
-        from lilbee.providers.worker.transport import WorkerRole
-
-        assert worker_ready(WorkerRole.RERANK) == "Rerank worker ready"
-        assert worker_ready(WorkerRole.EMBED) == "Embed worker ready"
 
 
 class TestServicesPoolListener:

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalGroup, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalGroup, VerticalScroll
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import (
@@ -140,7 +140,12 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        with VerticalScroll(id="settings-scroll"), TabbedContent(id="settings-tabs"):
+        # Container (not VerticalScroll) here -- each tab body is itself a
+        # VerticalScroll, and stacking two scrollables on the same column
+        # tears the layout when the inner one wheels past its top edge
+        # (bb-...-wiki-tear). Only the inner pane scrolls; the outer just
+        # reserves the flex row.
+        with Container(id="settings-scroll"), TabbedContent(id="settings-tabs"):
             yield from self._compose_group_tabs()
         with BottomBars():
             yield TaskBar()
@@ -616,17 +621,40 @@ class SettingsScreen(Screen[None]):
     def action_go_back(self) -> None:
         self.app.switch_view("Chat")
 
+    def _active_pane_body(self) -> _LazyGroupBody | None:
+        """Resolve the currently-active settings tab body (a VerticalScroll).
+
+        j/k/g/G key actions scroll this body directly because the outer
+        ``#settings-scroll`` is a Container, not a scroller -- one column
+        of scrolling per screen, the active tab's pane.
+        """
+        try:
+            tabs = self.query_one("#settings-tabs", TabbedContent)
+        except Exception:
+            return None
+        active = tabs.active
+        if not active:
+            return None
+        try:
+            return self.query_one(f"#{active}-body", _LazyGroupBody)
+        except Exception:
+            return None
+
     def action_scroll_down(self) -> None:
-        self.query_one("#settings-scroll", VerticalScroll).scroll_down()
+        if (body := self._active_pane_body()) is not None:
+            body.scroll_down()
 
     def action_scroll_up(self) -> None:
-        self.query_one("#settings-scroll", VerticalScroll).scroll_up()
+        if (body := self._active_pane_body()) is not None:
+            body.scroll_up()
 
     def action_scroll_home(self) -> None:
-        self.query_one("#settings-scroll", VerticalScroll).scroll_home()
+        if (body := self._active_pane_body()) is not None:
+            body.scroll_home()
 
     def action_scroll_end(self) -> None:
-        self.query_one("#settings-scroll", VerticalScroll).scroll_end()
+        if (body := self._active_pane_body()) is not None:
+            body.scroll_end()
 
     def action_next_field_or_pane(self) -> None:
         """Tab inside a pane; on overflow advance to the next group tab."""

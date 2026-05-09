@@ -23,26 +23,26 @@ SettingsScreen {
         min-height: 0;
     }
 
-    /* Settings sub-tabs adopt the same airline-pill aesthetic as the
-     * top ViewTabs strip: active tab gets a bold accent underline,
-     * inactive tabs stay muted. Two navigation levels speak the same
-     * dialect.
+    /* Settings sub-tabs adopt the same look as the top ViewTabs strip:
+     * active tab is bold + underlined in $accent regardless of focus,
+     * inactive tabs stay dim. Two navigation levels speak the same
+     * dialect, no separate "focused vs unfocused active" treatment.
      */
     #settings-tabs Tab {
         padding: 0 2;
         color: $text-muted;
     }
     #settings-tabs Tab.-active {
-        color: $primary;
-        text-style: bold;
-        background: $surface;
+        color: $accent;
+        text-style: bold underline;
+        background: transparent;
     }
     #settings-tabs Tabs:focus Tab.-active {
         color: $accent;
         text-style: bold underline;
     }
     #settings-tabs Underline {
-        color: $primary;
+        color: $accent;
     }
 
     .api-keys-warning {

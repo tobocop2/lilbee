@@ -180,13 +180,17 @@ class TaskBar(Static):
 
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
-        if idle and pending == 0:
+        spawning_roles = sorted(self._controller.spawning_roles) if idle else []
+        if idle and pending == 0 and not spawning_roles:
             self.display = False
             self._last_render_fingerprint = None
             return
 
         self.display = True
-        if idle and pending > 0:
+        if idle and spawning_roles:
+            dot_color = "$primary"
+            summary = self._spawning_workers_template(spawning_roles)
+        elif idle and pending > 0:
             dot_color = "$text-muted"
             key = self._pending_sync_template(pending)
             summary = key.format(count=pending)
@@ -204,6 +208,7 @@ class TaskBar(Static):
             in_flash,
             self._flash_outcome,
             pending,
+            tuple(spawning_roles),
         )
         if fingerprint == self._last_render_fingerprint:
             return
@@ -213,6 +218,12 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _spawning_workers_template(self, roles: list[str]) -> str:
+        """Render the active worker-warmup hint for the bottom bar."""
+        labels = ", ".join(role.replace("_", " ") for role in roles)
+        template = msg.TASKBAR_STARTING_WORKER if len(roles) == 1 else msg.TASKBAR_STARTING_WORKERS
+        return template.format(labels=labels)
 
     def _pending_sync_template(self, pending: int) -> str:
         """Pick the singular/plural hint, swapping in the Esc-prefixed copy

@@ -218,29 +218,20 @@ class LilbeeApp(App[None]):
         self.task_bar.start_detect_pending()
 
     def _wire_worker_pool_notifications(self) -> None:
-        """Surface worker spawn lifecycle as Textual notifications.
+        """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
         loop, so the listeners marshal back via :meth:`call_from_thread`
-        before touching ``self.notify``. The notifications give the user
-        feedback during the 1-3 s cold-start window per role.
+        before mutating controller state. A single TaskBar hint covers all
+        in-flight roles instead of one toast per role; the chat surface is
+        for user content, not implementation detail.
         """
 
         def _on_spawning(role: WorkerRole) -> None:
-            self.call_from_thread(
-                self.notify,
-                msg.worker_starting(role),
-                severity="information",
-                timeout=2,
-            )
+            self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
 
         def _on_spawned(role: WorkerRole) -> None:
-            self.call_from_thread(
-                self.notify,
-                msg.worker_ready(role),
-                severity="information",
-                timeout=1,
-            )
+            self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
