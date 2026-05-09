@@ -417,19 +417,7 @@ class ChatScreen(Screen[None]):
         self._send_message(text)
 
     def _accept_overlay_selection_on_enter(self) -> bool:
-        """Accept the highlighted completion if it differs from the input.
-
-        Returns True when the keystroke was consumed (input replaced, dropdown
-        hidden) and the caller should NOT submit. Returns False when the
-        selection already matches the input (or the overlay is empty), so the
-        normal submit path runs.
-
-        Inserts a trailing space after the accepted selection so the user can
-        immediately type arguments. This also flips the input out of the
-        "starts with /" command-prefix mode into the args-completion mode,
-        which keeps the auto-show overlay from re-popping with related
-        commands like /models when the user just picked /model.
-        """
+        """Accept the highlight as ``<selection> ``; True if Enter was consumed."""
         overlay = self._completion_overlay
         if not overlay.is_visible:
             return False
@@ -1121,14 +1109,7 @@ class ChatScreen(Screen[None]):
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: dismiss the completion overlay first; otherwise drop into NORMAL mode.
-
-        A visible completion dropdown is the kind of thing the user wants to
-        back out of WITHOUT also leaving INSERT mode (otherwise typing-in-the-
-        path workflows for ``/add`` get stuck behind a half-closed overlay).
-        First Esc hides the overlay; second Esc actually drops to NORMAL.
-        Stream cancel is on Ctrl+C.
-        """
+        """Esc dismisses the overlay if visible; otherwise drops into NORMAL mode."""
         overlay = self._completion_overlay
         if overlay.is_visible:
             overlay.hide()
@@ -1299,14 +1280,7 @@ class ChatScreen(Screen[None]):
         inp.insert("\t")
 
     def action_complete_next(self) -> None:
-        """Ctrl+N: move highlight DOWN in the visible dropdown.
-
-        Highlight-only navigation (vim ``<C-n>`` semantics): does not change
-        the input value, so the dropdown's options/index stay stable across
-        repeated presses. If no dropdown is open, fall through to the
-        original Tab-style "show + insert" behavior so Ctrl+N still works
-        as a one-key trigger from a bare slash.
-        """
+        """Ctrl+N: highlight-only nav when open, else show + insert (vim ``<C-n>``)."""
         inp = self._chat_input
         if not inp.has_focus:
             return
@@ -1348,14 +1322,7 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Move highlight UP in the visible dropdown, mirror of complete_next.
-
-        Production dispatch goes through :meth:`LilbeeApp.action_command_palette`
-        (which steals Ctrl+P only when the dropdown is visible) and from there
-        directly to the overlay. This method stays addressable for direct
-        callers / tests that want the full show-or-cycle behavior symmetric
-        with :meth:`action_complete_next`.
-        """
+        """Highlight-only nav when open, else show + insert (mirror of complete_next)."""
         inp = self._chat_input
         if not inp.has_focus:
             return
@@ -1435,14 +1402,7 @@ class ChatScreen(Screen[None]):
         self._refresh_arg_hint()
 
     def _refresh_completion_overlay(self) -> None:
-        """Auto-show the completion dropdown for COMMAND discovery only.
-
-        Toad-parity for slash commands: typing ``/`` immediately reveals the
-        command set, ``/m`` filters live, prose hides the overlay. Argument
-        completions (paths for ``/add``, model names, settings, themes) stay
-        Tab-triggered so a folder full of files doesn't shove a 20-row
-        dropdown up the moment the user types a space.
-        """
+        """Auto-show the dropdown for COMMAND discovery only; arg completions stay on Tab."""
         overlay = self._completion_overlay
         text = self._chat_input.value
         # Once the user has typed a space, they are in arg-completion mode.

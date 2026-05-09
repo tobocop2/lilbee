@@ -380,13 +380,7 @@ class LilbeeApp(App[None]):
             self.action_show_help_panel()
 
     def action_command_palette(self) -> None:
-        """Ctrl+P: cycle the chat completion dropdown if visible, else open palette.
-
-        The chat screen's slash-command dropdown reuses Ctrl+P for vim-style
-        backward navigation only WHEN it's visible. Everywhere else (and on
-        every other screen), Ctrl+P keeps its default behavior of opening
-        Textual's command palette.
-        """
+        """Ctrl+P: cycle the chat dropdown if visible, else open the palette."""
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 

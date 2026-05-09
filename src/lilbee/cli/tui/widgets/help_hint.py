@@ -1,9 +1,4 @@
-"""Always-visible chip that points new users at the slash-command catalog and the keybinding panel.
-
-Sits above the Footer in BottomBars. Clicking it asks the chat screen to open
-the catalog modal; the chip is otherwise passive (it reflects state, not
-stores it).
-"""
+"""Footer chip: passive ``/ commands · F1 keys`` hint; click defers to the host screen."""
 
 from __future__ import annotations
 

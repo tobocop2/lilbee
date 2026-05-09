@@ -1,9 +1,4 @@
-"""Modal listing every slash command, grouped and filterable.
-
-Opened by ``/help`` or by clicking the help-hint chip in the chat footer.
-Reads commands from :mod:`lilbee.cli.tui.command_registry` so the list stays
-in sync with the registry without duplication.
-"""
+"""Modal listing every slash command, grouped and filterable; reads ``COMMANDS``."""
 
 from __future__ import annotations
 
@@ -73,12 +68,7 @@ def _matches(cmd: SlashCommand, query: str) -> bool:
 
 
 class SlashCommandCatalog(ModalScreen[str | None]):
-    """Modal browser for every slash command in the registry.
-
-    Dismisses with the chosen command name (e.g. ``"/wiki"``) or ``None`` if
-    cancelled. The chat screen inserts ``"<name> "`` into the chat input so
-    the existing autocomplete can take over for arguments.
-    """
+    """Modal browser for every slash command; dismisses with the picked name or ``None``."""
 
     CSS_PATH = "slash_command_catalog.tcss"
 

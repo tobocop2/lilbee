@@ -1,11 +1,4 @@
-"""One-line status row beneath the chat input that describes the active slash command.
-
-When the chat input contains a recognized slash command (e.g. ``/model``,
-``/model gpt-4``), the row renders the command's argument syntax and a short
-description. It hides itself for empty input, plain prose, an unknown command,
-or a bare command name with no trailing space (so the user isn't crowded while
-still typing the command itself).
-"""
+"""One-line status row that mirrors the active slash command's signature."""
 
 from __future__ import annotations
 
