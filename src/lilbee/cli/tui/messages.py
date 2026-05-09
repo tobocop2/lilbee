@@ -260,6 +260,7 @@ SETUP_HEADING_EMBED = "Embedding Models"
 SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"
 SETUP_RETURN_HINT = "Your existing models are ready  ·  Esc to return"
 SETUP_CARD_HINT = "↵ Enter to install"
+INSTALLED_CARD_HINT = "D / ⌫ to delete"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 
