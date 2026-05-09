@@ -41,10 +41,13 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remove_copied_files,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
@@ -126,12 +129,18 @@ class ChatScreen(Screen[None]):
     _chat_input = getters.query_one("#chat-input", ChatInput)
     _chat_log = getters.query_one("#chat-log", VerticalScroll)
     _completion_overlay = getters.query_one("#completion-overlay", CompletionOverlay)
+    _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
-        Binding("ctrl+n", "complete_next", "^n next", show=False),
-        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
+        Binding("tab", "complete", "Complete", show=True, priority=True),
+        Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
+        # Ctrl+P stays bound to the app's command palette by default. The
+        # chat screen only intercepts it WHEN the dropdown is visible, via
+        # LilbeeApp.action_command_palette overriding to call
+        # ChatScreen.action_complete_prev. Action is exposed for direct
+        # callers / tests; not bound here so the app-level priority binding
+        # for ctrl+p (palette) wins by default.
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
         Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
@@ -159,6 +168,7 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
+        Binding("f2", "show_command_catalog", "Catalog", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -213,8 +223,10 @@ class ChatScreen(Screen[None]):
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
                 )
+                yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
+            yield HelpHint(id="help-hint")
             yield Footer()
 
     def on_mount(self) -> None:
@@ -386,6 +398,12 @@ class ChatScreen(Screen[None]):
             # they want to redirect the model.
             self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
             return
+        # Enter when the completion dropdown is showing a different
+        # selection than the input itself: accept the highlight first
+        # (matches Tab's cycle-and-insert behavior) instead of submitting
+        # whatever bare prefix the user typed.
+        if self._accept_overlay_selection_on_enter():
+            return
         text = event.value.strip()
         if not text:
             return
@@ -397,6 +415,24 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _accept_overlay_selection_on_enter(self) -> bool:
+        """Accept the highlight as ``<selection> ``; True if Enter was consumed."""
+        overlay = self._completion_overlay
+        if not overlay.is_visible:
+            return False
+        selection = overlay.get_current()
+        inp = self._chat_input
+        if not selection or selection == inp.value.rstrip():
+            overlay.hide()
+            return False
+        cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+        self._completing = True
+        inp.value = f"{cmd_prefix}{selection} "
+        self._completing = False
+        inp.action_end()
+        overlay.hide()
+        return True
 
     def _handle_slash(self, text: str) -> None:
         """Dispatch slash commands via the per-instance handler registry."""
@@ -736,7 +772,23 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
-        self.app.action_show_help_panel()
+        self.action_show_command_catalog()
+
+    def action_show_command_catalog(self) -> None:
+        """Push the slash-command catalog modal; selected name is inserted into the input."""
+        self.app.push_screen(SlashCommandCatalog(), self._on_catalog_pick)
+
+    def insert_slash_command(self, name: str) -> None:
+        """Drop ``name + ' '`` into the chat input and focus it for argument entry."""
+        self._enter_insert_mode()
+        inp = self._chat_input
+        inp.value = f"{name} "
+        inp.action_end()
+
+    def _on_catalog_pick(self, name: str | None) -> None:
+        if name is None:
+            return
+        self.insert_slash_command(name)
 
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
@@ -1057,7 +1109,11 @@ class ChatScreen(Screen[None]):
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: drop back into NORMAL mode (always). Stream cancel is on Ctrl+C."""
+        """Esc dismisses the overlay if visible; otherwise drops into NORMAL mode."""
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.hide()
+            return
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT
             # so the user can type their next prompt; routing through the
@@ -1224,9 +1280,13 @@ class ChatScreen(Screen[None]):
         inp.insert("\t")
 
     def action_complete_next(self) -> None:
-        """Ctrl+N: show completions or cycle forward."""
+        """Ctrl+N: highlight-only nav when open, else show + insert (vim ``<C-n>``)."""
         inp = self._chat_input
         if not inp.has_focus:
+            return
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
             return
         self._cycle_completion_forward(inp)
 
@@ -1262,18 +1322,13 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Ctrl+P: cycle backward through completions."""
-        overlay = self._completion_overlay
+        """Highlight-only nav when open, else show + insert (mirror of complete_next)."""
         inp = self._chat_input
-
+        if not inp.has_focus:
+            return
+        overlay = self._completion_overlay
         if overlay.is_visible:
-            selection = overlay.cycle_prev()
-            if selection:
-                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
-                self._completing = True
-                inp.value = cmd_prefix + selection
-                self._completing = False
-                inp.action_end()
+            overlay.cycle_prev()
             return
 
         options = get_completions(inp.value)
@@ -1291,11 +1346,19 @@ class ChatScreen(Screen[None]):
             self._completing = False
 
     def action_history_prev(self) -> None:
-        """Up arrow: recall previous input history entry."""
+        """Up arrow: cycle the dropdown if visible, else recall previous history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or not self._input_history:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Up navigates the dropdown
+        # (vim/Emacs-style) rather than recalling history.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_prev()
+            return
+        if not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
             self._history_index = len(self._input_history) - 1
@@ -1307,11 +1370,18 @@ class ChatScreen(Screen[None]):
         inp.action_end()
 
     def action_history_next(self) -> None:
-        """Down arrow: recall next input history entry."""
+        """Down arrow: cycle the dropdown if visible, else recall next history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or self._history_index == -1:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Down navigates the dropdown.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
+            return
+        if self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
             self._history_index += 1
@@ -1323,12 +1393,31 @@ class ChatScreen(Screen[None]):
 
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
-        """Hide completion overlay when input changes manually."""
+        """Refresh arg-hint and auto-show or hide the completion dropdown."""
         if self._completing:
+            # Tab-completion is mid-flight; the cycler manages overlay state.
+            self._refresh_arg_hint()
             return
+        self._refresh_completion_overlay()
+        self._refresh_arg_hint()
+
+    def _refresh_completion_overlay(self) -> None:
+        """Auto-show the dropdown for COMMAND discovery only; arg completions stay on Tab."""
         overlay = self._completion_overlay
-        if overlay.is_visible:
+        text = self._chat_input.value
+        # Once the user has typed a space, they are in arg-completion mode.
+        # Leave any Tab-triggered overlay alone and don't auto-pop one.
+        if " " in text:
+            return
+        options = get_completions(text)
+        if options:
+            overlay.show_completions(options)
+        elif overlay.is_visible:
             overlay.hide()
+
+    def _refresh_arg_hint(self) -> None:
+        """Push the current input value into the ArgHintLine."""
+        self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
         """Re-scan installed models and refresh the dropdowns."""

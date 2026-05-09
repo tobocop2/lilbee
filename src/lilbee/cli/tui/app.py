@@ -130,8 +130,8 @@ class LilbeeApp(App[None]):
         # ``?`` is non-priority so a focused TextArea (chat input in INSERT
         # mode) can swallow it and type the literal character. F1 / Ctrl+H
         # remain priority routes that always open help, even mid-typing.
-        Binding("question_mark", "push_help", "Help", show=True),
-        Binding("f1", "push_help", "Help", show=False, priority=True),
+        Binding("question_mark", "push_help", "Help", show=False),
+        Binding("f1", "push_help", "Help", show=True, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
@@ -378,6 +378,22 @@ class LilbeeApp(App[None]):
             self.action_hide_help_panel()
         else:
             self.action_show_help_panel()
+
+    def action_command_palette(self) -> None:
+        """Ctrl+P: cycle the chat dropdown if visible, else open the palette."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            try:
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            except NoMatches:
+                overlay = None
+            if overlay is not None and overlay.is_visible:
+                overlay.cycle_prev()
+                return
+        super().action_command_palette()
 
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.

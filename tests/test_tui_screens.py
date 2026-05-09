@@ -2976,11 +2976,13 @@ async def test_chat_slash_cancel():
 
 
 async def test_chat_slash_help():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/help")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_models():
@@ -3208,19 +3210,6 @@ async def test_model_bar_refreshes_on_embedding_model_signal():
             mock_refresh.assert_called()
 
 
-async def test_chat_input_changed_hides_overlay():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        inp = app.screen.query_one("#chat-input", ChatInput)
-        inp.focus()
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
-
-        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-        inp.value = "/he"
-        await _pilot.pause()
-        assert not overlay.is_visible
-
-
 async def test_chat_slash_quit():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3246,11 +3235,13 @@ async def test_chat_slash_exit():
 
 
 async def test_chat_slash_h():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/h")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_m():
@@ -6698,15 +6689,20 @@ async def test_app_nav_switches_all_views():
         assert app.active_view == "Catalog"
 
 
-async def test_chat_ctrl_n_p_bindings_exist():
-    """Ctrl+N and Ctrl+P bindings exist on ChatScreen."""
+async def test_chat_ctrl_n_binding_exists():
+    """Ctrl+N is bound on ChatScreen for vim-style cycle-next.
+
+    Ctrl+P is intentionally NOT a screen binding any more; it stays on
+    the app-level command palette and dispatches through
+    LilbeeApp.action_command_palette only when the dropdown is visible.
+    """
     from textual.binding import Binding as B
 
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
     assert "ctrl+n" in keys
-    assert "ctrl+p" in keys
+    assert "ctrl+p" not in keys
 
 
 async def test_chat_input_history_tracking():
