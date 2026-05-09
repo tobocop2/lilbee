@@ -1116,7 +1116,18 @@ class ChatScreen(Screen[None]):
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: drop back into NORMAL mode (always). Stream cancel is on Ctrl+C."""
+        """Escape: dismiss the completion overlay first; otherwise drop into NORMAL mode.
+
+        A visible completion dropdown is the kind of thing the user wants to
+        back out of WITHOUT also leaving INSERT mode (otherwise typing-in-the-
+        path workflows for ``/add`` get stuck behind a half-closed overlay).
+        First Esc hides the overlay; second Esc actually drops to NORMAL.
+        Stream cancel is on Ctrl+C.
+        """
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.hide()
+            return
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT
             # so the user can type their next prompt; routing through the
@@ -1391,13 +1402,21 @@ class ChatScreen(Screen[None]):
         self._refresh_arg_hint()
 
     def _refresh_completion_overlay(self) -> None:
-        """Auto-show the completion dropdown when the input has matching options.
+        """Auto-show the completion dropdown for COMMAND discovery only.
 
-        Toad-parity: typing ``/`` immediately reveals the command set; typing
-        ``/m`` filters live; typing prose hides the overlay.
+        Toad-parity for slash commands: typing ``/`` immediately reveals the
+        command set, ``/m`` filters live, prose hides the overlay. Argument
+        completions (paths for ``/add``, model names, settings, themes) stay
+        Tab-triggered so a folder full of files doesn't shove a 20-row
+        dropdown up the moment the user types a space.
         """
         overlay = self._completion_overlay
-        options = get_completions(self._chat_input.value)
+        text = self._chat_input.value
+        # Once the user has typed a space, they are in arg-completion mode.
+        # Leave any Tab-triggered overlay alone and don't auto-pop one.
+        if " " in text:
+            return
+        options = get_completions(text)
         if options:
             overlay.show_completions(options)
         elif overlay.is_visible:

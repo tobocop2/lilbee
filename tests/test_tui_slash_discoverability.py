@@ -691,3 +691,87 @@ class TestEnterAcceptsHighlightAsync:
                 await pilot.press("enter")
                 await pilot.pause()
             send.assert_called_once_with("hello")
+
+
+class TestOverlayBackoutAsync:
+    """Esc on a visible dropdown dismisses it without leaving INSERT mode."""
+
+    async def test_esc_hides_overlay_keeps_insert_mode(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            assert screen._insert_mode is True
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not overlay.is_visible
+            assert screen._insert_mode is True
+
+    async def test_second_esc_drops_to_normal_mode(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not overlay.is_visible
+            assert screen._insert_mode is True
+            await pilot.press("escape")
+            await pilot.pause()
+            assert screen._insert_mode is False
+
+    async def test_esc_without_overlay_drops_to_normal_mode(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            assert screen._insert_mode is True
+            await pilot.press("escape")
+            await pilot.pause()
+            assert screen._insert_mode is False
+
+
+class TestArgCompletionsNotAutoShownAsync:
+    """Once the user has entered arg-completion mode (typed a space), the
+    overlay must NOT auto-show — paths and other long lists are intrusive
+    and should stay Tab-triggered."""
+
+    async def test_typing_arg_partial_does_not_auto_show(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            # Land in arg-completion mode without going through any Tab.
+            inp.value = "/add "
+            await pilot.pause()
+            assert not overlay.is_visible
