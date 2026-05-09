@@ -133,9 +133,9 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
-        Binding("ctrl+n", "complete_next", "^n next", show=False, priority=True),
-        Binding("ctrl+p", "complete_prev", "^p prev", show=False, priority=True),
+        Binding("tab", "complete", "Complete", show=True, priority=True),
+        Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
+        Binding("ctrl+p", "complete_prev", "Prev match", show=False, priority=True),
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
         Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
