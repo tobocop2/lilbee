@@ -1356,10 +1356,7 @@ class ChatScreen(Screen[None]):
 
     def _refresh_arg_hint(self) -> None:
         """Push the current input value into the ArgHintLine."""
-        try:
-            self._arg_hint.update_for_input(self._chat_input.value)
-        except NoMatches:
-            return
+        self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
         """Re-scan installed models and refresh the dropdowns."""

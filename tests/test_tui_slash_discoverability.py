@@ -444,6 +444,31 @@ class TestChatScreenIntegrationAsync:
             await pilot.pause()
             assert screen.query_one("#chat-input").value == "/wiki "
 
+    async def test_on_catalog_pick_with_name_inserts(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            screen._on_catalog_pick("/clear")
+            await pilot.pause()
+            assert screen.query_one("#chat-input").value == "/clear "
+
+    async def test_on_catalog_pick_with_none_no_op(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            chat_input = screen.query_one("#chat-input")
+            chat_input.value = "preserved"
+            await pilot.pause()
+            screen._on_catalog_pick(None)
+            await pilot.pause()
+            assert chat_input.value == "preserved"
+
     async def test_help_hint_chip_renders(self, _mock_resolve, _mock_services) -> None:
         app = _ChatHostApp()
         async with app.run_test():
