@@ -1519,15 +1519,20 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
-    """action_reset_focused ignores focus that isn't inside a setting row."""
+    """action_reset_focused ignores focus that isn't inside a setting row.
+
+    AUTO_FOCUS targets ``#settings-tabs Tabs`` -- the Tabs strip widget,
+    which sits outside any setting row -- so the screen lands on a
+    non-row widget by construction. ``Tab`` would move into the first
+    row's editor (which IS a row), so do NOT press Tab here; assert
+    directly from the auto-focus state.
+    """
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        # Focus a non-row widget (the toolbar / view tabs strip).
-        await pilot.press("tab")
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()
