@@ -228,19 +228,21 @@ class TestFrontierTabBehavior:
         async with _App().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
-            screen._frontier_rows = [
+            fixture = [
                 _frontier("gemini-x", provider="Gemini"),
                 _frontier("gpt-x", provider="OpenAI"),
             ]
+            screen._frontier_rows = fixture
             screen._populate_library_list()
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "library"
             await _wait_for_active_tab(pilot, screen, "library")
-            # Windows 3.12 sometimes paints the sort label before the
-            # _frontier_rows assignment has propagated to the rendered
-            # provider count; poll up to 20 ticks for the expected text.
+            # The frontier-discovery worker fired by on_mount can land an
+            # empty result mid-poll and clobber the fixture; re-seat it
+            # each tick so the label renders against the test's rows.
             text = ""
             for _ in range(20):
+                screen._frontier_rows = fixture
                 screen._update_sort_label()
                 await pilot.pause()
                 text = str(screen.query_one("#sort-label", Static).render())
@@ -455,9 +457,14 @@ class TestLibraryTab:
         async with _App().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.query_one(CatalogScreen)
-            screen._frontier_rows = [_frontier("gemini-2.0-flash", provider="Gemini")]
+            fixture = [_frontier("gemini-2.0-flash", provider="Gemini")]
+            screen._frontier_rows = fixture
             ml = screen.query_one("#list-library", ModelList)
+            # The frontier-discovery worker fired by on_mount can land an
+            # empty result mid-poll and clobber the fixture; re-seat it
+            # each tick so the list renders the test's rows.
             for _ in range(20):
+                screen._frontier_rows = fixture
                 screen._tab_list_cache = {}
                 screen._populate_library_list()
                 await pilot.pause()
