@@ -24,12 +24,18 @@ from threading import Thread
 import pytest
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from conftest import Lane, LaneName, current_lane_name, lilbee_env
+from conftest import (
+    SEARCH_TIMEOUT,
+    SYNC_TIMEOUT,
+    Lane,
+    LaneName,
+    current_lane_name,
+    lilbee_env,
+    run_lilbee_with_env,
+)
 
 _CHROMIUM_BOOTSTRAP_TIMEOUT = 600.0
 _CRAWL_TIMEOUT = 300.0
-_SYNC_TIMEOUT = 240.0
-_SEARCH_TIMEOUT = 90.0
 
 
 _LILBEE_PAGE_HTML = """<!DOCTYPE html>
@@ -68,24 +74,12 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
             raise RuntimeError(message)
         pytest.skip(message)
 
-    probe = subprocess.run(
-        [lane.lilbee_bin, "add", "--help"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    probe = run_lilbee_with_env(lane, ["add", "--help"], env=env, timeout=30)
     if probe.returncode != 0 or "--crawl" not in (probe.stdout + probe.stderr):
         _gate("lilbee add --help missing --crawl flag; crawler not exposed in this artifact")
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "setup", "crawler"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_CHROMIUM_BOOTSTRAP_TIMEOUT,
-        check=False,
+    result = run_lilbee_with_env(
+        lane, ["setup", "crawler"], env=env, timeout=_CHROMIUM_BOOTSTRAP_TIMEOUT
     )
     if result.returncode != 0:
         _gate(
@@ -93,13 +87,11 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
             f"stderr tail: {result.stderr[-500:]}"
         )
 
-    runtime_probe = subprocess.run(
-        [lane.lilbee_bin, "add", "http://127.0.0.1:1", "--crawl", "--max-pages", "0"],
+    runtime_probe = run_lilbee_with_env(
+        lane,
+        ["add", "http://127.0.0.1:1", "--crawl", "--max-pages", "0"],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=15,
-        check=False,
     )
     combined = runtime_probe.stdout + runtime_probe.stderr
     if "Web crawling requires" in combined or "crawl4ai" in combined.lower():
@@ -200,22 +192,11 @@ def test_crawl_and_search_roundtrip(
         reraise=True,
     )
     def _crawl() -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            [
-                lane.lilbee_bin,
-                "add",
-                http_fixture_server,
-                "--crawl",
-                "--depth",
-                "0",
-                "--max-pages",
-                "1",
-            ],
+        result = run_lilbee_with_env(
+            lane,
+            ["add", http_fixture_server, "--crawl", "--depth", "0", "--max-pages", "1"],
             env=lilbee_env_with_models,
-            capture_output=True,
-            text=True,
             timeout=_CRAWL_TIMEOUT,
-            check=False,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -227,27 +208,15 @@ def test_crawl_and_search_roundtrip(
     assert crawl.returncode == 0, crawl.stderr
 
     # `lilbee add --crawl` auto-syncs in some versions; explicit sync to be safe.
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     # Diagnostic: confirm the crawled page actually landed in the store
     # before we try to search for it. A zero-chunk store means the crawl
     # call returned ok but ingest didn't write anything (silent failure
     # mode worth surfacing distinctly from a search miss).
-    status = subprocess.run(
-        [lane.lilbee_bin, "--json", "status"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=60.0,
-        check=False,
+    status = run_lilbee_with_env(
+        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=60.0
     )
     assert status.returncode == 0, status.stderr
     status_payload = json.loads(status.stdout)
@@ -258,20 +227,11 @@ def test_crawl_and_search_roundtrip(
     )
 
     # Search for the unique phrase. The crawled page should be the only source.
-    search = subprocess.run(
-        [
-            lane.lilbee_bin,
-            "--json",
-            "search",
-            "quokka-rendezvous-protocol",
-            "--top-k",
-            "5",
-        ],
+    search = run_lilbee_with_env(
+        lane,
+        ["--json", "search", "quokka-rendezvous-protocol", "--top-k", "5"],
         env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SEARCH_TIMEOUT,
-        check=False,
+        timeout=SEARCH_TIMEOUT,
     )
     assert search.returncode == 0, search.stderr
     payload = json.loads(search.stdout)

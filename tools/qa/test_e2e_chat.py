@@ -15,14 +15,13 @@ import pytest
 from drivers.mcp import MCPStdioClient
 
 from conftest import (
+    ASK_TIMEOUT,
+    SYNC_TIMEOUT,
     Lane,
     run_lilbee_with_env,
     seed_fixture_corpus,
     serve_lilbee_with,
 )
-
-_SYNC_TIMEOUT = 240.0
-_ASK_TIMEOUT = 320.0
 
 
 @pytest.mark.wiki
@@ -35,14 +34,14 @@ def test_cli_ask_cites_correct_source(
 ) -> None:
     """`lilbee --json ask "battery question"` returns a result citing ev-notes."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     ask = run_lilbee_with_env(
         lane,
         ["--json", "ask", "Answer in one short sentence: which document covers EV batteries?"],
         env=lilbee_env_with_models,
-        timeout=_ASK_TIMEOUT,
+        timeout=ASK_TIMEOUT,
     )
     assert ask.returncode == 0, ask.stderr
     payload = json.loads(ask.stdout)
@@ -63,7 +62,7 @@ def test_http_search_returns_battery_source(
 ) -> None:
     """POST /api/search routes the query through embedding and returns ev-notes."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     # Spawn server with the model-aware env (the bare `server_url` fixture
@@ -102,7 +101,7 @@ def test_mcp_search_routes_battery_to_ev_notes(
 ) -> None:
     """MCP `search` tool routes the battery query to ev-notes."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     client = MCPStdioClient(

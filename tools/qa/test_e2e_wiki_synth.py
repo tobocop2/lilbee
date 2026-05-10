@@ -23,14 +23,12 @@ Both require `LILBEE_WIKI=1` to flip `cfg.wiki` on (off by default).
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import Lane, seed_fixture_corpus
+from conftest import SYNC_TIMEOUT, Lane, run_lilbee_with_env, seed_fixture_corpus
 
-_SYNC_TIMEOUT = 240.0
 _BUILD_DRY_RUN_TIMEOUT = 240.0
 _BUILD_FULL_TIMEOUT = 720.0
 
@@ -55,23 +53,14 @@ def test_wiki_build_dry_run_extracts_entities(
     env = _wiki_env(lilbee_env_with_models)
     seed_fixture_corpus(lilbee_data)
 
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=env, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "wiki", "build", "--dry-run"],
+    result = run_lilbee_with_env(
+        lane,
+        ["--json", "wiki", "build", "--dry-run"],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_BUILD_DRY_RUN_TIMEOUT,
-        check=False,
     )
     assert result.returncode == 0, (
         f"wiki build --dry-run failed: rc={result.returncode}\n"
@@ -126,23 +115,11 @@ def test_wiki_build_full_runs_clean(
     env.setdefault("LILBEE_WIKI_BUILD_PER_SOURCE_TIMEOUT_SECS", "300")
 
     seed_fixture_corpus(lilbee_data)
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=env, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "wiki", "build"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_BUILD_FULL_TIMEOUT,
-        check=False,
+    result = run_lilbee_with_env(
+        lane, ["--json", "wiki", "build"], env=env, timeout=_BUILD_FULL_TIMEOUT
     )
     assert result.returncode == 0, (
         f"wiki build failed: rc={result.returncode}\n"
@@ -171,29 +148,17 @@ def test_wiki_synthesize_runs_clean(
     fixture corpus rarely produces any. This test asserts the command
     runs without crashing and returns the documented JSON shape, which
     is the regression we want to catch (broken synth code path), not page
-    count. A future test with a larger fixture corpus can assert on
-    paths != [].
+    count; a larger fixture corpus would let an ordering / paths-non-empty
+    assertion go in.
     """
     env = _wiki_env(lilbee_env_with_models)
     seed_fixture_corpus(lilbee_data)
 
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=env, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "wiki", "synthesize"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=_BUILD_DRY_RUN_TIMEOUT,
-        check=False,
+    result = run_lilbee_with_env(
+        lane, ["--json", "wiki", "synthesize"], env=env, timeout=_BUILD_DRY_RUN_TIMEOUT
     )
     assert result.returncode == 0, (
         f"wiki synthesize failed: rc={result.returncode}\n"

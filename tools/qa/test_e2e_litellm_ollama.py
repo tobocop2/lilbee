@@ -27,17 +27,18 @@ from conftest import (
     OLLAMA_HOST_ENV_VAR,
     OLLAMA_MODEL_ENV_VAR,
     OLLAMA_PORT_ENV_VAR,
+    STATUS_TIMEOUT,
     Lane,
     LaneName,
     current_lane_name,
     lilbee_env,
+    run_lilbee_with_env,
 )
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
 _OLLAMA_HEALTHCHECK_TIMEOUT = 2.0
 _CHAT_TIMEOUT = 360.0
-_STATUS_TIMEOUT = 60.0
 
 
 def _ollama_base_url() -> str:
@@ -114,20 +115,18 @@ def lilbee_env_with_ollama(
     )
 
 
-def _has_litellm_extras(lane: Lane) -> bool:
+def _has_litellm_extras(lane: Lane, lilbee_data: Path) -> bool:
     """Probe whether the artifact has the [litellm] extra wired at runtime.
 
-    Runs ``lilbee --json self-check-extras`` and reads the per-extra
-    boolean directly from the JSON payload. Can't gate on exit-code alone
-    because the command exits 1 if ANY extra is missing, so a healthy
-    litellm with a missing crawler would falsely mark this probe False.
+    Runs ``lilbee --json self-check-extras`` against an isolated env
+    (mirrors the per-test isolation invariant the rest of the harness
+    follows) and reads the per-extra boolean directly from the JSON
+    payload. Can't gate on exit-code alone because the command exits 1
+    if ANY extra is missing, so a healthy litellm with a missing crawler
+    would falsely mark this probe False.
     """
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "self-check-extras"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+    result = run_lilbee_with_env(
+        lane, ["--json", "self-check-extras"], env=lilbee_env(lilbee_data), timeout=60
     )
     try:
         payload = json.loads(result.stdout)
@@ -147,8 +146,8 @@ _xfail_on_binary_segfault = pytest.mark.xfail(
 )
 
 
-def _skip_without_litellm(lane: Lane) -> None:
-    if not _has_litellm_extras(lane):
+def _skip_without_litellm(lane: Lane, lilbee_data: Path) -> None:
+    if not _has_litellm_extras(lane, lilbee_data):
         pytest.skip("litellm not importable; ollama provider path not available")
 
 
@@ -165,7 +164,7 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.timeout(120)
 @_xfail_on_binary_segfault
 def test_status_with_ollama_backend_returns_chat_model(
-    lane: Lane, lilbee_env_with_ollama: dict[str, str]
+    lane: Lane, lilbee_data: Path, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
     """`lilbee --json status` configured for ollama exits 0 and includes the
     chat_model in the rendered config payload.
@@ -176,15 +175,10 @@ def test_status_with_ollama_backend_returns_chat_model(
     "no signal kill" and "config payload renders chat_model" so the test
     catches a silent regression where the path runs but drops the value.
     """
-    _skip_without_litellm(lane)
+    _skip_without_litellm(lane, lilbee_data)
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "status"],
-        env=lilbee_env_with_ollama,
-        capture_output=True,
-        text=True,
-        timeout=_STATUS_TIMEOUT,
-        check=False,
+    result = run_lilbee_with_env(
+        lane, ["--json", "status"], env=lilbee_env_with_ollama, timeout=STATUS_TIMEOUT
     )
     _assert_no_segfault(result, "lilbee --json status with ollama backend")
     assert result.returncode == 0, f"status failed: stderr={result.stderr}"
@@ -198,18 +192,19 @@ def test_status_with_ollama_backend_returns_chat_model(
 @pytest.mark.timeout(120)
 @_xfail_on_binary_segfault
 def test_model_list_includes_ollama_model(
-    lane: Lane, lilbee_env_with_ollama: dict[str, str], ollama_chat_model: str
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_ollama: dict[str, str],
+    ollama_chat_model: str,
 ) -> None:
     """`lilbee --json model list` surfaces ollama-installed models with source=remote."""
-    _skip_without_litellm(lane)
+    _skip_without_litellm(lane, lilbee_data)
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "model", "list"],
+    result = run_lilbee_with_env(
+        lane,
+        ["--json", "model", "list"],
         env=lilbee_env_with_ollama,
-        capture_output=True,
-        text=True,
-        timeout=_STATUS_TIMEOUT,
-        check=False,
+        timeout=STATUS_TIMEOUT,
     )
     _assert_no_segfault(result, "lilbee --json model list with ollama backend")
     assert result.returncode == 0, f"model list failed: stderr={result.stderr}"
@@ -229,25 +224,23 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.timeout(420)
 @_xfail_on_binary_segfault
 def test_ask_via_ollama_backend_completes(
-    lane: Lane, lilbee_env_with_ollama: dict[str, str]
+    lane: Lane, lilbee_data: Path, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
     """`lilbee --json ask` round-trip via ollama; no segfault, answer non-empty.
 
     Without a corpus this is a generic chat (no retrieval); we only assert
     that the provider stack rendered tokens and exited cleanly.
     """
-    _skip_without_litellm(lane)
+    _skip_without_litellm(lane, lilbee_data)
 
     if not shutil.which(lane.lilbee_bin):
         pytest.skip(f"lilbee binary not found at {lane.lilbee_bin}")
 
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "ask", "Reply with the single word 'ready'."],
+    result = run_lilbee_with_env(
+        lane,
+        ["--json", "ask", "Reply with the single word 'ready'."],
         env=lilbee_env_with_ollama,
-        capture_output=True,
-        text=True,
         timeout=_CHAT_TIMEOUT,
-        check=False,
     )
     _assert_no_segfault(result, "lilbee --json ask via ollama")
     if result.returncode != 0:

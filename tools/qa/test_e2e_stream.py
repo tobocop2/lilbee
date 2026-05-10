@@ -14,7 +14,6 @@ These tests assert:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
 from collections.abc import Iterator
@@ -25,28 +24,27 @@ import pytest
 from drivers.tui import TuiSession
 from httpx_sse import EventSource
 
-from conftest import Lane, seed_fixture_corpus, serve_lilbee_with
+from conftest import (
+    SERVER_BOOT_TIMEOUT_WITH_MODELS,
+    SYNC_TIMEOUT,
+    TUI_BOOT_TIMEOUT,
+    TUI_RESPONSE_TIMEOUT,
+    Lane,
+    run_lilbee_with_env,
+    seed_fixture_corpus,
+    serve_lilbee_with,
+)
 
-_SYNC_TIMEOUT = 240.0
 _STREAM_TIMEOUT = 240.0
-_SERVER_BOOT_TIMEOUT = 180.0
-_TUI_BOOT_TIMEOUT = 60.0
-_TUI_RESPONSE_TIMEOUT = 360.0
 
 
 def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
     """`lilbee token` prints the bearer for a running server. Empty string if
-    the binary doesn't expose the command (very old build) or it errors."""
-    result = subprocess.run(
-        [lane.lilbee_bin, "token"],
-        env=env,
-        capture_output=True,
-        text=True,
-        # Windows binary cold-start can take 30s+ per invocation (bb-rjez);
-        # 90s leaves headroom without masking a real hang.
-        timeout=90,
-        check=False,
-    )
+    the binary doesn't expose the command (very old build) or it errors.
+    90s budget leaves headroom for Windows binary cold-start (bb-rjez)
+    without masking a real hang.
+    """
+    result = run_lilbee_with_env(lane, ["token"], env=env, timeout=90)
     if result.returncode != 0:
         return ""
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
@@ -64,7 +62,7 @@ def served_lilbee(
     chat + embed model load on slow runners.
     """
     with serve_lilbee_with(
-        lane, lilbee_env_with_models, boot_timeout=_SERVER_BOOT_TIMEOUT
+        lane, lilbee_env_with_models, boot_timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS
     ) as base_url:
         token = _fetch_token(lane, lilbee_env_with_models)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -87,14 +85,7 @@ def test_ask_stream_completes_with_token_events(
     (a) the stream advanced beyond reasoning, (b) it terminated cleanly.
     """
     seed_fixture_corpus(lilbee_data)
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     base_url, _env, headers = served_lilbee
@@ -166,19 +157,12 @@ def test_tui_chat_advances_past_thinking_spinner(
     assertion deterministic without requiring exact token comparison.
     """
     seed_fixture_corpus(lilbee_data)
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     session = TuiSession([lane.lilbee_bin], env=lilbee_env_with_models)
     try:
-        session.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+        session.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
         session.send("Answer in one short sentence: which document covers EV batteries?\r")
         # The contract this test checks is "the TUI streams a response and
         # doesn't softlock on 'thinking...'", not "the model answers the
@@ -199,7 +183,7 @@ def test_tui_chat_advances_past_thinking_spinner(
             "extraction",
             "grind",
         )
-        deadline = time.monotonic() + _TUI_RESPONSE_TIMEOUT
+        deadline = time.monotonic() + TUI_RESPONSE_TIMEOUT
         while time.monotonic() < deadline:
             visible = session.text().lower()
             if any(marker.lower() in visible for marker in corpus_markers):
@@ -209,7 +193,7 @@ def test_tui_chat_advances_past_thinking_spinner(
         session.screenshot(screenshot)
         raise AssertionError(
             f"TUI never rendered a response derived from the corpus within "
-            f"{_TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'.\n"
+            f"{TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'.\n"
             f"Last visible screen:\n{session.text()}"
         )
     finally:
@@ -226,14 +210,7 @@ def test_chat_stream_rejects_concurrent_request_with_429(
 ) -> None:
     """A second concurrent /api/chat/stream request returns 429 with Retry-After."""
     seed_fixture_corpus(lilbee_data)
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     base_url, _env, headers = served_lilbee

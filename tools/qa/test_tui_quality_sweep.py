@@ -13,10 +13,7 @@ import re
 import pytest
 from drivers.tui import TuiSession
 
-from conftest import Lane
-
-_TUI_BOOT_TIMEOUT = 60.0
-_TUI_SCREEN_TIMEOUT = 15.0
+from conftest import TUI_BOOT_TIMEOUT, TUI_SCREEN_TIMEOUT, Lane
 
 
 @pytest.mark.tui
@@ -26,7 +23,7 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
     affordance: a missing toggle should fail the assertion, which the
     previous "chat or chat" OR couldn't detect.
     """
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     visible = tui.text().lower()
     assert "chat" in visible
     assert "embed" in visible
@@ -36,11 +33,11 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
 @pytest.mark.tui
 def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
     """F3 flips the Search/Chat toggle and updates the bar label."""
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     before = tui.text().lower()
     tui.send("\x1b[13~")  # F3 escape sequence
     try:
-        tui.wait_for("mode:", timeout=_TUI_SCREEN_TIMEOUT)
+        tui.wait_for("mode:", timeout=TUI_SCREEN_TIMEOUT)
     except AssertionError:
         # Fall back to checking the bar label changed (toast is transient).
         tui.send("")
@@ -57,15 +54,15 @@ def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
     The modal title contains "Pick a chat model" and a search input is
     focused; typing should narrow the visible row count.
     """
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("\x1b")  # Escape to normal mode
     tui.send("m")  # focus the model bar (m binding)
     try:
-        tui.wait_for("Pick a chat model", timeout=_TUI_SCREEN_TIMEOUT)
+        tui.wait_for("Pick a chat model", timeout=TUI_SCREEN_TIMEOUT)
     except AssertionError:
         # Some terminals reorder Enter handling; retry with explicit Enter.
         tui.send("\r")
-        tui.wait_for("Pick", timeout=_TUI_SCREEN_TIMEOUT)
+        tui.wait_for("Pick", timeout=TUI_SCREEN_TIMEOUT)
     # Escape closes; not asserting selection because available models depend
     # on the lane's installed registry.
     tui.send("\x1b")
@@ -77,9 +74,9 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
 
     Frontier visibility is API-key dependent and exercised in the manual lane.
     """
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
-    tui.wait_for("Local", timeout=_TUI_SCREEN_TIMEOUT)
+    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     visible = tui.text()
     assert "Local" in visible
 
@@ -87,9 +84,9 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
 @pytest.mark.tui
 def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     """`v` swaps grid <-> list view inside the Local tab."""
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
-    tui.wait_for("Local", timeout=_TUI_SCREEN_TIMEOUT)
+    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     before = tui.text()
     tui.send("v")
     # The visible state changes (grid renders cards, list renders rows).
@@ -111,9 +108,9 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     Uses regex word boundaries so the "fits" label doesn't match unrelated
     substrings like "benefits". Won't run is unambiguous as a phrase.
     """
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
-    tui.wait_for("Local", timeout=_TUI_SCREEN_TIMEOUT)
+    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     # Compact chip labels rendered by _fit_pill_compact in
     # src/lilbee/cli/tui/widgets/model_grid.py.
     chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
@@ -137,9 +134,9 @@ def test_settings_screen_omits_unavailable_tabs(tui: TuiSession, lane: Lane) -> 
     """
     if lane.is_binary:
         pytest.skip("the release binary bundles the extras these tabs gate on")
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("/settings\r")
-    tui.wait_for("Settings", timeout=_TUI_SCREEN_TIMEOUT)
+    tui.wait_for("Settings", timeout=TUI_SCREEN_TIMEOUT)
     visible = tui.text()
     assert "API-Keys" not in visible, "API-Keys tab should be hidden without litellm"
     assert "Crawling" not in visible, "Crawling tab should be hidden without crawler extra"

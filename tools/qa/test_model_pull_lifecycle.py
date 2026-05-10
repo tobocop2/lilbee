@@ -12,13 +12,12 @@ restarted lilbee and discovered their model gone.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
 
-from conftest import Lane, lilbee_env, serve_lilbee_with
+from conftest import Lane, lilbee_env, run_lilbee_with_env, serve_lilbee_with
 
 _PULL_TIMEOUT = 60.0
 
@@ -94,18 +93,11 @@ def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -
     `RuntimeError`/`OSError` traceback line and let a bare trace pass.
     """
     env = lilbee_env(lilbee_data)
-    result = subprocess.run(
-        [
-            lane.lilbee_bin,
-            "model",
-            "pull",
-            "this-org-does-not-exist-1234/this-repo-does-not-exist-5678-GGUF",
-        ],
+    result = run_lilbee_with_env(
+        lane,
+        ["model", "pull", "this-org-does-not-exist-1234/this-repo-does-not-exist-5678-GGUF"],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_PULL_TIMEOUT,
-        check=False,
     )
     assert result.returncode != 0, (
         f"pull of non-existent model should fail; got rc=0\n"

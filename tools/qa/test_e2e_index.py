@@ -11,10 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Lane, run_lilbee_with_env, seed_fixture_corpus
-
-_SYNC_TIMEOUT = 240.0
-_SEARCH_TIMEOUT = 90.0
+from conftest import (
+    SEARCH_TIMEOUT,
+    SYNC_TIMEOUT,
+    Lane,
+    run_lilbee_with_env,
+    seed_fixture_corpus,
+)
 
 
 @pytest.mark.wiki
@@ -28,7 +31,7 @@ def test_sync_indexes_fixture_corpus(
     """`lilbee sync` indexes both notes; status reports the right counts."""
     seed_fixture_corpus(lilbee_data)
 
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
     assert "Failed: 0" in sync.stdout, sync.stdout
     assert "Added: 2" in sync.stdout, sync.stdout
@@ -54,14 +57,14 @@ def test_search_finds_battery_query_in_ev_notes(
 ) -> None:
     """Semantic search routes a battery query to ev-notes, not coffee-notes."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     search = run_lilbee_with_env(
         lane,
         ["--json", "search", "lithium-ion battery technology", "--top-k", "3"],
         env=lilbee_env_with_models,
-        timeout=_SEARCH_TIMEOUT,
+        timeout=SEARCH_TIMEOUT,
     )
     assert search.returncode == 0, search.stderr
     payload = json.loads(search.stdout)
@@ -81,14 +84,14 @@ def test_search_finds_coffee_query_in_coffee_notes(
 ) -> None:
     """Mirror of the battery query: french press routes to coffee-notes."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     search = run_lilbee_with_env(
         lane,
         ["--json", "search", "french press extraction time", "--top-k", "3"],
         env=lilbee_env_with_models,
-        timeout=_SEARCH_TIMEOUT,
+        timeout=SEARCH_TIMEOUT,
     )
     assert search.returncode == 0, search.stderr
     payload = json.loads(search.stdout)
@@ -106,7 +109,7 @@ def test_remove_clears_indexed_source(
 ) -> None:
     """`lilbee remove <name>` purges chunks for that source."""
     seed_fixture_corpus(lilbee_data)
-    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
     remove = run_lilbee_with_env(

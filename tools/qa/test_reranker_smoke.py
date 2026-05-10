@@ -20,24 +20,26 @@ to catch, not a reason to ride green.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
 
 from conftest import (
+    SYNC_TIMEOUT,
     Lane,
     ModelTask,
     lilbee_env,
     resolve_registered_name,
+    run_lilbee_with_env,
     seed_fixture_corpus,
     serve_lilbee_with,
 )
 
 _PULL_TIMEOUT = 240.0
-_SYNC_TIMEOUT = 240.0
-_SEARCH_TIMEOUT = 120.0
+# Reranker search is slower than the bare semantic search; bump above the
+# shared SEARCH_TIMEOUT to absorb the cross-encoder load + per-candidate scoring.
+_RERANK_SEARCH_TIMEOUT = 120.0
 
 
 @pytest.mark.http
@@ -60,13 +62,8 @@ def test_cli_search_with_reranker_set_returns_results(
     """
     pull_env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
 
-    pull = subprocess.run(
-        [lane.lilbee_bin, "model", "pull", qa_reranker_model],
-        env=pull_env,
-        capture_output=True,
-        text=True,
-        timeout=_PULL_TIMEOUT,
-        check=False,
+    pull = run_lilbee_with_env(
+        lane, ["model", "pull", qa_reranker_model], env=pull_env, timeout=_PULL_TIMEOUT
     )
     assert pull.returncode == 0, (
         f"reranker pull from HF failed; treating as a hard failure to match "
@@ -82,23 +79,14 @@ def test_cli_search_with_reranker_set_returns_results(
     env_with_reranker["LILBEE_RERANKER_MODEL"] = reranker_name
 
     seed_fixture_corpus(lilbee_data)
-    sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=env_with_reranker,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    sync = run_lilbee_with_env(lane, ["sync"], env=env_with_reranker, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    search = subprocess.run(
-        [lane.lilbee_bin, "--json", "search", "lithium battery", "--top-k", "3"],
+    search = run_lilbee_with_env(
+        lane,
+        ["--json", "search", "lithium battery", "--top-k", "3"],
         env=env_with_reranker,
-        capture_output=True,
-        text=True,
-        timeout=_SEARCH_TIMEOUT,
-        check=False,
+        timeout=_RERANK_SEARCH_TIMEOUT,
     )
     assert search.returncode == 0, search.stderr
     payload = json.loads(search.stdout)
@@ -123,13 +111,8 @@ def test_http_search_with_reranker_set_returns_results(
     """
     pull_env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
 
-    pull = subprocess.run(
-        [lane.lilbee_bin, "model", "pull", qa_reranker_model],
-        env=pull_env,
-        capture_output=True,
-        text=True,
-        timeout=_PULL_TIMEOUT,
-        check=False,
+    pull = run_lilbee_with_env(
+        lane, ["model", "pull", qa_reranker_model], env=pull_env, timeout=_PULL_TIMEOUT
     )
     assert pull.returncode == 0, (
         f"reranker pull from HF failed (hard fail per conftest policy):\n"
@@ -140,14 +123,7 @@ def test_http_search_with_reranker_set_returns_results(
     )
 
     seed_fixture_corpus(lilbee_data)
-    pre_sync = subprocess.run(
-        [lane.lilbee_bin, "sync"],
-        env=lilbee_env_with_models,
-        capture_output=True,
-        text=True,
-        timeout=_SYNC_TIMEOUT,
-        check=False,
-    )
+    pre_sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert pre_sync.returncode == 0, pre_sync.stderr
 
     with serve_lilbee_with(lane, lilbee_env_with_models) as base_url:

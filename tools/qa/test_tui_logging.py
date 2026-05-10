@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from drivers.tui import TuiSession
 
-_TUI_BOOT_TIMEOUT = 60.0
+from conftest import TUI_BOOT_TIMEOUT
+
 _LOG_FLUSH_GRACE = 2.0
 
 
@@ -20,7 +21,7 @@ def test_tui_session_writes_rotating_log_file(tui: TuiSession, lilbee_data: Path
     RotatingFileHandler. Without this test, a regression that drops the file
     handler would only surface when a user reported missing logs.
     """
-    tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("\x11")  # Ctrl+Q exits the app; cleanup runs inside run_tui's finally.
     deadline = time.monotonic() + _LOG_FLUSH_GRACE
     log_path = lilbee_data / "logs" / "tui.log"

@@ -90,6 +90,7 @@ SEARCH_TIMEOUT = 90.0
 STATUS_TIMEOUT = 60.0
 TUI_BOOT_TIMEOUT = 60.0
 TUI_SCREEN_TIMEOUT = 15.0
+TUI_RESPONSE_TIMEOUT = 360.0
 SERVER_BOOT_TIMEOUT_WITH_MODELS = 180.0
 
 
@@ -108,12 +109,7 @@ class LaneName(StrEnum):
 
 
 class ModelTask(StrEnum):
-    """Task kinds reported by ``lilbee --json model list`` for each row.
-
-    Add a variant when a test calls ``resolve_registered_name`` with a
-    new task; see the call sites in this file and in
-    ``test_reranker_smoke.py``.
-    """
+    """Task kinds reported by ``lilbee --json model list`` for each row."""
 
     CHAT = "chat"
     EMBEDDING = "embedding"
@@ -185,12 +181,10 @@ def qa_embedding_model() -> str:
 def qa_reranker_model() -> str:
     """HF repo for the reranker model.
 
-    Consumed by ``test_reranker_smoke.py`` only. Unlike the chat and embedding
-    models, the reranker is not pre-pulled by ``models_pulled``; each reranker
-    test pulls it inline so cells that don't exercise the rerank lane don't
-    pay the download cost. A future test that needs the reranker as part of
-    ``lilbee_env_with_models`` should pull it explicitly rather than assume
-    it is already in the cache.
+    Not pre-pulled by ``models_pulled``: the reranker is heavier than the
+    chat / embed models and only the rerank-lane tests need it, so the
+    pull is per-test. Tests that put the reranker into
+    ``lilbee_env_with_models`` must pull it explicitly first.
     """
     return _DEFAULT_RERANKER_MODEL
 
@@ -259,7 +253,7 @@ def resolve_registered_name(
     `<owner>/<repo>/<filename>.gguf`. Role assignment needs that full key,
     not the bare repo ID. Walks `lilbee --json model list` and returns the
     first entry whose `task` matches and whose `name` contains
-    `repo_substring`. Public (used by tools/qa/test_reranker_smoke.py).
+    `repo_substring`.
     """
     result = subprocess.run(
         [lilbee_bin, "--json", "model", "list"],
@@ -379,9 +373,8 @@ def seed_fixture_corpus(lilbee_data: Path) -> Path:
     return documents
 
 
-# Public env-var names consumed by the ollama-pypi cell and read by
-# tools/qa/test_e2e_litellm_ollama.py. Keep the constants in one place
-# so a rename only needs to touch this file plus the workflow.
+# Env-var names for the ollama-up workflow step / harness. Keep here so
+# a rename only needs to touch this file plus the workflow.
 OLLAMA_HOST_ENV_VAR = "LILBEE_QA_OLLAMA_HOST"
 OLLAMA_PORT_ENV_VAR = "LILBEE_QA_OLLAMA_PORT"
 OLLAMA_MODEL_ENV_VAR = "LILBEE_QA_OLLAMA_MODEL"
