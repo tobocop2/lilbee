@@ -502,12 +502,7 @@ jobs:
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Dedicated crawler lane: install [crawler], bootstrap Chromium via
-  # `lilbee setup crawler`, run only the e2e crawl test against the local
-  # http.server fixture. Same isolation rationale as ollama-pypi: the
-  # crawl4ai + playwright SDK adds 30-60s to every `lilbee` invocation,
-  # which would blow the 60-min cap if applied to the full pypi matrix.
-  # Scoped to one cell on ubuntu-latest where Chromium install is reliable.
+  # Dedicated [crawler] lane on a single ubuntu cell; isolation rationale matches ollama-pypi.
   crawler-pypi:
     name: crawler-pypi (ubuntu-latest)
     runs-on: ubuntu-latest

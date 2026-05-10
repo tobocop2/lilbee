@@ -34,11 +34,7 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # Skip if the release was created by github-actions[bot] — that means
-  # release-candidate.yml's promote step (or emergency-publish.yml) just
-  # created it, the wheels are already on PyPI, and rebuilding would only
-  # waste runner time and trip PyPI's immutability check. Manual
-  # UI-created releases (real-user author) still trigger the build.
+  # bot-author skip prevents the orchestrator's promote step from re-firing this workflow.
   ci:
     if: |
       github.event_name == 'workflow_call' ||

@@ -1,15 +1,19 @@
-"""T2 reranker effect smoke.
+"""T2 reranker pipeline smoke.
 
-Pulls a small cross-encoder reranker (gpustack/bge-reranker-v2-m3-GGUF, ~400MB
-Q8_0), assigns it as the active reranker via env, syncs the standard fixture
-corpus, and runs `/api/search` plus `lilbee --json search` to verify the
-reranker pipeline doesn't crash search and produces results.
+Pulls a small cross-encoder reranker (gpustack/bge-reranker-v2-m3-GGUF, ~0.4 GB
+Q8_0), assigns it as the active reranker via env or via PUT, runs search,
+asserts the request completes cleanly with non-empty results.
 
-We don't assert ordering changes vs. no-reranker. The 2-document corpus has
-too few candidates to give a deterministic flip; that test would be flaky
-without a curated corpus and curated query. The contract this test gates is
-"set a reranker, search still works end to end". Future work in bb-p6sy can
-add an ordering-change test once the corpus is expanded.
+What this test does NOT prove: that the reranker actually loaded into memory
+or that it changed result ordering. The 2-doc fixture corpus is too small for
+a deterministic ordering flip, and lilbee may silently fall back to embedding
+ranking on a cross-encoder load failure. Both tests in this file are scoped
+as "search-with-reranker-set does not crash". An ordering-effect test belongs
+in a follow-up with a curated multi-doc corpus.
+
+Reranker pull failures are hard-failed (not skipped) to match the conftest
+``models_pulled`` policy: a broken pull is the regression the matrix exists
+to catch, not a reason to ride green.
 """
 
 from __future__ import annotations
@@ -63,7 +67,7 @@ def _resolve_registered_reranker(lane: Lane, env: dict[str, str], hf_repo: str) 
 @pytest.mark.http
 @pytest.mark.writer
 @pytest.mark.timeout(540)
-def test_search_with_reranker_returns_results(
+def test_cli_search_with_reranker_set_does_not_crash(
     lane: Lane,
     lilbee_data: Path,
     qa_models_dir: Path,
@@ -71,12 +75,13 @@ def test_search_with_reranker_returns_results(
     lilbee_env_with_models: dict[str, str],
     models_pulled: dict[str, str],
 ) -> None:
-    """End-to-end: pull reranker, configure it active, sync corpus, search.
+    """Pull the reranker, point lilbee at it via env, sync, run a CLI search.
 
-    Asserts the reranker pipeline integrates cleanly (no crash) and search
-    returns at least one chunk. The chat / embed models come from the
-    session-scoped models_pulled fixture; this test just adds a reranker
-    pull on top.
+    The chat / embed models come from the session-scoped ``models_pulled``
+    fixture; this test pulls the reranker on top. Asserts the search request
+    completes with rc=0 and returns a non-empty results list. Does not
+    assert that the reranker actually loaded or that it changed ordering;
+    see the file docstring for the scope rationale.
     """
     pull_env = os.environ.copy()
     pull_env["LILBEE_DATA"] = str(qa_models_dir / "data")
@@ -92,13 +97,11 @@ def test_search_with_reranker_returns_results(
         timeout=_PULL_TIMEOUT,
         check=False,
     )
-    if pull.returncode != 0:
-        # Network flakiness: HF Hub 503 etc. The matrix isn't here to test
-        # HF availability; surface as skip with a tail of the failure.
-        pytest.skip(
-            f"reranker pull from HF failed (likely transient network): "
-            f"{pull.stderr[-300:] or pull.stdout[-300:]}"
-        )
+    assert pull.returncode == 0, (
+        f"reranker pull from HF failed; treating as a hard failure to match "
+        f"the conftest models_pulled policy. stdout tail:\n"
+        f"{pull.stdout[-500:]}\nstderr tail:\n{pull.stderr[-500:]}"
+    )
 
     reranker_name = _resolve_registered_reranker(lane, pull_env, qa_reranker_model)
 
@@ -134,7 +137,7 @@ def test_search_with_reranker_returns_results(
 @pytest.mark.http
 @pytest.mark.writer
 @pytest.mark.timeout(540)
-def test_http_search_with_reranker_set(
+def test_http_search_with_reranker_set_does_not_crash(
     lane: Lane,
     lilbee_data: Path,
     qa_models_dir: Path,
@@ -142,11 +145,9 @@ def test_http_search_with_reranker_set(
     lilbee_env_with_models: dict[str, str],
     models_pulled: dict[str, str],
 ) -> None:
-    """HTTP /api/search route works with reranker assigned via PUT.
-
-    Boots a server, PUTs the reranker model, runs a search, asserts
-    structurally-valid results. Doesn't assert exact ordering. Tests the
-    PUT -> GET wiring in the running server, not just the env-var path.
+    """`PUT /api/models/reranker` followed by `GET /api/search` completes
+    with non-empty results. Tests the PUT -> GET wiring in the running
+    server (not just the env-var path).
     """
     pull_env = os.environ.copy()
     pull_env["LILBEE_DATA"] = str(qa_models_dir / "data")
@@ -162,8 +163,10 @@ def test_http_search_with_reranker_set(
         timeout=_PULL_TIMEOUT,
         check=False,
     )
-    if pull.returncode != 0:
-        pytest.skip(f"reranker pull from HF failed: {pull.stderr[-300:] or pull.stdout[-300:]}")
+    assert pull.returncode == 0, (
+        f"reranker pull from HF failed (hard fail per conftest policy):\n"
+        f"stdout tail: {pull.stdout[-500:]}\nstderr tail: {pull.stderr[-500:]}"
+    )
     reranker_name = _resolve_registered_reranker(lane, pull_env, qa_reranker_model)
 
     _seed_corpus(lilbee_data)
@@ -214,7 +217,7 @@ def test_http_search_with_reranker_set(
             timeout=60.0,
         )
         if response.status_code == httpx.codes.UNAUTHORIZED:
-            pytest.skip("HTTP search requires auth in this build; CLI lane covers it")
+            pytest.skip("HTTP /api/search returned 401: auth is enforced in this build")
         assert response.status_code == httpx.codes.OK, response.text
         payload = response.json()
         results = (

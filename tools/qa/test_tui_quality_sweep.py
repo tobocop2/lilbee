@@ -99,28 +99,29 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
 
 @pytest.mark.tui
 def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
-    """The Catalog screen renders a hardware-fit chip (FITS / TIGHT /
-    WONT_RUN) on at least one model row.
+    """The Catalog screen renders a hardware-fit chip on at least one row.
 
     PR #218 added server-side fit + size_variants on /api/models/catalog;
-    PR #212's catalog redesign binds those fields to per-row chips. This
-    asserts the round-trip from the response field through the rendered
-    cell works. Doesn't assert which chip — that's runner-RAM-dependent —
-    just that one of the three fit labels appears somewhere in the
-    catalog visible region.
+    PR #212's catalog redesign binds those fields to per-row chips with
+    the compact labels `fits`, `tight`, `won't run`. This asserts the
+    round-trip from the response field through the rendered cell works.
+    Uses regex word boundaries so the "fits" label doesn't match unrelated
+    substrings like "benefits". Won't run is unambiguous as a phrase.
     """
+    import re
+
     tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
     tui.wait_for("Local", timeout=_TUI_SCREEN_TIMEOUT)
-    # Give the row layout a chance to settle so chip text lands on screen.
+    # Compact chip labels rendered by _fit_pill_compact in
+    # src/lilbee/cli/tui/widgets/model_grid.py.
+    chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
     deadline_attempts = 8
-    fit_labels = ("FITS", "TIGHT", "WONT_RUN")
     for _ in range(deadline_attempts):
-        visible = tui.text()
-        if any(label in visible for label in fit_labels):
+        if chip_pattern.search(tui.text()):
             return
     raise AssertionError(
-        "catalog rendered without any FITS/TIGHT/WONT_RUN chip; visible:\n" + tui.text()
+        "catalog rendered without any fits/tight/won't run chip; visible:\n" + tui.text()
     )
 
 

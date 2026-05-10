@@ -29,7 +29,7 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
     """`/api/models/catalog` rows carry server-computed `fit` and
     `size_variants` fields (added in PR #218 for the TUI fit-chip and
     size-strip widgets). A regression that drops these would silently
-    break TUI rendering — gate the response shape here.
+    break TUI rendering, so gate the response shape here.
 
     Doesn't pin specific fit values (those depend on the runner's RAM)
     or specific variants (those depend on the featured catalog data).
@@ -53,7 +53,7 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
     assert "fit" in sample, f"catalog row missing `fit` field: {sample}"
     assert "size_variants" in sample, f"catalog row missing `size_variants` field: {sample}"
 
-    # `fit` is FitLevel | None — string label or null.
+    # `fit` is FitLevel | None: string label or null.
     fit = sample["fit"]
     assert fit is None or isinstance(fit, str), f"unexpected fit type: {fit!r}"
 

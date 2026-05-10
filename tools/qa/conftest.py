@@ -25,13 +25,12 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 # Pull by HuggingFace repo ID rather than friendly alias. Friendly aliases
 # (qwen3:0.6b, nomic-embed-text:v1.5) are only registered in lilbee builds
-# that include FEATURED_ALL — older releases reject them. Repo IDs go
-# straight to the catalog and work across every published version.
+# that include FEATURED_ALL. Repo IDs go straight to the catalog and work
+# across every published version.
 #
-# Qwen3 0.6B replaces SmolLM2-135M as the smoke chat model: SmolLM was too
-# small to produce assertable output for ask/wiki tests. Qwen3 0.6B is the
-# smallest model that completes coherent answers on a free GHA runner.
-# Embedding stays on nomic-embed-text-v1.5 (small, fast, well-tested).
+# Defaults are the smallest models that produce assertable output on a
+# free GHA runner: Qwen3 0.6B for chat, nomic-embed-text-v1.5 for
+# embedding, bge-reranker-v2-m3 Q8_0 (~0.4 GB) for the reranker lane.
 _DEFAULT_CHAT_MODEL = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _DEFAULT_RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF"
@@ -96,6 +95,15 @@ def qa_embedding_model() -> str:
 
 @pytest.fixture(scope="session")
 def qa_reranker_model() -> str:
+    """HF repo for the reranker model.
+
+    Consumed by ``test_reranker_smoke.py`` only. Unlike the chat and embedding
+    models, the reranker is not pre-pulled by ``models_pulled``; each reranker
+    test pulls it inline so cells that don't exercise the rerank lane don't
+    pay the download cost. A future test that needs the reranker as part of
+    ``lilbee_env_with_models`` should pull it explicitly rather than assume
+    it is already in the cache.
+    """
     return os.environ.get(_RERANKER_MODEL_ENV_VAR, _DEFAULT_RERANKER_MODEL)
 
 

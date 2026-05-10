@@ -1,13 +1,6 @@
 name: Emergency publish
 
-# Bypass-QA escape hatch. Builds wheels + binaries from an existing tag
-# and pushes them to PyPI + a GitHub release without running qa-matrix.
-# Use only when the QA matrix itself is broken or when there is a known
-# urgent fix the matrix would not yet exercise. Normal lane is
-# release-candidate.yml.
-#
-# Two-step confirm: provide a tag AND type "skip-qa" in the confirm field.
-# Guard job also refuses if the tag already has a published GH release.
+# QA-bypass escape hatch. Two-step confirm (tag + "skip-qa" token).
 
 on:
   workflow_dispatch:

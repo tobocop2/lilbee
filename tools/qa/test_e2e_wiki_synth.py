@@ -5,13 +5,13 @@ file exercises the actual generation pipeline end to end.
 
 Two tiers:
 
-* `test_wiki_build_dry_run_extracts_entities` — fast, deterministic. Runs
+* `test_wiki_build_dry_run_extracts_entities`. Fast, deterministic. Runs
   `lilbee wiki build --dry-run` which executes the NER entity extractor
   without making any LLM calls. Asserts the extractor produces ≥1 entity
   candidate from the seeded corpus. Catches regressions in the extraction
   pipeline without depending on model behavior.
 
-* `test_wiki_build_full_runs_clean` — slow, exercises the full LLM-curated
+* `test_wiki_build_full_runs_clean`. Slow, exercises the full LLM-curated
   build path with the QA-matrix Qwen 0.6B chat model. Assertion is "command
   exits 0 and emits a JSON envelope with the expected keys"; we don't pin
   the count of generated pages because that's content-dependent. Times out
@@ -100,6 +100,18 @@ def test_wiki_build_dry_run_extracts_entities(
     sample = entities[0]
     for required_key in ("slug", "label", "kind", "mentions", "sources"):
         assert required_key in sample, f"entity row missing {required_key!r}: {sample}"
+    # Bind the assertion to the seeded corpus so a stub or hallucinated
+    # entity list can't satisfy the count assertion. The fixtures cover EV
+    # batteries and coffee, so at least one extracted entity should mention
+    # one of those topics in its label or its sources.
+    corpus_haystack = " ".join(
+        f"{e.get('label', '')} {' '.join(e.get('sources', []))}".lower() for e in entities
+    )
+    corpus_keywords = ("battery", "coffee", "ev-notes", "coffee-notes", "lithium", "espresso")
+    assert any(kw in corpus_haystack for kw in corpus_keywords), (
+        f"extracted entities do not reference the seeded fixture corpus; "
+        f"entity labels/sources: {corpus_haystack[:500]!r}"
+    )
 
 
 @pytest.mark.wiki
@@ -169,8 +181,8 @@ def test_wiki_synthesize_runs_clean(
 
     Synthesis requires concept clusters spanning ≥3 sources; the 2-doc
     fixture corpus rarely produces any. This test asserts the command
-    runs without crashing and returns the documented JSON shape — that's
-    the regression we want to catch (broken synth code path), not page
+    runs without crashing and returns the documented JSON shape, which
+    is the regression we want to catch (broken synth code path), not page
     count. A future test with a larger fixture corpus can assert on
     paths != [].
     """

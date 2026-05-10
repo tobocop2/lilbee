@@ -1,12 +1,6 @@
 name: Release candidate
 
-# Pre-publish QA orchestrator. Builds the same wheels and binaries that
-# would ship to PyPI / a GitHub release, runs the QA matrix against those
-# artifacts, and only then promotes them to the public lanes.
-#
-# Tag push (`git push v0.6.66bN`) builds + QAs + auto-promotes on green.
-# workflow_dispatch builds + QAs only — useful for branch / SHA dry-runs
-# before tagging. The emergency-publish.yml workflow is the QA-bypass lane.
+# Tag push: build + QA + auto-promote on green. Dispatch: build + QA dry-run.
 
 on:
   push:

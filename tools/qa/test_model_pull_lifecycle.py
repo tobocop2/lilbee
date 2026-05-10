@@ -118,8 +118,14 @@ def test_pull_persists_across_server_restart(
 @pytest.mark.catalog
 @pytest.mark.timeout(120)
 def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -> None:
-    """Pulling a non-existent HF ref fails with a recognizable error keyword
-    on stdout/stderr, not a bare stack trace and not a silent zero exit."""
+    """Pulling a non-existent HF ref fails with a user-facing error message,
+    not a bare Python traceback, and not a silent zero exit.
+
+    The keyword list is deliberately specific: it admits the messages a CLI
+    user would recognize (`not found`, `does not exist`, `404`, etc.) and
+    rejects the generic word `error` because that would also match every
+    `RuntimeError`/`OSError` traceback line and let a bare trace pass.
+    """
     env = lilbee_env(lilbee_data)
     result = subprocess.run(
         [
@@ -139,8 +145,19 @@ def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     combined = (result.stdout + result.stderr).lower()
-    keywords = ("not found", "does not exist", "404", "no such", "error", "failed")
-    assert any(token in combined for token in keywords), (
-        f"expected a recognizable error keyword in output, got bare trace:\n"
+    user_facing_phrases = (
+        "not found",
+        "does not exist",
+        "404",
+        "no such",
+        "could not",
+        "unable to",
+    )
+    assert any(phrase in combined for phrase in user_facing_phrases), (
+        f"expected a user-facing error phrase, got something else:\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "traceback" not in combined, (
+        f"unknown-model error leaked a Python traceback to the user:\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
