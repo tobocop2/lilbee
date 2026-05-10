@@ -103,21 +103,49 @@ def test_native_stderr_redirect_captures_fd2_writes(tmp_path):
     import os
 
     log_path = setup_tui_log_file()
-    saved = _redirect_native_stderr_to(log_path)
-    assert saved is not None, "redirect should install successfully on a writable path"
+    redirect = _redirect_native_stderr_to(log_path)
+    assert redirect is not None, "redirect should install successfully on a writable path"
     try:
         os.write(2, b"native-probe-XYZ\n")
         os.fsync(2)
     finally:
-        _restore_native_stderr(saved)
+        _restore_native_stderr(redirect)
     assert "native-probe-XYZ" in log_path.read_text()
+
+
+def test_native_stderr_redirect_keeps_python_stderr_pointed_at_terminal(tmp_path):
+    """Python-level ``sys.stderr.write`` must still reach the real terminal so
+    Textual's driver (which writes ANSI to ``sys.__stderr__``) keeps painting.
+    Earlier the redirect ate that path too and the TUI rendered to ``tui.log``.
+    """
+    import os
+    import sys
+
+    log_path = setup_tui_log_file()
+    real_fd = os.dup(2)  # remember the actual terminal/test-runner fd
+    try:
+        redirect = _redirect_native_stderr_to(log_path)
+        assert redirect is not None
+        try:
+            # sys.stderr after the redirect must NOT write into fd 2 (the log).
+            assert sys.stderr.fileno() != 2
+            assert sys.__stderr__.fileno() != 2
+            sys.stderr.write("python-stderr-probe\n")
+            sys.stderr.flush()
+            os.fsync(sys.stderr.fileno())
+        finally:
+            _restore_native_stderr(redirect)
+    finally:
+        os.close(real_fd)
+    # The Python-level write went to the saved fd, NOT into the log file.
+    assert "python-stderr-probe" not in log_path.read_text()
 
 
 def test_native_stderr_redirect_returns_none_on_unwritable_path(tmp_path):
     """Bad path means we leave fd 2 alone and report None, not crash the TUI."""
     bogus = tmp_path / "does" / "not" / "exist" / "tui.log"
-    saved = _redirect_native_stderr_to(bogus)
-    assert saved is None
+    redirect = _redirect_native_stderr_to(bogus)
+    assert redirect is None
 
 
 def test_restore_native_stderr_handles_none():
