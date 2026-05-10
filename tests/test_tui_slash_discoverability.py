@@ -51,7 +51,7 @@ def _isolated_cfg(tmp_path):
 def _suppress_catalog_auto_hf_fetch():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    with mock.patch.object(CatalogScreen, "_fetch_all_hf_models"):
+    with mock.patch.object(CatalogScreen, "_fetch_initial_hf_models_for_task"):
         yield
 
 

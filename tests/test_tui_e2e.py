@@ -15,6 +15,7 @@ import pytest
 from textual.app import ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
@@ -49,11 +50,11 @@ def _suppress_catalog_auto_hf_fetch():
 
     The auto-fetch races every test that snapshots ModelGrid widgets on
     slow Windows runners. Tests that need to exercise the fetch path
-    invoke `_fetch_all_hf_models` directly.
+    invoke ``_fetch_initial_hf_models_for_task`` directly.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    with mock.patch.object(CatalogScreen, "_fetch_all_hf_models"):
+    with mock.patch.object(CatalogScreen, "_fetch_initial_hf_models_for_task"):
         yield
 
 
@@ -1672,7 +1673,7 @@ class TestCatalogInteractions:
 
                 # Disable prefetch so the worker doesn't rebuild the list
                 # and invalidate our item references.
-                app.screen._hf_has_more = False
+                app.screen._hf_has_more_by_task[ModelTask.CHAT] = False
                 items_count = app.screen._list_widget.option_count
                 if items_count > 1:
                     app.screen._list_widget.highlighted = 0
@@ -1726,7 +1727,7 @@ class TestCatalogInteractions:
 
                 # Disable prefetch so the worker doesn't rebuild the list
                 # and invalidate our item references.
-                app.screen._hf_has_more = False
+                app.screen._hf_has_more_by_task[ModelTask.CHAT] = False
                 items_count = app.screen._list_widget.option_count
                 if items_count:
                     app.screen._list_widget.highlighted = 0
@@ -2918,9 +2919,9 @@ class TestCatalogAutoLoad:
                 app.switch_view("Catalog")
                 for _ in range(20):
                     await pilot.pause()
-                    if getattr(app.screen, "_hf_fetched", False):
+                    if app.screen._hf_fetched_tasks:
                         break
-                assert app.screen._hf_fetched is True
+                assert ModelTask.CHAT in app.screen._hf_fetched_tasks
 
 
 class TestCatalogGridFocus:
