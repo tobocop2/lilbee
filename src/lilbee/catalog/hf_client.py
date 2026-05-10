@@ -166,7 +166,7 @@ class HfClient:
                     hf_repo=item.id,
                     gguf_filename="*.gguf",
                     size_gb=size_gb,
-                    min_ram_gb=max(2.0, size_gb * 1.5),
+                    min_ram_gb=round(max(2.0, size_gb * 1.5), 1),
                     description=card_desc[:120] if card_desc else "",
                     featured=False,
                     downloads=item.downloads or 0,
