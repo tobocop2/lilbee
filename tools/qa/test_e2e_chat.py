@@ -8,16 +8,18 @@ the source filename appears in the response. Doesn't assert on token content
 from __future__ import annotations
 
 import json
-import socket
-import subprocess
-import time
 from pathlib import Path
 
 import httpx
 import pytest
 from drivers.mcp import MCPStdioClient
 
-from conftest import Lane, run_lilbee_with_env, seed_fixture_corpus
+from conftest import (
+    Lane,
+    run_lilbee_with_env,
+    seed_fixture_corpus,
+    serve_lilbee_with,
+)
 
 _SYNC_TIMEOUT = 240.0
 _ASK_TIMEOUT = 320.0
@@ -64,37 +66,9 @@ def test_http_search_returns_battery_source(
     sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=_SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    # Spawn server inline since the server_url fixture uses lilbee_data with no models.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-
-    proc = subprocess.Popen(
-        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=lilbee_env_with_models,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        # Wait for /api/health
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            try:
-                if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == httpx.codes.OK:
-                    break
-            except (
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
-                httpx.RemoteProtocolError,
-            ):
-                pass
-            time.sleep(0.3)
-        else:
-            pytest.fail("server never came up")
-
+    # Spawn server with the model-aware env (the bare `server_url` fixture
+    # uses an empty data dir and would not find the just-synced corpus).
+    with serve_lilbee_with(lane, lilbee_env_with_models) as base_url:
         # GET /api/search?q=...&top_k=N. POST returns 405; query param key is `q`.
         response = httpx.get(
             f"{base_url}/api/search",
@@ -116,12 +90,6 @@ def test_http_search_returns_battery_source(
             results = payload.get("results", payload.get("chunks", []))
         sources = [r.get("source", r.get("source_path", "")) for r in results]
         assert any("ev-notes" in s for s in sources), payload
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 @pytest.mark.wiki

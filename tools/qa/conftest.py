@@ -21,7 +21,7 @@ from pathlib import Path
 import httpx
 import pytest
 from drivers.mcp import MCPStdioClient
-from drivers.tui import TuiSession, lilbee_env, worker_port_offset
+from drivers.tui import TuiSession
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 # Pull by HuggingFace repo ID rather than friendly alias. Friendly aliases
@@ -49,6 +49,48 @@ _SERVER_HEALTH_POLL = 0.25
 _SERVER_TEARDOWN_GRACE = 5.0
 _MCP_STARTUP_TIMEOUT = 60.0
 _MODEL_PULL_TIMEOUT = 240.0
+
+
+def worker_port_offset() -> int:
+    """Translate PYTEST_XDIST_WORKER (gw0/gw1/.../master) into a port offset."""
+    raw = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    if raw == "master" or not raw.startswith("gw"):
+        return 0
+    return int(raw.removeprefix("gw"))
+
+
+def lilbee_env(
+    data_dir: Path,
+    *,
+    models_dir: Path | None = None,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a deterministic environment for spawning lilbee under QA.
+
+    ``models_dir`` points the runtime at the shared QA model cache; pass
+    it for any test that pulls or uses a model so the cache survives
+    across tests. ``extra`` overrides individual keys, applied last.
+    """
+    env = os.environ.copy()
+    env["LILBEE_DATA"] = str(data_dir)
+    env["LILBEE_NO_SPLASH"] = "1"
+    env["LILBEE_LOG_LEVEL"] = "WARNING"
+    if models_dir is not None:
+        env["LILBEE_MODELS_DIR"] = str(models_dir)
+    if extra:
+        env.update(extra)
+    return env
+
+
+# Public timeouts shared across e2e tests so the writer files don't each
+# redefine the same constant with drifting values.
+SYNC_TIMEOUT = 240.0
+ASK_TIMEOUT = 320.0
+SEARCH_TIMEOUT = 90.0
+STATUS_TIMEOUT = 60.0
+TUI_BOOT_TIMEOUT = 60.0
+TUI_SCREEN_TIMEOUT = 15.0
+SERVER_BOOT_TIMEOUT_WITH_MODELS = 180.0
 
 
 class LaneName(StrEnum):
@@ -405,8 +447,12 @@ def _port_is_free(port: int) -> bool:
     return True
 
 
-def _allocate_server_port() -> int:
-    """Pick a free port deterministically per xdist worker, falling back to ephemeral."""
+def allocate_server_port() -> int:
+    """Pick a free port deterministically per xdist worker, falling back
+    to an OS-allocated ephemeral port. Public so test files that spawn
+    their own model-aware ``lilbee serve`` use the same port-pick logic
+    as the ``server_url`` fixture and avoid xdist port collisions.
+    """
     candidate = _SERVER_PORT_BASE + worker_port_offset()
     if _port_is_free(candidate):
         return candidate
@@ -416,7 +462,12 @@ def _allocate_server_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _wait_for_server(url: str, timeout: float) -> None:
+def wait_for_server(url: str, timeout: float) -> None:
+    """Block until ``url`` returns 200, swallowing the four ``httpx``
+    transport errors that fire during cold-start on slow runners. Raises
+    ``TimeoutError`` with the last transport error attached when the
+    deadline elapses.
+    """
     deadline = time.monotonic() + timeout
     last_err: Exception | None = None
     while time.monotonic() < deadline:
@@ -443,6 +494,38 @@ def _wait_for_server(url: str, timeout: float) -> None:
     )
 
 
+@contextlib.contextmanager
+def serve_lilbee_with(
+    lane: Lane,
+    env: dict[str, str],
+    *,
+    boot_timeout: float = _SERVER_BOOT_TIMEOUT,
+) -> Iterator[str]:
+    """Spawn ``lilbee serve`` with the given env, wait for /api/health,
+    yield the base URL, and tear down on exit. Use this when the caller
+    needs a model-aware env (e.g. ``lilbee_env_with_models``); the
+    ``server_url`` fixture covers the empty-store case.
+    """
+    port = allocate_server_port()
+    base_url = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for_server(f"{base_url}/api/health", timeout=boot_timeout)
+        yield base_url
+    finally:
+        with contextlib.suppress(Exception):
+            proc.terminate()
+            proc.wait(timeout=_SERVER_TEARDOWN_GRACE)
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+
 @pytest.fixture
 def server_url(lane: Lane, lilbee_data: Path) -> Iterator[str]:
     """Spawn `lilbee serve` on a per-worker port; yield base URL.
@@ -451,24 +534,8 @@ def server_url(lane: Lane, lilbee_data: Path) -> Iterator[str]:
     Cheap enough at the smoke/walk tier that file-scoped reuse isn't worth
     the cross-test state coupling.
     """
-    port = _allocate_server_port()
-    base_url = f"http://127.0.0.1:{port}"
-    proc = subprocess.Popen(
-        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=lilbee_env(lilbee_data),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        _wait_for_server(f"{base_url}/api/health", timeout=_SERVER_BOOT_TIMEOUT)
+    with serve_lilbee_with(lane, lilbee_env(lilbee_data)) as base_url:
         yield base_url
-    finally:
-        with contextlib.suppress(Exception):
-            proc.terminate()
-            proc.wait(timeout=_SERVER_TEARDOWN_GRACE)
-        with contextlib.suppress(Exception):
-            proc.kill()
 
 
 @pytest.fixture

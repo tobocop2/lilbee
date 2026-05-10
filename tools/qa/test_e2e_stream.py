@@ -14,12 +14,10 @@ These tests assert:
 
 from __future__ import annotations
 
-import socket
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import closing
 from pathlib import Path
 
 import httpx
@@ -27,35 +25,13 @@ import pytest
 from drivers.tui import TuiSession
 from httpx_sse import EventSource
 
-from conftest import Lane, seed_fixture_corpus
+from conftest import Lane, seed_fixture_corpus, serve_lilbee_with
 
 _SYNC_TIMEOUT = 240.0
 _STREAM_TIMEOUT = 240.0
+_SERVER_BOOT_TIMEOUT = 180.0
 _TUI_BOOT_TIMEOUT = 60.0
 _TUI_RESPONSE_TIMEOUT = 360.0
-
-
-def _free_port() -> int:
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-def _wait_health(url: str, timeout: float = 60.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if httpx.get(url, timeout=2.0).status_code == httpx.codes.OK:
-                return
-        except (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.ReadTimeout,
-            httpx.RemoteProtocolError,
-        ):
-            pass
-        time.sleep(0.3)
-    raise TimeoutError(f"server at {url} not ready within {timeout}s")
 
 
 def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
@@ -84,29 +60,15 @@ def served_lilbee(
     """Spawn `lilbee serve` and yield (url, env, headers).
 
     Headers carry the bearer token that protected POST endpoints require.
+    180s boot budget covers Windows binary cold-start plus the initial
+    chat + embed model load on slow runners.
     """
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    proc = subprocess.Popen(
-        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=lilbee_env_with_models,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        # 180s health budget covers Windows binary cold-start plus the
-        # initial chat + embed model load on slow runners.
-        _wait_health(f"{base_url}/api/health", timeout=180.0)
+    with serve_lilbee_with(
+        lane, lilbee_env_with_models, boot_timeout=_SERVER_BOOT_TIMEOUT
+    ) as base_url:
         token = _fetch_token(lane, lilbee_env_with_models)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         yield base_url, lilbee_env_with_models, headers
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 @pytest.mark.wiki

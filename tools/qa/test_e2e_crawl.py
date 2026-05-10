@@ -22,10 +22,9 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
-from drivers.tui import lilbee_env
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from conftest import Lane, LaneName, current_lane_name
+from conftest import Lane, LaneName, current_lane_name, lilbee_env
 
 _CHROMIUM_BOOTSTRAP_TIMEOUT = 600.0
 _CRAWL_TIMEOUT = 300.0

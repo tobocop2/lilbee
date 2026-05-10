@@ -12,64 +12,23 @@ restarted lilbee and discovered their model gone.
 
 from __future__ import annotations
 
-import socket
 import subprocess
-import time
 from pathlib import Path
 
 import httpx
 import pytest
-from drivers.tui import lilbee_env
 
-from conftest import Lane
+from conftest import Lane, lilbee_env, serve_lilbee_with
 
 _PULL_TIMEOUT = 60.0
-_SERVER_BOOT_TIMEOUT = 60.0
-_SERVER_HEALTH_POLL = 0.3
-_LIST_TIMEOUT = 180.0
-
-
-def _wait_for_health(base_url: str, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == httpx.codes.OK:
-                return
-        except (
-            httpx.ConnectError,
-            httpx.ConnectTimeout,
-            httpx.ReadTimeout,
-            httpx.RemoteProtocolError,
-        ):
-            pass
-        time.sleep(_SERVER_HEALTH_POLL)
-    pytest.fail(f"server at {base_url} never became healthy in {timeout:.0f}s")
 
 
 def _serve_once_and_query_installed(lane: Lane, env: dict[str, str]) -> list[dict[str, object]]:
     """Boot lilbee serve on a free port, hit /api/models/installed, tear down."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    proc = subprocess.Popen(
-        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        base_url = f"http://127.0.0.1:{port}"
-        _wait_for_health(base_url, _SERVER_BOOT_TIMEOUT)
+    with serve_lilbee_with(lane, env) as base_url:
         response = httpx.get(f"{base_url}/api/models/installed", timeout=30.0)
         assert response.status_code == httpx.codes.OK, response.text
         payload = response.json()
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
     # Endpoint shape varies across releases: bare list OR {"models": [...]}.
     if isinstance(payload, list):
         return payload

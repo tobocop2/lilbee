@@ -80,27 +80,10 @@ jobs:
 
       - name: Resolve target lilbee version
         id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.lilbee_version || 'latest' }}
-          RC_VERSION: ${{ inputs.version }}
-        shell: bash
-        run: |
-          if [ -n "${RC_VERSION}" ]; then
-            RESOLVED_TAG="v${RC_VERSION}"
-            RESOLVED_VERSION="${RC_VERSION}"
-          else
-            if [ "$TAG" = "latest" ]; then
-              TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            fi
-            RESOLVED_TAG="$TAG"
-            # Strip leading 'v' for PyPI version
-            RESOLVED_VERSION="${TAG#v}"
-          fi
-          {
-            echo "tag=${RESOLVED_TAG}"
-            echo "version=${RESOLVED_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
         id: models-cache
@@ -254,25 +237,10 @@ jobs:
 
       - name: Resolve target lilbee version
         id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.lilbee_version || 'latest' }}
-          RC_VERSION: ${{ inputs.version }}
-        run: |
-          if [ -n "${RC_VERSION}" ]; then
-            RESOLVED_TAG="v${RC_VERSION}"
-            RESOLVED_VERSION="${RC_VERSION}"
-          else
-            if [ "$TAG" = "latest" ]; then
-              TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            fi
-            RESOLVED_TAG="$TAG"
-            RESOLVED_VERSION="${TAG#v}"
-          fi
-          {
-            echo "tag=${RESOLVED_TAG}"
-            echo "version=${RESOLVED_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -371,22 +339,9 @@ jobs:
 
       - name: Resolve target lilbee version
         id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RC_VERSION: ${{ inputs.version }}
-        run: |
-          if [ -n "${RC_VERSION}" ]; then
-            RESOLVED_TAG="v${RC_VERSION}"
-            RESOLVED_VERSION="${RC_VERSION}"
-          else
-            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            RESOLVED_TAG="${TAG}"
-            RESOLVED_VERSION="${TAG#v}"
-          fi
-          {
-            echo "tag=${RESOLVED_TAG}"
-            echo "version=${RESOLVED_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
 
       - name: Restore QA models cache
         uses: actions/cache@v4
@@ -460,22 +415,9 @@ jobs:
 
       - name: Resolve target lilbee version
         id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RC_VERSION: ${{ inputs.version }}
-        run: |
-          if [ -n "${RC_VERSION}" ]; then
-            RESOLVED_TAG="v${RC_VERSION}"
-            RESOLVED_VERSION="${RC_VERSION}"
-          else
-            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            RESOLVED_TAG="${TAG}"
-            RESOLVED_VERSION="${TAG#v}"
-          fi
-          {
-            echo "tag=${RESOLVED_TAG}"
-            echo "version=${RESOLVED_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
 
       - name: Restore QA models cache
         uses: actions/cache@v4

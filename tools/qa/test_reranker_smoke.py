@@ -20,21 +20,24 @@ to catch, not a reason to ride green.
 from __future__ import annotations
 
 import json
-import socket
 import subprocess
-import time
 from pathlib import Path
 
 import httpx
 import pytest
-from drivers.tui import lilbee_env
 
-from conftest import Lane, ModelTask, resolve_registered_name, seed_fixture_corpus
+from conftest import (
+    Lane,
+    ModelTask,
+    lilbee_env,
+    resolve_registered_name,
+    seed_fixture_corpus,
+    serve_lilbee_with,
+)
 
 _PULL_TIMEOUT = 240.0
 _SYNC_TIMEOUT = 240.0
 _SEARCH_TIMEOUT = 120.0
-_SERVER_BOOT_TIMEOUT = 60.0
 
 
 @pytest.mark.http
@@ -147,35 +150,7 @@ def test_http_search_with_reranker_set_returns_results(
     )
     assert pre_sync.returncode == 0, pre_sync.stderr
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-
-    proc = subprocess.Popen(
-        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
-        env=lilbee_env_with_models,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        deadline = time.monotonic() + _SERVER_BOOT_TIMEOUT
-        while time.monotonic() < deadline:
-            try:
-                if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == httpx.codes.OK:
-                    break
-            except (
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
-                httpx.RemoteProtocolError,
-            ):
-                pass
-            time.sleep(0.3)
-        else:
-            pytest.fail("server never came up")
-
+    with serve_lilbee_with(lane, lilbee_env_with_models) as base_url:
         put = httpx.put(
             f"{base_url}/api/models/reranker",
             json={"model": reranker_name},
@@ -199,9 +174,3 @@ def test_http_search_with_reranker_set_returns_results(
         )
         assert isinstance(results, list), payload
         assert results, f"HTTP search with reranker returned no rows: {payload}"
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()

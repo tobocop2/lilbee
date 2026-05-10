@@ -138,14 +138,6 @@ else:
     PtyProcess = _PosixPty  # type: ignore[misc,assignment]
 
 
-def worker_port_offset() -> int:
-    """Translate PYTEST_XDIST_WORKER (gw0/gw1/.../master) into a port offset."""
-    raw = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    if raw == "master" or not raw.startswith("gw"):
-        return 0
-    return int(raw.removeprefix("gw"))
-
-
 def _is_pid_alive(pid: int) -> bool:
     """Non-blocking POSIX liveness via WNOHANG waitpid + kill(0)."""
     try:
@@ -302,26 +294,3 @@ class TuiSession:
         tb: TracebackType | None,
     ) -> None:
         self.close()
-
-
-def lilbee_env(
-    data_dir: Path,
-    *,
-    models_dir: Path | None = None,
-    extra: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """Build a deterministic environment for spawning lilbee under QA.
-
-    ``models_dir`` points the runtime at the shared QA model cache; pass
-    it for any test that pulls or uses a model so the cache survives
-    across tests. ``extra`` overrides individual keys, applied last.
-    """
-    env = os.environ.copy()
-    env["LILBEE_DATA"] = str(data_dir)
-    env["LILBEE_NO_SPLASH"] = "1"
-    env["LILBEE_LOG_LEVEL"] = "WARNING"
-    if models_dir is not None:
-        env["LILBEE_MODELS_DIR"] = str(models_dir)
-    if extra:
-        env.update(extra)
-    return env

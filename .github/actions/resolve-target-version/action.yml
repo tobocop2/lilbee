@@ -1,0 +1,56 @@
+name: Resolve target lilbee version
+description: |
+  Resolve the lilbee tag and PEP-440 version the QA matrix should run
+  against. Precedence: ``rc_version`` (set when the matrix is a
+  workflow_call from release-candidate.yml) > ``lilbee_version`` (the
+  workflow_dispatch knob; "latest" picks the newest GH release) > the
+  repo's most-recent published release.
+
+inputs:
+  rc_version:
+    description: "PEP-440 version string for an RC build, set on workflow_call from release-candidate.yml."
+    required: false
+    default: ""
+  lilbee_version:
+    description: "Tag or 'latest' for workflow_dispatch invocations."
+    required: false
+    default: "latest"
+  repo:
+    description: "owner/repo for `gh release view` lookups when no rc_version is provided."
+    required: false
+    default: ${{ github.repository }}
+
+outputs:
+  tag:
+    description: "Resolved tag, e.g. v0.6.66b469."
+    value: ${{ steps.compute.outputs.tag }}
+  version:
+    description: "Resolved version (tag without leading 'v')."
+    value: ${{ steps.compute.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: compute
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RC_VERSION: ${{ inputs.rc_version }}
+        TAG: ${{ inputs.lilbee_version }}
+        REPO: ${{ inputs.repo }}
+      run: |
+        set -euo pipefail
+        if [ -n "${RC_VERSION}" ]; then
+          RESOLVED_TAG="v${RC_VERSION}"
+          RESOLVED_VERSION="${RC_VERSION}"
+        else
+          if [ "${TAG}" = "latest" ]; then
+            TAG=$(gh release view --repo "${REPO}" --json tagName -q .tagName)
+          fi
+          RESOLVED_TAG="${TAG}"
+          RESOLVED_VERSION="${TAG#v}"
+        fi
+        {
+          echo "tag=${RESOLVED_TAG}"
+          echo "version=${RESOLVED_VERSION}"
+        } >> "$GITHUB_OUTPUT"

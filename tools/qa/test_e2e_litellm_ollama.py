@@ -22,7 +22,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from drivers.tui import lilbee_env
 
 from conftest import (
     OLLAMA_HOST_ENV_VAR,
@@ -31,6 +30,7 @@ from conftest import (
     Lane,
     LaneName,
     current_lane_name,
+    lilbee_env,
 )
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
@@ -47,11 +47,11 @@ def _ollama_base_url() -> str:
 
 
 def _ollama_reachable() -> bool:
+    """Probe the same host/port the URL builder will use, not the defaults."""
+    host = os.environ.get(OLLAMA_HOST_ENV_VAR, _OLLAMA_DEFAULT_HOST)
+    port = int(os.environ.get(OLLAMA_PORT_ENV_VAR, str(_OLLAMA_DEFAULT_PORT)))
     try:
-        with socket.create_connection(
-            (_OLLAMA_DEFAULT_HOST, _OLLAMA_DEFAULT_PORT),
-            timeout=_OLLAMA_HEALTHCHECK_TIMEOUT,
-        ):
+        with socket.create_connection((host, port), timeout=_OLLAMA_HEALTHCHECK_TIMEOUT):
             return True
     except OSError:
         return False
@@ -136,6 +136,22 @@ def _has_litellm_extras(lane: Lane) -> bool:
     return payload.get("litellm") is True
 
 
+# Every ollama-backed test pays the same two gates: xfail on the bundled
+# binary (bb-m234 startup segfault on ollama/* chat models) and skip when
+# the artifact doesn't ship the [litellm] extra. Wrap once so the
+# decorators don't drift between tests.
+_xfail_on_binary_segfault = pytest.mark.xfail(
+    current_lane_name() is LaneName.L2_BINARY,
+    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
+    strict=False,
+)
+
+
+def _skip_without_litellm(lane: Lane) -> None:
+    if not _has_litellm_extras(lane):
+        pytest.skip("litellm not importable; ollama provider path not available")
+
+
 def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) -> None:
     """Negative returncode on POSIX means killed by signal; SIGSEGV is -11."""
     assert result.returncode >= 0, (
@@ -147,11 +163,7 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(
-    current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
-    strict=False,
-)
+@_xfail_on_binary_segfault
 def test_status_with_ollama_backend_returns_chat_model(
     lane: Lane, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
@@ -164,8 +176,7 @@ def test_status_with_ollama_backend_returns_chat_model(
     "no signal kill" and "config payload renders chat_model" so the test
     catches a silent regression where the path runs but drops the value.
     """
-    if not _has_litellm_extras(lane):
-        pytest.skip("litellm not importable; ollama provider path not available")
+    _skip_without_litellm(lane)
 
     result = subprocess.run(
         [lane.lilbee_bin, "--json", "status"],
@@ -185,17 +196,12 @@ def test_status_with_ollama_backend_returns_chat_model(
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(
-    current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
-    strict=False,
-)
+@_xfail_on_binary_segfault
 def test_model_list_includes_ollama_model(
     lane: Lane, lilbee_env_with_ollama: dict[str, str], ollama_chat_model: str
 ) -> None:
     """`lilbee --json model list` surfaces ollama-installed models with source=remote."""
-    if not _has_litellm_extras(lane):
-        pytest.skip("litellm not importable; ollama provider path not available")
+    _skip_without_litellm(lane)
 
     result = subprocess.run(
         [lane.lilbee_bin, "--json", "model", "list"],
@@ -221,11 +227,7 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(420)
-@pytest.mark.xfail(
-    current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
-    strict=False,
-)
+@_xfail_on_binary_segfault
 def test_ask_via_ollama_backend_completes(
     lane: Lane, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
@@ -234,8 +236,7 @@ def test_ask_via_ollama_backend_completes(
     Without a corpus this is a generic chat (no retrieval); we only assert
     that the provider stack rendered tokens and exited cleanly.
     """
-    if not _has_litellm_extras(lane):
-        pytest.skip("litellm not importable; ollama provider path not available")
+    _skip_without_litellm(lane)
 
     if not shutil.which(lane.lilbee_bin):
         pytest.skip(f"lilbee binary not found at {lane.lilbee_bin}")
