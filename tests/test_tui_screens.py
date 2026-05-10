@@ -20,6 +20,7 @@ from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import _silence_stderr_log_handlers
 from lilbee.cli.tui import app as tui_app
 from lilbee.cli.tui.screens.catalog import (
@@ -907,7 +908,8 @@ async def test_catalog_mouse_scroll_no_more_pages_short_circuits():
             await _pilot.pause()
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = False  # nothing left to fetch
+            for task in screen._hf_has_more_by_task:
+                screen._hf_has_more_by_task[task] = False  # nothing left to fetch
             screen._loading_more = False
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
             with patch.object(screen, "_load_more") as load_more:
@@ -3648,15 +3650,15 @@ def _patch_catalog():
 def _suppress_catalog_auto_hf_fetch():
     """Block the catalog auto-fired HF fetch.
 
-    CatalogScreen kicks off `_fetch_all_hf_models` on mount; on slow
-    Windows runners that re-mounts ModelGrid sections under tests that
-    snapshotted them, causing flake. Suppress the fetch in every test
-    in this file; tests that need to exercise the fetch path call it
-    directly.
+    CatalogScreen kicks off ``_fetch_initial_hf_models_for_task`` on mount;
+    on slow Windows runners that re-mounts ModelGrid sections under tests
+    that snapshotted them, causing flake. Suppress the fetch in every
+    test in this file; tests that need to exercise the fetch path call
+    it directly.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    with patch.object(CatalogScreen, "_fetch_all_hf_models"):
+    with patch.object(CatalogScreen, "_fetch_initial_hf_models_for_task"):
         yield
 
 
@@ -3919,13 +3921,114 @@ async def test_catalog_load_more():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             # Auto-fetch on mount may have flipped these; reset to the
             # exhausted-not state this test exercises.
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            old_offset = screen._hf_offset
-            with patch.object(screen, "_fetch_more_hf"):
+            old_offset = screen._hf_offset_by_task[ModelTask.CHAT]
+            with patch.object(screen, "_fetch_more_hf_for_task"):
                 screen._load_more()
-                assert screen._hf_offset == old_offset + _HF_PAGE_SIZE
+                assert screen._hf_offset_by_task[ModelTask.CHAT] == old_offset + _HF_PAGE_SIZE
                 assert screen._loading_more is True
+
+
+async def test_catalog_load_more_isolates_per_task_offset():
+    """Paginating on the chat tab must NOT advance other tabs' offsets."""
+    from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            for task in screen._hf_has_more_by_task:
+                screen._hf_has_more_by_task[task] = True
+                screen._hf_offset_by_task[task] = 0
+            screen._loading_more = False
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
+                screen._load_more()
+                assert fetch.call_args.args == (ModelTask.CHAT,)
+            assert screen._hf_offset_by_task[ModelTask.CHAT] == _HF_PAGE_SIZE
+            assert screen._hf_offset_by_task[ModelTask.EMBEDDING] == 0
+            assert screen._hf_offset_by_task[ModelTask.VISION] == 0
+            assert screen._hf_offset_by_task[ModelTask.RERANK] == 0
+
+
+async def test_catalog_tab_activation_fetches_lazily():
+    """Activating an unfetched task tab fires its first HF page fetch.
+
+    Re-activating the same tab after the fetch lands does NOT re-fire,
+    so cached pages stay cached.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            with patch.object(screen, "_fetch_initial_hf_models_for_task") as fetch:
+                tabs = screen.query_one("#catalog-tabs")
+                tabs.active = "embed"
+                # Poll instead of single pause: TabActivated dispatch races
+                # the worker queue on windows runners; one pause isn't
+                # always enough for the activation handler to fire.
+                tasks: list = []
+                for _ in range(20):
+                    await _pilot.pause()
+                    tasks = [c.args[0] for c in fetch.call_args_list]
+                    if ModelTask.EMBEDDING in tasks:
+                        break
+                assert ModelTask.EMBEDDING in tasks
+                fetch.reset_mock()
+                screen._hf_fetched_tasks.add(ModelTask.EMBEDDING)
+                tabs.active = "chat"
+                for _ in range(5):
+                    await _pilot.pause()
+                tabs.active = "embed"
+                for _ in range(5):
+                    await _pilot.pause()
+                assert ModelTask.EMBEDDING not in [c.args[0] for c in fetch.call_args_list]
+
+
+async def test_catalog_search_scoped_to_active_task():
+    """Typing a search on the chat tab queries HF with task=chat only."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "embed"
+            with patch.object(screen, "_fetch_hf_search") as fetch:
+                screen._trigger_remote_search("llama")
+                fetch.assert_called_once_with("llama", ModelTask.EMBEDDING)
+
+
+async def test_catalog_search_skips_non_task_tab():
+    """Defensive guard: ``_trigger_remote_search`` short-circuits on
+    Discover/Library where the search Input is hidden, so the worker
+    never fires for a tab that has no task association.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "library"
+            screen._search_in_flight = False
+            with patch.object(screen, "_fetch_hf_search") as fetch:
+                screen._trigger_remote_search("llama")
+                assert not fetch.called
+            assert screen._search_in_flight is False
 
 
 async def test_catalog_action_load_more_triggers_fetch():
@@ -3941,14 +4044,14 @@ async def test_catalog_action_load_more_triggers_fetch():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            screen._hf_has_more = True
-            # Explicit reset: the auto-fired _fetch_all_hf_models on mount can
-            # set _loading_more=True transiently; under xdist, depending on
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
+            # Explicit reset: the auto-fired chat-tab fetch on mount can set
+            # _loading_more=True transiently; under xdist, depending on
             # event-loop scheduling it may still be True when this test
             # runs action_load_more, causing _load_more to early-return and
             # the fetch mock to never be called.
             screen._loading_more = False
-            with patch.object(screen, "_fetch_more_hf") as fetch:
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen.action_load_more()
                 assert fetch.called
 
@@ -3960,7 +4063,6 @@ async def test_catalog_keyboard_nav_near_end_triggers_load_more():
 
     screen = CatalogScreen.__new__(CatalogScreen)
     screen._grid_view = True
-    screen._hf_has_more = True
     screen._loading_more = False
     target = MagicMock(spec=ModelGrid)
     target.highlighted = 0
@@ -3970,6 +4072,7 @@ async def test_catalog_keyboard_nav_near_end_triggers_load_more():
     with (
         patch.object(CatalogScreen, "_grid_container", new=fake_container),
         patch.object(screen, "_focused_grid", return_value=target),
+        patch.object(screen, "_active_task_has_more", return_value=True),
         patch.object(screen, "_load_more") as load_more,
     ):
         screen._maybe_prefetch_on_grid_nav()
@@ -4014,7 +4117,7 @@ async def test_catalog_keyboard_nav_at_last_cell_scrolls_to_end():
 
 
 async def test_catalog_load_more_noop_when_exhausted():
-    """Calling _load_more when _hf_has_more is False must not fire a fetch."""
+    """_load_more must short-circuit when the active task has no more pages."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -4026,12 +4129,12 @@ async def test_catalog_load_more_noop_when_exhausted():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            screen._hf_has_more = False
-            old_offset = screen._hf_offset
-            with patch.object(screen, "_fetch_more_hf") as fetch:
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
+            old_offset = screen._hf_offset_by_task[ModelTask.CHAT]
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen._load_more()
                 assert not fetch.called
-                assert screen._hf_offset == old_offset
+                assert screen._hf_offset_by_task[ModelTask.CHAT] == old_offset
 
 
 async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
@@ -4081,6 +4184,49 @@ async def test_catalog_append_more_hf_to_list_noop_when_no_new_rows():
             assert screen._list_widget.option_count == initial
 
 
+async def test_catalog_append_more_hf_to_list_falls_back_on_non_task_tab():
+    """If the user switched to Library/Discover before the worker returned,
+    the append-fast-path can't safely target the active list. Fall back
+    to a full ``_refresh_view`` so the user sees the right rows.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "library"
+            with patch.object(screen, "_refresh_view") as refresh:
+                screen._append_more_hf_to_list(
+                    [_make_catalog_model(name="x", task="chat", featured=False)]
+                )
+                refresh.assert_called_once()
+
+
+async def test_catalog_append_more_hf_to_list_falls_back_on_cross_task_payload():
+    """If the worker's payload belongs to a different task than the now-active
+    tab (race: chat fetch lands after the user jumps to embed), fall back
+    to a full ``_refresh_view`` instead of leaking foreign rows into the
+    active list.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "embed"
+            with patch.object(screen, "_refresh_view") as refresh:
+                screen._append_more_hf_to_list(
+                    [_make_catalog_model(name="chat-1", task="chat", featured=False)]
+                )
+                refresh.assert_called_once()
+
+
 async def test_catalog_list_count_uses_row_count():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -4108,7 +4254,7 @@ async def test_catalog_scroll_prefetch_fires_load_more_near_bottom():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             with (
@@ -4144,7 +4290,7 @@ async def test_catalog_list_scroll_prefetch_skipped_when_no_more():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = False
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
             with patch.object(screen, "_load_more") as load_more:
                 screen._on_list_scrolled(99.0)
                 assert not load_more.called
@@ -4164,14 +4310,14 @@ async def test_catalog_grid_scroll_prefetch_skipped_in_list_view():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             with patch.object(screen, "_load_more") as load_more:
                 screen._on_grid_scrolled(99.0)
                 assert not load_more.called
 
 
 async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
-    """When _hf_has_more is False, the grid CTA reads 'All N models loaded'."""
+    """Grid CTA reads 'All N models loaded' once the active task is exhausted."""
     from lilbee.cli.tui import messages as msg_module
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -4185,8 +4331,8 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._refresh_grid = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            screen._hf_fetched = True
-            screen._hf_has_more = False
+            screen._hf_fetched_tasks.add(ModelTask.CHAT)
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
             wanted = msg_module.CATALOG_GRID_ALL_LOADED.format(count=12)
             for _ in range(20):
                 screen._mount_grid_ctas(hf_count=12)
@@ -4195,6 +4341,40 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
                 if any(wanted in str(c.render()) for c in ctas):
                     break
             assert any(wanted in str(c.render()) for c in ctas)
+
+
+async def test_catalog_grid_hf_count_is_per_active_task():
+    """The grid scroll-hint count must reflect the active tab's HF rows only,
+    not the merged ``self._hf_models`` total: the chat tab's hint should
+    not inflate as embedding/vision/rerank pages land.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    chat_models = [
+        _make_catalog_model(name=f"chat-{i}", hf_repo=f"o/c{i}", task="chat", featured=False)
+        for i in range(2)
+    ]
+    embed_models = [
+        _make_catalog_model(name=f"embed-{i}", hf_repo=f"o/e{i}", task="embedding", featured=False)
+        for i in range(3)
+    ]
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._families = []
+            screen._remote_models = []
+            screen._hf_models = chat_models + embed_models
+            screen._hf_fetched_tasks.update({ModelTask.CHAT, ModelTask.EMBEDDING})
+            prep = screen._prepare_grid_refresh()
+            assert prep is not None
+            _sections, hf_count = prep
+            assert hf_count == len(chat_models)
 
 
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
@@ -4211,7 +4391,7 @@ async def test_catalog_grid_scroll_fires_load_more_near_bottom():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             with (
@@ -4249,7 +4429,7 @@ async def test_catalog_scroll_prefetch_skipped_during_cooldown():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = _time.monotonic()
             with patch.object(screen, "_load_more") as load_more:
@@ -4270,7 +4450,7 @@ async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             with (
@@ -4303,7 +4483,7 @@ async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             container_type = type(screen._grid_container)
@@ -4346,7 +4526,7 @@ async def test_catalog_mouse_scroll_with_no_overflow_loads_more():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             container_type = type(screen._grid_container)
@@ -4387,7 +4567,7 @@ async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             container_type = type(screen._grid_container)
@@ -4430,7 +4610,7 @@ async def test_catalog_mouse_scroll_loads_more_in_list_view_at_max():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             container_type = type(screen._list_widget)
@@ -4472,7 +4652,7 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = _time.monotonic()
             container_type = type(screen._grid_container)
@@ -4515,7 +4695,7 @@ async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             screen._scroll_prefetch_armed_at = 0.0
             container_type = type(screen._list_widget)
@@ -4555,7 +4735,7 @@ async def test_catalog_grid_leave_down_at_last_section_loads_more():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             last_grid = ModelGrid([])
             event = ModelGrid.LeaveDown(last_grid)
@@ -4589,7 +4769,7 @@ async def test_catalog_grid_leave_down_in_middle_focuses_next():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             middle_grid = ModelGrid([])
             tail_grid = ModelGrid([])
@@ -4621,14 +4801,14 @@ async def test_catalog_load_more_deduplicated_while_in_flight():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            old_offset = screen._hf_offset
-            with patch.object(screen, "_fetch_more_hf") as fetch:
+            old_offset = screen._hf_offset_by_task[ModelTask.CHAT]
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen._load_more()
                 screen._load_more()
                 assert fetch.call_count == 1
-                assert screen._hf_offset == old_offset + _HF_PAGE_SIZE
+                assert screen._hf_offset_by_task[ModelTask.CHAT] == old_offset + _HF_PAGE_SIZE
 
 
 async def test_catalog_row_highlighted_prefetches_near_bottom():
@@ -4645,7 +4825,7 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             # Wipe featured families so the list is exactly the HF models.
             screen._families = []
             screen._hf_models = [
@@ -4665,7 +4845,7 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
             # Per-tab scroll watches may fire _load_more during the initial
             # pause; reset _loading_more so the prefetch path isn't gated.
             screen._loading_more = False
-            with patch.object(screen, "_fetch_more_hf") as fetch:
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen._maybe_prefetch_on_nav()
                 assert fetch.called
 
@@ -4684,8 +4864,8 @@ async def test_catalog_row_highlighted_ignored_in_grid_view():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = True
-            screen._hf_has_more = True
-            with patch.object(screen, "_fetch_more_hf") as fetch:
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
+            with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
                 screen._maybe_prefetch_on_nav()
                 assert not fetch.called
 
@@ -4708,7 +4888,7 @@ async def test_catalog_sort_label_covers_every_pagination_state():
 
             # In-flight fetch: "loading more…" branch.
             screen._loading_more = True
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._update_sort_label()
             assert "loading more" in str(label._Static__content)  # type: ignore[attr-defined]
 
@@ -4718,7 +4898,7 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             assert "for more" in str(label._Static__content).lower()  # type: ignore[attr-defined]
 
             # Exhausted: plain count with no suffix.
-            screen._hf_has_more = False
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
             screen._update_sort_label()
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "loading" not in text
@@ -5012,7 +5192,7 @@ async def test_catalog_input_handler_uses_on_decorator():
 
 
 async def test_catalog_fetch_more_hf_worker():
-    """Cover _fetch_more_hf worker body."""
+    """Cover _fetch_more_hf_for_task worker body."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     hf_models = [_make_catalog_model(name=f"hf-{i}B", featured=False) for i in range(5)]
@@ -5029,7 +5209,7 @@ async def test_catalog_fetch_more_hf_worker():
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=CatalogResult(total=5, limit=25, offset=0, models=hf_models),
             ):
-                screen._fetch_more_hf()
+                screen._fetch_more_hf_for_task(ModelTask.CHAT)
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
@@ -5424,7 +5604,7 @@ async def test_catalog_refresh_list_with_models():
                 _make_catalog_model(name=f"model-{i}B", hf_repo=f"org/model-{i}", downloads=100 - i)
                 for i in range(5)
             ]
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._refresh_list()
             list_container = screen.query_one("#list-chat", ModelList)
             assert list_container.option_count >= 5
@@ -5997,7 +6177,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             await screen.workers.wait_for_complete()
-            screen._hf_fetched = True
+            screen._hf_fetched_tasks.add(ModelTask.CHAT)
             screen._families = []
             screen._grid_cache_keys["chat"] = ()
             with patch.object(
@@ -9115,7 +9295,7 @@ async def test_catalog_grid_leave_down_focuses_next():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._hf_has_more = False
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
             for _ in range(20):
                 grids = list(screen.query(ModelGrid))
                 if len(grids) >= 2:
@@ -9146,7 +9326,7 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             await pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._hf_has_more = False
+            screen._hf_has_more_by_task[ModelTask.CHAT] = False
             for _ in range(20):
                 grids = list(screen.query("#grid-chat ModelGrid"))
                 if grids:
@@ -10949,18 +11129,25 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
 
 
 async def test_catalog_auto_fetches_hf_on_mount():
-    """Opening the catalog kicks off the HF bulk fetch automatically (no CTA gate)."""
+    """Opening the catalog kicks off the chat-tab HF fetch automatically.
+
+    Sibling task tabs (Embed/Vision/Rerank) fetch lazily on first activation
+    so the initial mount only costs one HF round-trip.
+    """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
-            with patch.object(CatalogScreen, "_fetch_all_hf_models") as mock_fetch:
+            with patch.object(CatalogScreen, "_fetch_initial_hf_models_for_task") as mock_fetch:
                 app.push_screen(screen)
                 await _pilot.pause()
-                assert screen._hf_fetched is True
-                mock_fetch.assert_called()
+                tasks_called = [c.args[0] for c in mock_fetch.call_args_list]
+                assert ModelTask.CHAT in tasks_called
+                assert ModelTask.EMBEDDING not in tasks_called
+                assert ModelTask.VISION not in tasks_called
+                assert ModelTask.RERANK not in tasks_called
 
 
 async def test_catalog_grid_selected_delegates_to_select_row():
@@ -11418,7 +11605,7 @@ async def test_catalog_maybe_prefetch_returns_when_no_focus():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._grid_view = False
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             # focused_list_index is None, so load_more must NOT be called.
             with patch.object(screen, "_load_more") as mock_load:
@@ -11525,7 +11712,7 @@ def test_catalog_grid_scroll_hint_text_all_loaded_branch():
 
     screen = CatalogScreen()
     screen._loading_more = False
-    screen._hf_has_more = False
+    screen._hf_has_more_by_task[ModelTask.CHAT] = False
     text = screen._grid_scroll_hint_text(hf_count=12)
     assert "12" in text
     assert "loading" not in text
@@ -11576,7 +11763,7 @@ def test_catalog_grid_scroll_hint_text_keep_scrolling_branch():
 
     screen = CatalogScreen()
     screen._loading_more = False
-    screen._hf_has_more = True
+    screen._hf_has_more_by_task[ModelTask.CHAT] = True
     text = screen._grid_scroll_hint_text(hf_count=7)
     assert "7" in text
 
