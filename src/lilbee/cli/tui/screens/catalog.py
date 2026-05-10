@@ -171,7 +171,11 @@ class CatalogScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
         Binding("escape", "dismiss_filter", "", show=False),
-        Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
+        # Surfaced outside _ACTION_GROUP so the "Grid/List" affordance prints
+        # in full in the footer instead of collapsing into the compact pill.
+        # The "(faster)" tag tells users list view paginates without the
+        # card layout overhead.
+        Binding("v", "toggle_view", "Grid/List (faster)", show=True),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
         # Delete sits outside _ACTION_GROUP so the footer renders it as
         # its own "D Delete" entry rather than collapsing it into the
