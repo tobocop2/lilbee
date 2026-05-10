@@ -4001,6 +4001,27 @@ async def test_catalog_search_scoped_to_active_task():
                 fetch.assert_called_once_with("llama", ModelTask.EMBEDDING)
 
 
+async def test_catalog_search_skips_non_task_tab():
+    """Defensive guard: ``_trigger_remote_search`` short-circuits on
+    Discover/Library where the search Input is hidden, so the worker
+    never fires for a tab that has no task association.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "library"
+            screen._search_in_flight = False
+            with patch.object(screen, "_fetch_hf_search") as fetch:
+                screen._trigger_remote_search("llama")
+                assert not fetch.called
+            assert screen._search_in_flight is False
+
+
 async def test_catalog_action_load_more_triggers_fetch():
     """Pressing n fires a fetch when more results are available."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -4152,6 +4173,49 @@ async def test_catalog_append_more_hf_to_list_noop_when_no_new_rows():
             screen._append_more_hf_to_list([])
             await _pilot.pause()
             assert screen._list_widget.option_count == initial
+
+
+async def test_catalog_append_more_hf_to_list_falls_back_on_non_task_tab():
+    """If the user switched to Library/Discover before the worker returned,
+    the append-fast-path can't safely target the active list. Fall back
+    to a full ``_refresh_view`` so the user sees the right rows.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "library"
+            with patch.object(screen, "_refresh_view") as refresh:
+                screen._append_more_hf_to_list(
+                    [_make_catalog_model(name="x", task="chat", featured=False)]
+                )
+                refresh.assert_called_once()
+
+
+async def test_catalog_append_more_hf_to_list_falls_back_on_cross_task_payload():
+    """If the worker's payload belongs to a different task than the now-active
+    tab (race: chat fetch lands after the user jumps to embed), fall back
+    to a full ``_refresh_view`` instead of leaking foreign rows into the
+    active list.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "embed"
+            with patch.object(screen, "_refresh_view") as refresh:
+                screen._append_more_hf_to_list(
+                    [_make_catalog_model(name="chat-1", task="chat", featured=False)]
+                )
+                refresh.assert_called_once()
 
 
 async def test_catalog_list_count_uses_row_count():
