@@ -67,10 +67,11 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
 
 
 @pytest.mark.http
-def test_unknown_role_assignment_rejected(server_url: str) -> None:
-    """PUT /api/models/<role> with an unknown role does not 5xx; the surface
-    rejects the request via auth / validation / method-not-allowed / not-found.
-    Any 4xx is acceptable; the contract is "doesn't crash the server"."""
+def test_unknown_role_assignment_does_not_5xx(server_url: str) -> None:
+    """`PUT /api/models/<role>` with an unknown role must never 5xx. The
+    surface rejects via 4xx (auth, validation, method-not-allowed,
+    not-found) depending on routing. Asserts the server didn't crash; does
+    not pin which 4xx, since that's routing-dependent."""
     response = httpx.put(
         f"{server_url}/api/models/not-a-real-role",
         json={"model": "anything"},

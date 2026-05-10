@@ -25,7 +25,7 @@ from threading import Thread
 import pytest
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from conftest import Lane
+from conftest import Lane, LaneName
 
 _CHROMIUM_BOOTSTRAP_TIMEOUT = 600.0
 _CRAWL_TIMEOUT = 300.0
@@ -173,12 +173,12 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 @pytest.mark.writer
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
-    sys.platform == "win32" and os.environ.get("LILBEE_QA_LANE") == "l1-pypi",
+    sys.platform == "win32" and os.environ.get("LILBEE_QA_LANE") == LaneName.L1_PYPI,
     reason="bb-l7t4: Windows pypi lane crawl returns 0 pages from local http.server fixture",
     strict=False,
 )
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
     reason=(
         "bb-sxsz: bundled binary's crawler stack is broken in b455 - "
         "lilbee add --help omits --crawl and lilbee setup crawler exits 2. "

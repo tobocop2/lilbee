@@ -24,7 +24,7 @@ import httpx
 import pytest
 from drivers.tui import lilbee_env
 
-from conftest import Lane
+from conftest import Lane, LaneName
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
@@ -131,7 +131,7 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.writer
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )
@@ -166,7 +166,7 @@ def test_status_with_ollama_backend_does_not_crash(
 @pytest.mark.writer
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )
@@ -202,7 +202,7 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.writer
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == "l2-binary",
+    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )

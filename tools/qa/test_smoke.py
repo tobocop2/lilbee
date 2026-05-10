@@ -65,4 +65,9 @@ def test_unknown_subcommand_exits_nonzero(lane: Lane, lilbee_data: Path) -> None
     result = run_lilbee(lane, ["this-command-does-not-exist"], data_dir=lilbee_data, timeout=60)
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
-    assert "no such command" in combined or "usage" in combined or "error" in combined
+    # See test_cli_negative.test_unknown_top_level_command_fails: drop bare
+    # "error" as a positive signal and assert no leaked traceback.
+    assert "no such command" in combined or "usage" in combined
+    assert "traceback" not in combined, (
+        f"unknown command leaked a Python traceback to the user: {combined[-500:]}"
+    )

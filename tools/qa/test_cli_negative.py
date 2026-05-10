@@ -14,7 +14,13 @@ def test_unknown_top_level_command_fails(lane: Lane, lilbee_data: Path) -> None:
     result = run_lilbee(lane, ["this-is-not-a-command"], data_dir=lilbee_data, timeout=60)
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
-    assert any(needle in combined for needle in ("no such command", "usage", "error"))
+    # Drop the bare word "error" as a positive signal: it would also match
+    # any traceback line that mentions an exception name (RuntimeError etc.)
+    # and let a bare stack trace pass.
+    assert any(needle in combined for needle in ("no such command", "usage"))
+    assert "traceback" not in combined, (
+        f"unknown command leaked a Python traceback to the user: {combined[-500:]}"
+    )
 
 
 @pytest.mark.cli

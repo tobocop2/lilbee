@@ -233,7 +233,7 @@ def test_tui_chat_advances_past_thinking_spinner(
         # doesn't softlock on 'thinking...'", not "the model answers the
         # question correctly" (covered separately by CLI/HTTP cite-the-source
         # assertions against the structured sources array). A 0.6B model
-        # may still pick the wrong chunk under contention — that's a
+        # may still pick the wrong chunk under contention. That's a
         # model-quality issue, not a TUI bug. Assert the response section
         # rendered SOMETHING from either source: any phrase that appears in
         # one of the seed corpus files. If none appear within the timeout,

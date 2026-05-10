@@ -256,10 +256,7 @@ class TuiSession:
         """Non-blocking liveness check."""
         if sys.platform == "win32":
             return _safe_isalive_winpty(self._proc)
-        pid = getattr(self._proc, "pid", None)
-        if pid is None:
-            return False
-        return _is_pid_alive(pid)
+        return _is_pid_alive(self._proc.pid)
 
     def close(self) -> None:
         """Terminate without hanging on a stubborn TUI."""
@@ -267,9 +264,7 @@ class TuiSession:
             with contextlib.suppress(Exception):
                 self._proc.terminate(force=True)
             return
-        pid = getattr(self._proc, "pid", None)
-        if pid is None:
-            return
+        pid = self._proc.pid
         with contextlib.suppress(ProcessLookupError, OSError):
             os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + _TERM_GRACE_SECONDS

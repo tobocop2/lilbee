@@ -15,6 +15,7 @@ import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -36,9 +37,6 @@ _DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _DEFAULT_RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF"
 _LANE_ENV_VAR = "LILBEE_QA_LANE"
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
-_CHAT_MODEL_ENV_VAR = "LILBEE_QA_CHAT_MODEL"
-_EMBEDDING_MODEL_ENV_VAR = "LILBEE_QA_EMBEDDING_MODEL"
-_RERANKER_MODEL_ENV_VAR = "LILBEE_QA_RERANKER_MODEL"
 _MODELS_DIR_ENV_VAR = "LILBEE_QA_MODELS_DIR"
 _SERVER_PORT_BASE = 5000
 _SERVER_BOOT_TIMEOUT = 60.0
@@ -48,16 +46,34 @@ _MCP_STARTUP_TIMEOUT = 60.0
 _MODEL_PULL_TIMEOUT = 240.0
 
 
+class LaneName(StrEnum):
+    """The artifact under test for this run.
+
+    ``L1_SOURCE`` is the local-dev default (whatever ``lilbee`` is on PATH).
+    ``L1_PYPI`` is the CI lane that installs from PyPI / a sibling-run wheel
+    artifact. ``L2_BINARY`` is the CI lane that runs the released onefile
+    binary downloaded from a GH release / sibling-run binary artifact.
+    """
+
+    L1_SOURCE = "l1-source"
+    L1_PYPI = "l1-pypi"
+    L2_BINARY = "l2-binary"
+
+
 @dataclass(frozen=True)
 class Lane:
     """The artifact under test for this run."""
 
-    name: str
+    name: LaneName
     lilbee_bin: str
 
     @property
     def is_binary(self) -> bool:
-        return self.name == "l2-binary"
+        return self.name is LaneName.L2_BINARY
+
+    @property
+    def is_pypi(self) -> bool:
+        return self.name is LaneName.L1_PYPI
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -85,12 +101,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture(scope="session")
 def qa_chat_model() -> str:
-    return os.environ.get(_CHAT_MODEL_ENV_VAR, _DEFAULT_CHAT_MODEL)
+    return _DEFAULT_CHAT_MODEL
 
 
 @pytest.fixture(scope="session")
 def qa_embedding_model() -> str:
-    return os.environ.get(_EMBEDDING_MODEL_ENV_VAR, _DEFAULT_EMBEDDING_MODEL)
+    return _DEFAULT_EMBEDDING_MODEL
 
 
 @pytest.fixture(scope="session")
@@ -104,7 +120,7 @@ def qa_reranker_model() -> str:
     ``lilbee_env_with_models`` should pull it explicitly rather than assume
     it is already in the cache.
     """
-    return os.environ.get(_RERANKER_MODEL_ENV_VAR, _DEFAULT_RERANKER_MODEL)
+    return _DEFAULT_RERANKER_MODEL
 
 
 @pytest.fixture(scope="session")
@@ -252,7 +268,14 @@ def lilbee_env_with_models(
 
 @pytest.fixture(scope="session")
 def lane() -> Lane:
-    name = os.environ.get(_LANE_ENV_VAR, "l1-source")
+    raw_name = os.environ.get(_LANE_ENV_VAR, LaneName.L1_SOURCE.value)
+    try:
+        name = LaneName(raw_name)
+    except ValueError:
+        pytest.fail(
+            f"{_LANE_ENV_VAR}={raw_name!r} is not a known lane; "
+            f"valid values: {[m.value for m in LaneName]}"
+        )
     explicit = os.environ.get(_BIN_ENV_VAR)
     if explicit:
         bin_path = explicit

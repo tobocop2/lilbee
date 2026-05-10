@@ -8,8 +8,12 @@ the matrix against real provider credentials.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from drivers.tui import TuiSession
+
+from conftest import Lane
 
 _TUI_BOOT_TIMEOUT = 60.0
 _TUI_SCREEN_TIMEOUT = 15.0
@@ -108,8 +112,6 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     Uses regex word boundaries so the "fits" label doesn't match unrelated
     substrings like "benefits". Won't run is unambiguous as a phrase.
     """
-    import re
-
     tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
     tui.wait_for("Local", timeout=_TUI_SCREEN_TIMEOUT)
@@ -126,19 +128,20 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
-def test_settings_screen_omits_unavailable_tabs(tui: TuiSession) -> None:
+def test_settings_screen_omits_unavailable_tabs(tui: TuiSession, lane: Lane) -> None:
     """Settings tabs for unavailable extras are hidden, not greyed out.
 
-    The default lane has no API keys configured, no crawler extra, and
-    `cfg.wiki=False`, so the API-Keys / Crawling / Wiki tabs must be absent.
-    The lane is built without these extras; if a lane configures them, this
-    test xfails on that lane via pytest.skip.
+    The pypi lane installs plain ``lilbee`` (no [crawler] / [litellm]) and
+    leaves ``cfg.wiki=False``, so the API-Keys / Crawling / Wiki tabs are
+    absent. The binary lane bundles those extras and renders the tabs, so
+    skip on binary rather than asserting an inverted invariant.
     """
+    if lane.is_binary:
+        pytest.skip("binary lane bundles [crawler] + [litellm]; the conditional tabs render")
     tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
     tui.send("/settings\r")
     tui.wait_for("Settings", timeout=_TUI_SCREEN_TIMEOUT)
     visible = tui.text()
-    # The 3 conditional tabs should not show by default.
     assert "API-Keys" not in visible, "API-Keys tab should be hidden without litellm"
     assert "Crawling" not in visible, "Crawling tab should be hidden without crawler extra"
     assert "Wiki" not in visible, "Wiki tab should be hidden when cfg.wiki is false"
