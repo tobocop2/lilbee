@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual import on
 from textual.app import ComposeResult
@@ -25,6 +28,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
+from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -32,9 +36,11 @@ from lilbee.catalog import (
     display_label_for_ref,
     extract_quant,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
+    CatalogRowKind,
     LocalCatalogRow,
     catalog_to_row,
     parse_param_label,
@@ -42,8 +48,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services
-from lilbee.modelhub.models import ModelTask, get_system_ram_gb
+from lilbee.modelhub.models import get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
@@ -98,16 +103,11 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
-    """Return the CatalogModel to download for a non-installed card, or None.
-
-    Setup wizard only renders local rows; the isinstance guard narrows
-    the union (CatalogRow = LocalCatalogRow | FrontierCatalogRow) so
-    the .installed / .catalog_model reads are typecheck-clean.
-    """
+    """Return the CatalogModel to download for a non-installed local card, or None."""
     if card is None:
         return None
     row = card.row
-    if not isinstance(row, LocalCatalogRow):  # setup never shows frontier rows
+    if row.kind != CatalogRowKind.LOCAL:  # setup never shows frontier rows
         return None
     if row.installed:
         return None
@@ -126,6 +126,8 @@ class SetupWizard(Screen[str | None]):
     Selections are persisted to settings eagerly (not at dismiss time),
     so Esc-ing out mid-wizard keeps your picks.
     """
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "setup.tcss"
 
@@ -249,8 +251,8 @@ class SetupWizard(Screen[str | None]):
                 continue
             for card in cards:
                 row = card.row
-                if not isinstance(
-                    row, LocalCatalogRow
+                if (
+                    row.kind != CatalogRowKind.LOCAL
                 ):  # pragma: no cover - setup never mounts frontier
                     continue
                 cm = row.catalog_model
@@ -273,8 +275,6 @@ class SetupWizard(Screen[str | None]):
         Called when the user presses Enter on a card. Saves the config
         fragment eagerly so Esc mid-wizard doesn't lose the pick.
         """
-        from lilbee.cli.tui.app import LilbeeApp
-
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
@@ -289,11 +289,7 @@ class SetupWizard(Screen[str | None]):
             apply_active_model(self.app, "embedding_model", ref)
 
         pending = _pending_download(card)
-        if (
-            pending is not None
-            and pending.ref not in self._submitted
-            and isinstance(self.app, LilbeeApp)
-        ):
+        if pending is not None and pending.ref not in self._submitted:
             self._submitted.add(pending.ref)
             self.app.task_bar.start_download(pending)
 

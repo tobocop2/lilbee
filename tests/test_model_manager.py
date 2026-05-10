@@ -7,14 +7,13 @@ from unittest import mock
 import httpx
 import pytest
 
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.modelhub.model_manager import (
     ModelManager,
-    ModelSource,
     RemoteModel,
     discover_api_models,
 )
 from lilbee.modelhub.model_manager.discovery import _has_provider_key
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import detect_backend_name
 
 
@@ -388,7 +387,9 @@ class TestModelManagerPull:
         fake_entry = mock.Mock()
         fake_entry.name = "test-model"
 
-        def fake_download(entry: object, *, on_progress: object = None) -> Path:
+        def fake_download(
+            entry: object, *, on_progress: object = None, on_complete: object = None
+        ) -> Path:
             path = models_dir / f"{entry.name}.gguf"
             path.write_text("fake model")
             return path
@@ -403,7 +404,11 @@ class TestModelManagerPull:
             result = mgr.pull("test-model", ModelSource.NATIVE)
 
         mock_resolve.assert_called_once_with("test-model")
-        mock_dl.assert_called_once_with(fake_entry, on_progress=None)
+        mock_dl.assert_called_once()
+        call = mock_dl.call_args
+        assert call.args == (fake_entry,)
+        assert call.kwargs["on_progress"] is None
+        assert callable(call.kwargs["on_complete"])
         assert result is not None
         assert result.name == "test-model.gguf"
 
@@ -414,7 +419,9 @@ class TestModelManagerPull:
 
         captured: list[object] = []
 
-        def fake_download(entry: object, *, on_progress: object = None) -> Path:
+        def fake_download(
+            entry: object, *, on_progress: object = None, on_complete: object = None
+        ) -> Path:
             captured.append(entry)
             path = models_dir / "adhoc.gguf"
             path.write_text("fake model")
@@ -575,7 +582,8 @@ class TestModelManagerRemove:
         model_file.write_text("fake model data")
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("llama3-8b.gguf", ModelSource.NATIVE) is True
+        removed = mgr.remove("llama3-8b.gguf", ModelSource.NATIVE)
+        assert removed is True
         assert not model_file.exists()
 
     def test_native_remove_nonexistent(self, tmp_path: Path) -> None:
@@ -583,14 +591,16 @@ class TestModelManagerRemove:
         models_dir.mkdir()
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("missing.gguf", ModelSource.NATIVE) is False
+        removed = mgr.remove("missing.gguf", ModelSource.NATIVE)
+        assert removed is False
 
     def test_native_remove_path_traversal_blocked(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
-        assert mgr.remove("../../etc/passwd", ModelSource.NATIVE) is False
+        removed = mgr.remove("../../etc/passwd", ModelSource.NATIVE)
+        assert removed is False
 
     def test_litellm_remove_success(self) -> None:
         mock_response = mock.Mock()
@@ -654,18 +664,18 @@ class TestServicesIntegration:
     """``ModelManager`` lifecycle inside the ``Services`` container."""
 
     def setup_method(self) -> None:
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 
     def teardown_method(self) -> None:
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 
     def test_services_holds_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -675,8 +685,8 @@ class TestServicesIntegration:
         assert mgr._remote_base_url == "http://localhost:11434"
 
     def test_services_returns_same_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -685,8 +695,8 @@ class TestServicesIntegration:
         assert mgr1 is mgr2
 
     def test_reset_services_creates_new_model_manager(self, tmp_path: Path) -> None:
+        from lilbee.app.services import get_services, reset_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import get_services, reset_services
 
         cfg.models_dir = tmp_path / "models"
         cfg.remote_base_url = "http://localhost:11434"
@@ -786,35 +796,35 @@ class TestDetectProvider:
 class TestClassifyRemoteTask:
     def test_bge_reranker_classified_as_rerank(self) -> None:
         """bge-reranker-* classifies as rerank despite bge being in _EMBEDDING_FAMILIES."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.discovery import _classify_remote_task
-        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-reranker-base", "bge") == ModelTask.RERANK
         assert _classify_remote_task("bge-reranker-large:latest", "bge") == ModelTask.RERANK
 
     def test_bge_m3_classified_as_embedding(self) -> None:
         """Regular bge embedding models still classify as EMBEDDING."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.discovery import _classify_remote_task
-        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("bge-m3:latest", "bge") == ModelTask.EMBEDDING
 
     def test_cross_encoder_classified_as_rerank(self) -> None:
         """cross-encoder/* sentence-transformers rerankers hit the reranker path."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.discovery import _classify_remote_task
-        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("cross-encoder/ms-marco-MiniLM-L-6-v2", "") == ModelTask.RERANK
 
     def test_chat_model_classified_as_chat(self) -> None:
+        from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.discovery import _classify_remote_task
-        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("qwen3:8b", "qwen") == ModelTask.CHAT
 
     def test_vision_model_classified_as_vision(self) -> None:
+        from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.discovery import _classify_remote_task
-        from lilbee.modelhub.models import ModelTask
 
         assert _classify_remote_task("llava:13b", "llama") == ModelTask.VISION
 
@@ -890,8 +900,8 @@ class TestDiscoverApiModels:
         # sys.modules["litellm"] patch these tests rely on can take effect.
         # Developers whose config.toml pins llm_provider="llama-cpp" would
         # otherwise see these tests fail locally while passing in CI.
+        from lilbee.app.services import reset_services
         from lilbee.core.config import cfg
-        from lilbee.core.services import reset_services
 
         cfg.llm_provider = "auto"
         reset_services()

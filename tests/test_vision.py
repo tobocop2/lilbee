@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.core.services import CrawlerSyncState, Services, set_services
+from lilbee.app.services import CrawlerSyncState, Services, set_services
 from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
 

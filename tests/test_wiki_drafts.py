@@ -8,10 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.wiki.drafts import (
-    PENDING_KIND_COLLISION,
-    PENDING_KIND_PARSE,
     AcceptResult,
     DraftInfo,
+    PendingKind,
     _base_slug_for_collision,
     accept_draft,
     diff_draft,
@@ -19,11 +18,9 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    DRAFTS_SUBDIR,
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
-    SUMMARIES_SUBDIR,
+    WikiSubdir,
 )
 
 
@@ -59,13 +56,13 @@ class TestListDrafts:
         assert list_drafts(tmp_path / "wiki") == []
 
     def test_returns_empty_when_drafts_dir_is_empty(self, tmp_path: Path) -> None:
-        (tmp_path / "wiki" / DRAFTS_SUBDIR).mkdir(parents=True)
+        (tmp_path / "wiki" / WikiSubdir.DRAFTS).mkdir(parents=True)
         assert list_drafts(tmp_path / "wiki") == []
 
     def test_lists_drafts_with_frontmatter_fields(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "chevrolet.md",
+            wiki_root / WikiSubdir.DRAFTS / "chevrolet.md",
             _draft_content("Chevrolet body", faithfulness=0.85, drift_pct=32),
         )
         drafts = list_drafts(wiki_root)
@@ -79,20 +76,20 @@ class TestListDrafts:
 
     def test_pairs_draft_with_existing_published_page(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / DRAFTS_SUBDIR / "chevrolet.md", _draft_content())
+        _write(wiki_root / WikiSubdir.DRAFTS / "chevrolet.md", _draft_content())
         _write(
-            wiki_root / SUMMARIES_SUBDIR / "chevrolet.md",
+            wiki_root / WikiSubdir.SUMMARIES / "chevrolet.md",
             "---\n---\n\nPublished chevrolet summary\n",
         )
         drafts = list_drafts(wiki_root)
         assert drafts[0].published_exists is True
         assert drafts[0].published_path is not None
         assert drafts[0].published_path.name == "chevrolet.md"
-        assert SUMMARIES_SUBDIR in drafts[0].published_path.parts
+        assert WikiSubdir.SUMMARIES in drafts[0].published_path.parts
 
     def test_recurses_into_per_source_draft_nesting(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / DRAFTS_SUBDIR / "cars" / "caprice.md", _draft_content())
+        _write(wiki_root / WikiSubdir.DRAFTS / "cars" / "caprice.md", _draft_content())
         drafts = list_drafts(wiki_root)
         assert len(drafts) == 1
         assert drafts[0].slug == "cars/caprice"
@@ -100,7 +97,7 @@ class TestListDrafts:
     def test_bad_title_flag_surfaces_from_frontmatter(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "garbage.md",
+            wiki_root / WikiSubdir.DRAFTS / "garbage.md",
             _draft_content(bad_title=True),
         )
         [d] = list_drafts(wiki_root)
@@ -109,7 +106,7 @@ class TestListDrafts:
     def test_non_numeric_faithfulness_coerces_to_none(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "weird.md",
+            wiki_root / WikiSubdir.DRAFTS / "weird.md",
             "---\nfaithfulness_score: not-a-number\n---\n\nbody\n",
         )
         [d] = list_drafts(wiki_root)
@@ -117,7 +114,7 @@ class TestListDrafts:
 
     def test_draft_info_to_dict_shape(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content(drift_pct=20))
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content(drift_pct=20))
         d = list_drafts(wiki_root)[0]
         payload = d.to_dict()
         assert payload["slug"] == "x"
@@ -133,15 +130,15 @@ class TestDiffDraft:
 
     def test_diff_against_published_shows_delta(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "old line\n")
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", "new line\n")
+        _write(wiki_root / WikiSubdir.SUMMARIES / "x.md", "old line\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", "new line\n")
         diff = diff_draft("x", wiki_root)
         assert "-old line" in diff
         assert "+new line" in diff
 
     def test_diff_against_no_published_shows_all_new(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", "new body\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", "new body\n")
         diff = diff_draft("x", wiki_root)
         assert "+new body" in diff
         assert "(new draft)" in diff
@@ -150,37 +147,37 @@ class TestDiffDraft:
 class TestAcceptDraft:
     def test_accepts_into_published_subdir_when_match_exists(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / CONCEPTS_SUBDIR / "brakes.md", "old\n")
-        _write(wiki_root / DRAFTS_SUBDIR / "brakes.md", _draft_content("new brakes body"))
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "brakes.md", _draft_content("new brakes body"))
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=3) as idx:
             result = accept_draft("brakes", wiki_root, store)
         assert isinstance(result, AcceptResult)
         assert result.slug == "brakes"
-        assert CONCEPTS_SUBDIR in result.moved_to.parts
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
         assert result.reindexed_chunks == 3
         idx.assert_called_once()
         # Draft file gone, published content replaced.
-        assert not (wiki_root / DRAFTS_SUBDIR / "brakes.md").exists()
-        assert "new brakes body" in (wiki_root / CONCEPTS_SUBDIR / "brakes.md").read_text()
+        assert not (wiki_root / WikiSubdir.DRAFTS / "brakes.md").exists()
+        assert "new brakes body" in (wiki_root / WikiSubdir.CONCEPTS / "brakes.md").read_text()
 
     def test_accepts_into_summaries_when_no_published_counterpart(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / DRAFTS_SUBDIR / "fresh.md", _draft_content("fresh body"))
+        _write(wiki_root / WikiSubdir.DRAFTS / "fresh.md", _draft_content("fresh body"))
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
             result = accept_draft("fresh", wiki_root, store)
-        assert SUMMARIES_SUBDIR in result.moved_to.parts
-        assert (wiki_root / SUMMARIES_SUBDIR / "fresh.md").is_file()
+        assert WikiSubdir.SUMMARIES in result.moved_to.parts
+        assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
 
     def test_strips_drift_marker_from_accepted_content(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "old\n")
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content(drift_pct=40))
+        _write(wiki_root / WikiSubdir.SUMMARIES / "x.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content(drift_pct=40))
         store = MagicMock()
         with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
             accept_draft("x", wiki_root, store)
-        accepted = (wiki_root / SUMMARIES_SUBDIR / "x.md").read_text()
+        accepted = (wiki_root / WikiSubdir.SUMMARIES / "x.md").read_text()
         assert "DRIFT" not in accepted
 
     def test_raises_when_draft_missing(self, tmp_path: Path) -> None:
@@ -198,7 +195,7 @@ class TestAcceptDraft:
             "content from second.md held for review -->\n\n"
         )
         _write(
-            wiki_root / DRAFTS_SUBDIR / f"{collision_slug}.md",
+            wiki_root / WikiSubdir.DRAFTS / f"{collision_slug}.md",
             collision_marker + _draft_content("brake system body"),
         )
         store = MagicMock()
@@ -211,23 +208,23 @@ class TestAcceptDraft:
         landed = result.moved_to.read_text(encoding="utf-8")
         assert PENDING_MARKER_KEYWORD_COLLISION not in landed
         # Draft file gone.
-        assert not (wiki_root / DRAFTS_SUBDIR / f"{collision_slug}.md").exists()
+        assert not (wiki_root / WikiSubdir.DRAFTS / f"{collision_slug}.md").exists()
 
 
 class TestRejectDraft:
     def test_deletes_draft_file(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        draft_path = wiki_root / DRAFTS_SUBDIR / "x.md"
+        draft_path = wiki_root / WikiSubdir.DRAFTS / "x.md"
         _write(draft_path, _draft_content())
         reject_draft("x", wiki_root)
         assert not draft_path.exists()
 
     def test_does_not_touch_published_or_store(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "published\n")
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content())
+        _write(wiki_root / WikiSubdir.SUMMARIES / "x.md", "published\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content())
         reject_draft("x", wiki_root)
-        assert (wiki_root / SUMMARIES_SUBDIR / "x.md").read_text() == "published\n"
+        assert (wiki_root / WikiSubdir.SUMMARIES / "x.md").read_text() == "published\n"
 
     def test_raises_when_draft_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -288,8 +285,8 @@ class TestAcceptCrashSafety:
 
     def test_reindex_failure_keeps_draft_on_disk(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        _write(wiki_root / SUMMARIES_SUBDIR / "x.md", "old\n")
-        _write(wiki_root / DRAFTS_SUBDIR / "x.md", _draft_content("new"))
+        _write(wiki_root / WikiSubdir.SUMMARIES / "x.md", "old\n")
+        _write(wiki_root / WikiSubdir.DRAFTS / "x.md", _draft_content("new"))
 
         boom = MagicMock(side_effect=RuntimeError("indexer down"))
         with patch("lilbee.wiki.drafts.index_wiki_page", boom), pytest.raises(RuntimeError):
@@ -297,7 +294,7 @@ class TestAcceptCrashSafety:
 
         # Published page was updated (first write), but the draft
         # survives so the user can re-run accept once the indexer is back.
-        assert (wiki_root / DRAFTS_SUBDIR / "x.md").is_file()
+        assert (wiki_root / WikiSubdir.DRAFTS / "x.md").is_file()
 
 
 class TestListDraftsWithOnlyDriftMarker:
@@ -306,7 +303,7 @@ class TestListDraftsWithOnlyDriftMarker:
     def test_drift_marker_without_frontmatter(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "x.md",
+            wiki_root / WikiSubdir.DRAFTS / "x.md",
             "<!-- DRIFT: 15% content changed - flagged for human review -->\n\nbody\n",
         )
         [d] = list_drafts(wiki_root)
@@ -321,23 +318,23 @@ class TestPendingKindDetection:
     def test_pending_parse_marker_surfaces_kind(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "henry-ford.md",
+            wiki_root / WikiSubdir.DRAFTS / "henry-ford.md",
             f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt, "
             "entity/concept Henry Ford - retry -->\n",
         )
         [d] = list_drafts(wiki_root)
-        assert d.pending_kind == PENDING_KIND_PARSE
+        assert d.pending_kind == PendingKind.PARSE
         assert d.drift_ratio is None
 
     def test_pending_collision_marker_surfaces_kind(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
         _write(
-            wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md",
+            wiki_root / WikiSubdir.DRAFTS / "brakes-collision-deadbeef.md",
             f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt, "
             "content from s2.txt held for review -->\n\nbody\n",
         )
         [d] = list_drafts(wiki_root)
-        assert d.pending_kind == PENDING_KIND_COLLISION
+        assert d.pending_kind == PendingKind.COLLISION
         assert d.drift_ratio is None
 
 
@@ -361,7 +358,7 @@ class TestAcceptPendingParse:
 
     def test_accept_pending_parse_deletes_marker_and_returns_zero(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
-        marker = wiki_root / DRAFTS_SUBDIR / "henry-ford.md"
+        marker = wiki_root / WikiSubdir.DRAFTS / "henry-ford.md"
         _write(
             marker,
             f"<!-- {PENDING_MARKER_KEYWORD_PARSE} for source s.txt, "
@@ -384,9 +381,9 @@ class TestAcceptPendingParse:
         """Collision draft accepts overwrite the winning page."""
         wiki_root = tmp_path / "wiki"
         # Winning source already wrote the concept page.
-        _write(wiki_root / CONCEPTS_SUBDIR / "brakes.md", "winning body\n")
+        _write(wiki_root / WikiSubdir.CONCEPTS / "brakes.md", "winning body\n")
         # Losing source's collision marker.
-        draft = wiki_root / DRAFTS_SUBDIR / "brakes-collision-deadbeef.md"
+        draft = wiki_root / WikiSubdir.DRAFTS / "brakes-collision-deadbeef.md"
         _write(
             draft,
             f"<!-- {PENDING_MARKER_KEYWORD_COLLISION} with source s1.txt, "
@@ -399,9 +396,9 @@ class TestAcceptPendingParse:
             result = accept_draft("brakes-collision-deadbeef", wiki_root, store)
         # The accepted slug collapses to the winning base slug.
         assert result.slug == "brakes"
-        assert CONCEPTS_SUBDIR in result.moved_to.parts
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
         # Published page was overwritten with the collision draft's body.
-        body = (wiki_root / CONCEPTS_SUBDIR / "brakes.md").read_text()
+        body = (wiki_root / WikiSubdir.CONCEPTS / "brakes.md").read_text()
         assert "losing body that won curation" in body
         assert "PENDING" not in body
         assert not draft.exists()

@@ -1,8 +1,8 @@
-"""GGUF download, mmproj resolution, registry registration."""
+"""GGUF download, mmproj resolution, post-download hooks."""
 
 import fnmatch
 import logging
-from datetime import UTC, datetime
+from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -14,10 +14,11 @@ from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
 from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, hf_headers, hf_token
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
-from lilbee.modelhub.models import ModelTask
-from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.runtime.cancellation import TaskCancelledError
+
+CompleteCallback = Callable[[CatalogModel, Path], None]
 
 log = logging.getLogger(__name__)
 
@@ -62,11 +63,18 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         ) from None
 
 
-def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
+def download_model(
+    entry: CatalogModel,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_complete: CompleteCallback | None = None,
+) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
-    For vision models, also downloads the mmproj (CLIP projection) file.
+    The optional *on_complete(entry, file_path)* callback runs after the file
+    is on disk; modelhub uses it to write a registry manifest. For vision
+    models, also downloads the mmproj (CLIP projection) file.
 
     Raises:
         PermissionError: gated repo requiring authentication
@@ -81,7 +89,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         if on_progress is not None:
             size = dest.stat().st_size
             on_progress(size, size)  # Report 100% immediately
-        return _finalize_download(entry, dest, on_progress=on_progress)
+        return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
     log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
     tracker = _ProgressTracker(on_progress) if on_progress else None
@@ -100,7 +108,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         if not tracker or not tracker.was_used:
             log.info("Model found in HuggingFace cache: %s", cached)
         on_progress(actual_size, actual_size)
-    return _finalize_download(entry, cached, on_progress=on_progress)
+    return _finalize_download(entry, cached, on_progress=on_progress, on_complete=on_complete)
 
 
 def _finalize_download(
@@ -108,29 +116,14 @@ def _finalize_download(
     dest: Path,
     *,
     on_progress: ProgressCallback | None = None,
+    on_complete: CompleteCallback | None = None,
 ) -> Path:
-    """Register the model in the manifest and download mmproj for vision models."""
-    _register_model(entry, dest)
+    """Run post-download hooks: registry write (via on_complete) + mmproj fetch."""
+    if on_complete is not None:
+        on_complete(entry, dest)
     if entry.task == ModelTask.VISION:
         _download_mmproj(entry, on_progress=on_progress)
     return dest
-
-
-def _register_model(entry: CatalogModel, file_path: Path) -> None:
-    """Create a registry manifest for a downloaded model."""
-    registry = ModelRegistry(cfg.models_dir)
-    manifest = ModelManifest(
-        hf_repo=entry.hf_repo,
-        gguf_filename=file_path.name,
-        size_bytes=file_path.stat().st_size,
-        task=entry.task,
-        downloaded_at=datetime.now(UTC).isoformat(),
-    )
-    try:
-        registry.install(entry.hf_repo, file_path.name, file_path, manifest)
-        log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
-    except Exception:
-        log.warning("Failed to register manifest for %s", entry.hf_repo, exc_info=True)
 
 
 def _download_mmproj(

@@ -16,15 +16,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lilbee.providers.worker.transport import RoleConfig
+from lilbee.providers.worker.transport import RoleConfig, WorkerRole
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    ACK_KIND,
-    ERROR_KIND,
-    PING_KIND,
-    PONG_KIND,
-    SHUTDOWN_KIND,
-)
+from lilbee.providers.worker.wire_kinds import WireKind
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +36,7 @@ def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swa
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
 
-def configure_worker_logging(role: str) -> None:
+def configure_worker_logging(role: WorkerRole) -> None:
     """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log`` if set."""
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
@@ -70,7 +64,7 @@ class Reply:
         self._conn = conn
         self._call_id = call_id
 
-    def send(self, kind: str, payload: Any) -> None:
+    def send(self, kind: WireKind, payload: Any) -> None:
         """Send one response frame tagged with this Reply's call_id."""
         self._conn.send((self._call_id, kind, payload))
 
@@ -101,7 +95,7 @@ def run_worker(
     role_config: RoleConfig,
     *,
     session_factory: Callable[[RoleConfig, Any], Any],
-    kind_handlers: dict[str, KindHandler],
+    kind_handlers: dict[WireKind, KindHandler],
 ) -> None:
     """Bootstrap stdio + logging, then run the recv loop until shutdown.
 
@@ -133,7 +127,7 @@ def run_worker(
         heartbeat.join(timeout=1.0)
 
 
-def _start_heartbeat_thread(health_conn: Any, role: str) -> threading.Thread:
+def _start_heartbeat_thread(health_conn: Any, role: WorkerRole) -> threading.Thread:
     """Spawn the daemon thread that owns the health pipe."""
     thread = threading.Thread(
         target=_heartbeat_loop,
@@ -145,16 +139,16 @@ def _start_heartbeat_thread(health_conn: Any, role: str) -> threading.Thread:
     return thread
 
 
-def _heartbeat_loop(health_conn: Any, role: str) -> None:
+def _heartbeat_loop(health_conn: Any, role: WorkerRole) -> None:
     """Respond to ping → pong on the health pipe until the parent closes it."""
     while True:
         try:
             _call_id, kind, _ = health_conn.recv()
         except (EOFError, OSError):
             return
-        if kind == PING_KIND:
+        if kind == WireKind.PING:
             try:
-                health_conn.send((_CONTROL_CALL_ID, PONG_KIND, None))
+                health_conn.send((_CONTROL_CALL_ID, WireKind.PONG, None))
             except (BrokenPipeError, OSError):
                 return
             continue
@@ -164,16 +158,16 @@ def _heartbeat_loop(health_conn: Any, role: str) -> None:
 def _handle_data_frame(
     data_conn: Any,
     state: WorkerLoopState,
-    kind_handlers: dict[str, KindHandler],
-    role: str,
+    kind_handlers: dict[WireKind, KindHandler],
+    role: WorkerRole,
 ) -> bool:
     """Read and dispatch one data-pipe frame. Return False to stop the loop."""
     try:
         call_id, kind, payload = data_conn.recv()
     except EOFError:
         return False
-    if kind == SHUTDOWN_KIND:
-        data_conn.send((call_id, ACK_KIND, None))
+    if kind == WireKind.SHUTDOWN:
+        data_conn.send((call_id, WireKind.ACK, None))
         return False
     reply = Reply(data_conn, call_id)
     handler = kind_handlers.get(kind)
@@ -183,7 +177,7 @@ def _handle_data_frame(
     try:
         raise ValueError(f"{role} worker received unknown kind {kind!r}")
     except ValueError as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
     return True
 
 

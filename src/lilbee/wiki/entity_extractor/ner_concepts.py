@@ -11,12 +11,12 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from lilbee.core.text import is_valid_label, make_slug
 from lilbee.wiki.entity_extractor.base import (
     ChunkRef,
     EntityKind,
     ExtractedEntity,
 )
-from lilbee.wiki.shared import is_valid_label, make_slug
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config

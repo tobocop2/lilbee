@@ -12,11 +12,11 @@ import pytest
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.app.services import set_services
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _mock_services():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     set_services(make_mock_services(store=store))
     yield
     set_services(None)

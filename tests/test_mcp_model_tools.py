@@ -17,6 +17,7 @@ from lilbee.app.models import (
     ShowModelResult,
 )
 from lilbee.catalog import DownloadProgress
+from lilbee.catalog.types import ModelSource
 from lilbee.mcp_server import (
     _log_progress_failure,
     model_list,
@@ -24,16 +25,24 @@ from lilbee.mcp_server import (
     model_rm,
     model_show,
 )
-from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError
 
 
 class TestMcpList:
     def test_native_source_forwarded(self):
+        from lilbee.catalog.types import ModelTask
+
         expected = ListModelsResult(models=[], total=0)
         with patch("lilbee.app.models.list_models_data", return_value=expected) as fn:
             result = model_list(source="native", task="chat")
         assert result == expected.model_dump()
-        fn.assert_called_once_with(source=ModelSource.NATIVE, task="chat")
+        fn.assert_called_once_with(source=ModelSource.NATIVE, task=ModelTask.CHAT)
+
+    def test_invalid_task_returns_explicit_error(self):
+        with patch("lilbee.app.models.list_models_data") as fn:
+            result = model_list(task="bogus")
+        assert result == {"error": "'bogus' is not a valid ModelTask"}
+        fn.assert_not_called()
 
     def test_empty_strings_mean_all(self):
         expected = ListModelsResult(models=[], total=0)

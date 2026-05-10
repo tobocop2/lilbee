@@ -19,7 +19,7 @@ def isolated_cfg():
 
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
-        from lilbee.core.services import CrawlerSyncState, Services
+        from lilbee.app.services import CrawlerSyncState, Services
         from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
         services = Services(
@@ -77,16 +77,14 @@ class TestEagerStartBranch:
         """Flag set: pool_runtime.start + start_eager run; suppress catches errors."""
         cfg.worker_pool_eager_start = True
 
-        from lilbee.core import services as services_mod
+        from lilbee.app import services as services_mod
 
         services_mod.set_services(None)
         # Stub the heavy collaborators so get_services builds without spawning anything.
         # Imports inside get_services() resolve to the source modules; patch at those
         # source paths so the lazy bindings inside the function pick up the stubs.
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(
-            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
-        )
+        monkeypatch.setattr("lilbee.providers.worker.transport.default_spawner", MagicMock)
 
         called: list[str] = []
 
@@ -139,13 +137,11 @@ class TestEagerStartBranch:
         """Suppress(Exception) keeps get_services() resilient if eager start raises."""
         cfg.worker_pool_eager_start = True
 
-        from lilbee.core import services as services_mod
+        from lilbee.app import services as services_mod
 
         services_mod.set_services(None)
         monkeypatch.setattr("lilbee.providers.factory.create_provider", lambda _cfg: MagicMock())
-        monkeypatch.setattr(
-            "lilbee.providers.worker.transport.default_spawner", lambda: MagicMock()
-        )
+        monkeypatch.setattr("lilbee.providers.worker.transport.default_spawner", MagicMock)
 
         class _BoomRuntime:
             def start(self):
@@ -173,8 +169,8 @@ class TestEagerStartBranch:
 class TestResetStore:
     def test_keeps_provider_and_embedder_replaces_store(self, tmp_path):
         """``reset_store`` rebuilds Store-bound services without unloading the provider."""
-        from lilbee.core import services as services_mod
-        from lilbee.core.services import get_services, reset_services, reset_store
+        from lilbee.app import services as services_mod
+        from lilbee.app.services import get_services, reset_services, reset_store
 
         cfg.data_root = tmp_path
         cfg.documents_dir = tmp_path / "documents"
@@ -197,7 +193,7 @@ class TestResetStore:
 
             reset_store()
 
-            after = services_mod._svc
+            after = services_mod.peek_services()
             assert after is not None
             assert after.store is not old_store
             assert after.concepts is not old_concepts
@@ -213,13 +209,13 @@ class TestResetStore:
 
     def test_no_op_when_services_uncached(self):
         """``reset_store`` is a no-op if Services has not been built yet."""
-        from lilbee.core import services as services_mod
-        from lilbee.core.services import reset_services, reset_store
+        from lilbee.app import services as services_mod
+        from lilbee.app.services import reset_services, reset_store
 
         reset_services()
-        assert services_mod._svc is None
+        assert services_mod.peek_services() is None
         reset_store()
-        assert services_mod._svc is None
+        assert services_mod.peek_services() is None
 
 
 def test_reset_services_dependencies_load_eagerly():
@@ -235,7 +231,7 @@ def test_reset_services_dependencies_load_eagerly():
     """
     import sys
 
-    import lilbee.core.services  # noqa: F401
+    import lilbee.app.services  # noqa: F401
 
     assert "lilbee.providers.worker.pool" in sys.modules
     assert "concurrent.futures.thread" in sys.modules

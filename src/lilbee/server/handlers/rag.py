@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
-from lilbee.core.services import get_services
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
@@ -75,7 +75,7 @@ def _run_llm_stream(
             options=opts or None,
             model=cfg.chat_model,
         )
-        for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
+        for st in filter_reasoning(stream, show=cfg.show_reasoning):
             if cancel.is_set():
                 break
             if st.content:

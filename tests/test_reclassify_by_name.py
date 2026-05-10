@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from lilbee.catalog.types import ModelTask
 from lilbee.modelhub.model_manager.discovery import reclassify_by_name
-from lilbee.modelhub.models import ModelTask
 
 
 def test_passes_through_when_name_has_no_special_pattern() -> None:

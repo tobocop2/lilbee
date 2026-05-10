@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
+from lilbee.core.text import clean_label_for_display, is_valid_label, make_slug
 from lilbee.wiki.shared import (
-    ARCHIVE_SUBDIR,
-    CONCEPTS_SUBDIR,
-    DRAFTS_SUBDIR,
-    ENTITIES_SUBDIR,
     SUBDIR_TO_TYPE,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
     WikiPageType,
-    clean_label_for_display,
-    is_valid_label,
-    make_slug,
+    WikiSubdir,
     parse_frontmatter,
 )
 
@@ -21,21 +14,21 @@ from lilbee.wiki.shared import (
 class TestSubdirToType:
     def test_all_expected_keys(self):
         assert set(SUBDIR_TO_TYPE) == {
-            SUMMARIES_SUBDIR,
-            SYNTHESIS_SUBDIR,
-            CONCEPTS_SUBDIR,
-            ENTITIES_SUBDIR,
-            DRAFTS_SUBDIR,
-            ARCHIVE_SUBDIR,
+            WikiSubdir.SUMMARIES,
+            WikiSubdir.SYNTHESIS,
+            WikiSubdir.CONCEPTS,
+            WikiSubdir.ENTITIES,
+            WikiSubdir.DRAFTS,
+            WikiSubdir.ARCHIVE,
         }
 
     def test_values(self):
-        assert SUBDIR_TO_TYPE[SUMMARIES_SUBDIR] is WikiPageType.SUMMARY
-        assert SUBDIR_TO_TYPE[SYNTHESIS_SUBDIR] is WikiPageType.SYNTHESIS
-        assert SUBDIR_TO_TYPE[CONCEPTS_SUBDIR] is WikiPageType.CONCEPT
-        assert SUBDIR_TO_TYPE[ENTITIES_SUBDIR] is WikiPageType.ENTITY
-        assert SUBDIR_TO_TYPE[DRAFTS_SUBDIR] is WikiPageType.DRAFT
-        assert SUBDIR_TO_TYPE[ARCHIVE_SUBDIR] is WikiPageType.ARCHIVE
+        assert SUBDIR_TO_TYPE[WikiSubdir.SUMMARIES] is WikiPageType.SUMMARY
+        assert SUBDIR_TO_TYPE[WikiSubdir.SYNTHESIS] is WikiPageType.SYNTHESIS
+        assert SUBDIR_TO_TYPE[WikiSubdir.CONCEPTS] is WikiPageType.CONCEPT
+        assert SUBDIR_TO_TYPE[WikiSubdir.ENTITIES] is WikiPageType.ENTITY
+        assert SUBDIR_TO_TYPE[WikiSubdir.DRAFTS] is WikiPageType.DRAFT
+        assert SUBDIR_TO_TYPE[WikiSubdir.ARCHIVE] is WikiPageType.ARCHIVE
 
 
 class TestParseFrontmatter:

@@ -26,9 +26,9 @@ from typing import TYPE_CHECKING
 # deferred at each callsite below because it transitively imports spaCy via
 # the wiki package and adds ~3s on first touch.
 from lilbee.app.ingest import copy_files
+from lilbee.app.services import reset_services
 from lilbee.core.config import Config, cfg
 from lilbee.core.security import validate_path_within
-from lilbee.core.services import reset_services
 from lilbee.data.store import Store
 from lilbee.providers.factory import create_provider
 from lilbee.retrieval.concepts import ConceptGraph

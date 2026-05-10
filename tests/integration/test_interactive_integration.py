@@ -19,10 +19,10 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
+from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
-from lilbee.core.services import reset_services as reset_provider
 from lilbee.core.system import canonical_models_dir
 
 pytestmark = pytest.mark.slow
@@ -149,8 +149,6 @@ def real_models():
 def isolated_env(tmp_path, real_models):
     """Redirect config to temp dirs, configure real llama-cpp models."""
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
-
-    _chat_path, _embed_path = real_models
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()

@@ -13,9 +13,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from lilbee.providers.model_ref import ProviderModelRef
+# Display name for the active backend the SDK is talking to. The
+# adapter's own identity is exposed separately via provider_name.
+from lilbee.providers.backend_names import BackendName
+
+if TYPE_CHECKING:
+    # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
+    from lilbee.providers.model_ref import ProviderModelRef
 
 # Single source of truth for per-provider API key configuration.
 # Maps (provider_name, config_field, env_var, display_label). Backend-agnostic:
@@ -29,36 +35,49 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 # Derived set of config field names (for checking which updates touch API keys).
 API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 
-# Display names for the active backend the SDK is talking to. The
-# adapter's own identity is exposed separately via provider_name.
-OLLAMA_BACKEND_NAME = "Ollama"
-OPENAI_BACKEND_NAME = "OpenAI"
-ANTHROPIC_BACKEND_NAME = "Anthropic"
-GEMINI_BACKEND_NAME = "Gemini"
-REMOTE_BACKEND_NAME = "Remote"
+# Provider name -> cfg attribute holding that provider's API key.
+PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
 
-_BACKEND_URL_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("localhost:11434", OLLAMA_BACKEND_NAME),
-    ("ollama", OLLAMA_BACKEND_NAME),
-    ("openai", OPENAI_BACKEND_NAME),
-    ("anthropic", ANTHROPIC_BACKEND_NAME),
-    ("googleapis", GEMINI_BACKEND_NAME),
-    ("gemini", GEMINI_BACKEND_NAME),
+
+def get_provider_api_key(provider: str) -> str | None:
+    """Return the configured API key for *provider*, or ``None`` if unknown / unset.
+
+    *provider* is the lowercase routing key from a parsed model ref (e.g.
+    ``"openai"``). Returns ``None`` for unknown providers AND for known
+    providers whose key is unconfigured; callers can distinguish via
+    :data:`PROVIDER_API_KEY_FIELD`.
+    """
+    from lilbee.core.config import cfg
+
+    field = PROVIDER_API_KEY_FIELD.get(provider.lower())
+    if field is None:
+        return None
+    value = getattr(cfg, field)
+    return value or None
+
+
+_BACKEND_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
+    ("localhost:11434", BackendName.OLLAMA),
+    ("ollama", BackendName.OLLAMA),
+    ("openai", BackendName.OPENAI),
+    ("anthropic", BackendName.ANTHROPIC),
+    ("googleapis", BackendName.GEMINI),
+    ("gemini", BackendName.GEMINI),
 )
 
 
-def detect_backend_name(base_url: str) -> str:
+def detect_backend_name(base_url: str) -> BackendName:
     """Return the display name of the backend behind ``base_url``.
 
     Adapter-agnostic; any SDK implementation can delegate to this helper.
-    Falls back to ``REMOTE_BACKEND_NAME`` when the URL matches none of
+    Falls back to ``BackendName.REMOTE`` when the URL matches none of
     the known patterns.
     """
     url_lower = base_url.lower()
     for pattern, name in _BACKEND_URL_PATTERNS:
         if pattern in url_lower:
             return name
-    return REMOTE_BACKEND_NAME
+    return BackendName.REMOTE
 
 
 @dataclass(frozen=True)

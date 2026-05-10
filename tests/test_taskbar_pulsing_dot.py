@@ -5,14 +5,16 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Label
 
 from lilbee.cli.tui.task_queue import TaskType
-from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
-class _Harness(App[None]):
+class _Harness(LilbeeAppHost):
     def __init__(self) -> None:
         super().__init__()
         self.task_bar = TaskBarController(self)
@@ -149,7 +151,7 @@ async def test_taskbar_hint_becomes_esc_variant_when_input_focused() -> None:
     """With a chat-style Input focused, the hint should read 'Esc then t'."""
     from textual.widgets import Input
 
-    class _InputHarness(App[None]):
+    class _InputHarness(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
             self.task_bar = TaskBarController(self)
@@ -244,3 +246,75 @@ async def test_taskbar_failure_flash_shows_count() -> None:
         bar._refresh_display()
         text = _label_text(bar)
         assert "failed" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_taskbar_starts_in_idle_mode_when_queue_empty() -> None:
+    """First mount with no work keeps the timer at the idle cadence."""
+    from lilbee.cli.tui.widgets.task_bar import _POLL_INTERVAL_IDLE_S
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        assert bar._idle_mode is True
+        assert bar._interval is not None
+        assert bar._interval._interval == _POLL_INTERVAL_IDLE_S
+
+
+@pytest.mark.asyncio
+async def test_taskbar_re_arms_at_active_rate_on_first_task() -> None:
+    """An enqueued+advanced task flips the bar to the active cadence."""
+    from lilbee.cli.tui.widgets.task_bar import _POLL_INTERVAL_ACTIVE_S
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        assert bar._idle_mode is True
+        app.task_bar.queue.enqueue(lambda: None, "go", TaskType.DOWNLOAD.value)
+        app.task_bar.queue.advance(TaskType.DOWNLOAD.value)
+        bar._refresh_display()
+        assert bar._idle_mode is False
+        assert bar._interval is not None
+        assert bar._interval._interval == _POLL_INTERVAL_ACTIVE_S
+
+
+@pytest.mark.asyncio
+async def test_taskbar_returns_to_idle_after_flash_clears() -> None:
+    """Once the completion flash drains, the timer drops back to 1 Hz."""
+    from lilbee.cli.tui.widgets.task_bar import (
+        _POLL_INTERVAL_ACTIVE_S,
+        _POLL_INTERVAL_IDLE_S,
+    )
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        tid = app.task_bar.queue.enqueue(lambda: None, "one", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        bar._refresh_display()
+        assert bar._interval is not None
+        assert bar._interval._interval == _POLL_INTERVAL_ACTIVE_S
+        app.task_bar.queue.complete_task(tid)
+        bar._refresh_display()
+        # Flash window holds active cadence; force-expire it and re-poll.
+        bar._flash_until_tick = bar._tick_count - 1
+        bar._flash_outcome = None
+        bar._refresh_display()
+        assert bar._idle_mode is True
+        assert bar._interval is not None
+        assert bar._interval._interval == _POLL_INTERVAL_IDLE_S
+
+
+@pytest.mark.asyncio
+async def test_taskbar_unmount_stops_idle_interval() -> None:
+    """on_unmount cancels whichever interval is currently armed."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        assert bar._idle_mode is True
+        bar.on_unmount()
+        assert bar._interval is None

@@ -11,9 +11,9 @@ from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
+from lilbee.app.services import get_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.routes.crawl import crawl_route

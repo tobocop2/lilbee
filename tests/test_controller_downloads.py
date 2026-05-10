@@ -17,16 +17,14 @@ import time
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
-from lilbee.cli.tui.widgets.task_bar import (
-    ProgressReporter,
-    TaskBarController,
-    TaskCancelledError,
-)
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+from lilbee.runtime.cancellation import TaskCancelledError
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
@@ -46,7 +44,7 @@ def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel
     )
 
 
-class _Host(App[None]):
+class _Host(LilbeeAppHost):
     """Minimal host so TaskBarController can bind to an App."""
 
     def compose(self) -> ComposeResult:
@@ -253,7 +251,7 @@ async def test_start_download_enqueues_under_download_type() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None):
+        def fake_download(model, on_progress=None, on_complete=None):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -277,7 +275,7 @@ async def test_start_download_progress_flows_through_queue() -> None:
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None):
+        def fake_download(model, on_progress=None, on_complete=None):
             on_progress(10, 100)
             on_progress(60, 100)
             on_progress(100, 100)
@@ -301,7 +299,7 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
 
-        def fake_download(model, on_progress=None):
+        def fake_download(model, on_progress=None, on_complete=None):
             raise PermissionError("401 Unauthorized")
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
@@ -366,7 +364,7 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None):
+        def fake_download(model, on_progress=None, on_complete=None):
             while not release[0]:
                 time.sleep(0.01)
 
@@ -401,7 +399,7 @@ async def test_concurrent_downloads_two_active_one_queued() -> None:
         controller = TaskBarController(app)
         release = [False]
 
-        def fake_download(model, on_progress=None):
+        def fake_download(model, on_progress=None, on_complete=None):
             while not release[0]:
                 time.sleep(0.01)
 

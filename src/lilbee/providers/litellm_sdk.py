@@ -40,6 +40,58 @@ _PROVIDER_NAME = "litellm"
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
 
+class _LitellmResponseView:
+    """Typed read-only view over a litellm completion-response object.
+
+    The litellm response shape is not in the SDK's type stubs. This
+    adapter is the one place that knows how to pull ``model``, ``choices``,
+    ``message_content`` and the streaming chunk fields out; SDK drift
+    breaks here rather than across every caller.
+    """
+
+    def __init__(self, response: Any) -> None:
+        self._response = response
+
+    @property
+    def model(self) -> str | None:
+        """The model name the SDK echoed back, if any."""
+        value = getattr(self._response, "model", None)
+        return str(value) if value is not None else None
+
+    def _first_choice(self) -> Any:
+        """First entry of the response's ``choices`` list, or ``None``."""
+        choices = getattr(self._response, "choices", None) or []
+        return choices[0] if choices else None
+
+    @property
+    def message_content(self) -> str:
+        """Content text of the first choice's message (non-stream path)."""
+        choice = self._first_choice()
+        if choice is None:
+            return ""
+        message = getattr(choice, "message", None)
+        if message is None:
+            return ""
+        return getattr(message, "content", "") or ""
+
+    @property
+    def delta_content(self) -> str:
+        """Content delta of the first choice (stream-path chunk)."""
+        choice = self._first_choice()
+        if choice is None:
+            return ""
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            return ""
+        return getattr(delta, "content", "") or ""
+
+    @property
+    def finish_reason(self) -> str | None:
+        """``finish_reason`` of the first choice, if the SDK populated it."""
+        choice = self._first_choice()
+        return getattr(choice, "finish_reason", None) if choice is not None else None
+
+
 def _is_ollama(base_url: str) -> bool:
     """Return True if *base_url* looks like an Ollama instance."""
     url_lower = base_url.lower()
@@ -73,7 +125,7 @@ def _require_litellm() -> Any:
 
 def _cache_ollama_defaults(model: str, params_text: str) -> None:
     """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.modelhub.model_defaults import parse_kv_parameters, set_defaults
+    from lilbee.providers.model_defaults import parse_kv_parameters, set_defaults
 
     defaults = parse_kv_parameters(params_text)
     set_defaults(model, defaults)
@@ -140,7 +192,7 @@ class LitellmSdkBackend:
 
             litellm.suppress_debug_info = True
         except ImportError:
-            pass
+            pass  # debug-suppression is best-effort when the litellm extra is absent
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         """Run a single-shot completion through ``litellm.completion``."""
@@ -150,14 +202,11 @@ class LitellmSdkBackend:
             response = litellm.completion(**kwargs)
         except Exception as exc:
             raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
-        choices = getattr(response, "choices", None) or []
-        message = choices[0].message if choices else None
-        content = getattr(message, "content", "") if message is not None else ""
-        finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
+        view = _LitellmResponseView(response)
         return CompletionResult(
-            content=content or "",
-            finish_reason=finish_reason,
-            model=getattr(response, "model", None),
+            content=view.message_content,
+            finish_reason=view.finish_reason,
+            model=view.model,
         )
 
     def complete_stream(self, request: CompletionRequest) -> Iterator[StreamChunk]:
@@ -180,14 +229,11 @@ class LitellmSdkBackend:
         """
         try:
             for chunk in response:
-                choices = getattr(chunk, "choices", None) or []
-                if not choices:
-                    continue
-                delta = getattr(choices[0], "delta", None)
-                content = getattr(delta, "content", "") if delta is not None else ""
-                finish_reason = getattr(choices[0], "finish_reason", None)
+                view = _LitellmResponseView(chunk)
+                content = view.delta_content
+                finish_reason = view.finish_reason
                 if content or finish_reason:
-                    yield StreamChunk(content=content or "", finish_reason=finish_reason)
+                    yield StreamChunk(content=content, finish_reason=finish_reason)
         except ProviderError:
             raise
         except Exception as exc:

@@ -500,9 +500,9 @@ class TestStatusScreenAsync:
         mock_catalog.return_value = _EMPTY_CATALOG
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = []
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.core.services import set_services
 
         set_services(mock_svc)
         try:
@@ -910,10 +910,13 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
         assert any("command" in d.lower() for d in visible)
+        # F2 Catalog is intentionally visible so the slash-command catalog
+        # has a discoverable keybinding in the footer alongside / Commands.
+        assert any(d == "Catalog" for d in visible)
         # Footer shows the small discoverable set: slash commands, Tab
-        # completion, the dual-purpose Esc dispatch, and Models. Hidden
-        # helpers (history, scope cycle, F-keys) stay show=False.
-        assert len(visible) <= 5
+        # completion, the dual-purpose Esc dispatch, Models, and F2 Catalog.
+        # Hidden helpers (history, scope cycle, other F-keys) stay show=False.
+        assert len(visible) <= 6
 
     def test_catalog_numeric_tab_bindings(self) -> None:
         """1-6 jump to the corresponding tab in the 6-tab catalog shell.
@@ -937,7 +940,8 @@ class TestMinimalFooter:
         assert any("Search" in d for d in visible)
         assert any("Delete" in d for d in visible)
         assert any("Info" in d for d in visible)
-        assert len(visible) <= 6
+        # 5 baseline + 2 visible tab-cycling bindings (Next tab / Prev tab).
+        assert len(visible) <= 7
 
     def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
         """D, Backspace, and the legacy X all delete an installed model.
@@ -982,7 +986,9 @@ class TestMinimalFooter:
         assert any("Back" in d for d in visible)
         # Search binding was removed when the settings filter was dropped.
         assert not any("Search" in d for d in visible)
-        assert len(visible) <= 4
+        # 4 baseline (Back, Next field, Prev field, Reset all) + 2 visible
+        # tab-cycling bindings (Next tab / Prev tab) shared with Catalog.
+        assert len(visible) <= 6
 
 
 class TestNavBindings:

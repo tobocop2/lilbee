@@ -119,7 +119,7 @@ class GridSelect(containers.ItemGrid, can_focus=True):
                 widget.add_class("-highlight")
                 self.post_message(self.Highlighted(self, widget))
             except IndexError:
-                pass
+                pass  # children mutated between validate_highlighted and watch_highlighted
         self.reveal_highlight()
 
     def validate_highlighted(self, highlighted: int | None) -> int | None:

@@ -22,21 +22,30 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
+from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import SearchScope, scope_to_chunk_type
-from lilbee.runtime.crawl_task import get_task, start_crawl
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
-    SUMMARIES_SUBDIR,
     WIKI_DISABLED_ERROR,
+    WikiSubdir,
 )
 
 log = logging.getLogger(__name__)
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
+
+
+def _error(msg: str) -> dict[str, Any]:
+    """Uniform error envelope MCP tool handlers return on a failure path.
+
+    Typed as ``dict[str, Any]`` rather than a TypedDict so it composes
+    with the success-side returns under the existing handler signatures
+    without forcing every caller to widen its return type.
+    """
+    return {"error": msg}
 
 
 @mcp.tool()
@@ -50,17 +59,17 @@ def search(
     sorted by relevance. No LLM call -- uses pre-computed embeddings.
     """
     if not query or not query.strip():
-        return {"error": "query must not be empty"}
+        return _error("query must not be empty")
     try:
         chunk_type = scope_to_chunk_type(scope)
     except ValueError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
     try:
         results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
     except Exception as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
 
 
 @mcp.tool()
@@ -140,7 +149,7 @@ async def add(
         from lilbee.crawler import crawler_available
 
         if not crawler_available():
-            return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
+            return _error("Web crawling requires: pip install 'lilbee[crawler]'")
         from lilbee.crawler import crawl_and_save
 
         for url in urls:
@@ -192,11 +201,11 @@ def crawl(
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
-        return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
+        return _error("Web crawling requires: pip install 'lilbee[crawler]'")
     try:
         require_valid_crawl_url(url)
     except ValueError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
 
     task_id = start_crawl(url, depth=depth, max_pages=max_pages)
     return {"status": "started", "task_id": task_id, "url": url}
@@ -213,7 +222,7 @@ def crawl_status(task_id: str) -> dict[str, Any]:
     """
     task = get_task(task_id)
     if task is None:
-        return {"error": f"No task found with id: {task_id}"}
+        return _error(f"No task found with id: {task_id}")
     return {
         "task_id": task.task_id,
         "url": task.url,
@@ -289,7 +298,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     Pass confirm=true to proceed.
     """
     if not confirm:
-        return {"error": "pass confirm=true to confirm deletion"}
+        return _error("pass confirm=true to confirm deletion")
     from lilbee.app.reset import perform_reset
 
     result = perform_reset().model_dump()
@@ -345,16 +354,16 @@ def wiki_status() -> dict[str, Any]:
     if not wiki_root.exists():
         return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
 
-    summaries_dir = wiki_root / SUMMARIES_SUBDIR
-    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    summaries_dir = wiki_root / WikiSubdir.SUMMARIES
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
     report = lint_all(get_services().store)
     return {
         "wiki_enabled": cfg.wiki,
-        SUMMARIES_SUBDIR: len(summaries),
-        DRAFTS_SUBDIR: len(drafts),
+        WikiSubdir.SUMMARIES: len(summaries),
+        WikiSubdir.DRAFTS: len(drafts),
         "pages": len(summaries) + len(drafts),
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,
@@ -367,7 +376,7 @@ def wiki_list() -> dict[str, Any]:
     Returns page slugs, titles, types, source counts, and creation dates.
     """
     if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
+        return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
 
     from lilbee.wiki.browse import list_pages
@@ -388,7 +397,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
         slug: Page slug like "summaries/my-doc" or "concepts/typing".
     """
     if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
+        return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
 
     from lilbee.wiki.browse import read_page
@@ -396,7 +405,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
     wiki_root = cfg.data_root / cfg.wiki_dir
     result = read_page(wiki_root, slug)
     if result is None:
-        return {"error": f"wiki page not found: {slug}"}
+        return _error(f"wiki page not found: {slug}")
     return {"command": "wiki_read", **asdict(result)}
 
 
@@ -407,7 +416,7 @@ def wiki_build() -> dict[str, Any]:
     Returns ``{paths, entities, count}``.
     """
     if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
+        return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_build
 
     return {"command": "wiki_build", **run_full_build(cfg)}
@@ -417,7 +426,7 @@ def wiki_build() -> dict[str, Any]:
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
+        return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_build
 
     return {"command": "wiki_update", **run_full_build(cfg)}
@@ -432,7 +441,7 @@ def wiki_synthesize() -> dict[str, Any]:
     ``count: 0``.
     """
     if not cfg.wiki:
-        return {"error": WIKI_DISABLED_ERROR}
+        return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_synthesize
 
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
@@ -465,13 +474,17 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.app.models import list_models_data
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource, ModelTask
 
     try:
         src = ModelSource.parse(source)
     except ValueError as exc:
-        return {"error": str(exc)}
-    return list_models_data(source=src, task=task or None).model_dump()
+        return _error(str(exc))
+    try:
+        parsed_task = ModelTask(task) if task else None
+    except ValueError as exc:
+        return _error(str(exc))
+    return list_models_data(source=src, task=parsed_task).model_dump()
 
 
 @mcp.tool()
@@ -483,7 +496,7 @@ def model_show(model: str) -> dict[str, Any]:
     try:
         return show_model_data(model).model_dump()
     except ModelNotFoundError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
 
 
 def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
@@ -513,12 +526,12 @@ async def model_pull(
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
     except ValueError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
 
     loop = asyncio.get_running_loop()
 
@@ -534,7 +547,7 @@ async def model_pull(
     try:
         result = await asyncio.to_thread(pull_model_data, model, src, on_update=on_update)
     except (RuntimeError, PermissionError) as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
     return result.model_dump()
 
 
@@ -547,12 +560,12 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.app.models import remove_model_data
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source)
     except ValueError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
     return remove_model_data(model, source=src).model_dump()
 
 
@@ -586,7 +599,7 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     try:
         diff = diff_draft(slug, wiki_root)
     except FileNotFoundError as exc:
-        return {"error": str(exc)}
+        return _error(str(exc))
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 
 

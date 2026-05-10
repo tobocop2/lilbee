@@ -1,7 +1,7 @@
 """Long-lived vision-OCR worker subprocess body.
 
-Hosts both single-image OCR (``VISION_KIND``, used by the live wiki /
-catalog flows) and multi-page PDF vision OCR (``PDF_OCR_KIND``, used by
+Hosts both single-image OCR (``WireKind.VISION``, used by the live wiki /
+catalog flows) and multi-page PDF vision OCR (``WireKind.PDF_OCR``, used by
 the ingest pipeline). The PDF path streams one chunk per page so
 subscribers see incremental progress. Tesseract OCR has no shared model
 state and runs inline via ``asyncio.to_thread`` in the ingest caller,
@@ -18,14 +18,7 @@ from typing import Any
 
 from lilbee.providers.worker.transport import PdfOcrRequest, RoleConfig, VisionRequest
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    ERROR_KIND,
-    PDF_OCR_KIND,
-    RESULT_KIND,
-    STREAM_CHUNK_KIND,
-    STREAM_END_KIND,
-    VISION_KIND,
-)
+from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 from lilbee.vision import (
     OCR_PROMPT,
@@ -136,13 +129,13 @@ def _handle_vision(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
                 f"vision_ocr payload must be VisionRequest, got {type(payload).__name__}"
             )
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     if not isinstance(payload.png_bytes, (bytes, bytearray)):
         try:
             raise TypeError("vision_ocr payload.png_bytes must be bytes")
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     session: _VisionSession = state.session
     try:
@@ -152,9 +145,9 @@ def _handle_vision(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             model=payload.model,
         )
     except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
-    reply.send(RESULT_KIND, text)
+    reply.send(WireKind.RESULT, text)
 
 
 def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
@@ -169,7 +162,7 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         try:
             raise TypeError(f"pdf_ocr payload must be PdfOcrRequest, got {type(payload).__name__}")
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     # ``payload.backend`` is typed ``Literal["vision"]`` so any other
     # value is a type-system regression on the parent side; trust the
@@ -188,11 +181,11 @@ def _handle_pdf_ocr(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             # 1-based page index matches how the rest of lilbee numbers
             # pages (PageText, ExtractEvent, etc.). Total ships in every
             # chunk so consumers don't need a separate header frame.
-            reply.send(STREAM_CHUNK_KIND, PdfOcrChunk(page=idx + 1, total=total, text=text))
+            reply.send(WireKind.STREAM_CHUNK, PdfOcrChunk(page=idx + 1, total=total, text=text))
     except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
-    reply.send(STREAM_END_KIND, None)
+    reply.send(WireKind.STREAM_END, None)
 
 
 def vision_worker_main(
@@ -206,8 +199,8 @@ def vision_worker_main(
         role_config,
         session_factory=_VisionSession,
         kind_handlers={
-            VISION_KIND: _handle_vision,
-            PDF_OCR_KIND: _handle_pdf_ocr,
+            WireKind.VISION: _handle_vision,
+            WireKind.PDF_OCR: _handle_pdf_ocr,
         },
     )
 

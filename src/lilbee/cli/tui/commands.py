@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
+from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 
 log = logging.getLogger(__name__)
 
@@ -22,11 +22,7 @@ class LilbeeCommandProvider(Provider):
 
     @property
     def _app(self) -> LilbeeApp:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if not isinstance(self.screen.app, LilbeeApp):  # test apps aren't LilbeeApp
-            raise TypeError(f"Expected LilbeeApp, got {type(self.screen.app).__name__}")
-        return self.screen.app
+        return cast("LilbeeApp", self.screen.app)
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
@@ -129,11 +125,7 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.push_screen(SetupWizard())
 
     def _action_open_wiki(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = self.screen.app
-        if isinstance(app, LilbeeApp):  # test apps aren't LilbeeApp
-            app.switch_view("Wiki")
+        self._app.switch_view("Wiki")
 
     def _action_noop(self) -> None:
         self.screen.app.notify("Type '/reset confirm' in chat to reset")

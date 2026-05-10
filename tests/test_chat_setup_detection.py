@@ -94,7 +94,7 @@ def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
 
 @pytest.fixture
 def mock_services():
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     svc = mock.MagicMock()
     svc.provider.list_models.return_value = []

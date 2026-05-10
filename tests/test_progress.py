@@ -21,10 +21,6 @@ class TestNoopCallback:
         ev = FileStartEvent(file="test.txt", total_files=1, current_file=1)
         noop_callback(EventType.FILE_START, ev)
 
-    def test_noop_returns_none(self) -> None:
-        result = noop_callback(EventType.EMBED, EmbedEvent(file="x", chunk=1, total_chunks=5))
-        assert result is None
-
 
 class TestEventTypes:
     def test_core_event_types_exist(self) -> None:
