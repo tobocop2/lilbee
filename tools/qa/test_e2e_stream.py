@@ -14,7 +14,6 @@ These tests assert:
 
 from __future__ import annotations
 
-import shutil
 import socket
 import subprocess
 import sys
@@ -28,21 +27,12 @@ import pytest
 from drivers.tui import TuiSession
 from httpx_sse import EventSource
 
-from conftest import Lane
+from conftest import Lane, seed_fixture_corpus
 
-_FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _SYNC_TIMEOUT = 240.0
 _STREAM_TIMEOUT = 240.0
 _TUI_BOOT_TIMEOUT = 60.0
 _TUI_RESPONSE_TIMEOUT = 360.0
-
-
-def _seed_corpus(lilbee_data: Path) -> Path:
-    documents = lilbee_data / "documents"
-    documents.mkdir(parents=True, exist_ok=True)
-    for path in _FIXTURES.glob("*.md"):
-        shutil.copy(path, documents / path.name)
-    return documents
 
 
 def _free_port() -> int:
@@ -76,8 +66,8 @@ def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
         env=env,
         capture_output=True,
         text=True,
-        # PyInstaller binary cold-start on Windows can take 30s+ per invocation
-        # (bb-rjez); 90s leaves headroom without masking a real hang.
+        # Windows binary cold-start can take 30s+ per invocation (bb-rjez);
+        # 90s leaves headroom without masking a real hang.
         timeout=90,
         check=False,
     )
@@ -105,8 +95,8 @@ def served_lilbee(
         text=True,
     )
     try:
-        # 180s health budget covers PyInstaller cold-start on Windows binary
-        # plus model load (chat + embed) on slow runners.
+        # 180s health budget covers Windows binary cold-start plus the
+        # initial chat + embed model load on slow runners.
         _wait_health(f"{base_url}/api/health", timeout=180.0)
         token = _fetch_token(lane, lilbee_env_with_models)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -134,7 +124,7 @@ def test_ask_stream_completes_with_token_events(
     events past the reasoning marker and never DONE. This asserts both:
     (a) the stream advanced beyond reasoning, (b) it terminated cleanly.
     """
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=lilbee_env_with_models,
@@ -213,7 +203,7 @@ def test_tui_chat_advances_past_thinking_spinner(
     question) catches the softlock. The unique seed phrase makes the
     assertion deterministic without requiring exact token comparison.
     """
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=lilbee_env_with_models,
@@ -273,7 +263,7 @@ def test_chat_stream_rejects_concurrent_request_with_429(
     served_lilbee: tuple[str, dict[str, str], dict[str, str]],
 ) -> None:
     """A second concurrent /api/chat/stream request returns 429 with Retry-After."""
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=lilbee_env_with_models,
@@ -296,5 +286,5 @@ def test_chat_stream_rejects_concurrent_request_with_429(
         next(iter(held.iter_lines()), None)
         with httpx.Client(timeout=15.0, headers=headers) as competitor:
             second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
-        assert second.status_code == 429, second.text
+        assert second.status_code == httpx.codes.TOO_MANY_REQUESTS, second.text
         assert second.headers.get("Retry-After") == "1", dict(second.headers)

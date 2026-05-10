@@ -6,11 +6,16 @@ http://127.0.0.1:<port>`` against it. lilbee's URL filter rightly blocks
 private and reserved IPs in production but does not yet expose an opt-in
 env var for development / testing (tracked as bb-235r).
 
-Until that env-var lands in lilbee, this module gets copied into the
-Python install's ``sitecustomize.py`` slot by the qa-matrix workflow on
-the lanes that need it. The patch is gated on ``LILBEE_QA_LANE`` so
-nothing happens outside the QA harness even if a copy of this file ends
-up on a machine's import path by accident.
+Until that env-var lands in lilbee, the qa-matrix workflow copies this
+file into the runner's ``sitecustomize.py`` slot. The patch is gated on
+``LILBEE_QA_LANE`` so nothing happens outside the QA harness even if a
+copy of this module ends up on a machine's import path by accident.
+
+The lane-env-var name and the lane values are duplicated as string
+literals here on purpose: this script runs at Python startup and cannot
+import ``conftest.LaneName`` (conftest isn't on the import path of an
+arbitrary Python invocation). Keep the values aligned with
+``LaneName`` / ``LANE_ENV_VAR`` in ``tools/qa/conftest.py``.
 """
 
 from __future__ import annotations
@@ -20,8 +25,12 @@ import os
 if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
     try:
         from lilbee.crawler import url_filter
-
-        url_filter._BLOCKED_NETWORKS = ()
-        url_filter.get_blocked_networks = lambda: ()
     except ImportError:
+        # lilbee is not installed in this interpreter yet (e.g. the
+        # workflow ran the cp before `pip install lilbee` completed).
+        # The next Python invocation re-evaluates this hook; nothing to
+        # patch in the meantime.
         pass
+    else:
+        # `_BLOCKED_NETWORKS` is private; patch the public reader instead.
+        url_filter.get_blocked_networks = lambda: ()

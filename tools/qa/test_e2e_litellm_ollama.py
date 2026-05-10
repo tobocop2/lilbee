@@ -24,7 +24,14 @@ import httpx
 import pytest
 from drivers.tui import lilbee_env
 
-from conftest import Lane, LaneName, current_lane_name
+from conftest import (
+    OLLAMA_HOST_ENV_VAR,
+    OLLAMA_MODEL_ENV_VAR,
+    OLLAMA_PORT_ENV_VAR,
+    Lane,
+    LaneName,
+    current_lane_name,
+)
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
@@ -34,8 +41,8 @@ _STATUS_TIMEOUT = 60.0
 
 
 def _ollama_base_url() -> str:
-    host = os.environ.get("LILBEE_QA_OLLAMA_HOST", _OLLAMA_DEFAULT_HOST)
-    port = int(os.environ.get("LILBEE_QA_OLLAMA_PORT", str(_OLLAMA_DEFAULT_PORT)))
+    host = os.environ.get(OLLAMA_HOST_ENV_VAR, _OLLAMA_DEFAULT_HOST)
+    port = int(os.environ.get(OLLAMA_PORT_ENV_VAR, str(_OLLAMA_DEFAULT_PORT)))
     return f"http://{host}:{port}"
 
 
@@ -68,7 +75,7 @@ def ollama_chat_model(ollama_url: str) -> str:
     Reads LILBEE_QA_OLLAMA_MODEL if set; otherwise picks the first model
     the daemon reports via /api/tags. Skips if no models are installed.
     """
-    explicit = os.environ.get("LILBEE_QA_OLLAMA_MODEL")
+    explicit = os.environ.get(OLLAMA_MODEL_ENV_VAR)
     if explicit:
         return explicit
     response = httpx.get(f"{ollama_url}/api/tags", timeout=10.0)
@@ -77,8 +84,8 @@ def ollama_chat_model(ollama_url: str) -> str:
     models = payload.get("models", [])
     if not models:
         pytest.skip(
-            "no models installed in ollama; pull one (e.g. `ollama pull qwen3:0.6b`) "
-            "or set LILBEE_QA_OLLAMA_MODEL"
+            f"no models installed in ollama; pull one (e.g. `ollama pull qwen3:0.6b`) "
+            f"or set {OLLAMA_MODEL_ENV_VAR}"
         )
     return models[0]["name"]
 
@@ -110,12 +117,10 @@ def lilbee_env_with_ollama(
 def _has_litellm_extras(lane: Lane) -> bool:
     """Probe whether the artifact has the [litellm] extra wired at runtime.
 
-    Runs ``lilbee --json self-check-extras`` and inspects the per-extra
-    boolean. The command exits 0 when every extra imports and 1 otherwise,
-    so we can't gate on rc alone: a missing crawler extra would mark this
-    probe False even when litellm is fine. Read the JSON payload directly
-    instead, matching the shape emitted by self_check_extras_cmd in
-    src/lilbee/cli/commands/setup.py: ``{"ok": bool, "<extra>": bool, ...}``.
+    Runs ``lilbee --json self-check-extras`` and reads the per-extra
+    boolean directly from the JSON payload. Can't gate on exit-code alone
+    because the command exits 1 if ANY extra is missing, so a healthy
+    litellm with a missing crawler would falsely mark this probe False.
     """
     result = subprocess.run(
         [lane.lilbee_bin, "--json", "self-check-extras"],
@@ -144,7 +149,7 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
     strict=False,
 )
 def test_status_with_ollama_backend_returns_chat_model(
@@ -182,7 +187,7 @@ def test_status_with_ollama_backend_returns_chat_model(
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
     strict=False,
 )
 def test_model_list_includes_ollama_model(
@@ -218,7 +223,7 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
-    reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
+    reason="bb-m234: binary segfaults at startup with an ollama/* LILBEE_CHAT_MODEL",
     strict=False,
 )
 def test_ask_via_ollama_backend_completes(

@@ -66,11 +66,7 @@ jobs:
           - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
           - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
     runs-on: ${{ matrix.os }}
-    # 90 minutes accommodates the Windows binary lane: PyInstaller --onefile
-    # cold-starts add ~30s per subprocess invocation (bb-rjez / superseded by
-    # bb-a9a1 Nuitka switch), and ~95 tests * many subprocess calls each
-    # cumulates past the previous 60-min cap. Faster lanes (linux-distros,
-    # ubuntu-binary, macos-binary) finish in 10-30 min and don't notice.
+    # 90-min cap covers Windows binary cold-starts cumulated across ~95 subprocess invocations.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
@@ -229,7 +225,7 @@ jobs:
           retention-days: 7
 
   # Linux distros: same lanes, but the runtime is the distro container.
-  # pypi lane on Arch / Fedora is the high-value one — that's where most
+  # pypi lane on Arch / Fedora is the high-value one. That's where most
   # Linux users hit install failures; binary lane is the fallback path.
   linux-distros:
     name: linux-distros (${{ matrix.label }}, ${{ matrix.lane }})

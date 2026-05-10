@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import socket
 import subprocess
 import sys
@@ -23,6 +22,7 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
+from drivers.tui import lilbee_env
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from conftest import Lane, LaneName, current_lane_name
@@ -58,11 +58,7 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
         crawler stack that's a release defect we want surfaced, not
         skipped. Raise so the test xfail decorator on binary captures it.
     """
-    env = os.environ.copy()
-    env["LILBEE_DATA"] = str(qa_models_dir / "data-crawl")
-    env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
-    env["LILBEE_NO_SPLASH"] = "1"
-    env["LILBEE_LOG_LEVEL"] = "WARNING"
+    env = lilbee_env(qa_models_dir / "data-crawl", models_dir=qa_models_dir)
 
     def _gate(message: str) -> str:
         # On pypi (no extras) skip is the right call. On binary, where

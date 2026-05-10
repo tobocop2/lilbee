@@ -20,18 +20,17 @@ _TUI_SCREEN_TIMEOUT = 15.0
 
 
 @pytest.mark.tui
-def test_model_bar_shows_picker_buttons_and_chat_mode_toggle(tui: TuiSession) -> None:
-    """Chat screen renders pickers (Chat / Embed) and the Search/Chat toggle.
-
-    The dropdowns were replaced with clickable button labels backed by a
-    modal picker; the toggle replaces the implicit RAG-on/RAG-off behavior.
+def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> None:
+    """Chat screen renders the chat + embed picker buttons and the
+    Search/Chat mode toggle. The search-mode label is the load-bearing
+    affordance: a missing toggle should fail the assertion, which the
+    previous "chat or chat" OR couldn't detect.
     """
     tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
     visible = tui.text().lower()
     assert "chat" in visible
     assert "embed" in visible
-    # The Search/Chat toggle renders one of these labels.
-    assert "search" in visible or "chat" in visible
+    assert "search" in visible
 
 
 @pytest.mark.tui

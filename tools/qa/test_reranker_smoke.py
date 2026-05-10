@@ -20,8 +20,6 @@ to catch, not a reason to ride green.
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import socket
 import subprocess
 import time
@@ -29,21 +27,14 @@ from pathlib import Path
 
 import httpx
 import pytest
+from drivers.tui import lilbee_env
 
-from conftest import Lane, ModelTask, resolve_registered_name
+from conftest import Lane, ModelTask, resolve_registered_name, seed_fixture_corpus
 
-_FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _PULL_TIMEOUT = 240.0
 _SYNC_TIMEOUT = 240.0
 _SEARCH_TIMEOUT = 120.0
 _SERVER_BOOT_TIMEOUT = 60.0
-
-
-def _seed_corpus(lilbee_data: Path) -> None:
-    documents = lilbee_data / "documents"
-    documents.mkdir(parents=True, exist_ok=True)
-    for path in _FIXTURES.glob("*.md"):
-        shutil.copy(path, documents / path.name)
 
 
 @pytest.mark.http
@@ -64,11 +55,7 @@ def test_cli_search_with_reranker_set_returns_results(
     assert that the reranker actually loaded or that it changed ordering;
     see the file docstring for the scope rationale.
     """
-    pull_env = os.environ.copy()
-    pull_env["LILBEE_DATA"] = str(qa_models_dir / "data")
-    pull_env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
-    pull_env["LILBEE_NO_SPLASH"] = "1"
-    pull_env["LILBEE_LOG_LEVEL"] = "WARNING"
+    pull_env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
 
     pull = subprocess.run(
         [lane.lilbee_bin, "model", "pull", qa_reranker_model],
@@ -91,7 +78,7 @@ def test_cli_search_with_reranker_set_returns_results(
     env_with_reranker = dict(lilbee_env_with_models)
     env_with_reranker["LILBEE_RERANKER_MODEL"] = reranker_name
 
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=env_with_reranker,
@@ -131,11 +118,7 @@ def test_http_search_with_reranker_set_returns_results(
     with non-empty results. Tests the PUT -> GET wiring in the running
     server (not just the env-var path).
     """
-    pull_env = os.environ.copy()
-    pull_env["LILBEE_DATA"] = str(qa_models_dir / "data")
-    pull_env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
-    pull_env["LILBEE_NO_SPLASH"] = "1"
-    pull_env["LILBEE_LOG_LEVEL"] = "WARNING"
+    pull_env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
 
     pull = subprocess.run(
         [lane.lilbee_bin, "model", "pull", qa_reranker_model],
@@ -153,7 +136,7 @@ def test_http_search_with_reranker_set_returns_results(
         lane.lilbee_bin, pull_env, ModelTask.RERANK, qa_reranker_model
     )
 
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     pre_sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=lilbee_env_with_models,
@@ -180,9 +163,14 @@ def test_http_search_with_reranker_set_returns_results(
         deadline = time.monotonic() + _SERVER_BOOT_TIMEOUT
         while time.monotonic() < deadline:
             try:
-                if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == 200:
+                if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == httpx.codes.OK:
                     break
-            except httpx.HTTPError:
+            except (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+            ):
                 pass
             time.sleep(0.3)
         else:

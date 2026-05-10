@@ -23,25 +23,16 @@ Both require `LILBEE_WIKI=1` to flip `cfg.wiki` on (off by default).
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import Lane
+from conftest import Lane, seed_fixture_corpus
 
-_FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _SYNC_TIMEOUT = 240.0
 _BUILD_DRY_RUN_TIMEOUT = 240.0
 _BUILD_FULL_TIMEOUT = 720.0
-
-
-def _seed_corpus(lilbee_data: Path) -> None:
-    documents = lilbee_data / "documents"
-    documents.mkdir(parents=True, exist_ok=True)
-    for path in _FIXTURES.glob("*.md"):
-        shutil.copy(path, documents / path.name)
 
 
 def _wiki_env(base: dict[str, str]) -> dict[str, str]:
@@ -62,7 +53,7 @@ def test_wiki_build_dry_run_extracts_entities(
     """`lilbee --json wiki build --dry-run` extracts at least one NER entity
     candidate from the seeded corpus, without making any LLM calls."""
     env = _wiki_env(lilbee_env_with_models)
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
 
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
@@ -134,7 +125,7 @@ def test_wiki_build_full_runs_clean(
     # invokes the chat model per source.
     env.setdefault("LILBEE_WIKI_BUILD_PER_SOURCE_TIMEOUT_SECS", "300")
 
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],
         env=env,
@@ -184,7 +175,7 @@ def test_wiki_synthesize_runs_clean(
     paths != [].
     """
     env = _wiki_env(lilbee_env_with_models)
-    _seed_corpus(lilbee_data)
+    seed_fixture_corpus(lilbee_data)
 
     sync = subprocess.run(
         [lane.lilbee_bin, "sync"],

@@ -66,12 +66,16 @@ class LaneName(StrEnum):
 
 
 class ModelTask(StrEnum):
-    """Task kinds reported by ``lilbee --json model list`` for each row."""
+    """Task kinds reported by ``lilbee --json model list`` for each row.
+
+    Add a variant when a test calls ``resolve_registered_name`` with a
+    new task; see the call sites in this file and in
+    ``test_reranker_smoke.py``.
+    """
 
     CHAT = "chat"
     EMBEDDING = "embedding"
     RERANK = "rerank"
-    VISION = "vision"
 
 
 def current_lane_name() -> LaneName | None:
@@ -256,11 +260,7 @@ def models_pulled(
     catch. Masquerading it as a skip lets a fundamental install bug ride
     green CI.
     """
-    env = os.environ.copy()
-    env["LILBEE_DATA"] = str(qa_models_dir / "data")
-    env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
-    env["LILBEE_NO_SPLASH"] = "1"
-    env["LILBEE_LOG_LEVEL"] = "WARNING"
+    env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
     for ref in (qa_chat_model, qa_embedding_model):
         try:
             _pull_model(lane.lilbee_bin, ref, env)
@@ -286,8 +286,8 @@ def lilbee_env_with_models(
     """
     return lilbee_env(
         lilbee_data,
+        models_dir=qa_models_dir,
         extra={
-            "LILBEE_MODELS_DIR": str(qa_models_dir),
             "LILBEE_CHAT_MODEL": models_pulled["chat"],
             "LILBEE_EMBEDDING_MODEL": models_pulled["embedding"],
             "LILBEE_QUERY_EXPANSION_COUNT": "0",  # avoid loading chat model on search
@@ -320,8 +320,52 @@ def lane() -> Lane:
 def lilbee_data(tmp_path: Path) -> Path:
     """Per-test data directory; isolates LanceDB across xdist workers."""
     data = tmp_path / "lilbee-data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     return data
+
+
+_FIXTURE_NOTES_DIR = Path(__file__).parent / "fixtures" / "notes"
+
+
+def seed_fixture_corpus(lilbee_data: Path) -> Path:
+    """Copy the shared fixture corpus (coffee + EV notes) into a test's
+    documents directory and return the directory path."""
+    documents = lilbee_data / "documents"
+    documents.mkdir(parents=True, exist_ok=True)
+    for path in _FIXTURE_NOTES_DIR.glob("*.md"):
+        shutil.copy(path, documents / path.name)
+    return documents
+
+
+# Public env-var names consumed by the ollama-pypi cell and read by
+# tools/qa/test_e2e_litellm_ollama.py. Keep the constants in one place
+# so a rename only needs to touch this file plus the workflow.
+OLLAMA_HOST_ENV_VAR = "LILBEE_QA_OLLAMA_HOST"
+OLLAMA_PORT_ENV_VAR = "LILBEE_QA_OLLAMA_PORT"
+OLLAMA_MODEL_ENV_VAR = "LILBEE_QA_OLLAMA_MODEL"
+
+
+def run_lilbee_with_env(
+    lane: Lane,
+    args: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float = 60.0,
+) -> subprocess.CompletedProcess[str]:
+    """Run a lilbee CLI command with a fully-built env, capture stdout/stderr.
+
+    Use this when the caller already has a model-aware env (e.g. from
+    ``lilbee_env_with_models``). For the simpler "build env on the fly"
+    case use ``run_lilbee`` instead.
+    """
+    return subprocess.run(
+        [lane.lilbee_bin, *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
 
 
 def run_lilbee(
@@ -333,13 +377,11 @@ def run_lilbee(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a lilbee CLI command and capture stdout/stderr."""
-    return subprocess.run(
-        [lane.lilbee_bin, *args],
+    return run_lilbee_with_env(
+        lane,
+        args,
         env=lilbee_env(data_dir, extra=extra_env),
-        capture_output=True,
-        text=True,
         timeout=timeout,
-        check=False,
     )
 
 

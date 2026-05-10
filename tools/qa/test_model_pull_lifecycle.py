@@ -33,9 +33,14 @@ def _wait_for_health(base_url: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == 200:
+            if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == httpx.codes.OK:
                 return
-        except httpx.HTTPError:
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+        ):
             pass
         time.sleep(_SERVER_HEALTH_POLL)
     pytest.fail(f"server at {base_url} never became healthy in {timeout:.0f}s")
@@ -74,19 +79,22 @@ def _serve_once_and_query_installed(lane: Lane, env: dict[str, str]) -> list[dic
 @pytest.mark.catalog
 @pytest.mark.writer
 @pytest.mark.timeout(360)
-def test_pull_persists_across_server_restart(
+def test_pulled_models_survive_server_restart(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
     models_pulled: dict[str, str],
 ) -> None:
-    """Models pulled via the session fixture appear in /api/models/installed,
-    survive a server restart with the same data dir, and remain enumerable.
+    """Models pulled by the session fixture appear in /api/models/installed
+    on a fresh ``lilbee serve`` and remain on a second cold-start with the
+    same data dir.
 
-    The session fixture already pulled chat + embed before this test runs;
-    that work is the on-disk registration we're checking. Two consecutive
-    serve+query cycles let us verify the second cold-start sees the same
-    set as the first.
+    The pull happens in the session-scoped ``models_pulled`` fixture, not
+    in this test body. What this test gates is the post-pull invariant:
+    once a model is pulled, the on-disk registry serves it identically
+    across server restarts. A regression that kept the registered set in
+    a per-process cache (instead of on disk) would make the two cold-start
+    queries return different sets.
     """
     first = _serve_once_and_query_installed(lane, lilbee_env_with_models)
     second = _serve_once_and_query_installed(lane, lilbee_env_with_models)
