@@ -19,3 +19,11 @@ reason = "lxml 5.4.0 pinned transitively by crawl4ai 0.8.6 (latest release), whi
 [[IgnoredVulns]]
 id = "GHSA-xqmj-j6mv-4862"
 reason = "Server-side template injection in the LiteLLM Proxy server's `POST /prompts/test` endpoint. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never runs the proxy server, so the affected endpoint is not exposed. Bumping to the patched 1.83.7 is currently blocked: litellm 1.83.7+ hard-pins click==8.1.8, but typer (a direct dependency) requires click>=8.2.1. Revisit when litellm loosens its click pin or typer relaxes its click floor."
+
+[[IgnoredVulns]]
+id = "GHSA-r75f-5x8p-qvmc"
+reason = "SQL injection in the LiteLLM Proxy server's API-key verification path. Reachable only via proxy HTTP endpoints (e.g. POST /chat/completions through the proxy). lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never starts the proxy, so the affected code path is not exposed. Patched in 1.83.7; bump is blocked by the same click==8.1.8 vs typer click>=8.2.1 conflict noted on GHSA-xqmj-j6mv-4862."
+
+[[IgnoredVulns]]
+id = "GHSA-v4p8-mg3p-g94g"
+reason = "Authenticated command execution via the LiteLLM Proxy MCP stdio test endpoints (POST /mcp-rest/test/connection and /mcp-rest/test/tools/list). Requires a valid proxy API key and only triggers when the proxy is running. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never starts the proxy, so neither endpoint is exposed. Patched in 1.83.7; bump is blocked by the same click==8.1.8 vs typer click>=8.2.1 conflict noted on GHSA-xqmj-j6mv-4862."

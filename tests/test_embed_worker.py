@@ -48,6 +48,13 @@ def _stub_embed_worker_main(
     from lilbee.providers.worker import embed_worker
 
     class _StubLlama:
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * max(1, len(text))
+
         def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
             return {
                 "data": [
@@ -238,6 +245,13 @@ def test_session_embed_lazy_loads_then_reuses(monkeypatch) -> None:
         load_calls += 1
 
         class _Stub:
+            n_batch = 8192
+
+            def tokenize(
+                self, text: bytes, *, add_bos: bool = True, special: bool = False
+            ) -> list[int]:
+                return [0] * max(1, len(text))
+
             def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
                 return {"data": [{"embedding": [float(len(t))]} for t in input]}
 

@@ -33,11 +33,21 @@ _TEST_SHUTDOWN_TIMEOUT_S = 2.0
 
 def _stub_load(_self: _RerankSession) -> Any:
     class _StubLlama:
-        def create_embedding(self, *, input: str) -> dict[str, Any]:
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * max(1, len(text))
+
+        def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
             # Score = length of the candidate part (after the </s></s> sep).
             sep = "</s></s>"
-            candidate = input.split(sep, 1)[-1] if sep in input else input
-            return {"data": [{"embedding": [float(len(candidate))]}]}
+            data = []
+            for pair in input:
+                candidate = pair.split(sep, 1)[-1] if sep in pair else pair
+                data.append({"embedding": [float(len(candidate))]})
+            return {"data": data}
 
     return _StubLlama()
 
@@ -251,14 +261,24 @@ def test_session_close_idempotent_and_swallows_close_errors() -> None:
 
 def test_session_score_loads_and_runs_compute_rerank_scores(monkeypatch, tmp_path) -> None:
     """``_RerankSession.score`` loads on first call and feeds compute_rerank_scores."""
-    received_inputs: list[str] = []
+    received_inputs: list[list[str]] = []
 
     class _StubLlama:
-        def create_embedding(self, *, input: str) -> dict[str, Any]:
-            received_inputs.append(input)
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * max(1, len(text))
+
+        def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
+            received_inputs.append(list(input))
             sep = "</s></s>"
-            candidate = input.split(sep, 1)[-1] if sep in input else input
-            return {"data": [{"embedding": [float(len(candidate))]}]}
+            data = []
+            for pair in input:
+                candidate = pair.split(sep, 1)[-1] if sep in pair else pair
+                data.append({"embedding": [float(len(candidate))]})
+            return {"data": data}
 
     monkeypatch.setattr(
         "lilbee.providers.llama_cpp.provider.load_llama",
@@ -268,8 +288,8 @@ def test_session_score_loads_and_runs_compute_rerank_scores(monkeypatch, tmp_pat
     session = _RerankSession(role_config)
     scores = session.score("query", ["aaaa", "bb"])
     assert scores == [4.0, 2.0]
-    # Pair-formatted inputs reached compute_rerank_scores.
-    assert received_inputs == ["query</s></s>aaaa", "query</s></s>bb"]
+    # Pair-formatted inputs reached compute_rerank_scores in a single batched call.
+    assert received_inputs == [["query</s></s>aaaa", "query</s></s>bb"]]
 
 
 def test_rerank_worker_main_routes_through_run_worker(monkeypatch) -> None:

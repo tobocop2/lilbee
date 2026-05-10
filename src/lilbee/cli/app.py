@@ -181,4 +181,4 @@ def _default(
             raise SystemExit(1)
         from lilbee.cli.tui import run_tui
 
-        run_tui(auto_sync=True)
+        run_tui()

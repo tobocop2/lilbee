@@ -68,7 +68,7 @@ class TestRunTui:
 
         with mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init:
             run_tui(initial_view="Catalog")
-        init.assert_called_once_with(auto_sync=False, initial_view="Catalog")
+        init.assert_called_once_with(initial_view="Catalog")
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -372,6 +372,9 @@ class TestCatalogScreenAsync:
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_quit(self, mock_catalog: mock.MagicMock) -> None:
+        """`q` dismisses the catalog (Escape no longer dismisses; see
+        action_dismiss_filter).
+        """
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -382,7 +385,7 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
-            await pilot.press("escape")
+            await pilot.press("q")
             await pilot.pause()
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
@@ -456,6 +459,11 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
+            # Pin active tab to Chat: the 6-tab shell's TabbedContent can
+            # briefly land on the first-defined pane (Discover) under
+            # run_test before the call_after_refresh setter runs. Sorting
+            # is gated on a task tab being active.
+            catalog._active_tab_id_cache = "chat"
             # Switch to list view so sort is available.
             catalog._grid_view = False
             catalog._sort_column = "Name"
@@ -546,7 +554,7 @@ class TestCLIIntegration:
                 num_ctx=None,
                 seed=None,
             )
-        mock_run_tui.assert_called_once_with(auto_sync=True)
+        mock_run_tui.assert_called_once_with()
 
 
 class TestThemes:
@@ -907,12 +915,19 @@ class TestMinimalFooter:
         # helpers (history, scope cycle, F-keys) stay show=False.
         assert len(visible) <= 5
 
-    def test_catalog_tab_bindings_removed(self) -> None:
+    def test_catalog_numeric_tab_bindings(self) -> None:
+        """1-6 jump to the corresponding tab in the 6-tab catalog shell.
+
+        Earlier versions of the catalog reused numeric keys for sort
+        cycling and explicitly removed them. The 6-tab redesign restores
+        them with priority=True so they jump to Discover/Chat/Embed/
+        Vision/Rerank/Library directly. show=False keeps the footer tidy.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
-        for k in ("1", "2", "3", "4"):
-            assert k not in keys
+        for k in ("1", "2", "3", "4", "5", "6"):
+            assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -923,6 +938,35 @@ class TestMinimalFooter:
         assert any("Delete" in d for d in visible)
         assert any("Info" in d for d in visible)
         assert len(visible) <= 6
+
+    def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
+        """D, Backspace, and the legacy X all delete an installed model.
+
+        Backspace is the natural reach on every keyboard; D is the
+        documented hotkey; X stays as a hidden alias for muscle memory.
+        """
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        delete_keys = {
+            b.key
+            for b in CatalogScreen.BINDINGS
+            if isinstance(b, Binding) and b.action == "delete_model"
+        }
+        assert delete_keys == {"d", "backspace", "x"}
+
+    def test_catalog_delete_binding_is_ungrouped(self) -> None:
+        """The D Delete entry stands alone in the footer instead of
+        collapsing into the compact Actions group, so users see a
+        labelled delete affordance at all times."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        d_binding = next(
+            b
+            for b in CatalogScreen.BINDINGS
+            if isinstance(b, Binding) and b.key == "d" and b.action == "delete_model"
+        )
+        assert d_binding.show is True
+        assert d_binding.group is None
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
@@ -1028,3 +1072,193 @@ class TestAppSignals:
             await pilot.pause()
             assert len(received) == 1
             assert received[0] == ("chat_model", "new-model")
+
+
+class TestSyncHint:
+    """Cover the launch-time sync detection + TaskBar hint surface."""
+
+    @pytest.mark.asyncio
+    async def test_app_on_mount_runs_detect_not_sync(self) -> None:
+        """App mount kicks detection (not sync) and writes the count to the controller."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch("lilbee.data.ingest.detect_pending", return_value=3) as detect,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+        ):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                # detect runs on a daemon thread; pause until the count lands.
+                for _ in range(50):
+                    if app.task_bar.pending_sync_count == 3:
+                        break
+                    await pilot.pause()
+            detect.assert_called()
+            run_sync.assert_not_called()
+            assert app.task_bar.pending_sync_count == 3
+
+    @pytest.mark.asyncio
+    async def test_app_on_mount_no_pending_files_hint_hidden(self) -> None:
+        """When the vault is in sync, the TaskBar stays hidden."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                bar = app.screen.query_one(TaskBar)
+                bar._refresh_display()
+                assert app.task_bar.pending_sync_count == 0
+                assert bar.display is False
+
+    @pytest.mark.asyncio
+    async def test_taskbar_renders_pending_sync_hint(self) -> None:
+        """Controller count > 0 + idle queue renders the hint copy."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui import messages as tui_msg
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.task_bar.set_pending_sync(3)
+                bar = app.screen.query_one(TaskBar)
+                bar._refresh_display()
+                await pilot.pause()
+                assert bar.display is True
+                label = bar.query_one("#task-status-label", Label)
+                rendered = str(label._Static__content)  # type: ignore[attr-defined]
+                expected = tui_msg.TASKBAR_SYNC_PENDING_PLURAL.format(count=3)
+                # Strip rich markup so the assertion ignores [b]/[/b] noise.
+                assert "3 docs to sync" in rendered
+                assert "S to sync" in rendered
+                assert expected.replace("[b]", "").replace("[/b]", "") in (
+                    rendered.replace("[b]", "").replace("[/b]", "")
+                )
+
+    @pytest.mark.asyncio
+    async def test_shift_s_triggers_sync_and_clears_hint(self) -> None:
+        """Pressing S from any screen routes to ChatScreen._run_sync and clears the hint."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch("lilbee.data.ingest.detect_pending", return_value=2),
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+        ):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                # Wait until detection has populated the count.
+                for _ in range(50):
+                    if app.task_bar.pending_sync_count == 2:
+                        break
+                    await pilot.pause()
+                # ChatScreen starts in INSERT mode with the input focused;
+                # escape drops to NORMAL where the global S binding fires.
+                await pilot.press("escape")
+                await pilot.press("S")
+                await pilot.pause()
+                run_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_post_setup_runs_detect(self) -> None:
+        """Setup-wizard completion re-runs detection (not sync) on the chat screen."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with mock.patch.object(app.task_bar, "start_detect_pending") as start:
+                    app.screen._on_setup_complete("done")
+                    start.assert_called_once()
+
+    @pytest.mark.asyncio
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_action_run_sync_from_non_chat_screen_switches_view(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """When invoked from Catalog, action_run_sync routes back to Chat."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch("lilbee.data.ingest.detect_pending", return_value=0),
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+        ):
+            app = LilbeeApp(initial_view="Catalog")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app.active_view == "Catalog"
+                app.action_run_sync()
+                for _ in range(50):
+                    if run_sync.called:
+                        break
+                    await pilot.pause()
+                run_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_action_run_sync_no_op_when_chat_screen_unregistered(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """Defensive: action_run_sync returns cleanly if the chat screen lookup fails."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
+            app = LilbeeApp(initial_view="Catalog")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with mock.patch.object(app, "get_screen", side_effect=KeyError("chat")):
+                    # Should return without raising or attempting a switch.
+                    app.action_run_sync()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_clears_hint_and_restarts_detect_after_completion(self) -> None:
+        """Starting a sync clears the hint; the worker restarts detection at the end."""
+        import threading as _threading
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+
+        observed: list[int] = []
+        gate = _threading.Event()
+
+        def _do_sync_target(self_screen, reporter):
+            observed.append(self_screen.app.task_bar.pending_sync_count)
+            gate.set()
+
+        with (
+            mock.patch("lilbee.data.ingest.detect_pending", return_value=4),
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._do_sync", _do_sync_target),
+        ):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                for _ in range(50):
+                    if app.task_bar.pending_sync_count == 4:
+                        break
+                    await pilot.pause()
+                start_calls: list[None] = []
+                original = app.task_bar.start_detect_pending
+
+                def _track() -> None:
+                    start_calls.append(None)
+                    original()
+
+                app.task_bar.start_detect_pending = _track  # type: ignore[method-assign]
+
+                app.screen._run_sync()
+                gate.wait(timeout=5)
+                for _ in range(50):
+                    queue = app.task_bar.queue
+                    if not queue.active_tasks and not [
+                        t for t in queue.queued_tasks if t.task_type == TaskType.SYNC.value
+                    ]:
+                        break
+                    await pilot.pause()
+                assert observed == [0]
+                assert len(start_calls) >= 1

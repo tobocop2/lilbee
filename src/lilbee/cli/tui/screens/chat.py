@@ -51,7 +51,18 @@ from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.progress import EventType, ProgressEvent
+from lilbee.runtime.progress import (
+    BatchProgressEvent,
+    BatchStatus,
+    DetailedProgressCallback,
+    EmbedEvent,
+    EventType,
+    ExtractEvent,
+    FileDoneEvent,
+    FileStartEvent,
+    ProgressEvent,
+    SyncDoneEvent,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -82,6 +93,24 @@ def _close_stream(stream: Any) -> None:
             stream.close()
 
 
+def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
+    """Pick the user-facing detail label for a BATCH_PROGRESS tick.
+
+    Per-page rasterization (vision OCR) is the only producer that uses
+    BatchStatus.RASTERIZING; it emits an absolute path in data.file
+    which never matches the relative source name kept in in_flight, so
+    identity-based detection would never fire. Status-based dispatch is
+    the reliable discriminator between per-page and per-file ticks.
+    """
+    if data.status == BatchStatus.RASTERIZING:
+        return msg.ADD_PAGE_PROGRESS.format(
+            status=data.status.capitalize(), current=data.current, total=data.total
+        )
+    if in_flight:
+        return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
+    return msg.ADD_FILE_DONE.format(file=data.file)
+
+
 def _remove_copied_files(names: list[str]) -> None:
     """Delete files previously copied into documents/ by a /add invocation.
 
@@ -99,6 +128,106 @@ def _remove_copied_files(names: list[str]) -> None:
                 target.unlink()
         except OSError:
             log.debug("Could not remove copied file %s", target, exc_info=True)
+
+
+_ADD_EMBED_THROTTLE_SECONDS = 0.15
+"""Throttle EMBED reporter updates to avoid TaskBar update storms.
+
+The embed worker fires one EmbedEvent per sub-batch, which on a fast
+laptop can be dozens per second. The Task Center only repaints at 10 Hz
+anyway, so we coalesce here at the same cadence.
+"""
+
+
+def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
+    """Build the on_progress callback used by /add.
+
+    Tracks files in flight in start order so the displayed filename pins
+    to the oldest unfinished file (the pipeline runs files concurrently;
+    without pinning the label flips around the queue). EXTRACT surfaces
+    "extracted N pages" once per file so a 44MB scanned PDF doesn't read
+    as a hang; EMBED ticks per chunk, throttled to a steady cadence.
+    """
+    in_flight: list[str] = []
+    last_embed_update = 0.0
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        # Polling point so /c in Task Center can stop a long ingest
+        # between file boundaries without having to kill the thread.
+        nonlocal last_embed_update
+        reporter.check_cancelled()
+        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+            in_flight.append(data.file)
+            reporter.update(0, msg.ADD_SYNCING_FILE.format(file=in_flight[0]), indeterminate=True)
+        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+            with contextlib.suppress(ValueError):
+                in_flight.remove(data.file)
+        elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
+            pct = (data.current / data.total * 100.0) if data.total else 0.0
+            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
+        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
+            reporter.update(
+                0,
+                msg.SYNC_FILE_PROGRESS.format(
+                    current=data.page, total=data.total_pages, file=data.file
+                ),
+                indeterminate=True,
+            )
+        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            now = time.monotonic()
+            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
+                return
+            last_embed_update = now
+            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+
+    return on_progress
+
+
+def _build_sync_progress_callback(
+    reporter: ProgressReporter,
+) -> Callable[[EventType, ProgressEvent], None]:
+    """Return the on_progress shim used by ``_do_sync``.
+
+    Hoisted out of ``_do_sync`` so the dispatch doesn't bloat the method's
+    cyclomatic complexity. EXTRACT mirrors the /add path: a 44MB scanned
+    PDF needs a per-page tick or the row reads as frozen.
+    """
+    last_embed_update = 0.0
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        nonlocal last_embed_update
+        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
+            pct = int((data.current_file - 1) * 100 / data.total_files)
+            status = msg.SYNC_FILE_PROGRESS.format(
+                current=data.current_file, total=data.total_files, file=data.file
+            )
+            reporter.update(pct, status, indeterminate=False)
+        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
+            reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
+        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
+            reporter.update(
+                0,
+                msg.SYNC_FILE_PROGRESS.format(
+                    current=data.page, total=data.total_pages, file=data.file
+                ),
+                indeterminate=True,
+            )
+        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
+            now = time.monotonic()
+            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
+                return
+            last_embed_update = now
+            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+        elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
+            # Without this handler the task never ticks to 100% and the
+            # Task Center row never flashes "just-completed" (bb-7enj).
+            # "Synced (N docs)" means successfully synced, so failed is excluded.
+            total = data.added + data.updated + data.removed
+            reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
+
+    return on_progress
 
 
 class ChatWelcome(Static):
@@ -160,24 +289,17 @@ class ChatScreen(Screen[None]):
         # inside the prompt still works via PgUp/PgDn/Home/End.
         Binding("up", "history_prev", "Up", show=False, priority=True),
         Binding("down", "history_next", "Down", show=False, priority=True),
-        # Esc dispatches to ``action_enter_normal_mode``, which cancels
-        # an active stream first and otherwise drops the screen back
-        # into normal mode. The footer label flips to "Cancel stream"
-        # while streaming via ``check_action`` parameter dispatch.
-        Binding(
-            "escape",
-            "esc_dispatch('cancel')",
-            "Cancel stream",
-            show=True,
-            priority=True,
-        ),
-        Binding(
-            "escape",
-            "esc_dispatch('normal')",
-            "Normal mode",
-            show=True,
-            priority=True,
-        ),
+        # Esc always drops back into NORMAL mode so the user can navigate
+        # the terminal. Cancel-while-streaming is on Ctrl+C below; the
+        # two roles used to share Esc and clobbered each other.
+        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
+        # Ctrl+C cancels the active stream when streaming AND in INSERT
+        # mode so the user can interrupt without leaving the input. The
+        # screen-level priority binding overrides the App-level Quit;
+        # check_action below hides + disables it outside that exact
+        # context, so Ctrl+C still quits the app from NORMAL or when
+        # nothing is streaming.
+        Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
@@ -185,9 +307,8 @@ class ChatScreen(Screen[None]):
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._insert_mode: bool = True
@@ -195,9 +316,6 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
-        # Mid-stream submissions are parked here; _exit_streaming_state
-        # fires the queued prompt once the current stream finishes.
-        self._queued_prompt: str | None = None
 
     @property
     def _task_bar(self) -> TaskBarController:
@@ -233,8 +351,6 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
         if isinstance(self.app, LilbeeApp):
             self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
@@ -283,8 +399,9 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if self._embedding_ready() and self._auto_sync:
-            self._run_sync()
+        # Re-detect after setup so a freshly-set-up vault gets the hint.
+        if isinstance(self.app, LilbeeApp):
+            self.app.task_bar.start_detect_pending()
         self.refresh_model_bar()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
@@ -392,6 +509,13 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
+        if self.streaming:
+            # Only one chat message may be in flight at a time. Surface a
+            # toast so the user knows the prompt was rejected (rather
+            # than silently dropped) and ask them to cancel first if
+            # they want to redirect the model.
+            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+            return
         text = event.value.strip()
         if not text:
             return
@@ -401,14 +525,6 @@ class ChatScreen(Screen[None]):
 
         if text.startswith("/"):
             self._handle_slash(text)
-            return
-        if self.streaming:
-            # Park the prompt instead of silently dropping it; it fires
-            # automatically once the active stream finishes or is
-            # cancelled. A second submission overwrites the first --
-            # the most recent prompt wins.
-            self._queued_prompt = text
-            self.notify(msg.CHAT_PROMPT_QUEUED, timeout=2)
             return
         self._send_message(text)
 
@@ -441,11 +557,6 @@ class ChatScreen(Screen[None]):
     def _exit_streaming_state(self) -> None:
         self.remove_class("streaming")
         self.refresh_bindings()
-        # Drain any prompt the user submitted mid-stream so it doesn't
-        # get silently dropped on the floor.
-        if self._queued_prompt is not None:
-            text, self._queued_prompt = self._queued_prompt, None
-            self.call_later(self._send_message, text)
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -506,7 +617,6 @@ class ChatScreen(Screen[None]):
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import BatchProgressEvent, FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
         copy_result = copy_files([path], force=force)
@@ -515,22 +625,10 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
-        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            # Polling point so /c in Task Center can stop a long ingest
-            # between file boundaries without having to kill the thread.
-            reporter.check_cancelled()
-            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-                reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
-            elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
-                pct = (data.current / data.total * 100.0) if data.total else 0.0
-                reporter.update(
-                    pct,
-                    f"{data.status.capitalize()} page {data.current} of {data.total}",
-                    indeterminate=False,
-                )
-
         try:
-            sync_result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
+            sync_result = asyncio_loop.run(
+                sync(quiet=True, on_progress=_build_add_progress_callback(reporter))
+            )
         except BaseException:
             # On cancel or any failure, remove the files we copied into
             # documents/ so the next sync doesn't silently re-ingest the
@@ -1073,22 +1171,14 @@ class ChatScreen(Screen[None]):
     def action_scroll_down(self) -> None:
         self._chat_log.scroll_page_down()
 
-    def action_esc_dispatch(self, _variant: str = "normal") -> None:
-        """Esc dispatch -- both the 'cancel' and 'normal' variants share logic."""
-        self.action_enter_normal_mode()
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Footer-binding gating: show 'Cancel stream' only while streaming."""
-        if action == "esc_dispatch":
-            wants_cancel = parameters == ("cancel",)
-            return self.streaming if wants_cancel else not self.streaming
+        """Footer-binding gating: show 'Cancel stream' only while streaming + INSERT."""
+        if action == "cancel_stream":
+            return self.streaming and self._insert_mode
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: cancel stream, return from model bar, or enter normal mode."""
-        if self.streaming:
-            self._cancel_inflight_stream()
-            return
+        """Escape: drop back into NORMAL mode (always). Stream cancel is on Ctrl+C."""
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT
             # so the user can type their next prompt; routing through the
@@ -1105,13 +1195,9 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
-        """Context-aware Escape: cancel stream -> blur input -> no-op."""
+        """Cancel an in-flight chat stream. Bound to Ctrl+C from INSERT mode."""
         if self.streaming:
             self._cancel_inflight_stream()
-            return
-        inp = self._chat_input
-        if inp.has_focus:
-            self._chat_log.focus()
 
     def _cancel_inflight_stream(self) -> None:
         """Stop the streaming Textual worker AND interrupt its inference call.
@@ -1159,54 +1245,32 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
+        # Clear the pending hint so the bar shows live sync progress
+        # instead of the stale "N docs to sync" line.
+        self._task_bar.clear_pending_sync()
 
         def _target(reporter: ProgressReporter) -> None:
             try:
                 self._do_sync(reporter)
             finally:
                 self._sync_active = False
+                # Re-detect after every sync attempt: success drives the
+                # count to 0, failure or cancel leaves the still-pending
+                # files counted so the hint reappears.
+                self._task_bar.start_detect_pending()
 
         self._task_bar.start_task("Sync documents", TaskType.SYNC, _target, indeterminate=True)
 
     def _do_sync(self, reporter: ProgressReporter) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
-        from lilbee.runtime.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
-
-        last_embed_update = 0.0
-        _throttle_seconds = 0.15
-
-        def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            nonlocal last_embed_update
-            if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-                pct = int((data.current_file - 1) * 100 / data.total_files)
-                status = msg.SYNC_FILE_PROGRESS.format(
-                    current=data.current_file, total=data.total_files, file=data.file
-                )
-                reporter.update(pct, status, indeterminate=False)
-            elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
-                reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
-            elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-                now = time.monotonic()
-                if now - last_embed_update < _throttle_seconds:
-                    return
-                last_embed_update = now
-                pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-                reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
-            elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
-                # Without this handler the task never ticks to 100% and the
-                # Task Center row never flashes "just-completed" (bb-7enj).
-                # "Synced (N docs)" means successfully synced, so failed is excluded.
-                total = data.added + data.updated + data.removed
-                reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
-
+        on_progress = _build_sync_progress_callback(reporter)
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
-            self._auto_sync = False
-            raise RuntimeError("Sync cancelled. Use /sync to resume.") from exc
+            raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
         if result.failed:
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
         if result.skipped:

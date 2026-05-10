@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-import os
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
-from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.core.config import cfg
 from lilbee.core.services import get_services
+from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.types import (
     _MARKDOWN_OUTPUT,
     _MIN_MEANINGFUL_CHARS,
@@ -24,9 +22,14 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 from lilbee.data.store import CHUNK_TYPE_RAW
-from lilbee.vision import PageText
+from lilbee.runtime.cpu import cpu_quota
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    ExtractEvent,
+    noop_callback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,77 +50,33 @@ def content_type_to_mode(content_type: str) -> ExtractMode:
 
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
-    from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
+    from kreuzberg import ConcurrencyConfig, ExtractionConfig, OcrConfig, PageConfig
 
     chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
     ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    # Bound kreuzberg's internal pool to the same CPU budget as the
+    # pipeline semaphore so the two stop competing for cores.
+    concurrency = ConcurrencyConfig(max_threads=cpu_quota())
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking,
             output_format=_MARKDOWN_OUTPUT,
+            concurrency=concurrency,
         ),
         ExtractMode.PAGINATED: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
+            concurrency=concurrency,
         ),
         ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
             chunking=chunking,
             pages=pages,
             ocr=ocr,
+            concurrency=concurrency,
         ),
     }
     return builders[mode]()
-
-
-@contextlib.contextmanager
-def suppress_fd_stderr() -> Generator[None, None, None]:
-    """Suppress stderr at the file-descriptor level.
-    Catches subprocess output (e.g. Tesseract's "Detected N diacritics")
-    that ``contextlib.redirect_stderr`` cannot intercept.
-    """
-    old_stderr = os.dup(2)
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        try:
-            os.dup2(devnull, 2)
-            yield
-        finally:
-            os.dup2(old_stderr, 2)
-            os.close(devnull)
-    finally:
-        os.close(old_stderr)
-
-
-async def _try_tesseract_ocr(
-    path: Path, source_name: str, fallback: ExtractionResult
-) -> ExtractionResult:
-    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure.
-
-    Wraps extraction in ``asyncio.wait_for(cfg.tesseract_timeout)`` so a
-    huge scanned document can't monopolize an ingest worker for many
-    minutes (which the caller perceives as a UI lockup). The timeout is
-    configurable via ``LILBEE_TESSERACT_TIMEOUT``; 0 disables the cap.
-    """
-    try:
-        from kreuzberg import extract_file
-
-        log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
-        with suppress_fd_stderr():
-            coro = extract_file(str(path), config=extraction_config(ExtractMode.PAGINATED_OCR))
-            if cfg.tesseract_timeout > 0:
-                return await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
-            return await coro
-    except TimeoutError:
-        log.warning(
-            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
-            cfg.tesseract_timeout,
-            source_name,
-        )
-        return fallback
-    except Exception:
-        log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
-        return fallback
 
 
 def _should_run_ocr() -> bool:
@@ -136,170 +95,87 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
-async def _cleanup_pdf_subprocess(
-    proc: asyncio.subprocess.Process, progress_task: asyncio.Task[None]
-) -> None:
-    """Kill a PDF-extract subprocess and cancel its stderr-progress task."""
-    progress_task.cancel()
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
-    await proc.wait()
-    with contextlib.suppress(asyncio.CancelledError):
-        await progress_task
-
-
-async def _extract_pdf_vision_in_subprocess(
-    path: Path,
-    vision_model: str,
-    *,
-    timeout: float | None,
-    quiet: bool,
-    on_progress: DetailedProgressCallback,
-) -> list[PageText]:
-    """Run ``extract_pdf_vision`` in a child process via ``-m lilbee.runtime.pdf_extract``.
-
-    pdfium's JPEG-2000 decoder spawns its own internal thread pool; running
-    it in-process saturated CPU and starved the asyncio main thread on
-    macOS. The child writes per-page progress to stderr so the parent can
-    surface it via ``on_progress``. JSON args go in via stdin; the result
-    (or an error string) comes back as JSON on stdout.
-
-    NOTE: this per-PDF subprocess pre-dates the persistent worker pool.
-    The vision pool worker (lilbee.providers.worker.vision_worker) only
-    handles single-image OCR today; routing PDF rasterize + per-page
-    OCR through the same pool worker is tracked as a follow-up so the
-    pdfium decoder still runs in its own process here. Until that
-    lands, this path remains the canonical multi-page OCR entry point.
-    """
-    import json
-    import sys
-
-    from lilbee.vision import pdf_page_count
-
-    pages = pdf_page_count(path)
-    # Outer wall-clock budget = vision_load_budget_s + per-page work. The
-    # per-page budget honours both cfg.vision_per_page_budget_s and the
-    # caller's timeout (whichever is larger) so a user-set ocr_timeout above
-    # the default doesn't trip the wrapper before the child's per-page wait.
-    per_page_cap = max(cfg.vision_per_page_budget_s, timeout or 0.0)
-    wall_clock_budget = cfg.vision_load_budget_s + per_page_cap * max(pages, 1)
-
-    payload = json.dumps(
-        {
-            "path": str(path),
-            "vision_model": vision_model,
-            "timeout": timeout,
-            "quiet": quiet,
-        }
-    )
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "lilbee.runtime.pdf_extract",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-    assert proc.stderr is not None
-    proc.stdin.write(payload.encode("utf-8"))
-    await proc.stdin.drain()
-    proc.stdin.close()
-
-    # Read stdout and stderr with separate tasks. proc.communicate() would
-    # attach its own stderr reader and collide with _pump_pdf_progress,
-    # raising "read() called while another coroutine is already waiting
-    # for incoming data" at the first stderr line.
-    progress_task = asyncio.create_task(_pump_pdf_progress(proc.stderr, on_progress, path))
-    try:
-        stdout_bytes = await asyncio.wait_for(proc.stdout.read(), timeout=wall_clock_budget)
-    except TimeoutError:
-        await _cleanup_pdf_subprocess(proc, progress_task)
-        raise RuntimeError(
-            f"PDF extraction timed out after {wall_clock_budget:.0f}s "
-            f"({pages} pages)"
-        ) from None
-    except BaseException:
-        await _cleanup_pdf_subprocess(proc, progress_task)
-        raise
-    await proc.wait()
-    progress_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await progress_task
-
-    try:
-        result = json.loads(stdout_bytes.decode("utf-8") or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"PDF extraction returned invalid JSON: {exc}") from exc
-    if "error" in result:
-        raise RuntimeError(result["error"])
-    raw = result.get("page_texts", [])
-    return [PageText(int(p), str(t)) for p, t in raw]
-
-
-async def _pump_pdf_progress(
-    stream: asyncio.StreamReader,
-    on_progress: DetailedProgressCallback,
-    path: Path,
-) -> None:
-    """Forward ``progress: page=N total=M`` lines from the subprocess to ``on_progress``."""
-    from lilbee.runtime.progress import BatchProgressEvent, EventType
-
-    while True:
-        line = await stream.readline()
-        if not line:
-            return
-        text = line.decode("utf-8", errors="replace").strip()
-        if not text.startswith("progress: "):
-            continue
-        try:
-            parts = dict(part.split("=") for part in text[len("progress: ") :].split())
-            page = int(parts["page"])
-            total = int(parts["total"])
-        except (KeyError, ValueError):
-            continue
-        on_progress(
-            EventType.BATCH_PROGRESS,
-            BatchProgressEvent(
-                file=str(path), status="rasterizing", current=page, total=total
-            ),
-        )
-
-
-async def _vision_fallback(
+async def _vision_ocr_fallback(
     path: Path,
     source_name: str,
     content_type: str,
-    on_progress: DetailedProgressCallback = noop_callback,
     *,
-    quiet: bool = False,
+    on_progress: DetailedProgressCallback,
+    quiet: bool,
 ) -> list[ChunkRecord]:
-    """OCR a scanned PDF via the configured vision model, chunk, and embed.
+    """Vision OCR via the persistent worker pool, chunk + embed the pages.
 
-    Uses ``cfg.vision_model`` unconditionally. The chat model is never
-    loaded as a vision backend. If ``cfg.vision_model`` is empty this
-    returns an empty list; callers should fall back to Tesseract via
-    ``_handle_scanned_pdf_fallback``.
+    Pool routing is what amortises the multi-second vision-Llama load
+    cost across PDFs. Tesseract has no shared model state and is run
+    inline by ``_tesseract_ocr_fallback``; this helper is vision-only.
     """
-    if not cfg.vision_model:
-        return []
     try:
-        page_texts = await _extract_pdf_vision_in_subprocess(
+        page_texts = await asyncio.to_thread(
+            get_services().provider.pdf_ocr,
             path,
-            cfg.vision_model,
-            timeout=cfg.ocr_timeout,
+            backend="vision",
+            model=cfg.vision_model,
+            per_page_timeout_s=cfg.ocr_timeout,
             quiet=quiet,
             on_progress=on_progress,
         )
     except Exception:
+        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
+        return []
+    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+
+
+async def _tesseract_ocr_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord]:
+    """Tesseract OCR via ``asyncio.to_thread`` (no model load = no pool).
+
+    ``cfg.tesseract_timeout`` caps the whole-document extract; 0 means
+    unlimited. Failures (including timeout) log a warning and return an
+    empty list so the caller can skip the file.
+    """
+    from kreuzberg import extract_file_sync
+
+    coro = asyncio.to_thread(
+        extract_file_sync,
+        str(path),
+        config=extraction_config(ExtractMode.PAGINATED_OCR),
+    )
+    try:
+        if cfg.tesseract_timeout > 0:
+            result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+        else:
+            result = await coro
+    except TimeoutError:
         log.warning(
-            "Vision OCR failed for %s using vision model %s.",
+            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
+            cfg.tesseract_timeout,
             source_name,
-            cfg.vision_model,
-            exc_info=True,
         )
         return []
+    except Exception:
+        log.warning("OCR via tesseract backend failed for %s.", source_name, exc_info=True)
+        return []
+
+    by_page: dict[int, list[str]] = {}
+    for chunk in result.chunks or []:
+        page = int(chunk.metadata.get("first_page") or 1)
+        by_page.setdefault(page, []).append(chunk.content)
+    page_texts = [(page, "\n".join(by_page[page])) for page in sorted(by_page)]
+    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+
+
+async def _chunk_and_embed_pages(
+    page_texts: Sequence[tuple[int, str]],
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord]:
+    """Chunk OCR per-page text and embed every chunk through the embedder."""
     if not page_texts:
         return []
 
@@ -311,9 +187,7 @@ async def _vision_fallback(
     ]
     if not all_chunks:
         return []
-
     texts = [c for _, c in all_chunks]
-
     vectors = await asyncio.to_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
@@ -342,48 +216,46 @@ async def _handle_scanned_pdf_fallback(
     *,
     quiet: bool,
     on_progress: DetailedProgressCallback,
-) -> list[ChunkRecord] | ExtractionResult:
-    """Handle scanned PDF fallback chain: Tesseract OCR then vision model.
+) -> list[ChunkRecord]:
+    """Route a scanned PDF through the configured OCR backend.
 
-    Returns chunk records if a fallback produced final results, or an
-    updated ExtractionResult when Tesseract OCR succeeded (so the
-    caller can proceed with normal chunking/embedding).
-
-    When vision OCR is available (``_should_run_ocr()`` True) we go
-    straight to it. Tesseract is only attempted when vision isn't an
-    option at all. Running a huge scanned PDF through vision *and then*
-    through Tesseract would double the wall-clock cost for no reason,
-    and Tesseract on a 50+ MB document otherwise feels like a TUI
-    lockup to the user.
+    Vision OCR (pool-routed) runs when ``_should_run_ocr()`` is True
+    and a vision model is configured; otherwise the file falls back to
+    inline Tesseract. Both paths return chunk records; an empty list
+    means OCR found no usable text and the caller should skip the
+    file.
     """
+    del result  # Both backends re-extract; the kreuzberg result is not reused.
     use_ocr = _should_run_ocr()
-
     if use_ocr and cfg.vision_model:
         log.info(
             "Scanned PDF: using vision OCR for %s (model=%s)",
             source_name,
             cfg.vision_model,
         )
-        return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
+        return await _vision_ocr_fallback(
+            path,
+            source_name,
+            content_type,
+            on_progress=on_progress,
+            quiet=quiet,
+        )
 
-    result = await _try_tesseract_ocr(path, source_name, result)
-
-    if not _has_meaningful_text(result):
+    log.info("Scanned PDF: falling back to Tesseract OCR for %s", source_name)
+    chunks = await _tesseract_ocr_fallback(
+        path,
+        source_name,
+        content_type,
+        on_progress=on_progress,
+    )
+    if not chunks:
         log.warning(
             "Skipped %s: text extraction produced no usable text. "
             "For better results on scanned PDFs, configure a vision model "
             "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
             source_name,
         )
-        return []
-
-    log.info(
-        "Scanned PDF detected: extracted with Tesseract OCR: %s. "
-        "For structured markdown output (tables, headings), "
-        "configure a vision model via PUT /api/models/vision.",
-        source_name,
-    )
-    return result
+    return chunks
 
 
 async def ingest_document(
@@ -398,13 +270,13 @@ async def ingest_document(
 
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     """
-    from kreuzberg import extract_file
+    from kreuzberg import extract_file_sync
 
     config = extraction_config(content_type_to_mode(content_type))
-    result = await extract_file(str(path), config=config)
+    result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
 
     if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
-        fallback = await _handle_scanned_pdf_fallback(
+        return await _handle_scanned_pdf_fallback(
             path,
             source_name,
             content_type,
@@ -412,13 +284,20 @@ async def ingest_document(
             quiet=quiet,
             on_progress=on_progress,
         )
-        if isinstance(fallback, list):
-            return fallback
-        # Tesseract OCR succeeded: use the updated ExtractionResult
-        result = fallback
 
     if not result.chunks:
         return []
+
+    # Fire one EXTRACT event per file so subscribers (chat /add, /sync,
+    # CLI Rich progress) can show "extracted N pages" before the embed
+    # phase starts; otherwise a 44MB PDF sits at file-level 0% for
+    # minutes. get_page_count is the canonical PDF page count; for
+    # non-paginated formats we fall back to the chunk count.
+    page_count = result.get_page_count() or len(result.chunks)
+    on_progress(
+        EventType.EXTRACT,
+        ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
+    )
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await asyncio.to_thread(
