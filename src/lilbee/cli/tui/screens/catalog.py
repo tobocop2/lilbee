@@ -115,7 +115,7 @@ _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 _SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 _SPINNER_INTERVAL_S = 0.1
 
-_RowCacheKey = tuple[int, int, int, bool, int, int]
+_RowCacheKey = tuple[int, int, int, int, int, int]
 
 
 @dataclass(frozen=True)

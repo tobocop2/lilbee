@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from pathlib import Path
 
 from lilbee.app.services import reset_services
 from lilbee.cli.tui.log_routing import setup_tui_log_file
@@ -26,6 +28,38 @@ def _silence_stderr_log_handlers() -> None:
             root.removeHandler(handler)
 
 
+def _redirect_native_stderr_to(log_path: Path) -> int | None:
+    """Redirect fd 2 to *log_path* so C-level stderr writes don't reach the TUI.
+
+    The Python ``logging.StreamHandler(stderr)`` strip in
+    ``_silence_stderr_log_handlers`` only catches Python-level handlers.
+    Native dependencies (kreuzberg's vendored tesseract emits
+    ``"Detected N diacritics"`` during OCR; pdfium/poppler also chatter)
+    write straight to fd 2, which Textual then renders as garbage on top
+    of the alternate-screen buffer.
+
+    Returns the saved original fd so the caller can restore it on
+    teardown, or ``None`` when the redirect couldn't be installed (in
+    which case the caller leaves stderr alone).
+    """
+    try:
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:
+        return None
+    saved = os.dup(2)
+    os.dup2(log_fd, 2)
+    os.close(log_fd)
+    return saved
+
+
+def _restore_native_stderr(saved_fd: int | None) -> None:
+    """Undo ``_redirect_native_stderr_to``; safe to call when ``saved_fd`` is None."""
+    if saved_fd is None:
+        return
+    os.dup2(saved_fd, 2)
+    os.close(saved_fd)
+
+
 def run_tui(*, initial_view: str | None = None) -> None:
     """Launch the full-screen Textual TUI.
 
@@ -37,8 +71,9 @@ def run_tui(*, initial_view: str | None = None) -> None:
     from lilbee.cli.sync import shutdown_executor
     from lilbee.cli.tui.app import LilbeeApp
 
-    setup_tui_log_file()
+    log_path = setup_tui_log_file()
     _silence_stderr_log_handlers()
+    saved_stderr_fd = _redirect_native_stderr_to(log_path)
 
     app = LilbeeApp(initial_view=initial_view)
     try:
@@ -46,5 +81,6 @@ def run_tui(*, initial_view: str | None = None) -> None:
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     finally:
+        _restore_native_stderr(saved_stderr_fd)
         shutdown_executor()
         reset_services()
