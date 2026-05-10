@@ -208,7 +208,13 @@ class ModelRegistry:
             blob_file.unlink()
 
     def list_installed(self) -> list[ModelManifest]:
-        """Return manifests for all installed models."""
+        """Return manifests for models whose blob is fully present on disk.
+
+        A manifest with a null blob field or a missing blob file is the
+        residue of a canceled or partial download. Surfacing it would
+        let the picker offer an unusable selection, so the read filter
+        lives here at the source instead of in every UI caller.
+        """
         manifests: list[ModelManifest] = []
         if not self._manifests_dir.exists():
             return manifests
@@ -217,9 +223,18 @@ class ModelRegistry:
                 continue
             for tag_file in sorted(repo_dir.glob("*.gguf.json")):
                 manifest = self._load_manifest_file(tag_file)
-                if manifest is not None:
+                if manifest is not None and self._blob_present(manifest):
                     manifests.append(manifest)
         return manifests
+
+    def _blob_present(self, manifest: ModelManifest) -> bool:
+        """True iff *manifest* points at an existing blob file."""
+        if manifest.blob is None:
+            return False
+        blob_file = (
+            self._root / f"models--{repo_to_dir(manifest.hf_repo)}" / "blobs" / manifest.blob
+        )
+        return blob_file.exists()
 
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
