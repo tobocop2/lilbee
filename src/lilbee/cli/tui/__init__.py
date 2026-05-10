@@ -86,7 +86,7 @@ def _restore_native_stderr(redirect: _StderrRedirect | None) -> None:
     os.dup2(redirect.saved_fd, 2)
     os.close(redirect.saved_fd)
     sys.stderr = redirect.saved_sys_stderr  # type: ignore[assignment]
-    sys.__stderr__ = redirect.saved_sys_dunder_stderr  # type: ignore[assignment]
+    sys.__stderr__ = redirect.saved_sys_dunder_stderr  # type: ignore[misc,assignment]
 
 
 def run_tui(*, initial_view: str | None = None) -> None:
