@@ -119,9 +119,12 @@ class Config(BaseSettings):
     llm_provider: str = ConfigField(default="auto", writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    mistral_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    deepseek_api_key: str = ConfigField(default="", writable=True, write_only=True)
 
     # Retrieval quality knobs.
 
