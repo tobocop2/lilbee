@@ -1141,7 +1141,8 @@ class CatalogScreen(Screen[None]):
             return None
         self._grid_cache_keys[active_tab] = row_key
         if active_tab in TASK_TAB_IDS:
-            task_label = TAB_ID_TO_TASK[active_tab].value.capitalize()
+            active_task = TAB_ID_TO_TASK[active_tab]
+            task_label = active_task.value.capitalize()
             # Split locals and frontier so the picks/installed grouping
             # only sees LocalCatalogRow (it reads .featured / .installed
             # which FrontierCatalogRow doesn't carry). Frontier rows land
@@ -1150,9 +1151,11 @@ class CatalogScreen(Screen[None]):
             sections = [s for s in group_task_rows_with_picks(local_tab_rows, task_label) if s.rows]
             if frontier_only:
                 sections.append(GridSection(heading="Cloud", rows=list(frontier_only)))
+            hf_count = sum(1 for r in hf_rows if r.task == active_task.value)
         else:
             sections = [s for s in group_rows_for_grid(local_tab_rows) if s.rows]
-        return sections, len(hf_rows)
+            hf_count = len(hf_rows)
+        return sections, hf_count
 
     def _extend_grid_sections_in_place(self, sections: list[GridSection], hf_count: int) -> bool:
         """Update existing ModelGrids in place when section count matches.
@@ -1595,8 +1598,15 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = None
             self._spinner_frame = 0
             # Restore the post-load CTA text now that the fetch settled.
+            # Count is per active task tab so the hint matches what's rendered.
             hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched_any() else []
-            self._refresh_grid_ctas(hf_count=len(hf_rows))
+            active_task = self._active_task()
+            hf_count = (
+                sum(1 for r in hf_rows if r.task == active_task.value)
+                if active_task is not None
+                else len(hf_rows)
+            )
+            self._refresh_grid_ctas(hf_count=hf_count)
 
     def _tick_loading_spinner(self) -> None:
         """Advance the spinner one braille frame; called by the interval timer."""

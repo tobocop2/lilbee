@@ -4270,6 +4270,41 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
             assert any(wanted in str(c.render()) for c in ctas)
 
 
+async def test_catalog_grid_hf_count_is_per_active_task():
+    """The grid scroll-hint count must reflect the active tab's HF rows only,
+    not the merged ``self._hf_models`` total. Earlier the CTA showed
+    ``len(hf_rows)`` across every task, so the chat tab's hint inflated as
+    embedding/vision/rerank pages landed.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    chat_models = [
+        _make_catalog_model(name=f"chat-{i}", hf_repo=f"o/c{i}", task="chat", featured=False)
+        for i in range(2)
+    ]
+    embed_models = [
+        _make_catalog_model(name=f"embed-{i}", hf_repo=f"o/e{i}", task="embedding", featured=False)
+        for i in range(3)
+    ]
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._activation_settled = True
+            screen._families = []
+            screen._remote_models = []
+            screen._hf_models = chat_models + embed_models
+            screen._hf_fetched_tasks.update({ModelTask.CHAT, ModelTask.EMBEDDING})
+            prep = screen._prepare_grid_refresh()
+            assert prep is not None
+            _sections, hf_count = prep
+            assert hf_count == len(chat_models)
+
+
 async def test_catalog_grid_scroll_fires_load_more_near_bottom():
     """Grid view: scroll past the threshold triggers _load_more."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
