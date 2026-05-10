@@ -418,8 +418,7 @@ class CatalogScreen(Screen[None]):
         # task tabs fetch lazily on first activation (see
         # `_on_catalog_tab_activated`) so opening the catalog only costs
         # one HF round-trip instead of four.
-        self._hf_fetched_tasks.add(ModelTask.CHAT)
-        self._fetch_initial_hf_models_for_task(ModelTask.CHAT)
+        self._ensure_task_initial_fetch(ModelTask.CHAT)
         self.app.provider_availability_changed_signal.subscribe(
             self, self._on_provider_availability_changed
         )
@@ -524,10 +523,17 @@ class CatalogScreen(Screen[None]):
     def _hf_fetched_any(self) -> bool:
         """True iff any task has had its first HF page fetched.
 
-        Used by the rendering gates that should suppress HF sections until
-        at least one task page has landed.
+        Renders gate HF sections on this so the catalog doesn't paint
+        empty HF rows before the first per-task fetch lands.
         """
         return bool(self._hf_fetched_tasks)
+
+    def _ensure_task_initial_fetch(self, task: ModelTask) -> None:
+        """Fire the per-task initial HF fetch once; idempotent on repeats."""
+        if task in self._hf_fetched_tasks:
+            return
+        self._hf_fetched_tasks.add(task)
+        self._fetch_initial_hf_models_for_task(task)
 
     def action_toggle_view(self) -> None:
         """Toggle between grid and list view on the active task tab.
@@ -548,9 +554,8 @@ class CatalogScreen(Screen[None]):
                 self.remove_class("-grid-view")
                 self.add_class("-list-view")
                 active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
-                if active_task is not None and active_task not in self._hf_fetched_tasks:
-                    self._hf_fetched_tasks.add(active_task)
-                    self._fetch_initial_hf_models_for_task(active_task)
+                if active_task is not None:
+                    self._ensure_task_initial_fetch(active_task)
                 with self.app.batch_update():
                     self._refresh_list()
                 self._focus_list_item(0)
@@ -671,12 +676,10 @@ class CatalogScreen(Screen[None]):
     def _fetch_hf_page_for_task(self, task: ModelTask) -> list[CatalogModel]:
         """Fetch one HF page for *task* at the task's own offset.
 
-        Called from the worker-thread bodies of
-        ``_fetch_initial_hf_models_for_task`` and ``_fetch_more_hf_for_task``.
         Dedupes against repos already in ``self._hf_models`` so re-fetches
         from a stale offset don't double-count rows. Writes the per-task
-        ``has_more`` directly on the screen (same pattern as the prior
-        single-flag implementation).
+        ``has_more`` directly on the screen from the worker thread; the
+        dict assignment is GIL-atomic and the main thread only reads.
         """
         offset = self._hf_offset_by_task[task]
         result = get_catalog(
@@ -777,25 +780,21 @@ class CatalogScreen(Screen[None]):
     def _append_more_hf_to_list(self, new_models: list[CatalogModel]) -> None:
         """Append newly-arrived HF rows to the active task tab's list.
 
-        Guards against the rare race where the user switches tabs after
-        firing pagination but before the worker returns: the result still
-        belongs to the previously-active task, and a blind extend would
-        leak foreign rows into the new tab. Falls back to a full
-        refresh when the task no longer matches.
+        Falls back to a full ``_refresh_view`` on the rare tab-switch
+        race where the worker's payload no longer matches the active
+        task; otherwise a blind extend would leak foreign rows into a
+        sibling tab's list.
         """
         active_task = self._active_task()
-        if active_task is None:
+        if active_task is None or any(m.task != active_task for m in new_models):
             self._refresh_view()
             return
-        same_task = [m for m in new_models if m.task == active_task]
-        if len(same_task) != len(new_models):
-            self._refresh_view()
-            return
-        new_rows = [
-            catalog_to_row(m, installed=self._is_installed(m.ref, m.hf_repo, m.gguf_filename))
-            for m in same_task
-        ]
-        new_rows = self._sort_rows(new_rows)
+        new_rows = self._sort_rows(
+            [
+                catalog_to_row(m, installed=self._is_installed(m.ref, m.hf_repo, m.gguf_filename))
+                for m in new_models
+            ]
+        )
         if not new_rows:
             self._update_sort_label()
             return
@@ -1755,10 +1754,7 @@ class CatalogScreen(Screen[None]):
             # Lazy first-fetch: tabs other than Chat skip their HF round-trip
             # at mount and hit the API only when first activated. Cached
             # after, so re-activations stay free.
-            task = TAB_ID_TO_TASK[new_tab]
-            if task not in self._hf_fetched_tasks:
-                self._hf_fetched_tasks.add(task)
-                self._fetch_initial_hf_models_for_task(task)
+            self._ensure_task_initial_fetch(TAB_ID_TO_TASK[new_tab])
             # Refresh the newly active task tab. Per-tab cache key skips
             # the rebuild when the row shape hasn't changed since last paint.
             self._refresh_view()

@@ -3142,9 +3142,8 @@ class TestViewTabsWikiVisibility:
 
     async def test_wiki_tab_hidden_at_mount_when_disabled(self) -> None:
         """When cfg.wiki=False at startup, the Wiki tab must be hidden by the
-        time the first paint settles. Earlier the visibility check ran inside
-        on_mount before the ViewTab children finished mounting, leaving the
-        tab visible until the user toggled cfg.wiki at runtime.
+        time the first paint settles -- not just after the user toggles the
+        setting at runtime.
         """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.status_bar import ViewTab

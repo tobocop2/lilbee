@@ -4336,9 +4336,8 @@ async def test_catalog_grid_shows_all_loaded_hint_when_no_more():
 
 async def test_catalog_grid_hf_count_is_per_active_task():
     """The grid scroll-hint count must reflect the active tab's HF rows only,
-    not the merged ``self._hf_models`` total. Earlier the CTA showed
-    ``len(hf_rows)`` across every task, so the chat tab's hint inflated as
-    embedding/vision/rerank pages landed.
+    not the merged ``self._hf_models`` total: the chat tab's hint should
+    not inflate as embedding/vision/rerank pages land.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 

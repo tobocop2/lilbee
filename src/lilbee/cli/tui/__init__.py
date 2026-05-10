@@ -102,7 +102,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
 
     log_path = setup_tui_log_file()
     _silence_stderr_log_handlers()
-    saved_stderr_fd = _redirect_native_stderr_to(log_path)
+    stderr_redirect = _redirect_native_stderr_to(log_path)
 
     app = LilbeeApp(initial_view=initial_view)
     try:
@@ -110,6 +110,6 @@ def run_tui(*, initial_view: str | None = None) -> None:
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     finally:
-        _restore_native_stderr(saved_stderr_fd)
+        _restore_native_stderr(stderr_redirect)
         shutdown_executor()
         reset_services()

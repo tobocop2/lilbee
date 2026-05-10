@@ -116,7 +116,6 @@ def test_native_stderr_redirect_captures_fd2_writes(tmp_path):
 def test_native_stderr_redirect_keeps_python_stderr_pointed_at_terminal(tmp_path):
     """Python-level ``sys.stderr.write`` must still reach the real terminal so
     Textual's driver (which writes ANSI to ``sys.__stderr__``) keeps painting.
-    Earlier the redirect ate that path too and the TUI rendered to ``tui.log``.
     """
     import os
     import sys
