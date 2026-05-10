@@ -15,6 +15,10 @@ on:
         description: "Publish wheels + sdist to PyPI when true."
         type: boolean
         default: false
+      build_extras:
+        description: "Build the CUDA + Intel-Mac CPU extras matrix (PEP 503 index)."
+        type: boolean
+        default: false
       ref:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
@@ -120,14 +124,15 @@ jobs:
           name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Extra-backend wheels (CUDA + pure CPU); only built on actual publish lanes
-  # so RC dry-runs / tag-push QA don't sit behind 90-min Windows CUDA builds.
+  # Extra-backend wheels (CUDA + pure CPU). Off by default so RC dry-runs and
+  # tag-push QA don't sit behind 90-min Windows CUDA builds; publish lanes
+  # opt in via inputs.build_extras=true to populate the PEP 503 index.
   build-extra-wheels:
     needs: [ci]
     if: |
       always()
       && needs.ci.result != 'failure'
-      && (github.event_name == 'release' || inputs.publish)
+      && (github.event_name == 'release' || inputs.build_extras)
     strategy:
       fail-fast: false
       matrix:

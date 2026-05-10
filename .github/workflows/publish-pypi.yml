@@ -57,6 +57,7 @@ jobs:
     uses: ./.github/workflows/build-wheels.yml
     with:
       publish: false
+      build_extras: true
       ref: ${{ inputs.tag }}
     secrets: inherit
 
