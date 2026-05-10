@@ -403,6 +403,77 @@ class TestModelRegistryList:
         (manifests_dir / "stray-file.txt").write_text("not a repo dir")
         assert registry.list_installed() == []
 
+    def test_list_skips_manifest_with_null_blob(self, tmp_path: Path) -> None:
+        """A manifest whose blob field is null (interrupted install) is hidden.
+
+        Pickers source their options from list_installed, so an entry
+        without a blob hash would let the user select an unusable model.
+        """
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        manifest_file = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+        data = json.loads(manifest_file.read_text())
+        data["blob"] = None
+        manifest_file.write_text(json.dumps(data))
+        assert registry.list_installed() == []
+
+    def test_list_skips_manifest_with_missing_blob_file(self, tmp_path: Path) -> None:
+        """Manifest references a digest whose blob no longer exists on disk.
+
+        Happens when the HF cache is cleared externally or a download
+        was canceled mid-stream. The manifest survives but the model
+        cannot be loaded; pickers must not surface it.
+        """
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        for blob in blob_dir.iterdir():
+            blob.unlink()
+        assert registry.list_installed() == []
+
+    def test_list_skips_manifest_when_cache_dir_missing(self, tmp_path: Path) -> None:
+        """The whole per-repo cache dir was wiped; the orphan manifest stays hidden."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        cache_dir = tmp_path / f"models--{repo_to_dir(_REPO)}"
+        for child in cache_dir.rglob("*"):
+            if child.is_file():
+                child.unlink()
+        for sub in sorted(cache_dir.rglob("*"), key=lambda p: -len(p.parts)):
+            if sub.is_dir():
+                sub.rmdir()
+        cache_dir.rmdir()
+        assert registry.list_installed() == []
+
+    def test_list_keeps_complete_alongside_incomplete(self, tmp_path: Path) -> None:
+        """Two manifests, one complete and one with a null blob: only the complete survives."""
+        registry = ModelRegistry(tmp_path)
+        complete_src = tmp_path / "complete.gguf"
+        complete_src.write_bytes(b"GGUF" + b"\x01" * 64)
+        registry.install(
+            _REPO,
+            "Qwen3-0.6B-Q4_K_M.gguf",
+            complete_src,
+            _make_manifest(gguf_filename="Qwen3-0.6B-Q4_K_M.gguf"),
+        )
+        broken_src = tmp_path / "broken.gguf"
+        broken_src.write_bytes(b"GGUF" + b"\x02" * 64)
+        registry.install(
+            _REPO,
+            "Qwen3-0.6B-Q8_0.gguf",
+            broken_src,
+            _make_manifest(gguf_filename="Qwen3-0.6B-Q8_0.gguf"),
+        )
+        broken_manifest = tmp_path / "manifests" / repo_to_dir(_REPO) / "Qwen3-0.6B-Q8_0.gguf.json"
+        broken_data = json.loads(broken_manifest.read_text())
+        broken_data["blob"] = None
+        broken_manifest.write_text(json.dumps(broken_data))
+        listed = registry.list_installed()
+        assert [m.gguf_filename for m in listed] == ["Qwen3-0.6B-Q4_K_M.gguf"]
+
 
 class TestModelRegistryWriteManifestErrors:
     def test_write_failure_cleans_up_temp_file(
