@@ -437,7 +437,7 @@ async def test_maybe_prefetch_on_grid_nav_no_op_when_focused_not_modelgrid() -> 
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -460,7 +460,7 @@ async def test_maybe_prefetch_on_grid_nav_no_op_without_focused_grid() -> None:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen.set_focus(None)
         await pilot.pause()
         screen._maybe_prefetch_on_grid_nav()
@@ -473,7 +473,7 @@ async def test_on_grid_scrolled_swallows_below_threshold() -> None:
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         # _scroll_prefetch_due returns False because the chat tab grid
         # has no overflow yet (max_scroll_y == 0).
@@ -563,7 +563,7 @@ async def test_refresh_grid_non_task_tab_uses_legacy_grouping() -> None:
         screen._families = []
         screen._hf_models = []
         screen._remote_models = []
-        screen._hf_fetched = False
+        screen._hf_fetched_tasks = set()
         screen._refresh_grid()
 
 
@@ -578,7 +578,7 @@ async def test_refresh_list_non_task_tab_uses_unfiltered_rows() -> None:
         screen._families = []
         screen._hf_models = []
         screen._remote_models = []
-        screen._hf_fetched = False
+        screen._hf_fetched_tasks = set()
         screen._grid_view = False
         screen._refresh_list()
 
@@ -609,7 +609,7 @@ async def test_maybe_prefetch_on_grid_nav_no_op_when_grid_empty() -> None:
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -682,7 +682,7 @@ async def test_maybe_prefetch_on_grid_nav_skips_when_grids_empty(monkeypatch) ->
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -730,7 +730,7 @@ async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -843,7 +843,7 @@ async def test_maybe_prefetch_on_grid_nav_skips_empty_total() -> None:
         screen._activation_settled = True
         screen._active_tab_id_cache = "chat"
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 

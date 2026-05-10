@@ -105,9 +105,10 @@ class ViewTabs(Widget):
     def on_mount(self) -> None:
         self.active_view = self.app.active_view
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
-        self._apply_wiki_visibility()
-        # Defer the initial paint: update() during on_mount can no-op while
-        # children are still completing their mount cycle.
+        # Wiki visibility AND the initial paint both deferred: query() during
+        # on_mount can no-op while ViewTab children are still completing their
+        # mount cycle, leaving the Wiki tab visible even when cfg.wiki=False.
+        self.call_after_refresh(self._apply_wiki_visibility)
         self.call_after_refresh(self._refresh)
 
     def watch_active_view(self, value: str) -> None:
