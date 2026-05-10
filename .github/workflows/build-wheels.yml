@@ -32,10 +32,12 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
+  # ci runs on direct workflow_dispatch + release-published. Skipped when called as a
+  # reusable workflow from an orchestrator (already gated by main's CI on merge).
   # bot-author skip prevents the orchestrator's promote step from re-firing this workflow.
   ci:
     if: |
-      github.event_name == 'workflow_call' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'release' && github.event.release.author.login != 'github-actions[bot]')
     uses: ./.github/workflows/ci.yml
     permissions:
@@ -44,7 +46,7 @@ jobs:
   # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal).
   build-default-wheels:
     needs: [ci]
-    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.ci.result != 'failure'
     strategy:
       fail-fast: false
       matrix:
@@ -121,7 +123,7 @@ jobs:
   # Extra-backend wheels (CUDA + pure CPU); distributed via PEP 503 index, soft-fail.
   build-extra-wheels:
     needs: [ci]
-    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.ci.result != 'failure'
     strategy:
       fail-fast: false
       matrix:
@@ -249,7 +251,7 @@ jobs:
           path: dist/*.tar.gz
 
   publish-pypi:
-    if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
+    if: github.event_name == 'release' || inputs.publish
     needs: [build-default-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
@@ -280,7 +282,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   verify-pypi:
-    if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
+    if: github.event_name == 'release' || inputs.publish
     needs: [publish-pypi]
     strategy:
       fail-fast: false

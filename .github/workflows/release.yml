@@ -267,16 +267,15 @@ jobs:
         shell: bash
 
       - name: Upload to release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
+        if: github.event_name == 'release' || inputs.publish
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event_name == 'workflow_call' && (inputs.ref || github.ref_name) || '' }}
+          tag_name: ${{ inputs.publish && (inputs.ref || github.ref_name) || '' }}
           files: dist/${{ matrix.asset_name }}
 
       - name: Upload artifact (no-publish lane)
-        # Fires on workflow_dispatch dry-run and on workflow_call
-        # with publish=false (release-candidate.yml's build phase).
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_call' && !inputs.publish)
+        # Fires on workflow_dispatch + workflow_call with publish=false.
+        if: github.event_name != 'release' && !inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
