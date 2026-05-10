@@ -2,9 +2,10 @@ name: Publish to PyPI and fan out downstream packaging
 description: |
   Download wheel + sdist artifacts from the current run, publish them to
   PyPI via Trusted Publishing, then dispatch publish-docker.yml and
-  publish-packages.yml against the same tag. Caller's job needs
-  `permissions.id-token: write` and `permissions.actions: write`, and
-  must declare `environment: pypi` for the OIDC binding.
+  publish-packages.yml against the same tag. Caller is responsible for
+  the OIDC binding (`environment: pypi` on the calling job) and the
+  permissions block (`id-token: write`, `actions: write`); the OIDC
+  publish step fails-loud if either is missing.
 
 inputs:
   tag:

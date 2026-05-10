@@ -127,8 +127,14 @@ class _PosixPty:
 
 
 if sys.platform == "win32":
+    # `winpty` is a Windows-only dep and not on the import path of mypy
+    # runs on POSIX hosts; `import-not-found` is the correct silence here.
     from winpty import PtyProcess  # type: ignore[import-not-found]
 else:
+    # The two backends share the same `pid`/`fd`/`write`/`read`/`isalive`/
+    # `terminate` shape that `TuiSession` uses, but mypy can't model the
+    # platform-conditional binding as a type alias without a Protocol the
+    # winpty stub doesn't satisfy. Live with the assignment-misc silence.
     PtyProcess = _PosixPty  # type: ignore[misc,assignment]
 
 
