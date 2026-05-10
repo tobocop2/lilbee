@@ -1,0 +1,467 @@
+name: QA matrix
+
+# QA matrix runs published lilbee in two lanes (pypi wheel + standalone binary) across native + Linux-distro runners.
+
+on:
+  push:
+    branches: [qa-matrix]
+    paths:
+      - 'tools/qa/**'
+      - '.github/workflows/qa-matrix.yml'
+  workflow_dispatch:
+    inputs:
+      lilbee_version:
+        description: "lilbee version to QA (defaults to latest published)"
+        required: false
+        default: "latest"
+  # Reusable trigger: with wheel_run_id/binary_run_id set, consumes those run artifacts instead of PyPI/GH release.
+  workflow_call:
+    inputs:
+      wheel_run_id:
+        description: "Workflow run ID containing wheel-default-* artifacts (RC lane)."
+        type: string
+        default: ""
+      binary_run_id:
+        description: "Workflow run ID containing lilbee-<os>-<arch> artifacts (RC lane)."
+        type: string
+        default: ""
+      version:
+        description: "lilbee version string for the artifacts (e.g. 0.6.66b458)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read   # download-artifact with run-id (workflow_call RC mode)
+
+env:
+  # Ollama-registry analogue of conftest's _DEFAULT_CHAT_MODEL; keep param count aligned.
+  OLLAMA_TINY_MODEL: qwen3:0.6b
+  # Bump alongside conftest _DEFAULT_*_MODEL so model changes invalidate the cache.
+  QA_MODELS_CACHE_KEY: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+
+concurrency:
+  group: qa-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: native (${{ matrix.label }}, ${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  label: ubuntu,  lane: pypi   }
+          - { os: macos-latest,   label: macos,   lane: pypi   }
+          - { os: windows-latest, label: windows, lane: pypi   }
+          - { os: ubuntu-latest,  label: ubuntu,  lane: binary, asset: lilbee-linux-x86_64,        chmod: true  }
+          - { os: macos-latest,   label: macos,   lane: binary, asset: lilbee-macos-arm64,         chmod: true  }
+          - { os: windows-latest, label: windows, lane: binary, asset: lilbee-windows-x86_64.exe,  chmod: false }
+    runs-on: ${{ matrix.os }}
+    # 90-min cap covers Windows binary cold-starts cumulated across ~95 subprocess invocations.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
+
+      - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        shell: bash
+        # --find-links picks the matching local wheel; --pre matches PyPI beta install behavior.
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+          SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
+
+      - name: Install lilbee from PyPI (lane=pypi)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
+        shell: bash
+        # Plain `lilbee` without extras; [crawler] / [litellm] live in the dedicated cells.
+        run: |
+          python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+          SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
+
+      - name: Download lilbee binary from sibling run (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ./_bin
+          run-id: ${{ inputs.binary_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Make binary executable + set LILBEE_QA_BIN (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        shell: bash
+        run: |
+          ls -la _bin
+          if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
+
+      - name: Download lilbee binary from GH release (lane=binary)
+        if: matrix.lane == 'binary' && inputs.binary_run_id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p _bin
+          gh release download "${{ steps.ver.outputs.tag }}" --repo ${{ github.repository }} --pattern "${{ matrix.asset }}" --dir _bin
+          ls -la _bin
+          if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
+
+      - name: Bring up Ollama (Linux binary lane only)
+        # macOS/Windows ollama setup is gnarlier; those lanes skip via
+        # 'daemon not reachable' inside test_e2e_litellm_ollama.
+        if: matrix.lane == 'binary' && matrix.os == 'ubuntu-latest'
+        uses: ./.github/actions/ollama-up
+        with:
+          model: ${{ env.OLLAMA_TINY_MODEL }}
+
+      - name: Run QA matrix
+        env:
+          LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        shell: bash
+        run: |
+          echo "Lane: $LILBEE_QA_LANE"
+          echo "Binary: $LILBEE_QA_BIN"
+          # Mirror the cached path into the workspace so per-test envs find it.
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          python -m pytest tools/qa/ -v --tb=short \
+            --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-${{ matrix.label }}-${{ matrix.lane }}
+          path: |
+            qa-*.xml
+            _bin/
+            tools/qa/.pytest_cache/
+          retention-days: 7
+
+  # Same lanes against Arch/Fedora containers (where most Linux install bugs surface).
+  linux-distros:
+    name: linux-distros (${{ matrix.label }}, ${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: arch,    container: archlinux:latest, install: arch,   lane: pypi   }
+          - { label: arch,    container: archlinux:latest, install: arch,   lane: binary }
+          - { label: fedora,  container: fedora:latest,    install: fedora, lane: pypi   }
+          - { label: fedora,  container: fedora:latest,    install: fedora, lane: binary }
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    timeout-minutes: 60
+    steps:
+      - name: Install Arch base toolchain
+        if: matrix.install == 'arch'
+        # vulkan-icd-loader provides libvulkan.so.1 (lilbee Linux wheel's import-time dep).
+        run: |
+          pacman -Sy --noconfirm
+          pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates base-devel vulkan-icd-loader
+
+      - name: Install Fedora base toolchain
+        if: matrix.install == 'fedora'
+        # vulkan-loader is Fedora's vulkan-icd-loader equivalent.
+        run: |
+          dnf -y update
+          dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make vulkan-loader
+
+      - uses: actions/checkout@v6
+
+      - name: Install QA harness deps
+        run: python3 -m pip install --break-system-packages --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
+
+      - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        run: |
+          python3 -m pip install --break-system-packages --root-user-action=ignore --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Install lilbee from PyPI (lane=pypi)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
+        run: |
+          python3 -m pip install --break-system-packages --root-user-action=ignore "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Download lilbee binary from sibling run (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: lilbee-linux-x86_64
+          path: ./_bin
+          run-id: ${{ inputs.binary_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Make binary executable + set LILBEE_QA_BIN (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        run: |
+          chmod +x _bin/lilbee-linux-x86_64
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/lilbee-linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Download lilbee binary from GH release (lane=binary)
+        if: matrix.lane == 'binary' && inputs.binary_run_id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _bin
+          gh release download "${{ steps.ver.outputs.tag }}" --repo ${{ github.repository }} --pattern "lilbee-linux-x86_64" --dir _bin
+          chmod +x _bin/lilbee-linux-x86_64
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/lilbee-linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Bring up Ollama (binary lane)
+        if: matrix.lane == 'binary'
+        uses: ./.github/actions/ollama-up
+        with:
+          model: ${{ env.OLLAMA_TINY_MODEL }}
+
+      - name: Run QA matrix
+        env:
+          LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        run: |
+          echo "Lane: $LILBEE_QA_LANE"
+          echo "Binary: $LILBEE_QA_BIN"
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          python3 -m pytest tools/qa/ -v --tb=short \
+            --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-${{ matrix.label }}-${{ matrix.lane }}
+          path: |
+            qa-*.xml
+            _bin/
+            tools/qa/.pytest_cache/
+          retention-days: 7
+
+  # Dedicated Ollama lane (litellm SDK adds ~30-60s per lilbee call; isolated to keep main suite under budget).
+  ollama-pypi:
+    name: ollama-pypi (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
+
+      - name: Download wheel artifacts from sibling run (RC mode)
+        if: inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels with crawler + litellm extras (RC mode)
+        if: inputs.wheel_run_id != ''
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Install lilbee from PyPI with crawler + litellm extras
+        if: inputs.wheel_run_id == ''
+        run: |
+          python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Bring up Ollama
+        uses: ./.github/actions/ollama-up
+        with:
+          model: ${{ env.OLLAMA_TINY_MODEL }}
+
+      - name: Run ollama tests only
+        env:
+          LILBEE_QA_LANE: l1-pypi
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          python -m pytest tools/qa/test_e2e_litellm_ollama.py -v --tb=short \
+            --junitxml=qa-ollama-pypi.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-ollama-pypi
+          path: |
+            qa-*.xml
+            tools/qa/.pytest_cache/
+          retention-days: 7
+
+  # Dedicated [crawler] lane on a single ubuntu cell; isolation rationale matches ollama-pypi.
+  crawler-pypi:
+    name: crawler-pypi (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        uses: ./.github/actions/resolve-target-version
+        with:
+          rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
+
+      - name: Download wheel artifacts from sibling run (RC mode)
+        if: inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels with crawler extra (RC mode)
+        if: inputs.wheel_run_id != ''
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee[crawler]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Install lilbee from PyPI with crawler extra
+        if: inputs.wheel_run_id == ''
+        run: |
+          python -m pip install "lilbee[crawler]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Run crawler tests only
+        env:
+          LILBEE_QA_LANE: l1-pypi
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
+          python -m pytest tools/qa/test_e2e_crawl.py -v --tb=short \
+            --junitxml=qa-crawler-pypi.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-crawler-pypi
+          path: |
+            qa-*.xml
+            tools/qa/.pytest_cache/
+          retention-days: 7
