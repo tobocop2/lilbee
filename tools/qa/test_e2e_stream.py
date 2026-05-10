@@ -28,6 +28,7 @@ from httpx_sse import EventSource
 from conftest import (
     SERVER_BOOT_TIMEOUT_WITH_MODELS,
     SYNC_TIMEOUT,
+    TOKEN_FETCH_TIMEOUT,
     TUI_BOOT_TIMEOUT,
     TUI_RESPONSE_TIMEOUT,
     Lane,
@@ -50,11 +51,8 @@ _STREAM_TIMEOUT = 240.0
 
 def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
     """`lilbee token` prints the bearer for a running server. Empty string if
-    the binary doesn't expose the command (very old build) or it errors.
-    90s budget leaves headroom for Windows binary cold-start (bb-rjez)
-    without masking a real hang.
-    """
-    result = run_lilbee_with_env(lane, ["token"], env=env, timeout=90)
+    the binary doesn't expose the command (very old build) or it errors."""
+    result = run_lilbee_with_env(lane, ["token"], env=env, timeout=TOKEN_FETCH_TIMEOUT)
     if result.returncode != 0:
         return ""
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]

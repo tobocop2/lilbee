@@ -96,6 +96,13 @@ SERVER_BOOT_TIMEOUT_WITH_MODELS = 180.0
 HTTP_FAST_TIMEOUT = 15.0
 HTTP_SLOW_TIMEOUT = 30.0
 CLI_FAST_TIMEOUT = 60.0
+# Token / extras probes can run cold-start on Windows binary; bump
+# accordingly so a slow but-not-hung process doesn't trip pytest-timeout.
+TOKEN_FETCH_TIMEOUT = 90.0
+EXTRAS_PROBE_TIMEOUT = 120.0
+# `lilbee --json model list` walks the on-disk registry; allow headroom
+# for a cold-start binary on Windows so a slow enumeration doesn't trip.
+MODEL_LIST_TIMEOUT = 180.0
 
 
 class LaneName(StrEnum):
@@ -270,9 +277,7 @@ def resolve_registered_name(
         env=env,
         capture_output=True,
         text=True,
-        # Cold-start on Windows can take 30+ seconds (bb-rjez). 180s leaves
-        # headroom for the slowest cell without masking a real hang.
-        timeout=180,
+        timeout=MODEL_LIST_TIMEOUT,
         check=False,
     )
     if result.returncode != 0:

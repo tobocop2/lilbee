@@ -70,19 +70,11 @@ def test_list_documents_tool_returns_empty(mcp_client: MCPStdioClient) -> None:
 
 
 @pytest.mark.mcp
-def test_wiki_status_tool_returns_payload(mcp_client: MCPStdioClient) -> None:
-    response = mcp_client.call_tool("wiki_status")
-    assert isinstance(response, dict), response
-
-
-@pytest.mark.mcp
 def test_wiki_status_tool_response_has_documented_keys(mcp_client: MCPStdioClient) -> None:
-    """wiki_status MCP response carries the documented WikiStatusResult keys.
-
-    Beyond inventory (tools/list count): the wiki_* tools are public MCP
-    contract. wiki_status surfaces wiki_enabled + page/draft counts; an
-    empty data dir should still return a structurally valid envelope
-    rather than a bare error.
+    """wiki_status MCP response is a dict carrying the documented
+    WikiStatusResult keys, even on an empty data dir. The wiki_* tools
+    are public MCP contract; an empty store should still return a
+    structurally valid envelope rather than a bare error.
     """
     response = mcp_client.call_tool("wiki_status")
     assert isinstance(response, dict), response

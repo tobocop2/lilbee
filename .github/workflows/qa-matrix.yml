@@ -49,10 +49,16 @@ permissions:
   actions: read   # download-artifact with run-id (workflow_call RC mode)
 
 env:
-  # Single source of truth for the ollama model that the binary / ollama-pypi
-  # cells pull. Mirrors `_DEFAULT_CHAT_MODEL` in tools/qa/conftest.py
-  # (Qwen3 0.6B); update both when bumping the smoke chat model.
+  # Ollama-side analogue of the harness's `_DEFAULT_CHAT_MODEL`. The two
+  # name the same Qwen3 0.6B weights via different registries: the harness
+  # pulls a HF GGUF, ollama uses its own model registry. Keep both pinned
+  # to the same parameter count so cell-to-cell behaviour aligns.
   OLLAMA_TINY_MODEL: qwen3:0.6b
+  # The actions/cache key encodes the active model defaults; bump along
+  # with `_DEFAULT_CHAT_MODEL` / `_DEFAULT_EMBEDDING_MODEL` /
+  # `_DEFAULT_RERANKER_MODEL` in conftest so a model change invalidates
+  # the cache instead of restoring a stale tree.
+  QA_MODELS_CACHE_KEY: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
 
 concurrency:
   group: qa-matrix-${{ github.ref }}
@@ -92,11 +98,10 @@ jobs:
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
-        id: models-cache
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -252,7 +257,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -359,7 +364,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
@@ -438,7 +443,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+          key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''

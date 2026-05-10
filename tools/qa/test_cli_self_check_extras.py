@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Lane, run_lilbee
+from conftest import EXTRAS_PROBE_TIMEOUT, Lane, run_lilbee
 
 _EXPECTED_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
 
@@ -15,7 +15,9 @@ _EXPECTED_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
 @pytest.mark.cli
 def test_self_check_extras_json_shape(lane: Lane, lilbee_data: Path) -> None:
     """`--json self-check-extras` emits a payload with one bool per known extra."""
-    result = run_lilbee(lane, ["--json", "self-check-extras"], data_dir=lilbee_data, timeout=120)
+    result = run_lilbee(
+        lane, ["--json", "self-check-extras"], data_dir=lilbee_data, timeout=EXTRAS_PROBE_TIMEOUT
+    )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert isinstance(payload, dict), payload
     assert isinstance(payload.get("ok"), bool), payload
@@ -34,7 +36,9 @@ def test_self_check_extras_passes_on_binary_lane(lane: Lane, lilbee_data: Path) 
     """
     if not lane.is_binary:
         pytest.skip("the bundled-extras invariant only applies to the release binary")
-    result = run_lilbee(lane, ["--json", "self-check-extras"], data_dir=lilbee_data, timeout=120)
+    result = run_lilbee(
+        lane, ["--json", "self-check-extras"], data_dir=lilbee_data, timeout=EXTRAS_PROBE_TIMEOUT
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["ok"] is True, payload

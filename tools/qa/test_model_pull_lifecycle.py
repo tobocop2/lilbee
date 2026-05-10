@@ -17,9 +17,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import Lane, lilbee_env, run_lilbee_with_env, serve_lilbee_with
-
-_PULL_TIMEOUT = 60.0
+from conftest import (
+    CLI_FAST_TIMEOUT,
+    Lane,
+    lilbee_env,
+    run_lilbee_with_env,
+    serve_lilbee_with,
+)
 
 
 def _serve_once_and_query_installed(lane: Lane, env: dict[str, str]) -> list[dict[str, object]]:
@@ -97,7 +101,7 @@ def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -
         lane,
         ["model", "pull", "this-org-does-not-exist-1234/this-repo-does-not-exist-5678-GGUF"],
         env=env,
-        timeout=_PULL_TIMEOUT,
+        timeout=CLI_FAST_TIMEOUT,
     )
     assert result.returncode != 0, (
         f"pull of non-existent model should fail; got rc=0\n"

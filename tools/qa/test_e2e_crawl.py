@@ -26,6 +26,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from conftest import (
     CLI_FAST_TIMEOUT,
+    HTTP_FAST_TIMEOUT,
+    HTTP_SLOW_TIMEOUT,
     SEARCH_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
@@ -75,7 +77,7 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
             raise RuntimeError(message)
         pytest.skip(message)
 
-    probe = run_lilbee_with_env(lane, ["add", "--help"], env=env, timeout=30)
+    probe = run_lilbee_with_env(lane, ["add", "--help"], env=env, timeout=HTTP_SLOW_TIMEOUT)
     if probe.returncode != 0 or "--crawl" not in (probe.stdout + probe.stderr):
         _gate("lilbee add --help missing --crawl flag; crawler not exposed in this artifact")
 
@@ -92,7 +94,7 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
         lane,
         ["add", "http://127.0.0.1:1", "--crawl", "--max-pages", "0"],
         env=env,
-        timeout=15,
+        timeout=HTTP_FAST_TIMEOUT,
     )
     combined = runtime_probe.stdout + runtime_probe.stderr
     if "Web crawling requires" in combined or "crawl4ai" in combined.lower():
