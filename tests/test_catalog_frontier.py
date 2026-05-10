@@ -236,8 +236,16 @@ class TestFrontierTabBehavior:
             await pilot.pause()
             screen.query_one("#catalog-tabs", TabbedContent).active = "library"
             await _wait_for_active_tab(pilot, screen, "library")
-            screen._update_sort_label()
-            text = str(screen.query_one("#sort-label", Static).render())
+            # Windows 3.12 sometimes paints the sort label before the
+            # _frontier_rows assignment has propagated to the rendered
+            # provider count; poll up to 20 ticks for the expected text.
+            text = ""
+            for _ in range(20):
+                screen._update_sort_label()
+                await pilot.pause()
+                text = str(screen.query_one("#sort-label", Static).render())
+                if "2" in text and "providers" in text:
+                    break
             assert "2" in text  # 2 cloud models
             assert "providers" in text
 

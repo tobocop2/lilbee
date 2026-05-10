@@ -90,15 +90,23 @@ async def test_action_select_tab_out_of_range_is_noop() -> None:
 
 
 async def test_on_key_digit_calls_select_tab() -> None:
-    """The screen-level on_key handler intercepts digit keys outside Input focus."""
+    """The screen-level on_key handler intercepts digit keys outside Input focus.
+
+    Windows 3.12 needs a few extra event-loop ticks for the digit-key
+    activation to propagate through TabbedContent's TabActivated signal
+    chain; the polling loop tolerates that without slowing other platforms.
+    """
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         event = Key(key="3", character="3")
         screen.on_key(event)
-        await pilot.pause()
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        for _ in range(20):
+            await pilot.pause()
+            if tabs.active == "embed":
+                break
         assert tabs.active == "embed"
 
 
