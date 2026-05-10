@@ -1366,6 +1366,79 @@ class TestRoutingProvider:
 # ---------------------------------------------------------------------------
 
 
+class TestAllChatModelsFor:
+    """Prefix-stripping and chat-mode filtering in litellm catalog reads."""
+
+    def _stub_litellm(
+        self, models_by_provider: dict[str, set[str]], model_cost: dict[str, dict[str, str]]
+    ) -> mock.MagicMock:
+        stub = mock.MagicMock()
+        stub.models_by_provider = models_by_provider
+        stub.model_cost = model_cost
+        return stub
+
+    def test_strips_provider_prefix_from_catalog_names(self) -> None:
+        """Names like ``mistral/codestral-latest`` come back bare."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        litellm = self._stub_litellm(
+            {"mistral": {"mistral/codestral-latest", "mistral/mistral-large"}},
+            {
+                "mistral/codestral-latest": {"mode": "chat"},
+                "mistral/mistral-large": {"mode": "chat"},
+            },
+        )
+        result = LitellmSdkBackend._all_chat_models_for("mistral", litellm)
+        assert result == ["codestral-latest", "mistral-large"]
+
+    def test_passes_through_bare_names_unchanged(self) -> None:
+        """OpenAI/Anthropic/Gemini names already lack a prefix and round-trip."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        litellm = self._stub_litellm(
+            {"openai": {"gpt-4o", "gpt-4o-mini"}},
+            {"gpt-4o": {"mode": "chat"}, "gpt-4o-mini": {"mode": "chat"}},
+        )
+        result = LitellmSdkBackend._all_chat_models_for("openai", litellm)
+        assert result == ["gpt-4o", "gpt-4o-mini"]
+
+    def test_dedupes_bare_and_prefixed_duplicates(self) -> None:
+        """``deepseek-chat`` and ``deepseek/deepseek-chat`` collapse to one entry."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        litellm = self._stub_litellm(
+            {"deepseek": {"deepseek-chat", "deepseek/deepseek-chat", "deepseek-reasoner"}},
+            {
+                "deepseek-chat": {"mode": "chat"},
+                "deepseek/deepseek-chat": {"mode": "chat"},
+                "deepseek-reasoner": {"mode": "chat"},
+            },
+        )
+        result = LitellmSdkBackend._all_chat_models_for("deepseek", litellm)
+        assert result == ["deepseek-chat", "deepseek-reasoner"]
+
+    def test_filters_out_non_chat_modes(self) -> None:
+        """Embedding-mode entries never appear in the chat catalog."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        litellm = self._stub_litellm(
+            {"mistral": {"mistral/mistral-large", "mistral/mistral-embed"}},
+            {
+                "mistral/mistral-large": {"mode": "chat"},
+                "mistral/mistral-embed": {"mode": "embedding"},
+            },
+        )
+        result = LitellmSdkBackend._all_chat_models_for("mistral", litellm)
+        assert result == ["mistral-large"]
+
+    def test_unknown_provider_returns_empty(self) -> None:
+        """A provider missing from the catalog yields ``[]`` without raising."""
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        litellm = self._stub_litellm({}, {})
+        assert LitellmSdkBackend._all_chat_models_for("nonexistent", litellm) == []
+
+
 class TestLitellmResponseView:
     """The shape adapter that owns getattr-default extraction over litellm responses."""
 
@@ -2359,6 +2432,29 @@ class TestInjectProviderKeys:
         import os
 
         assert os.environ["OPENAI_API_KEY"] == "sk-existing"
+
+    def test_every_provider_key_routes_to_its_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each PROVIDER_KEYS entry round-trips cfg field -> env var.
+
+        Iterates the canonical PROVIDER_KEYS tuple so a newly added
+        provider is exercised here without a hand-edited assertion.
+        """
+        import os
+
+        from lilbee.providers.sdk_backend import PROVIDER_KEYS
+        from lilbee.providers.sdk_llm_provider import inject_provider_keys
+
+        marker = "sk-pk-{}"
+        for _prov, cfg_field, env_var, _label in PROVIDER_KEYS:
+            monkeypatch.delenv(env_var, raising=False)
+            setattr(cfg, cfg_field, marker.format(env_var))
+
+        inject_provider_keys()
+
+        for _prov, _cfg_field, env_var, _label in PROVIDER_KEYS:
+            assert os.environ.get(env_var) == marker.format(env_var)
 
 
 class TestLiteLLMListModelsRouting:

@@ -61,14 +61,24 @@ def for_you_sort_key(row: LocalCatalogRow) -> tuple[int, str]:
 def group_frontier_rows(
     frontier_rows: list[FrontierCatalogRow],
 ) -> list[ModelListSection]:
-    """Group frontier rows into provider-headed sections, alphabetical within."""
+    """Group frontier rows into provider-headed sections.
+
+    Section order follows :data:`PROVIDER_KEYS` (the canonical display
+    order); providers absent from PROVIDER_KEYS land at the tail in
+    alphabetical order. Rows within each section are alphabetical.
+    """
     if not frontier_rows:
         return []
+    from lilbee.providers.sdk_backend import PROVIDER_KEYS
+
     per_provider: dict[str, list[FrontierCatalogRow]] = {}
     for row in frontier_rows:
         per_provider.setdefault(row.provider, []).append(row)
+    canonical_order = [label for _, _, _, label in PROVIDER_KEYS]
+    ordered = [p for p in canonical_order if p in per_provider]
+    extras = sorted(set(per_provider) - set(canonical_order))
     sections: list[ModelListSection] = []
-    for provider in sorted(per_provider):
+    for provider in [*ordered, *extras]:
         rows = sorted(per_provider[provider], key=lambda r: r.name.lower())
         sections.append(ModelListSection(heading=provider, rows=list(rows)))
     return sections

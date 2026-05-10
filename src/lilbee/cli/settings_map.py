@@ -452,11 +452,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "recursive crawls. One per line."
         ),
     ),
-    "openai_api_key": SettingDef(
+    "openrouter_api_key": SettingDef(
         str,
         nullable=False,
         group="API-Keys",
-        help_text="OpenAI API key (enables frontier models in chat picker)",
+        help_text="OpenRouter API key (enables frontier models in chat picker)",
+    ),
+    "gemini_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="Google Gemini API key (enables frontier models in chat picker)",
     ),
     "anthropic_api_key": SettingDef(
         str,
@@ -464,11 +470,23 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="API-Keys",
         help_text="Anthropic API key (enables frontier models in chat picker)",
     ),
-    "gemini_api_key": SettingDef(
+    "openai_api_key": SettingDef(
         str,
         nullable=False,
         group="API-Keys",
-        help_text="Google Gemini API key (enables frontier models in chat picker)",
+        help_text="OpenAI API key (enables frontier models in chat picker)",
+    ),
+    "mistral_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="Mistral API key (enables frontier models in chat picker)",
+    ),
+    "deepseek_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="DeepSeek API key (enables frontier models in chat picker)",
     ),
     "chunk_size": SettingDef(
         int,
