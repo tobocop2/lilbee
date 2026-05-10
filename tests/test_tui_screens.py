@@ -3973,15 +3973,24 @@ async def test_catalog_tab_activation_fetches_lazily():
             with patch.object(screen, "_fetch_initial_hf_models_for_task") as fetch:
                 tabs = screen.query_one("#catalog-tabs")
                 tabs.active = "embed"
-                await _pilot.pause()
-                tasks = [c.args[0] for c in fetch.call_args_list]
+                # Poll instead of single pause: TabActivated dispatch races
+                # the worker queue on windows runners; one pause isn't
+                # always enough for the activation handler to fire.
+                tasks: list = []
+                for _ in range(20):
+                    await _pilot.pause()
+                    tasks = [c.args[0] for c in fetch.call_args_list]
+                    if ModelTask.EMBEDDING in tasks:
+                        break
                 assert ModelTask.EMBEDDING in tasks
                 fetch.reset_mock()
                 screen._hf_fetched_tasks.add(ModelTask.EMBEDDING)
                 tabs.active = "chat"
-                await _pilot.pause()
+                for _ in range(5):
+                    await _pilot.pause()
                 tabs.active = "embed"
-                await _pilot.pause()
+                for _ in range(5):
+                    await _pilot.pause()
                 assert ModelTask.EMBEDDING not in [c.args[0] for c in fetch.call_args_list]
 
 
