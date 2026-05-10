@@ -448,6 +448,7 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
     import threading
 
     from lilbee.app import services as services_mod
+    from lilbee.providers.worker.transport import WorkerRole
     from tests.conftest import make_mock_services
 
     captured: dict[str, object] = {}
@@ -471,8 +472,8 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
             # call_from_thread refuses to run on the app's own thread; fire
             # the listeners from a worker thread to mimic the real pool's
             # spawn callback site (the pool runtime thread).
-            threading.Thread(target=on_spawning, args=("chat",)).start()
-            threading.Thread(target=on_spawned, args=("chat",)).start()
+            threading.Thread(target=on_spawning, args=(WorkerRole.CHAT,)).start()
+            threading.Thread(target=on_spawned, args=(WorkerRole.CHAT,)).start()
             await pilot.pause()
     finally:
         services_mod.set_services(None)
