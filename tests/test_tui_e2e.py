@@ -12,12 +12,13 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +70,7 @@ def _mock_resolve():
 @pytest.fixture()
 def _mock_services():
     """Mock services to prevent real provider initialization."""
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
@@ -81,7 +82,7 @@ def _mock_services():
         set_services(None)
 
 
-class ChatTestApp(App[None]):
+class ChatTestApp(LilbeeAppHost):
     """Minimal app that pushes ChatScreen for testing."""
 
     def compose(self) -> ComposeResult:
@@ -326,8 +327,8 @@ class TestDownloadProgressSlow:
         if not hf_token:
             pytest.skip("HF_TOKEN environment variable not set")
 
+        from lilbee.app.services import reset_services
         from lilbee.catalog import CatalogModel, download_model
-        from lilbee.core.services import reset_services
 
         snapshot = cfg.model_copy()
         try:
@@ -842,13 +843,15 @@ class TestChatInteractions:
             assert inp.value.startswith("/")
 
     async def test_slash_command_help_opens_panel(self, _mock_resolve):
-        """Typing /help dispatches to the help handler."""
+        """Typing /help opens the slash-command catalog modal."""
+        from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._handle_slash("/help")
             await pilot.pause()
-            assert app.screen.query("HelpPanel")
+            assert isinstance(app.screen, SlashCommandCatalog)
 
     async def test_slash_command_unknown_notifies(self, _mock_resolve):
         """Unknown slash command shows a warning notification."""
@@ -2681,8 +2684,8 @@ class TestChatCompletions:
             await pilot.pause()
             assert app.screen.is_current
 
-    async def test_input_change_hides_overlay(self, _mock_resolve):
-        """Changing input manually hides the completion overlay."""
+    async def test_input_change_keeps_slash_overlay_then_hides_on_prose(self, _mock_resolve):
+        """Overlay stays visible while text starts with '/'; hides once it stops."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -2695,8 +2698,12 @@ class TestChatCompletions:
             await pilot.pause()
 
             overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-            # Changing input should dismiss overlay
+            # Editing to a still-slashy value re-filters but keeps the overlay open.
             inp.value = "/h"
+            await pilot.pause()
+            assert overlay.is_visible
+            # Editing to plain prose hides it.
+            inp.value = "hello"
             await pilot.pause()
             assert overlay.display is False
 
@@ -2710,7 +2717,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(6)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2739,7 +2746,7 @@ class TestGridSelectWidget:
 
         selections = []
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(4)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2763,7 +2770,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Static(f"Item {i}", classes="card") for i in range(6)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -2786,7 +2793,7 @@ class TestGridSelectWidget:
 
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
-        class GridTestApp(App[None]):
+        class GridTestApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 items = [Input(f"Item {i}", classes="card") for i in range(4)]
                 yield GridSelect(*items, min_column_width=20, id="test-grid")
@@ -3125,9 +3132,14 @@ class TestSetupWizardGrid:
                 # The focus rule paints a visible color; baseline is transparent.
                 assert focused_border[1] != baseline_border[1]
 
-    async def test_setup_focused_selected_card_keeps_green_bar(self, _mock_resolve):
-        """A card that is both selected and focused keeps its green left bar.
-        Guards against the focus border shorthand clobbering border-left."""
+    async def test_setup_focused_selected_card_uses_accent_border(self, _mock_resolve):
+        """A focused + selected wizard card uses the full $accent border that
+        catalog model cards do, not the older thick-left-only treatment.
+
+        After bb-2rzb the wizard is required to share its card styling
+        with the catalog browser; the focused + selected state therefore
+        collapses into the same ``border: tall $accent`` rule the catalog
+        uses on hover/highlight."""
         from lilbee.cli.tui.screens.setup import SetupWizard
         from lilbee.cli.tui.widgets.grid_select import GridSelect
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -3149,9 +3161,9 @@ class TestSetupWizardGrid:
                 await pilot.pause()
                 assert cards[0].has_class("-highlight")
                 assert cards[0].has_class("-selected")
-                border_left = cards[0].styles.border_left
-                assert border_left is not None
-                assert border_left[0] == "thick"
+                border_top = cards[0].styles.border_top
+                assert border_top is not None
+                assert border_top[0] == "tall"
 
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""
@@ -3214,8 +3226,8 @@ class TestChatEmbeddingReadyCoverage:
         (from /api/tags), so _embedding_ready must strip the prefix
         before substring-matching.
         """
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
@@ -3237,8 +3249,8 @@ class TestChatEmbeddingReadyCoverage:
         """ollama/ refs that don't appear in provider.list_models return False
         without falling through to the native registry probe.
         """
+        from lilbee.app.services import set_services
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.core.services import set_services
 
         snapshot_embed = cfg.embedding_model
         cfg.embedding_model = "ollama/nomic-embed-text:v1.5"

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.runtime.crawl_task import (
+from lilbee.crawler.task import (
     _MAX_COMPLETED_TASKS,
     CrawlTask,
     TaskStatus,
@@ -105,7 +105,7 @@ class TestMakeProgressUpdater:
 
 class TestRunCrawl:
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_success(self, mock_crawl, mock_sync):
         from pathlib import Path
 
@@ -118,7 +118,7 @@ class TestRunCrawl:
         assert task.finished_at != ""
         assert task.pages_crawled == 2
 
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_failure(self, mock_crawl):
         mock_crawl.side_effect = RuntimeError("network error")
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
@@ -128,7 +128,7 @@ class TestRunCrawl:
         assert "network error" in task.error
         assert task.finished_at != ""
 
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_crawler_backend_missing_surfaces_actionable_error(self, mock_crawl):
         """When the crawler extra isn't installed, the task.error reaches the
         client with the ``uv sync --extra crawler`` hint, not a raw stack trace."""
@@ -145,7 +145,7 @@ class TestRunCrawl:
         assert task.finished_at != ""
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_sync_called_after_crawl(self, mock_crawl, mock_sync):
         """Auto-sync is triggered after a successful crawl (BEE-7ic)."""
         from pathlib import Path
@@ -157,7 +157,7 @@ class TestRunCrawl:
         mock_sync.assert_awaited_once_with(quiet=True)
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_sync_failure_does_not_fail_crawl(self, mock_crawl, mock_sync):
         """Sync failure after crawl is logged but doesn't mark task as failed."""
         from pathlib import Path
@@ -168,7 +168,7 @@ class TestRunCrawl:
         assert task.status == TaskStatus.DONE
         assert task.error is None
 
-    @patch("lilbee.runtime.crawl_task.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_finished_at_set_before_sync(self, mock_crawl):
         """finished_at is set before sync runs, not after (BEE-ays)."""
         from pathlib import Path
@@ -187,7 +187,7 @@ class TestRunCrawl:
 
 
 class TestTaskRegistry:
-    @patch("lilbee.runtime.crawl_task.run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
     async def test_start_and_get(self, mock_run):
         task_id = start_crawl("https://example.com", depth=1, max_pages=10)
         assert task_id is not None
@@ -200,21 +200,21 @@ class TestTaskRegistry:
     def test_get_nonexistent(self):
         assert get_task("nonexistent") is None
 
-    @patch("lilbee.runtime.crawl_task.run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
     async def test_list_tasks(self, mock_run):
         start_crawl("https://a.com")
         start_crawl("https://b.com")
         tasks = list_tasks()
         assert len(tasks) == 2
 
-    @patch("lilbee.runtime.crawl_task.run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
     async def test_clear_tasks(self, mock_run):
         start_crawl("https://example.com")
         assert len(list_tasks()) == 1
         clear_tasks()
         assert len(list_tasks()) == 0
 
-    @patch("lilbee.runtime.crawl_task.run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
     async def test_concurrent_tasks(self, mock_run):
         id1 = start_crawl("https://a.com")
         id2 = start_crawl("https://b.com")
@@ -226,7 +226,7 @@ class TestTaskRegistry:
 
 
 class TestEviction:
-    @patch("lilbee.runtime.crawl_task.run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
     async def test_evicts_oldest_completed_tasks(self, mock_run):
         """When completed tasks exceed _MAX_COMPLETED_TASKS, oldest are evicted."""
         for i in range(_MAX_COMPLETED_TASKS + 5):

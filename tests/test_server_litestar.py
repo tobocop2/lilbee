@@ -9,9 +9,9 @@ import pytest
 from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.validators import TaskMismatchError
-from lilbee.modelhub.models import ModelTask
 
 
 @pytest.fixture(autouse=True)
@@ -1177,7 +1177,11 @@ class TestAuthMiddleware:
         auth_mod.session_manager.token = "secret"
         try:
             handler = mock.MagicMock()
-            handler.fn._lilbee_read_only = True
+
+            @auth_mod.read_only
+            def _ro_route() -> None: ...
+
+            handler.fn = _ro_route
             scope = {"type": "http", "method": "GET", "headers": [], "route_handler": handler}
             await middleware(scope, AsyncMock(), AsyncMock())
             middleware.app.assert_awaited_once()

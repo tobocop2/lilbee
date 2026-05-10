@@ -24,11 +24,11 @@ class FileToProcess(NamedTuple):
 # 50 chars ≈ 12 words: if a PDF yields less, it's almost certainly a scanned
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
-_MIN_MEANINGFUL_CHARS = 50
+MIN_MEANINGFUL_CHARS = 50
 
-_PDF_CONTENT_TYPE = "pdf"
-_MARKDOWN_OUTPUT = "markdown"
-_TESSERACT_BACKEND = "tesseract"
+PDF_CONTENT_TYPE = "pdf"
+MARKDOWN_OUTPUT = "markdown"
+TESSERACT_BACKEND = "tesseract"
 
 
 class ExtractMode(StrEnum):
@@ -102,9 +102,9 @@ class _IngestResult:
 
 
 # Extension → content_type string for document formats handled by kreuzberg
-_DOCUMENT_EXTENSION_MAP: dict[str, str] = {
+DOCUMENT_EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
-    ".pdf": _PDF_CONTENT_TYPE,
+    ".pdf": PDF_CONTENT_TYPE,
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},

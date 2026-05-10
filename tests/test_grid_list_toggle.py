@@ -5,12 +5,13 @@ from __future__ import annotations
 from unittest import mock
 
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
-class _ToggleApp(App[None]):
+class _ToggleApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield GridListToggle()
 

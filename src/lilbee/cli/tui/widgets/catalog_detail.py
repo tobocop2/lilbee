@@ -20,6 +20,7 @@ from textual.widgets import Static
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
+    CatalogRowKind,
     FrontierCatalogRow,
     LocalCatalogRow,
     SizeVariant,
@@ -60,7 +61,7 @@ class CatalogDetailDrawer(Vertical):
         if row is None:
             self._clear()
             return
-        if isinstance(row, FrontierCatalogRow):
+        if row.kind == CatalogRowKind.FRONTIER:
             self._render_frontier(row)
             return
         self._render_local(row)

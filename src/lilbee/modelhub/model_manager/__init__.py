@@ -8,7 +8,6 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import (
     ModelNotFoundError,
-    ModelSource,
     RemoteModel,
     ValidationResult,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "CanonicalRef",
     "ModelManager",
     "ModelNotFoundError",
-    "ModelSource",
     "RemoteModel",
     "ValidationResult",
     "canonicalize_chat_model",

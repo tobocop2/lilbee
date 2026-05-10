@@ -1047,9 +1047,9 @@ class TestEmbeddingModelGate:
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
         from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
+        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
 
-        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
         assert store.get_meta() is None
 
         with caplog.at_level(logging.WARNING, logger="lilbee.data.store"):
@@ -1089,9 +1089,9 @@ class TestEmbeddingModelGate:
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
         from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
+        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
 
-        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
         original_model = test_config.embedding_model
 
         wrote = store.initialize_meta_if_legacy()
@@ -1117,9 +1117,9 @@ class TestEmbeddingModelGate:
         meta_table = store.open_table(META_TABLE)
         assert meta_table is not None
         from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import _META_DELETE_ALL_PREDICATE
+        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
 
-        _safe_delete_unlocked(meta_table, _META_DELETE_ALL_PREDICATE)
+        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
 
         winning_meta = {
             "embedding_model": "winner-model:v1",

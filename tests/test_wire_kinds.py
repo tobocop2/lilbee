@@ -38,25 +38,25 @@ _WORKER_MODULES = (
 
 
 _EXPECTED_VALUES = {
-    "PING_KIND": "ping",
-    "PONG_KIND": "pong",
-    "SHUTDOWN_KIND": "shutdown",
-    "ACK_KIND": "ack",
-    "RESULT_KIND": "result",
-    "ERROR_KIND": "error",
-    "STREAM_CHUNK_KIND": "stream_chunk",
-    "STREAM_END_KIND": "stream_end",
-    "EMBED_KIND": "embed",
-    "CHAT_KIND": "chat",
-    "RERANK_KIND": "rerank",
-    "VISION_KIND": "vision_ocr",
-    "PDF_OCR_KIND": "pdf_ocr",
+    "PING": "ping",
+    "PONG": "pong",
+    "SHUTDOWN": "shutdown",
+    "ACK": "ack",
+    "RESULT": "result",
+    "ERROR": "error",
+    "STREAM_CHUNK": "stream_chunk",
+    "STREAM_END": "stream_end",
+    "EMBED": "embed",
+    "CHAT": "chat",
+    "RERANK": "rerank",
+    "VISION": "vision_ocr",
+    "PDF_OCR": "pdf_ocr",
 }
 
 
 @pytest.mark.parametrize(("name", "value"), list(_EXPECTED_VALUES.items()))
 def test_wire_kind_values_are_stable(name: str, value: str) -> None:
-    assert getattr(wire_kinds, name) == value
+    assert wire_kinds.WireKind[name] == value
 
 
 def test_no_worker_module_redefines_kinds_as_literals() -> None:

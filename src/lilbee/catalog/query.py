@@ -5,11 +5,11 @@ from typing import Any, NamedTuple
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
+from lilbee.app.services import get_services
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.core.services import get_services
-from lilbee.modelhub.models import ModelTask
-from lilbee.modelhub.registry import format_native_gguf_ref
+from lilbee.catalog.refs import format_native_gguf_ref, hf_repo_from_ref
+from lilbee.catalog.types import ModelTask
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -32,7 +32,7 @@ _NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 def get_catalog(
-    task: str | None = None,
+    task: ModelTask | None = None,
     *,
     search: str = "",
     size: str | None = None,
@@ -82,7 +82,7 @@ def get_catalog(
 
     # A repo is "installed" if any of its quants has a manifest.
     if installed is not None and model_manager is not None:
-        installed_repos = {ref.rsplit("/", 1)[0] for ref in _get_installed_models(model_manager)}
+        installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
         if installed:
             all_models = [m for m in all_models if m.hf_repo in installed_repos]
         else:
@@ -106,9 +106,9 @@ def get_catalog(
     )
 
 
-def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
+def _task_to_pipeline(task: ModelTask | None) -> tuple[str, str | None]:
     """Map task name to HuggingFace pipeline tag and library filter."""
-    mapping: dict[str, tuple[str, str | None]] = {
+    mapping: dict[ModelTask, tuple[str, str | None]] = {
         ModelTask.CHAT: ("text-generation", None),
         ModelTask.EMBEDDING: ("feature-extraction", "sentence-transformers"),
         ModelTask.VISION: ("image-text-to-text", None),
@@ -117,7 +117,7 @@ def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
     return mapping.get(task or ModelTask.CHAT, ("text-generation", None))
 
 
-_PIPELINE_TO_TASK: dict[str, str] = {
+_PIPELINE_TO_TASK: dict[str, ModelTask] = {
     "text-generation": ModelTask.CHAT,
     "feature-extraction": ModelTask.EMBEDDING,
     "sentence-similarity": ModelTask.EMBEDDING,
@@ -128,7 +128,7 @@ _PIPELINE_TO_TASK: dict[str, str] = {
 }
 
 
-def pipeline_to_task(pipeline_tag: str) -> str:
+def pipeline_to_task(pipeline_tag: str) -> ModelTask:
     """Map HuggingFace pipeline tag to internal task name."""
     return _PIPELINE_TO_TASK.get(pipeline_tag, ModelTask.CHAT)
 
@@ -223,7 +223,7 @@ def _is_hf_repo_id(value: str) -> bool:
     return True
 
 
-def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
+def build_adhoc_entry(hf_repo: str, *, task: ModelTask = ModelTask.CHAT) -> CatalogModel:
     """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
     return CatalogModel(
         hf_repo=hf_repo,

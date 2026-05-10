@@ -9,8 +9,8 @@ from unittest.mock import Mock
 import pytest
 from litestar.testing import AsyncTestClient
 
+from lilbee.app.services import set_services
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
 from tests.server.conftest import parse_sse_events as _parse_sse_events
@@ -58,7 +58,7 @@ def reset_ingest_locks():
     Locks are bound to the event loop; leaking them across tests produces
     cryptic 'attached to a different loop' errors.
     """
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     get_services().ingest_lock_registry.reset()
     yield
@@ -365,7 +365,7 @@ class TestAddIngestMutex:
 
     async def test_try_acquire_rejects_while_held(self, isolated_env):
         """A second ``_try_acquire_source`` for a held name returns ``None``."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
@@ -377,7 +377,7 @@ class TestAddIngestMutex:
 
     async def test_try_acquire_succeeds_after_release(self, isolated_env):
         """Once released, the same name can be acquired again."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         first = await get_services().ingest_lock_registry.try_acquire("doc.txt")
         assert first is not None
@@ -388,7 +388,7 @@ class TestAddIngestMutex:
 
     async def test_try_acquire_distinct_names_run_parallel(self, isolated_env):
         """Locks for different source names are independent."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         a = await get_services().ingest_lock_registry.try_acquire("a.txt")
         b = await get_services().ingest_lock_registry.try_acquire("b.txt")
@@ -406,7 +406,7 @@ class TestAddIngestMutex:
 
     async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
         """Duplicate paths in one request collapse to a single acquired lock."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         registry = get_services().ingest_lock_registry
         acquired, busy = await registry.acquire(["/x/doc.txt", "/y/doc.txt"])
@@ -418,7 +418,7 @@ class TestAddIngestMutex:
 
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
         """Second /api/add for a held source yields already_ingesting, no done."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "holdme.txt"
@@ -437,7 +437,7 @@ class TestAddIngestMutex:
 
     async def test_partial_contention_partitions_paths(self, isolated_env, tmp_path):
         """Held paths emit already_ingesting; free paths still run to done."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.server.handlers import add_files_stream
 
         held = tmp_path / "held.txt"
@@ -490,7 +490,7 @@ class TestAddIngestMutex:
 
     async def test_mutex_released_on_exception(self, isolated_env, tmp_path):
         """If ingest raises, the source mutex is released so retries succeed."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "boom.txt"
@@ -510,7 +510,7 @@ class TestAddIngestMutex:
 
     async def test_mutex_released_on_task_cancellation(self, isolated_env, tmp_path):
         """Task cancellation during ingest still releases the source mutex."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.server.handlers import add_files_stream
 
         src = tmp_path / "slow.txt"

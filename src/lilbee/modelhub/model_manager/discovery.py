@@ -5,10 +5,10 @@ import os
 
 import httpx
 
+from lilbee.app.services import get_services
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
-from lilbee.core.services import get_services
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
@@ -27,7 +27,7 @@ _RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 _CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
 
 
-def _classify_remote_task(name: str, family: str) -> str:
+def _classify_remote_task(name: str, family: str) -> ModelTask:
     """Classify a remote model as chat, embedding, vision, or rerank.
 
     Reranker detection runs first so ``bge-reranker-base`` (family

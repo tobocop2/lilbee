@@ -1,21 +1,14 @@
-"""Hardware-fit signaling for the catalog UI.
-
-`compute_fit` reports whether a model's footprint fits the host's
-available memory and how much headroom or shortfall remains. The
-catalog renders this as a per-card chip (`fits +N GB`, `tight +N GB`,
-`won't run -N GB`) so users can tell at a glance whether a model
-will run before they download it.
-
-Hardware probing lives in `lilbee.providers.model_cache.get_available_memory`
-(macOS unified memory, NVIDIA GPU, system RAM fallback). This module
-only owns the fit semantics so it stays free of provider/runtime
-layering concerns.
-"""
+"""Hardware-fit signaling and per-row size-variant grouping for the catalog."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+
+from pydantic import BaseModel
+
+from lilbee.catalog.models import ModelFamily
+from lilbee.core.config import cfg
 
 _BYTES_PER_GB = 1024**3
 _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
@@ -36,7 +29,7 @@ class FitChip:
 def compute_fit(model_size_bytes: int, available_bytes: int) -> FitChip:
     """Classify how a model footprint fits the available memory budget.
 
-    `headroom_gb` is positive when the model fits and negative when it
+    Headroom_gb is positive when the model fits and negative when it
     won't. The 1 GB band between FITS and TIGHT leaves room for the
     inference runtime, KV cache, and OS overhead beyond the raw weight
     file.
@@ -50,3 +43,47 @@ def compute_fit(model_size_bytes: int, available_bytes: int) -> FitChip:
     else:
         level = FitLevel.WONT_RUN
     return FitChip(level=level, headroom_gb=headroom_gb)
+
+
+def available_memory_for_fit() -> int | None:
+    """Bytes available to a model after ``cfg.gpu_memory_fraction``, or None on probe failure.
+
+    Single entry point so the TUI and the HTTP catalog handler classify fit
+    against the same number; otherwise the same model would chip differently in
+    each surface.
+    """
+    try:
+        from lilbee.providers.model_cache import get_available_memory
+
+        return get_available_memory(cfg.gpu_memory_fraction)
+    except Exception:
+        return None
+
+
+class SizeVariantInfo(BaseModel):
+    """One size/quant of a model family, serialised for HTTP responses."""
+
+    size_label: str
+    params: str
+    size_gb: float
+    ref: str
+
+
+def family_size_variants(family: ModelFamily) -> list[SizeVariantInfo]:
+    """Build the per-row size-variant strip for a featured ModelFamily, smallest first."""
+    variants = sorted(family.variants, key=lambda v: v.size_mb)
+    return [
+        SizeVariantInfo(
+            size_label=_size_variant_label(v.param_count, v.quant),
+            params=v.param_count,
+            size_gb=v.size_mb / 1024,
+            ref=v.hf_repo,
+        )
+        for v in variants
+    ]
+
+
+def _size_variant_label(param_count: str, quant: str) -> str:
+    """Render the compact label for one size variant (``8B Q4_K_M``)."""
+    pieces = [p for p in (param_count, quant) if p]
+    return " ".join(pieces) if pieces else "--"

@@ -11,24 +11,25 @@ Run with:
 from __future__ import annotations
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import DataTable, Footer
 
+from lilbee.app.services import get_services
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = pytest.mark.slow
 
 
-class _IntegrationChatApp(App[None]):
+class _IntegrationChatApp(LilbeeAppHost):
     """Minimal app that pushes ChatScreen with real services."""
 
     CSS = ""
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -72,7 +73,7 @@ class TestChatFlow:
 
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
         """Type a question about indexed docs, get a real streamed answer."""
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -193,7 +194,7 @@ class TestStatusScreen:
 
         from lilbee.cli.tui.screens.status import StatusScreen
 
-        class _StatusApp(App[None]):
+        class _StatusApp(LilbeeAppHost):
             CSS = ""
 
             def compose(self) -> ComposeResult:
@@ -313,7 +314,7 @@ class TestCrawlAndSync:
             server.stop()
 
 
-class _WikiApp(App[None]):
+class _WikiApp(LilbeeAppHost):
     """Minimal app that pushes WikiScreen for integration tests."""
 
     CSS = ""

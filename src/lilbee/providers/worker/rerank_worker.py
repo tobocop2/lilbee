@@ -7,7 +7,7 @@ from typing import Any
 
 from lilbee.providers.worker.transport import RerankPayload, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import ERROR_KIND, RERANK_KIND, RESULT_KIND
+from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
 
@@ -26,9 +26,9 @@ class _RerankSession:
 
     def _load(self) -> Any:
         from lilbee.providers.llama_cpp.provider import load_llama
-        from lilbee.providers.model_cache import MODE_RERANK
+        from lilbee.providers.model_cache import LoaderMode
 
-        return load_llama(self._role_config.model_path, mode=MODE_RERANK)
+        return load_llama(self._role_config.model_path, mode=LoaderMode.RERANK)
 
     @staticmethod
     def _compute(llm: Any, query: str, candidates: list[str]) -> list[float]:
@@ -54,15 +54,15 @@ def _handle_rerank(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         try:
             raise TypeError(f"rerank payload must be RerankPayload, got {type(payload).__name__}")
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     session: _RerankSession = state.session
     try:
         scores = session.score(payload.query, payload.candidates)
     except Exception as exc:
-        reply.send(ERROR_KIND, _serialize_exception(exc))
+        reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
-    reply.send(RESULT_KIND, scores)
+    reply.send(WireKind.RESULT, scores)
 
 
 def rerank_worker_main(
@@ -75,7 +75,7 @@ def rerank_worker_main(
         abort_flag,
         role_config,
         session_factory=lambda role_cfg, _abort: _RerankSession(role_cfg),
-        kind_handlers={RERANK_KIND: _handle_rerank},
+        kind_handlers={WireKind.RERANK: _handle_rerank},
     )
 
 

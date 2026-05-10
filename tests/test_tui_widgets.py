@@ -6,7 +6,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Button, Static
 
 from conftest import (
@@ -24,6 +24,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +40,7 @@ def _isolated_cfg(tmp_path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-class _MsgApp(App):
+class _MsgApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 
@@ -283,7 +284,7 @@ class TestAssistantMessageAsync:
             assert am._thinking_header is None
 
 
-class _ThinkingHeaderApp(App):
+class _ThinkingHeaderApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 
@@ -373,7 +374,7 @@ class TestThinkingHeader:
             assert header._timer is None
 
 
-class _HelpApp(App):
+class _HelpApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield Static("bg")
 
@@ -400,10 +401,10 @@ class TestHelpPanel:
             assert not app.screen.query("HelpPanel")
 
 
-class _TaskBarApp(App):
+class _TaskBarApp(LilbeeAppHost):
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -414,6 +415,41 @@ class _TaskBarApp(App):
 
 
 class TestTaskBar:
+    async def test_spawning_workers_template_singular(self) -> None:
+        """Single role -> 'Starting <role> worker...'."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert bar._spawning_workers_template(["chat"]) == "Starting chat worker..."
+
+    async def test_spawning_workers_template_plural(self) -> None:
+        """Multiple roles -> 'Starting <a>, <b> workers...'."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            out = bar._spawning_workers_template(["chat", "embed"])
+            assert out == "Starting chat, embed workers..."
+
+    async def test_renders_spawning_summary_when_idle_with_spawn(self) -> None:
+        """When idle except for in-flight worker spawns, the bar surfaces the
+        'Starting <role> worker...' summary instead of hiding."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app.task_bar.mark_role_spawning("chat")
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
     async def test_hidden_when_empty(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -544,7 +580,8 @@ class TestTaskBar:
 
     async def test_app_task_bar_ref(self) -> None:
         """TaskBarController is accessible via app.task_bar from other screens."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
@@ -554,7 +591,7 @@ class TestTaskBar:
             assert bar.queue is app.task_bar.queue
 
 
-class _ModelBarApp(App):
+class _ModelBarApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -1043,7 +1080,7 @@ class TestModelPickerButton:
                     set_mode.assert_called_once_with("chat")
 
 
-class _ScopeChipApp(App):
+class _ScopeChipApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
@@ -1304,7 +1341,7 @@ def _make_frontier_row(
     )
 
 
-class _ModelListApp(App):
+class _ModelListApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.model_list import ModelList
 
@@ -1315,7 +1352,6 @@ class TestModelPickerModal:
     """ModelPickerModal filters options by typed search and dismisses with selected ref."""
 
     async def test_modal_dismisses_with_selected_ref(self) -> None:
-        from textual.app import App
         from textual.widgets import Button
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -1326,7 +1362,7 @@ class TestModelPickerModal:
             ModelOption("Llama 8B", "llama-8b"),
         ]
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1349,7 +1385,6 @@ class TestModelPickerModal:
             assert "qwen3-0.6b" in results
 
     async def test_modal_consecutive_keystrokes_stop_prior_debounce_timer(self) -> None:
-        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -1357,7 +1392,7 @@ class TestModelPickerModal:
 
         opts = [ModelOption("Qwen3 0.6B", "qwen3-0.6b"), ModelOption("Llama 8B", "llama-8b")]
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1377,7 +1412,6 @@ class TestModelPickerModal:
             assert ml.option_count == 1
 
     async def test_modal_filters_options_by_search(self) -> None:
-        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -1388,7 +1422,7 @@ class TestModelPickerModal:
             ModelOption("Llama 8B", "llama-8b"),
         ]
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1406,12 +1440,11 @@ class TestModelPickerModal:
             assert ml.option_count == 1
 
     async def test_modal_escape_dismisses_with_none(self) -> None:
-        from textual.app import App
         from textual.widgets import Button
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1433,14 +1466,13 @@ class TestModelPickerModal:
             assert results == [None]
 
     async def test_modal_enter_in_search_picks_first_match(self) -> None:
-        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
         opts = [ModelOption("Qwen3 0.6B", "qwen3-0.6b")]
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1463,12 +1495,11 @@ class TestModelPickerModal:
             assert results == ["qwen3-0.6b"]
 
     async def test_modal_enter_with_empty_list_is_noop(self) -> None:
-        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -1487,12 +1518,11 @@ class TestModelPickerModal:
             assert isinstance(app.screen, ModelPickerModal)
 
     async def test_modal_action_focus_search_focuses_input(self) -> None:
-        from textual.app import App
         from textual.widgets import Button, Input
 
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Button("anchor")
 
@@ -2375,7 +2405,7 @@ class TestPathOptions:
         assert len(r) == 20
 
 
-class _OverlayApp(App):
+class _OverlayApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
@@ -2828,7 +2858,7 @@ class TestCompletionOverlayCyclePrev:
             assert overlay.cycle_prev() is None
 
 
-class _SetupApp(App):
+class _SetupApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield Static("bg")
 
@@ -2852,8 +2882,8 @@ class TestSetupWizard:
 
     async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
         """action_cancel returns 'skipped' only when the user picked nothing."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.modelhub.models import ModelTask
 
         app = _SetupApp()
         results: list[object] = []
@@ -2877,7 +2907,7 @@ class TestSetupWizard:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
             # Preselected chat+embed survive; action_cancel should return completed.
-            with mock.patch("lilbee.core.services.reset_services"):
+            with mock.patch("lilbee.app.services.reset_services"):
                 app.screen.action_cancel()
             await pilot.pause()
         assert "completed" in results
@@ -2999,8 +3029,8 @@ class TestSetupWizard:
     def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
         """_scan_installed_models output must be usable as installed refs for the
         catalog grid so the same model never appears with a phantom download."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.setup import _scan_installed_models
-        from lilbee.modelhub.models import ModelTask
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
@@ -3077,7 +3107,7 @@ class TestRunTuiKeyboardInterrupt:
                 mock_reset.assert_called_once()
 
 
-class _ViewTabsApp(App):
+class _ViewTabsApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
@@ -3120,6 +3150,34 @@ class TestViewTabs:
             await pilot.pause()
             bar = app.query_one(ViewTabs)
             assert bar is not None
+
+    async def test_view_tab_on_click_invokes_switch_view(self) -> None:
+        """Clicking a ViewTab dispatches to the host's switch_view."""
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        app = _ViewTabsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tab = next(iter(app.query(ViewTab)))
+            with patch.object(app, "switch_view") as switch:
+                tab.on_click()
+                switch.assert_called_once_with(tab.view_name)
+
+    async def test_view_tab_action_activate_invokes_switch_view(self) -> None:
+        """The keyboard binding (Enter / Space) lands on the same dispatch."""
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        app = _ViewTabsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tab = next(iter(app.query(ViewTab)))
+            with patch.object(app, "switch_view") as switch:
+                tab.action_activate()
+                switch.assert_called_once_with(tab.view_name)
 
     async def test_default_active_view_is_chat(self) -> None:
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -3219,7 +3277,7 @@ class TestViewTabs:
         assert msg.get_nav_views()[0] == msg.DEFAULT_VIEW
 
 
-class TestLilbeeAppSettingWriter:
+class LilbeeAppHostSettingWriter:
     """LilbeeApp.set_setting + apply_setting cover the non-model write boundary."""
 
     async def test_set_setting_writes_cfg_settings_and_publishes(self) -> None:
@@ -3252,21 +3310,8 @@ class TestLilbeeAppSettingWriter:
                 apply_setting(app, "chat_mode", "chat")
                 mock_set_setting.assert_called_once_with("chat_mode", "chat")
 
-    def test_apply_setting_falls_back_to_direct_write_when_not_lilbee_app(self) -> None:
-        from textual.app import App
 
-        from lilbee.cli.tui.app import apply_setting
-
-        cfg.chat_mode = "search"
-        plain_app = App()
-        with mock.patch("lilbee.core.settings.set_value") as mock_set:
-            apply_setting(plain_app, "chat_mode", "chat")
-        assert cfg.chat_mode == "chat"
-        assert mock_set.called
-        cfg.chat_mode = "search"
-
-
-class TestLilbeeAppViewTabs:
+class LilbeeAppHostViewTabs:
     async def test_screen_composes_status_bar(self) -> None:
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -3384,7 +3429,7 @@ class TestPill:
 # ---------------------------------------------------------------------------
 
 
-class _GridApp(App):
+class _GridApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
@@ -3397,7 +3442,7 @@ class _GridApp(App):
         )
 
 
-class _LargeGridApp(App):
+class _LargeGridApp(LilbeeAppHost):
     """Grid with enough items and wide min_column_width to guarantee multiple rows."""
 
     def compose(self) -> ComposeResult:
@@ -3407,7 +3452,7 @@ class _LargeGridApp(App):
         yield GridSelect(*items, min_column_width=30)
 
 
-class _EmptyGridApp(App):
+class _EmptyGridApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
@@ -4039,7 +4084,6 @@ class TestModelCardBuildHelpers:
     async def test_compose_frontier_renders_frontier_branch(self) -> None:
         """ModelCard.compose for a FrontierCatalogRow renders the
         frontier-specific child tree (provider + key-status pills)."""
-        from textual.app import App
 
         from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
         from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -4053,7 +4097,7 @@ class TestModelCardBuildHelpers:
             key_status=KeyStatus.MISSING_KEY,
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ModelCard(row)
 
@@ -4371,7 +4415,8 @@ class TestEnsureChromium:
         async with app.run_test() as pilot:
             await pilot.pause()
             with mock.patch(
-                "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True
+                "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                return_value=True,
             ):
                 fired = _threading.Event()
                 app.task_bar.ensure_chromium(fired.set)
@@ -4394,7 +4439,8 @@ class TestEnsureChromium:
             on_ready = mock.Mock()
             with (
                 mock.patch(
-                    "lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=False
+                    "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                    return_value=False,
                 ),
                 mock.patch.object(app.task_bar, "start_task") as mock_start,
             ):
@@ -4412,7 +4458,7 @@ class TestChromiumBootstrapTarget:
     def test_forwards_setup_progress_with_known_total(self) -> None:
         """With total_bytes set, the target formats 'chromium: N/M MB'."""
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets import task_bar
+        from lilbee.cli.tui.widgets import task_bar_controller
         from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupProgressEvent
 
         reporter = mock.MagicMock()
@@ -4445,8 +4491,8 @@ class TestChromiumBootstrapTarget:
                 ),
             )
 
-        with mock.patch.object(task_bar, "bootstrap_chromium", new=_fake_bootstrap):
-            task_bar._chromium_bootstrap_target(reporter)
+        with mock.patch.object(task_bar_controller, "bootstrap_chromium", new=_fake_bootstrap):
+            task_bar_controller._chromium_bootstrap_target(reporter)
 
         pct_detail_calls = [call.args for call in reporter.update.call_args_list]
         assert (25, msg.SETUP_CHROMIUM_DETAIL.format(done=10, total=40)) in pct_detail_calls
@@ -4481,7 +4527,7 @@ class TestTaskBarIndeterminate:
 
     async def test_controller_add_task_indeterminate(self) -> None:
         """TaskBarController.add_task passes indeterminate through to queue."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
@@ -4669,7 +4715,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4686,7 +4732,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4703,7 +4749,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4720,7 +4766,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4737,7 +4783,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4754,7 +4800,7 @@ class TestConfirmDialog:
 
         results: list[bool] = []
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def on_mount(self):
                 self.push_screen(ConfirmDialog("Title", "Message"), results.append)
 
@@ -4767,7 +4813,7 @@ class TestConfirmDialog:
         assert results == [False]
 
 
-class CrawlDialogTestApp(App[None]):
+class CrawlDialogTestApp(LilbeeAppHost):
     def __init__(self):
         super().__init__()
         self.results: list = []
@@ -5129,12 +5175,11 @@ class TestSearchHFCtaItem:
         assert received and received[0].term == "phi-3"
 
     async def test_compose_yields_label_with_term(self) -> None:
-        from textual.app import App
         from textual.widgets import Static
 
         from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
 
-        class _App(App):
+        class _App(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield SearchHFCtaItem("phi-3")
 
@@ -5499,7 +5544,7 @@ class TestModelGridLayoutEdges:
         rows = [_vgrid_row(f"m{i}") for i in range(4)]
         grid = ModelGrid(rows, id="mg-render-test")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             CSS = "ModelGrid { height: 12; width: 80; }"
 
             def compose(self) -> ComposeResult:
@@ -5521,7 +5566,7 @@ class TestModelGridLayoutEdges:
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
         grid = ModelGrid(rows, id="mg-render-past")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             CSS = "ModelGrid { height: 12; width: 80; }"
 
             def compose(self) -> ComposeResult:
@@ -5542,7 +5587,7 @@ class TestModelGridLayoutEdges:
         rows = [_vgrid_row(f"m{i}") for i in range(3)]  # 3 rows, 2-cols => one short
         grid = ModelGrid(rows, id="mg-short-row")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             CSS = "ModelGrid { height: 12; width: 60; }"
 
             def compose(self) -> ComposeResult:
@@ -5565,7 +5610,7 @@ class TestModelGridLayoutEdges:
         rows = [_vgrid_row(f"m{i}") for i in range(8)]
         grid = ModelGrid(rows, id="mg-resize")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             CSS = "ModelGrid { height: 12; width: 30; }"
 
             def compose(self) -> ComposeResult:
@@ -5866,7 +5911,7 @@ class TestModelGridBorderStyleSelection:
         rows = [_vgrid_row(f"m{i}") for i in range(2)]
         grid = ModelGrid(rows, id="mg-focus-token")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield VerticalScroll(grid)
 
@@ -5907,7 +5952,7 @@ class TestModelGridBorderStyleSelection:
         grid = ModelGrid(rows, id="mg-blur-token")
         focus_sink = Input(id="focus-sink")
 
-        class _GridApp(App):
+        class _GridApp(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield focus_sink
                 yield VerticalScroll(grid)

@@ -360,7 +360,7 @@ class TestConcurrencySemaphore:
 
     async def test_no_semaphore_when_unlimited(self, monkeypatch):
         """``crawl_max_concurrent <= 0`` means no semaphore construction."""
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         cfg.crawl_max_concurrent = 0
         reset_services()
@@ -368,7 +368,7 @@ class TestConcurrencySemaphore:
 
     async def test_semaphore_reused_within_services_lifetime(self):
         """Repeated ``_get_crawl_semaphore`` calls return the same Services-owned semaphore."""
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         cfg.crawl_max_concurrent = 2
         reset_services()
@@ -378,7 +378,7 @@ class TestConcurrencySemaphore:
 
     async def test_semaphore_rebuilt_on_reset_services(self):
         """``reset_services`` rebuilds the semaphore reflecting the new cfg value."""
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         cfg.crawl_max_concurrent = 2
         reset_services()

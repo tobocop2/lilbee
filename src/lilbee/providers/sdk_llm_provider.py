@@ -17,7 +17,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
@@ -103,6 +103,26 @@ class SdkLLMProvider(LLMProvider):
                 f"Embedding failed: {exc}", provider=self._backend.provider_name
             ) from exc
         return result.vectors
+
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[False] = False,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[True],
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ClosableIterator[str]: ...
 
     def chat(
         self,

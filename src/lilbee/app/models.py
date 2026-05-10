@@ -8,15 +8,17 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from lilbee.app.services import get_services
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.modelhub.registry import ModelRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.modelhub.model_manager import ModelSource, RemoteModel
+    from lilbee.catalog.types import ModelSource
+    from lilbee.modelhub.model_manager import RemoteModel
     from lilbee.modelhub.registry import ModelManifest
 
 
@@ -53,7 +55,7 @@ class ModelEntry(BaseModel):
 
     name: str
     source: str
-    task: str | None = None
+    task: ModelTask | None = None
     size_gb: float | None = None
     display_name: str = ""
 
@@ -61,7 +63,7 @@ class ModelEntry(BaseModel):
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
         # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
         from lilbee.catalog import clean_display_name
-        from lilbee.modelhub.model_manager import ModelSource
+        from lilbee.catalog.types import ModelSource
 
         return cls(
             name=ref,
@@ -74,7 +76,7 @@ class ModelEntry(BaseModel):
     @classmethod
     def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
         # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-        from lilbee.modelhub.model_manager import ModelSource
+        from lilbee.catalog.types import ModelSource
 
         return cls(
             name=ref,
@@ -99,7 +101,7 @@ class CatalogEntryData(BaseModel):
     size_gb: float
     min_ram_gb: float
     description: str
-    task: str
+    task: ModelTask
     featured: bool
     recommended: bool
 
@@ -122,7 +124,7 @@ class CatalogEntryData(BaseModel):
 class ManifestData(BaseModel):
     ref: str
     display_name: str
-    task: str
+    task: ModelTask
     size_gb: float
     size_bytes: int
     hf_repo: str
@@ -159,7 +161,7 @@ class PullResult(BaseModel):
     command: str = ModelCommand.PULL
     model: str
     source: str
-    status: str
+    status: PullStatus
     path: str | None = None
 
 
@@ -200,7 +202,7 @@ def _resolve_native_path(ref: str) -> str | None:
 
 def _collect_native_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     manifests = _native_manifest_index()
     refs = get_services().model_manager.list_installed(source=ModelSource.NATIVE)
@@ -218,7 +220,7 @@ def _collect_backend_entries() -> list[ModelEntry]:
 
 def list_models_data(
     source: ModelSource | None = None,
-    task: str | None = None,
+    task: ModelTask | None = None,
 ) -> ListModelsResult:
     """Build the list of installed models with source and task metadata.
 
@@ -226,7 +228,7 @@ def list_models_data(
     so the command stays responsive when the backend is down.
     """
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.modelhub.model_manager import ModelSource
+    from lilbee.catalog.types import ModelSource
 
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:

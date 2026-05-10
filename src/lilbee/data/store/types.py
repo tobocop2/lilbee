@@ -26,7 +26,7 @@ META_SCHEMA_VERSION = 1
 # Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
 # Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
 # coupling the deletion to any specific column's value domain.
-_META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
+META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
 
 
 class SearchScope(StrEnum):

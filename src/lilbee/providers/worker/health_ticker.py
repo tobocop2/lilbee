@@ -7,8 +7,11 @@ import contextlib
 import logging
 from concurrent.futures import Future
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
+if TYPE_CHECKING:
+    # circular: health_ticker -> pool via WorkerPool/PoolRuntime (annotation-only)
+    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
 
 log = logging.getLogger(__name__)
 

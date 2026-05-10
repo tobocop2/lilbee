@@ -89,7 +89,7 @@ def pool_provider(monkeypatch, tmp_path):
         _patched_embed_worker_main,
     )
 
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
     from tests.conftest import make_mock_services
 
@@ -136,7 +136,7 @@ async def test_asyncio_loop_stays_responsive_during_pool_embed(pool_provider) ->
     await asyncio.gather(embed_task, tick_task)
 
     # All embed calls completed (no exceptions raised).
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     assert "embed" in get_services().worker_pool.registered_roles
 

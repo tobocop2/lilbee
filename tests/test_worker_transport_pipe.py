@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import pickle
+import threading
 import time
 from multiprocessing.connection import wait
 from typing import Any
@@ -642,6 +643,20 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
             child_health.close()
 
 
+def test_reader_main_short_circuits_when_async_setup_incomplete() -> None:
+    """``_reader_main`` returns immediately when ``_reader_loop`` /
+    ``_frame_queue`` haven't been wired up yet. Without this guard a thread
+    would spin on a recv() against the data pipe with no consumer."""
+
+    class _DummyChannel:
+        _reader_loop: Any = None
+        _frame_queue: Any = None
+        _conn: Any = None  # never read because we early-return
+
+    # Bind the real method to the dummy via descriptor protocol.
+    PipeChannel._reader_main(_DummyChannel())  # must return cleanly
+
+
 def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
     """Without LILBEE_DATA the log path resolver returns None."""
     from lilbee.providers.worker.transport_pipe import _worker_log_path
@@ -808,3 +823,145 @@ async def test_recv_for_drains_stale_call_id_frames(caplog) -> None:
             child_data.close()
         with contextlib.suppress(Exception):
             child_health.close()
+
+
+@pytest.mark.asyncio
+async def test_reader_thread_starts_lazily_on_first_recv() -> None:
+    """No reader thread spins up until a coroutine awaits a frame."""
+    import multiprocessing as _mp
+
+    ctx = _mp.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    try:
+        assert channel._reader_thread is None
+        assert not channel._reader_started.is_set()
+        child_data.send((1, "result", "go"))
+        _, _, value = await channel._recv()
+        assert value == "go"
+        assert channel._reader_started.is_set()
+        assert channel._reader_thread is not None
+        assert channel._reader_thread.is_alive()
+    finally:
+        channel._executor.shutdown(wait=False, cancel_futures=True)
+        for handle in (parent_data, parent_health, child_data, child_health):
+            with contextlib.suppress(Exception):
+                handle.close()
+
+
+@pytest.mark.asyncio
+async def test_reader_thread_surfaces_eof_as_worker_crash() -> None:
+    """Closing the parent conn drains EOF into a WorkerCrashError on next recv."""
+    import multiprocessing as _mp
+
+    ctx = _mp.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    try:
+        child_data.send((1, "result", "primer"))
+        await channel._recv()
+        # Close both ends so the reader's blocking recv() raises EOFError;
+        # the next _recv() should then surface the crash to the caller.
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            parent_data.close()
+        with pytest.raises(WorkerCrashError):
+            await asyncio.wait_for(channel._recv(), timeout=2.0)
+    finally:
+        channel._executor.shutdown(wait=False, cancel_futures=True)
+        for handle in (parent_health, child_health):
+            with contextlib.suppress(Exception):
+                handle.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_frame_ordering_under_burst() -> None:
+    """A burst of stream_chunks is delivered to stream() in send order."""
+    import multiprocessing as _mp
+
+    from lilbee.providers.worker.wire_kinds import WireKind
+
+    ctx = _mp.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),  # type: ignore[arg-type]
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    burst_count = 250
+    try:
+        # Start the reader first so the OS pipe buffer drains as we send;
+        # otherwise child_data.send() blocks once the buffer fills.
+        channel._ensure_reader()
+
+        def _produce() -> None:
+            for i in range(burst_count):
+                child_data.send((7, WireKind.STREAM_CHUNK, f"chunk-{i}"))
+            child_data.send((7, WireKind.STREAM_END, None))
+
+        producer = threading.Thread(target=_produce, daemon=True)
+        producer.start()
+
+        received: list[str] = []
+        seen_end = False
+        while not seen_end:
+            kind, value = await asyncio.wait_for(channel._recv_for(7), timeout=5.0)
+            if kind == WireKind.STREAM_END:
+                seen_end = True
+            else:
+                received.append(value)
+        producer.join(timeout=1.0)
+        assert received == [f"chunk-{i}" for i in range(burst_count)]
+    finally:
+        channel._executor.shutdown(wait=False, cancel_futures=True)
+        for handle in (parent_data, parent_health, child_data, child_health):
+            with contextlib.suppress(Exception):
+                handle.close()

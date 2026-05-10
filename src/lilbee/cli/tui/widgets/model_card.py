@@ -25,6 +25,7 @@ from textual.reactive import reactive
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
+    CatalogRowKind,
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
@@ -59,7 +60,7 @@ class ModelCard(containers.VerticalGroup):
     def __init__(self, row: CatalogRow) -> None:
         self._row = row
         super().__init__()
-        if isinstance(row, FrontierCatalogRow):
+        if row.kind == CatalogRowKind.FRONTIER:
             self.add_class("-frontier")
 
     @property
@@ -87,7 +88,7 @@ class ModelCard(containers.VerticalGroup):
 
 def _render(row: CatalogRow, *, selected: bool) -> Content:
     """Compose the full card content (name + pills + specs + status + hint)."""
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == CatalogRowKind.FRONTIER:
         return _render_frontier(row)
     return _render_local(row, selected=selected)
 

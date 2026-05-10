@@ -10,7 +10,7 @@ from lilbee.catalog.featured import (
 )
 from lilbee.catalog.formatting import clean_display_name, extract_quant
 from lilbee.catalog.models import CatalogModel, ModelFamily, ModelVariant
-from lilbee.modelhub.models import ModelTask
+from lilbee.catalog.types import ModelTask
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 
@@ -47,7 +47,7 @@ def _family_slug(display_name: str) -> str:
     return _extract_family_name(display_name).lower().replace(" ", "-")
 
 
-def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFamily]:
+def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[ModelFamily]:
     """Group CatalogModels into families by display-derived family name."""
     groups: dict[str, list[CatalogModel]] = {}
     order: list[str] = []

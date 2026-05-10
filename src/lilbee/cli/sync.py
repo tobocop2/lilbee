@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from rich.console import Console
 
 from lilbee.cli import theme
 from lilbee.data.ingest import sync
+from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.progress import (
     EventType,
     ExtractEvent,
@@ -37,23 +39,34 @@ def _format_sync_summary(
     return ", ".join(parts) if parts else None
 
 
+def _print_file_start(con: Console, data: ProgressEvent) -> None:
+    if not isinstance(data, FileStartEvent):
+        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
+    m = theme.MUTED
+    con.print(f"[{m}]Syncing [{data.current_file}/{data.total_files}]: {data.file}[/{m}]")
+
+
+def _print_done(con: Console, data: ProgressEvent) -> None:
+    if not isinstance(data, SyncDoneEvent):
+        raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
+    summary = _format_sync_summary(
+        data.added, data.updated, data.removed, data.failed, data.skipped
+    )
+    if summary:
+        con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
+
+
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
     """Return a callback that prints one-line status for FILE_START and DONE events."""
+    handlers: dict[EventType, Callable[[Console, ProgressEvent], None]] = {
+        EventType.FILE_START: _print_file_start,
+        EventType.DONE: _print_done,
+    }
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
-        if event_type == EventType.FILE_START:
-            if not isinstance(data, FileStartEvent):
-                raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-            m = theme.MUTED
-            con.print(f"[{m}]Syncing [{data.current_file}/{data.total_files}]: {data.file}[/{m}]")
-        elif event_type == EventType.DONE:
-            if not isinstance(data, SyncDoneEvent):
-                raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
-            summary = _format_sync_summary(
-                data.added, data.updated, data.removed, data.failed, data.skipped
-            )
-            if summary:
-                con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
+        handler = handlers.get(event_type)
+        if handler is not None:
+            handler(con, data)
 
     return _callback
 
@@ -88,7 +101,7 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
         return
     if isinstance(exc, asyncio.CancelledError):
         return
-    if isinstance(exc, RuntimeError) and "cannot schedule new futures" in str(exc):
+    if is_executor_shutdown(exc):
         return
     if chat_mode:
         print(f"Background sync error: {exc}")

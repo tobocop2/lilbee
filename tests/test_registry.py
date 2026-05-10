@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.modelhub.registry import (
     ModelManifest,
     ModelRegistry,
     _sha256_file,
     _validate_gguf_filename,
     _validate_hf_repo,
-    format_native_gguf_ref,
     parse_hf_ref,
     repo_to_dir,
 )
@@ -225,6 +226,21 @@ class TestModelRegistryResolve:
         with pytest.raises(KeyError, match="Blob file missing"):
             registry.resolve(_REF)
 
+    def test_resolve_no_blob_hash_in_manifest(self, tmp_path: Path) -> None:
+        """A manifest written before install computes the digest fails with a
+        clear 'install incomplete' error rather than building cache_path / 'blobs' / ''."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        # Write a manifest with blob=None directly to mimic the "download wrote
+        # the manifest but install never set the digest" race.
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        manifest_file = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+        data = json.loads(manifest_file.read_text())
+        data["blob"] = None
+        manifest_file.write_text(json.dumps(data))
+        with pytest.raises(KeyError, match="install incomplete"):
+            registry.resolve(_REF)
+
 
 class TestModelRegistryIsInstalled:
     def test_is_installed_true(self, tmp_path: Path) -> None:
@@ -248,7 +264,8 @@ class TestModelRegistryRemove:
         registry = ModelRegistry(tmp_path)
         src = _write_source(tmp_path)
         registry.install(_REPO, _FILENAME, src, _make_manifest())
-        assert registry.remove(_REF) is True
+        removed = registry.remove(_REF)
+        assert removed is True
         assert registry.list_installed() == []
 
     def test_remove_deletes_cached_blob(self, tmp_path: Path) -> None:
@@ -311,11 +328,13 @@ class TestModelRegistryRemove:
 
     def test_remove_missing(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        assert registry.remove(_REF) is False
+        removed = registry.remove(_REF)
+        assert removed is False
 
     def test_remove_invalid_ref(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        assert registry.remove("not-a-ref") is False
+        removed = registry.remove("not-a-ref")
+        assert removed is False
 
     def test_remove_cleans_empty_repo_dir(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
@@ -423,3 +442,33 @@ class TestModelRegistryGetManifest:
     def test_get_manifest_invalid_ref(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         assert registry.get_manifest("not-a-ref") is None
+
+
+class TestModelRegistryGCBlobPathGuard:
+    """``_gc_blob`` refuses to delete cache trees outside ``models_dir``.
+
+    A repo argument whose resolved path falls outside the registry's
+    ``_root`` (symlink trickery, ``..`` traversal) hits the
+    ``validate_path_within`` guard and the function logs + returns
+    instead of removing arbitrary directories.
+    """
+
+    def test_refuses_path_outside_models_dir(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        from lilbee.modelhub import registry as registry_mod
+
+        registry = ModelRegistry(tmp_path)
+        with (
+            caplog.at_level(logging.WARNING, logger=registry_mod.__name__),
+            mock.patch(
+                "lilbee.modelhub.registry.validate_path_within",
+                side_effect=ValueError("outside root"),
+            ),
+        ):
+            registry._gc_blob(_REPO, "deadbeef")
+        assert any(
+            "Refusing to remove cache outside models_dir" in r.message for r in caplog.records
+        )
