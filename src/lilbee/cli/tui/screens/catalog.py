@@ -665,12 +665,14 @@ class CatalogScreen(Screen[None]):
                 self._list_widget.action_select()
 
     def _fetch_hf_page_for_task(self, task: ModelTask) -> list[CatalogModel]:
-        """Fetch one HF page for *task* at the task's own offset (worker thread).
+        """Fetch one HF page for *task* at the task's own offset.
 
+        Called from the worker-thread bodies of
+        ``_fetch_initial_hf_models_for_task`` and ``_fetch_more_hf_for_task``.
         Dedupes against repos already in ``self._hf_models`` so re-fetches
-        from a stale offset don't double-count rows. Records the per-task
-        ``has_more`` directly on the screen, matching the existing pattern
-        of writing worker state from the worker thread.
+        from a stale offset don't double-count rows. Writes the per-task
+        ``has_more`` directly on the screen (same pattern as the prior
+        single-flag implementation).
         """
         offset = self._hf_offset_by_task[task]
         result = get_catalog(
