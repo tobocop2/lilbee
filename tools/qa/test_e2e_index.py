@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import (
+    CLI_FAST_TIMEOUT,
     SEARCH_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
@@ -37,7 +38,7 @@ def test_sync_indexes_fixture_corpus(
     assert "Added: 2" in sync.stdout, sync.stdout
 
     status = run_lilbee_with_env(
-        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=60.0
+        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=CLI_FAST_TIMEOUT
     )
     assert status.returncode == 0, status.stderr
     payload = json.loads(status.stdout)
@@ -113,12 +114,12 @@ def test_remove_clears_indexed_source(
     assert sync.returncode == 0, sync.stderr
 
     remove = run_lilbee_with_env(
-        lane, ["remove", "coffee-notes.md"], env=lilbee_env_with_models, timeout=60.0
+        lane, ["remove", "coffee-notes.md"], env=lilbee_env_with_models, timeout=CLI_FAST_TIMEOUT
     )
     assert remove.returncode == 0, remove.stderr
 
     status = run_lilbee_with_env(
-        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=60.0
+        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=CLI_FAST_TIMEOUT
     )
     payload = json.loads(status.stdout)
     filenames = {src["filename"] for src in payload["sources"]}

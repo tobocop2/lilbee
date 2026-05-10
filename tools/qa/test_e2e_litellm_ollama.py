@@ -38,7 +38,9 @@ from conftest import (
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
 _OLLAMA_HEALTHCHECK_TIMEOUT = 2.0
-_CHAT_TIMEOUT = 360.0
+# Remote ollama responses run cold-start each test, ~40s slower than the
+# in-process llama.cpp ASK_TIMEOUT covers; bump above the local-model budget.
+_OLLAMA_ASK_TIMEOUT = 360.0
 
 
 def _ollama_base_url() -> str:
@@ -240,7 +242,7 @@ def test_ask_via_ollama_backend_completes(
         lane,
         ["--json", "ask", "Reply with the single word 'ready'."],
         env=lilbee_env_with_ollama,
-        timeout=_CHAT_TIMEOUT,
+        timeout=_OLLAMA_ASK_TIMEOUT,
     )
     _assert_no_segfault(result, "lilbee --json ask via ollama")
     if result.returncode != 0:

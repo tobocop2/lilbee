@@ -12,19 +12,19 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Lane, run_lilbee
+from conftest import CLI_FAST_TIMEOUT, Lane, run_lilbee
 
 
 @pytest.mark.smoke
 def test_version_runs_and_prints_lilbee(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["--version"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--version"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert "lilbee" in (result.stdout + result.stderr).lower()
 
 
 @pytest.mark.smoke
 def test_help_succeeds(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["--help"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--help"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     assert "Usage" in result.stdout or "USAGE" in result.stdout.upper()
 
@@ -32,7 +32,7 @@ def test_help_succeeds(lane: Lane, lilbee_data: Path) -> None:
 @pytest.mark.smoke
 def test_top_level_help_lists_core_commands(lane: Lane, lilbee_data: Path) -> None:
     """The flagship commands must remain in --help. A regression here is loud."""
-    result = run_lilbee(lane, ["--help"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--help"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     output = result.stdout
     for command in ("search", "sync", "ask", "chat", "status", "serve", "mcp"):
@@ -42,7 +42,7 @@ def test_top_level_help_lists_core_commands(lane: Lane, lilbee_data: Path) -> No
 @pytest.mark.smoke
 def test_status_returns_json_on_empty(lane: Lane, lilbee_data: Path) -> None:
     """`lilbee --json status` parses cleanly against an empty data dir."""
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict), f"--json status was not a dict: {payload!r}"
@@ -52,7 +52,7 @@ def test_status_returns_json_on_empty(lane: Lane, lilbee_data: Path) -> None:
 @pytest.mark.smoke
 def test_status_reports_zero_chunks_initially(lane: Lane, lilbee_data: Path) -> None:
     """A fresh data dir reports zero indexed chunks and an empty sources list."""
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload.get("total_chunks", -1) == 0, payload
@@ -62,7 +62,9 @@ def test_status_reports_zero_chunks_initially(lane: Lane, lilbee_data: Path) -> 
 @pytest.mark.smoke
 def test_unknown_subcommand_exits_nonzero(lane: Lane, lilbee_data: Path) -> None:
     """Negative path. Unknown subcommands fail loudly, not silently."""
-    result = run_lilbee(lane, ["this-command-does-not-exist"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(
+        lane, ["this-command-does-not-exist"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT
+    )
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
     # See test_cli_negative.test_unknown_top_level_command_fails: drop bare

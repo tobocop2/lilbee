@@ -32,5 +32,9 @@ if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
         # patch in the meantime.
         pass
     else:
-        # `_BLOCKED_NETWORKS` is private; patch the public reader instead.
+        # Reassign the public `get_blocked_networks` reader; lilbee's URL
+        # filter calls that function rather than reading
+        # `_BLOCKED_NETWORKS` directly. Reassigning a public name is
+        # still a runtime monkey-patch; it stays here only until lilbee
+        # exposes a real opt-in env (bb-235r).
         url_filter.get_blocked_networks = lambda: ()

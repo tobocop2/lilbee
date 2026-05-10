@@ -16,11 +16,14 @@ from drivers.mcp import MCPStdioClient
 
 from conftest import (
     ASK_TIMEOUT,
+    STATUS_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
+    extract_search_results,
     run_lilbee_with_env,
     seed_fixture_corpus,
     serve_lilbee_with,
+    skip_if_search_unauthenticated,
 )
 
 
@@ -78,15 +81,9 @@ def test_http_search_returns_battery_source(
             httpx.codes.OK,
             httpx.codes.UNAUTHORIZED,
         ), response.text
-        if response.status_code == httpx.codes.UNAUTHORIZED:
-            pytest.skip("HTTP /api/search returned 401: auth is enforced in this build")
+        skip_if_search_unauthenticated(response)
         payload = response.json()
-        # /api/search returns a bare list of chunks; older builds wrapped it in
-        # {"results": [...]} or {"chunks": [...]}. Handle all three.
-        if isinstance(payload, list):
-            results = payload
-        else:
-            results = payload.get("results", payload.get("chunks", []))
+        results = extract_search_results(payload)
         sources = [r.get("source", r.get("source_path", "")) for r in results]
         assert any("ev-notes" in s for s in sources), payload
 
@@ -107,13 +104,13 @@ def test_mcp_search_routes_battery_to_ev_notes(
     client = MCPStdioClient(
         [lane.lilbee_bin, "mcp"],
         env=lilbee_env_with_models,
-        startup_timeout=60.0,
+        startup_timeout=STATUS_TIMEOUT,
     )
     try:
         result = client.call_tool(
             "search",
             {"query": "lithium-ion battery technology", "top_k": 3},
-            timeout=60.0,
+            timeout=STATUS_TIMEOUT,
         )
         assert isinstance(result, dict), result
         # MCP returns content as text blocks; extract sources from the JSON-like text

@@ -26,7 +26,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Self
 
 import pyte
 
@@ -153,7 +153,10 @@ def _is_pid_alive(pid: int) -> bool:
     return True
 
 
-def _safe_isalive_winpty(proc: Any) -> bool:
+def _safe_isalive_winpty(proc: PtyProcess) -> bool:
+    """Wrap ``proc.isalive()`` with the OSError/ValueError swallow that
+    pywinpty occasionally raises mid-teardown (the underlying ConPTY
+    socket can be closed before isalive's poll lands)."""
     try:
         return bool(proc.isalive())
     except (OSError, ValueError):

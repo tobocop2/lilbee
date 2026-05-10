@@ -25,6 +25,7 @@ import pytest
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from conftest import (
+    CLI_FAST_TIMEOUT,
     SEARCH_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
@@ -165,9 +166,8 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 @pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
     reason=(
-        "bb-sxsz: bundled binary's crawler stack is broken in b455 - "
-        "lilbee add --help omits --crawl and lilbee setup crawler exits 2. "
-        "PR #195 fixes the spawn path; xfail until a release ships with that fix."
+        "bb-sxsz: bundled binary's crawler stack is broken in b455: "
+        "lilbee add --help omits --crawl and lilbee setup crawler exits 2."
     ),
     strict=False,
 )
@@ -216,7 +216,7 @@ def test_crawl_and_search_roundtrip(
     # call returned ok but ingest didn't write anything (silent failure
     # mode worth surfacing distinctly from a search miss).
     status = run_lilbee_with_env(
-        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=60.0
+        lane, ["--json", "status"], env=lilbee_env_with_models, timeout=CLI_FAST_TIMEOUT
     )
     assert status.returncode == 0, status.stderr
     status_payload = json.loads(status.stdout)

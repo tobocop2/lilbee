@@ -18,6 +18,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import pytest
@@ -34,6 +35,15 @@ from conftest import (
     seed_fixture_corpus,
     serve_lilbee_with,
 )
+
+
+class ServedLilbee(NamedTuple):
+    """Tuple yielded by the ``served_lilbee`` fixture."""
+
+    base_url: str
+    env: dict[str, str]
+    headers: dict[str, str]
+
 
 _STREAM_TIMEOUT = 240.0
 
@@ -52,9 +62,7 @@ def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
 
 
 @pytest.fixture
-def served_lilbee(
-    lane: Lane, lilbee_env_with_models: dict[str, str]
-) -> Iterator[tuple[str, dict[str, str], dict[str, str]]]:
+def served_lilbee(lane: Lane, lilbee_env_with_models: dict[str, str]) -> Iterator[ServedLilbee]:
     """Spawn `lilbee serve` and yield (url, env, headers).
 
     Headers carry the bearer token that protected POST endpoints require.
@@ -66,7 +74,7 @@ def served_lilbee(
     ) as base_url:
         token = _fetch_token(lane, lilbee_env_with_models)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        yield base_url, lilbee_env_with_models, headers
+        yield ServedLilbee(base_url=base_url, env=lilbee_env_with_models, headers=headers)
 
 
 @pytest.mark.wiki
@@ -76,7 +84,7 @@ def test_ask_stream_completes_with_token_events(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    served_lilbee: tuple[str, dict[str, str], dict[str, str]],
+    served_lilbee: ServedLilbee,
 ) -> None:
     """`POST /api/ask/stream` emits TOKEN events and a DONE event within timeout.
 
@@ -206,7 +214,7 @@ def test_chat_stream_rejects_concurrent_request_with_429(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    served_lilbee: tuple[str, dict[str, str], dict[str, str]],
+    served_lilbee: ServedLilbee,
 ) -> None:
     """A second concurrent /api/chat/stream request returns 429 with Retry-After."""
     seed_fixture_corpus(lilbee_data)

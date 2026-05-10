@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -48,7 +49,7 @@ _SERVER_BOOT_TIMEOUT = 60.0
 _SERVER_HEALTH_POLL = 0.25
 _SERVER_TEARDOWN_GRACE = 5.0
 _MCP_STARTUP_TIMEOUT = 60.0
-_MODEL_PULL_TIMEOUT = 240.0
+MODEL_PULL_TIMEOUT = 240.0
 
 
 def worker_port_offset() -> int:
@@ -92,6 +93,9 @@ TUI_BOOT_TIMEOUT = 60.0
 TUI_SCREEN_TIMEOUT = 15.0
 TUI_RESPONSE_TIMEOUT = 360.0
 SERVER_BOOT_TIMEOUT_WITH_MODELS = 180.0
+HTTP_FAST_TIMEOUT = 15.0
+HTTP_SLOW_TIMEOUT = 30.0
+CLI_FAST_TIMEOUT = 60.0
 
 
 class LaneName(StrEnum):
@@ -109,11 +113,17 @@ class LaneName(StrEnum):
 
 
 class ModelTask(StrEnum):
-    """Task kinds reported by ``lilbee --json model list`` for each row."""
+    """Task kinds reported by ``lilbee --json model list`` for each row.
+
+    Mirrors ``src/lilbee/catalog/types.ModelTask``. Keep the variant set
+    aligned with that source-of-truth so a row whose ``task`` field is
+    ``"vision"`` doesn't fall outside any harness enum.
+    """
 
     CHAT = "chat"
     EMBEDDING = "embedding"
     RERANK = "rerank"
+    VISION = "vision"
 
 
 def current_lane_name() -> LaneName | None:
@@ -231,7 +241,7 @@ def _pull_model(lilbee_bin: str, ref: str, env: dict[str, str]) -> None:
             env=env,
             capture_output=True,
             text=True,
-            timeout=_MODEL_PULL_TIMEOUT,
+            timeout=MODEL_PULL_TIMEOUT,
             check=False,
         )
         if result.returncode != 0:
@@ -361,6 +371,33 @@ def lilbee_data(tmp_path: Path) -> Path:
 
 
 _FIXTURE_NOTES_DIR = Path(__file__).parent / "fixtures" / "notes"
+
+
+def extract_search_results(payload: Any) -> list[dict[str, Any]]:
+    """Coalesce ``/api/search`` response shapes across releases.
+
+    Older builds wrapped chunks in ``{"results": [...]}`` or
+    ``{"chunks": [...]}``. Current builds return a bare list. Return a
+    list either way; callers iterate over chunk dicts.
+    """
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        results = payload.get("results")
+        if isinstance(results, list):
+            return results
+        chunks = payload.get("chunks")
+        if isinstance(chunks, list):
+            return chunks
+    return []
+
+
+def skip_if_search_unauthenticated(response: httpx.Response) -> None:
+    """``/api/search`` returns 401 in builds that enforce auth on the
+    public reads; the CLI lane covers the same flow without auth, so
+    the HTTP test skips rather than fails."""
+    if response.status_code == httpx.codes.UNAUTHORIZED:
+        pytest.skip("HTTP /api/search returned 401: auth is enforced in this build")
 
 
 def seed_fixture_corpus(lilbee_data: Path) -> Path:

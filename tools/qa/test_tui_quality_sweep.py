@@ -9,11 +9,14 @@ the matrix against real provider credentials.
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 from drivers.tui import TuiSession
 
 from conftest import TUI_BOOT_TIMEOUT, TUI_SCREEN_TIMEOUT, Lane
+
+_TUI_REDRAW_POLL = 0.25
 
 
 @pytest.mark.tui
@@ -90,10 +93,11 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     before = tui.text()
     tui.send("v")
     # The visible state changes (grid renders cards, list renders rows).
-    deadline_attempts = 5
-    for _ in range(deadline_attempts):
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
+    while time.monotonic() < deadline:
         if tui.text() != before:
             return
+        time.sleep(_TUI_REDRAW_POLL)
     raise AssertionError("`v` did not change catalog Local view state. visible:\n" + tui.text())
 
 
@@ -101,23 +105,22 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
 def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     """The Catalog screen renders a hardware-fit chip on at least one row.
 
-    PR #218 added server-side fit + size_variants on /api/models/catalog;
-    PR #212's catalog redesign binds those fields to per-row chips with
-    the compact labels `fits`, `tight`, `won't run`. This asserts the
+    The catalog response carries server-computed fit + size_variants;
+    the catalog screen binds those fields to per-row chips with the
+    compact labels `fits`, `tight`, `won't run`. This asserts the
     round-trip from the response field through the rendered cell works.
     Uses regex word boundaries so the "fits" label doesn't match unrelated
-    substrings like "benefits". Won't run is unambiguous as a phrase.
+    substrings like "benefits". "Won't run" is unambiguous as a phrase.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("/models\r")
     tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
-    # Compact chip labels rendered by _fit_pill_compact in
-    # src/lilbee/cli/tui/widgets/model_grid.py.
     chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
-    deadline_attempts = 8
-    for _ in range(deadline_attempts):
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
+    while time.monotonic() < deadline:
         if chip_pattern.search(tui.text()):
             return
+        time.sleep(_TUI_REDRAW_POLL)
     raise AssertionError(
         "catalog rendered without any fits/tight/won't run chip; visible:\n" + tui.text()
     )

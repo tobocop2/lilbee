@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Lane, run_lilbee
+from conftest import CLI_FAST_TIMEOUT, Lane, run_lilbee
 
 
 @pytest.mark.cli
 def test_status_json_has_command_key(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["command"] == "status"
@@ -20,7 +20,7 @@ def test_status_json_has_command_key(lane: Lane, lilbee_data: Path) -> None:
 
 @pytest.mark.cli
 def test_status_json_exposes_config_block(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     payload = json.loads(result.stdout)
     config = payload.get("config")
     assert isinstance(config, dict), payload
@@ -31,7 +31,7 @@ def test_status_json_exposes_config_block(lane: Lane, lilbee_data: Path) -> None
 @pytest.mark.cli
 def test_status_json_documents_dir_under_lilbee_data(lane: Lane, lilbee_data: Path) -> None:
     """LILBEE_DATA env var should resolve documents_dir under it."""
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     payload = json.loads(result.stdout)
     documents_dir = Path(payload["config"]["documents_dir"])
     # Path comparison, not string startswith, so symlinked tmp dirs match.
@@ -43,7 +43,7 @@ def test_status_json_documents_dir_under_lilbee_data(lane: Lane, lilbee_data: Pa
 @pytest.mark.cli
 def test_status_text_mentions_chat_and_embedding_models(lane: Lane, lilbee_data: Path) -> None:
     """Default (non-JSON) status text exposes Chat model and Embeddings rows."""
-    result = run_lilbee(lane, ["status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode == 0, result.stderr
     output = result.stdout
     assert "Chat model" in output
@@ -52,7 +52,7 @@ def test_status_text_mentions_chat_and_embedding_models(lane: Lane, lilbee_data:
 
 @pytest.mark.cli
 def test_status_reports_zero_chunks(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["--json", "status"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     payload = json.loads(result.stdout)
     assert payload["total_chunks"] == 0
     assert payload["sources"] == []
@@ -67,7 +67,7 @@ def test_data_dir_flag_resolves_documents_dir_under_it(lane: Lane, tmp_path: Pat
         lane,
         ["--data-dir", str(explicit), "--json", "status"],
         data_dir=explicit,
-        timeout=60,
+        timeout=CLI_FAST_TIMEOUT,
     )
     payload = json.loads(result.stdout)
     documents_dir = Path(payload["config"]["documents_dir"])

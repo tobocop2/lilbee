@@ -27,9 +27,9 @@ def test_models_catalog_returns_200(server_url: str) -> None:
 @pytest.mark.http
 def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
     """`/api/models/catalog` rows carry server-computed `fit` and
-    `size_variants` fields (added in PR #218 for the TUI fit-chip and
-    size-strip widgets). A regression that drops these would silently
-    break TUI rendering, so gate the response shape here.
+    `size_variants` fields that the TUI fit-chip and size-strip widgets
+    bind to. A regression that drops these would silently break TUI
+    rendering, so gate the response shape here.
 
     Doesn't pin specific fit values (those depend on the runner's RAM)
     or specific variants (those depend on the featured catalog data).

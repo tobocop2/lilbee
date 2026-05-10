@@ -48,6 +48,12 @@ permissions:
   contents: read
   actions: read   # download-artifact with run-id (workflow_call RC mode)
 
+env:
+  # Single source of truth for the ollama model that the binary / ollama-pypi
+  # cells pull. Mirrors `_DEFAULT_CHAT_MODEL` in tools/qa/conftest.py
+  # (Qwen3 0.6B); update both when bumping the smoke chat model.
+  OLLAMA_TINY_MODEL: qwen3:0.6b
+
 concurrency:
   group: qa-matrix-${{ github.ref }}
   cancel-in-progress: true
@@ -159,7 +165,7 @@ jobs:
         if: matrix.lane == 'binary' && matrix.os == 'ubuntu-latest'
         uses: ./.github/actions/ollama-up
         with:
-          model: qwen3:0.6b
+          model: ${{ env.OLLAMA_TINY_MODEL }}
 
       - name: Run QA matrix
         env:
@@ -242,6 +248,12 @@ jobs:
           rc_version: ${{ inputs.version }}
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
         uses: actions/download-artifact@v4
@@ -293,7 +305,7 @@ jobs:
         if: matrix.lane == 'binary'
         uses: ./.github/actions/ollama-up
         with:
-          model: qwen3:0.6b
+          model: ${{ env.OLLAMA_TINY_MODEL }}
 
       - name: Run QA matrix
         env:
@@ -374,7 +386,7 @@ jobs:
       - name: Bring up Ollama
         uses: ./.github/actions/ollama-up
         with:
-          model: qwen3:0.6b
+          model: ${{ env.OLLAMA_TINY_MODEL }}
 
       - name: Run ollama tests only
         env:
@@ -388,6 +400,9 @@ jobs:
           fi
           python -m pytest tools/qa/test_e2e_litellm_ollama.py -v --tb=short \
             --junitxml=qa-ollama-pypi.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
 
       - name: Upload artifacts on failure
         if: failure()
@@ -461,6 +476,9 @@ jobs:
           cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
           python -m pytest tools/qa/test_e2e_crawl.py -v --tb=short \
             --junitxml=qa-crawler-pypi.xml
+          # Persist any newly-pulled models back to the cache location.
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
 
       - name: Upload artifacts on failure
         if: failure()
