@@ -332,7 +332,7 @@ class TestFetchHfModels:
         models = page.models
         # gguf.total = 7_000_000_000 bytes -> ~6.5 GB
         assert models[0].size_gb == round(7_000_000_000 / (1024**3), 1)
-        assert models[0].min_ram_gb == max(2.0, models[0].size_gb * 1.5)
+        assert models[0].min_ram_gb == round(max(2.0, models[0].size_gb * 1.5), 1)
 
     def test_empty_gguf_meta_falls_back_to_siblings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
