@@ -1067,6 +1067,209 @@ class TestModelsCatalog:
         assert by_repo["Qwen/Qwen3-8B-GGUF"].installed is True
         assert by_repo["TheBloke/Mistral-7B-GGUF"].installed is False
 
+    @patch("lilbee.server.handlers.models.available_memory_for_fit", return_value=16 * 1024**3)
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_fit_set_for_native_installed_row(self, mock_get_catalog, _mock_mem, mock_svc):
+        """A native row with a known footprint gets a server-computed fit level."""
+        from lilbee.catalog import CatalogModel, CatalogResult
+        from lilbee.runtime.hardware import FitLevel
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="",
+                    featured=True,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = [
+            self._manifest("Qwen/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf")
+        ]
+        result = await handlers.models_catalog()
+        assert result.models[0].fit is FitLevel.FITS
+
+    @patch("lilbee.server.handlers.models.available_memory_for_fit", return_value=4 * 1024**3)
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_fit_set_for_native_not_installed_row(
+        self, mock_get_catalog, _mock_mem, mock_svc
+    ):
+        """A native, not-yet-installed row still carries fit so users see it before pulling."""
+        from lilbee.catalog import CatalogModel, CatalogResult
+        from lilbee.runtime.hardware import FitLevel
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="",
+                    featured=True,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog()
+        assert result.models[0].installed is False
+        assert result.models[0].fit is FitLevel.WONT_RUN
+
+    @patch("lilbee.server.handlers.models.available_memory_for_fit", return_value=None)
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_fit_none_when_memory_probe_unavailable(
+        self, mock_get_catalog, _mock_mem, mock_svc
+    ):
+        """When the host probe fails, every row degrades to fit=None instead of guessing."""
+        from lilbee.catalog import CatalogModel, CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="",
+                    featured=True,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog()
+        assert result.models[0].fit is None
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_fit_none_when_size_unknown(self, mock_get_catalog, mock_svc):
+        """Rows without a resolved footprint cannot be assessed against host memory."""
+        from lilbee.catalog import CatalogModel, CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="adhoc/repo",
+                    gguf_filename="*.gguf",
+                    size_gb=0.0,
+                    min_ram_gb=2.0,
+                    description="",
+                    featured=False,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog()
+        assert result.models[0].fit is None
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_size_variants_attached_for_featured_family(self, mock_get_catalog, mock_svc):
+        """A featured row exposes its sibling family variants on the response."""
+        from lilbee.catalog import FEATURED_CHAT, CatalogResult
+
+        # Pick the first featured chat repo; its family should yield at least
+        # one SizeVariantInfo regardless of how many siblings it has.
+        anchor = FEATURED_CHAT[0]
+        mock_get_catalog.return_value = CatalogResult(total=1, limit=20, offset=0, models=[anchor])
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog()
+        variants = result.models[0].size_variants
+        assert len(variants) >= 1
+        assert all(v.size_gb >= 0 for v in variants)
+        assert anchor.hf_repo in {v.ref for v in variants}
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_size_variants_empty_for_non_family_row(self, mock_get_catalog, mock_svc):
+        """An ad-hoc HF row with no family grouping returns an empty variant strip."""
+        from lilbee.catalog import CatalogModel, CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="adhoc/some-repo",
+                    gguf_filename="*.gguf",
+                    size_gb=2.0,
+                    min_ram_gb=4.0,
+                    description="",
+                    featured=False,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog()
+        assert result.models[0].size_variants == []
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_fit_none_for_non_native_source(self, mock_get_catalog, mock_svc):
+        """Non-native (off-host) rows leave fit unset since the footprint isn't local.
+
+        ``enrich_catalog`` currently always emits ``source="native"``, but the
+        handler must still return ``fit=None`` for any row whose source is not
+        native so a future router that mixes cloud rows in this response keeps
+        the contract (cloud rows have no on-host footprint to assess).
+        """
+        from dataclasses import replace
+
+        from lilbee.catalog import CatalogModel, CatalogResult, enrich_catalog
+        from lilbee.catalog.types import ModelSource
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    hf_repo="cloud/example",
+                    gguf_filename="",
+                    size_gb=0.0,
+                    min_ram_gb=0.0,
+                    description="cloud chat model",
+                    featured=False,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_svc.registry.list_installed.return_value = []
+
+        def _enrich_as_remote(result, installed_refs):
+            enriched = enrich_catalog(result, installed_refs)
+            return [replace(e, source=ModelSource.REMOTE.value) for e in enriched]
+
+        with patch(
+            "lilbee.server.handlers.models.enrich_catalog",
+            side_effect=_enrich_as_remote,
+        ):
+            result = await handlers.models_catalog()
+        assert result.models[0].source == "remote"
+        assert result.models[0].fit is None
+
 
 class TestModelsInstalled:
     async def test_returns_installed_models(self):

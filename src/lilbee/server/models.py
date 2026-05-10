@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.data.store import SearchScope
+from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 _VALID_CHUNK_TYPES = frozenset({SearchScope.RAW.value, SearchScope.WIKI.value})
 
@@ -242,7 +243,14 @@ class ModelsShowResponse(BaseModel):
 
 
 class CatalogEntryResponse(BaseModel):
-    """A single model in the catalog browser."""
+    """A single model in the catalog browser.
+
+    ``fit`` and ``size_variants`` carry server-computed hardware-fit
+    data so clients (TUI, plugin) can render fit chips and size strips
+    without probing local memory themselves. ``fit`` is ``None`` when
+    the row's footprint cannot be assessed against host memory (e.g.
+    a future cloud-only entry whose weights live off-host).
+    """
 
     hf_repo: str
     gguf_filename: str
@@ -257,6 +265,8 @@ class CatalogEntryResponse(BaseModel):
     downloads: int
     installed: bool
     source: ModelSource
+    fit: FitLevel | None = None
+    size_variants: list[SizeVariantInfo] = []
 
 
 class ModelsCatalogResponse(BaseModel):

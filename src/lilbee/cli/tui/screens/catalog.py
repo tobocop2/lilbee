@@ -78,7 +78,7 @@ from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
 from lilbee.providers.sdk_backend import get_provider_api_key
-from lilbee.runtime.hardware import compute_fit
+from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
 
@@ -278,29 +278,9 @@ class CatalogScreen(Screen[None]):
             tab_id: SourceMode.LOCAL for tab_id in TASK_TAB_IDS
         }
         # Hardware-fit baseline. Captured once at construction so the
-        # row-build path (cached, only re-runs when _data_version moves)
-        # can stamp each row's fit chip without re-probing on every refresh.
-        # None when the probe failed or psutil is unavailable; rows render
-        # without a fit chip in that case.
-        self._available_memory_bytes: int | None = self._probe_available_memory()
-
-    @staticmethod
-    def _probe_available_memory() -> int | None:
-        """One-shot hardware probe used to compute per-row fit chips.
-
-        Wraps ``providers.model_cache.get_available_memory`` so test envs
-        without a usable psutil/pynvml install fall back to a chip-less
-        catalog instead of crashing. The fraction follows the configured
-        ``gpu_memory_fraction`` so the fit signal matches what the
-        runtime would actually leave for the model after KV cache + OS
-        overhead.
-        """
-        try:
-            from lilbee.providers.model_cache import get_available_memory
-
-            return get_available_memory(cfg.gpu_memory_fraction)
-        except Exception:
-            return None
+        # cached row-build path can stamp each row's fit chip without
+        # re-probing on every refresh.
+        self._available_memory_bytes: int | None = available_memory_for_fit()
 
     def _grid_for_tab(self, tab_id: str) -> VerticalScroll:
         """Return (and memoize) the VerticalScroll for *tab_id*.

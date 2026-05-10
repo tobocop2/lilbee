@@ -292,15 +292,16 @@ def test_for_you_sort_key_orders_fit_levels_then_name() -> None:
     assert [r.name for r in ordered] == ["a-fits", "b-tight", "c-wont", "d-none"]
 
 
-def test_probe_available_memory_returns_none_on_failure(monkeypatch) -> None:
+def test_available_memory_for_fit_returns_none_on_failure(monkeypatch) -> None:
     """Hardware probe failures fall through chip-less, never crash."""
     import lilbee.providers.model_cache as mc
+    from lilbee.runtime.hardware import available_memory_for_fit
 
     def boom(_fraction: float) -> int:
         raise RuntimeError("psutil missing")
 
     monkeypatch.setattr(mc, "get_available_memory", boom)
-    assert CatalogScreen._probe_available_memory() is None
+    assert available_memory_for_fit() is None
 
 
 def test_stamp_fit_no_op_without_probe() -> None:
