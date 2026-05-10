@@ -29,13 +29,14 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
     assert "search" in visible
 
 
-def _mode_bar_lines(text: str) -> list[str]:
-    """Extract bar lines carrying a mode marker (search/chat/mode)."""
-    return [
-        line
-        for line in text.lower().splitlines()
-        if any(m in line for m in ("mode:", "search", "chat"))
-    ]
+def _mode_toggle_lines(text: str) -> list[str]:
+    """Extract the mode-toggle row(s) (Search and Chat pills render side-by-side).
+
+    Requiring both labels on the same line excludes the welcome tagline
+    ("local search engine ... encyclopedia") and chat-history rows that
+    carry just one of the words.
+    """
+    return [line for line in text.lower().splitlines() if "search" in line and "chat" in line]
 
 
 @pytest.mark.tui
@@ -46,16 +47,16 @@ def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
     status tick) doesn't satisfy the assertion.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    before = _mode_bar_lines(tui.text())
+    before = _mode_toggle_lines(tui.text())
     assert before, f"no mode bar found in initial chat screen:\n{tui.text()}"
     tui.send("\x1b[13~")  # F3 escape sequence
     deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
     while time.monotonic() < deadline:
-        after = _mode_bar_lines(tui.text())
+        after = _mode_toggle_lines(tui.text())
         if after != before:
             return
         time.sleep(_TUI_REDRAW_POLL)
-    final = _mode_bar_lines(tui.text())
+    final = _mode_toggle_lines(tui.text())
     raise AssertionError(
         f"F3 produced no change in the mode bar. before:\n{before}\nafter:\n{final}"
     )

@@ -41,7 +41,7 @@ jobs:
     permissions:
       contents: read
 
-  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal, macOS x86_64=cpu cross-compiled).
+  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal).
   build-default-wheels:
     needs: [ci]
     if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')

@@ -4,14 +4,10 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name for artifact uploads (use a -nuitka.N suffix for dry-runs).'
-        required: true
   workflow_call:
     inputs:
       publish:
-        description: "Attach binaries to the GitHub release named by `ref`/`tag_name` when true."
+        description: "Attach binaries to the GitHub release named by `ref` when true."
         type: boolean
         default: false
       ref:
