@@ -125,7 +125,7 @@ class TestFormatRemoteRef:
         model = RemoteModel(
             name="gpt-4o", task="chat", family="", parameter_size="", provider="OpenAI"
         )
-        assert format_remote_ref(model) == "openai/gpt-4o"
+        assert format_remote_ref(model.name, model.provider) == "openai/gpt-4o"
 
     def test_anthropic_provider(self) -> None:
         model = RemoteModel(
@@ -135,7 +135,7 @@ class TestFormatRemoteRef:
             parameter_size="",
             provider="Anthropic",
         )
-        assert format_remote_ref(model) == "anthropic/claude-sonnet-4-20250514"
+        assert format_remote_ref(model.name, model.provider) == "anthropic/claude-sonnet-4-20250514"
 
     def test_ollama_provider_uses_ollama_prefix(self) -> None:
         model = RemoteModel(
@@ -145,7 +145,7 @@ class TestFormatRemoteRef:
             parameter_size="",
             provider="Ollama",
         )
-        assert format_remote_ref(model) == "ollama/qwen3:8b"
+        assert format_remote_ref(model.name, model.provider) == "ollama/qwen3:8b"
 
 
 class TestTranslateOptions:

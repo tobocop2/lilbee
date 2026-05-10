@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import shutil
+import os
+import shlex
 import threading
 import time
 from collections.abc import Callable
@@ -28,48 +29,45 @@ from textual.widgets import Footer, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
-from lilbee.cli.tui.command_registry import build_dispatch_dict
+from lilbee.cli.tui.screens.chat_helpers import (
+    build_add_progress_callback,
+    build_sync_progress_callback,
+    close_stream,
+    remove_copied_files,
+)
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBar
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
-from lilbee.core.services import get_services, reset_services, reset_store
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import scope_to_chunk_type
-from lilbee.providers.base import ClosableIterator
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
-    BatchProgressEvent,
-    BatchStatus,
-    DetailedProgressCallback,
-    EmbedEvent,
     EventType,
-    ExtractEvent,
-    FileDoneEvent,
-    FileStartEvent,
     ProgressEvent,
-    SyncDoneEvent,
 )
 
 if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
+    from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
-
-_DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
@@ -84,150 +82,6 @@ _STREAM_FLUSH_INTERVAL = 0.05
 
 # Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
 _STREAM_SCROLL_INTERVAL = 0.15
-
-
-def _close_stream(stream: Any) -> None:
-    """Close a streaming iterator if it satisfies the ClosableIterator protocol."""
-    if isinstance(stream, ClosableIterator):
-        with contextlib.suppress(Exception):
-            stream.close()
-
-
-def _detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
-    """Pick the user-facing detail label for a BATCH_PROGRESS tick.
-
-    Per-page rasterization (vision OCR) is the only producer that uses
-    BatchStatus.RASTERIZING; it emits an absolute path in data.file
-    which never matches the relative source name kept in in_flight, so
-    identity-based detection would never fire. Status-based dispatch is
-    the reliable discriminator between per-page and per-file ticks.
-    """
-    if data.status == BatchStatus.RASTERIZING:
-        return msg.ADD_PAGE_PROGRESS.format(
-            status=data.status.capitalize(), current=data.current, total=data.total
-        )
-    if in_flight:
-        return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
-    return msg.ADD_FILE_DONE.format(file=data.file)
-
-
-def _remove_copied_files(names: list[str]) -> None:
-    """Delete files previously copied into documents/ by a /add invocation.
-
-    Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync. Silently tolerates missing entries;
-    the user may have removed them concurrently, and the goal is just to
-    prevent accidental indexing.
-    """
-    for name in names:
-        target = cfg.documents_dir / name
-        try:
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            log.debug("Could not remove copied file %s", target, exc_info=True)
-
-
-_ADD_EMBED_THROTTLE_SECONDS = 0.15
-"""Throttle EMBED reporter updates to avoid TaskBar update storms.
-
-The embed worker fires one EmbedEvent per sub-batch, which on a fast
-laptop can be dozens per second. The Task Center only repaints at 10 Hz
-anyway, so we coalesce here at the same cadence.
-"""
-
-
-def _build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
-    """Build the on_progress callback used by /add.
-
-    Tracks files in flight in start order so the displayed filename pins
-    to the oldest unfinished file (the pipeline runs files concurrently;
-    without pinning the label flips around the queue). EXTRACT surfaces
-    "extracted N pages" once per file so a 44MB scanned PDF doesn't read
-    as a hang; EMBED ticks per chunk, throttled to a steady cadence.
-    """
-    in_flight: list[str] = []
-    last_embed_update = 0.0
-
-    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        # Polling point so /c in Task Center can stop a long ingest
-        # between file boundaries without having to kill the thread.
-        nonlocal last_embed_update
-        reporter.check_cancelled()
-        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-            in_flight.append(data.file)
-            reporter.update(0, msg.ADD_SYNCING_FILE.format(file=in_flight[0]), indeterminate=True)
-        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
-            with contextlib.suppress(ValueError):
-                in_flight.remove(data.file)
-        elif event_type == EventType.BATCH_PROGRESS and isinstance(data, BatchProgressEvent):
-            pct = (data.current / data.total * 100.0) if data.total else 0.0
-            reporter.update(pct, _detail_for_batch_progress(data, in_flight), indeterminate=False)
-        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
-            reporter.update(
-                0,
-                msg.SYNC_FILE_PROGRESS.format(
-                    current=data.page, total=data.total_pages, file=data.file
-                ),
-                indeterminate=True,
-            )
-        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
-
-    return on_progress
-
-
-def _build_sync_progress_callback(
-    reporter: ProgressReporter,
-) -> Callable[[EventType, ProgressEvent], None]:
-    """Return the on_progress shim used by ``_do_sync``.
-
-    Hoisted out of ``_do_sync`` so the dispatch doesn't bloat the method's
-    cyclomatic complexity. EXTRACT mirrors the /add path: a 44MB scanned
-    PDF needs a per-page tick or the row reads as frozen.
-    """
-    last_embed_update = 0.0
-
-    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-        nonlocal last_embed_update
-        if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
-            pct = int((data.current_file - 1) * 100 / data.total_files)
-            status = msg.SYNC_FILE_PROGRESS.format(
-                current=data.current_file, total=data.total_files, file=data.file
-            )
-            reporter.update(pct, status, indeterminate=False)
-        elif event_type == EventType.FILE_DONE and isinstance(data, FileDoneEvent):
-            reporter.update(0, msg.SYNC_FILE_DONE.format(file=data.file), indeterminate=False)
-        elif event_type == EventType.EXTRACT and isinstance(data, ExtractEvent):
-            reporter.update(
-                0,
-                msg.SYNC_FILE_PROGRESS.format(
-                    current=data.page, total=data.total_pages, file=data.file
-                ),
-                indeterminate=True,
-            )
-        elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
-            now = time.monotonic()
-            if now - last_embed_update < _ADD_EMBED_THROTTLE_SECONDS:
-                return
-            last_embed_update = now
-            pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
-            reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
-        elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
-            # Without this handler the task never ticks to 100% and the
-            # Task Center row never flashes "just-completed" (bb-7enj).
-            # "Synced (N docs)" means successfully synced, so failed is excluded.
-            total = data.added + data.updated + data.removed
-            reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
-
-    return on_progress
 
 
 class ChatWelcome(Static):
@@ -250,6 +104,11 @@ class PromptArea(Vertical):
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
+    # Lilbee always hosts screens on a LilbeeApp (production + LilbeeAppHost
+    # in tests), so narrowing the type lets the screen call set_theme /
+    # switch_view / task_bar without isinstance dance or # type: ignore.
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "chat.tcss"
     AUTO_FOCUS = "#chat-input"
 
@@ -270,12 +129,18 @@ class ChatScreen(Screen[None]):
     _chat_input = getters.query_one("#chat-input", ChatInput)
     _chat_log = getters.query_one("#chat-log", VerticalScroll)
     _completion_overlay = getters.query_one("#completion-overlay", CompletionOverlay)
+    _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "complete", "Tab models / complete", show=True, priority=True),
-        Binding("ctrl+n", "complete_next", "^n next", show=False),
-        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
+        Binding("tab", "complete", "Complete", show=True, priority=True),
+        Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
+        # Ctrl+P stays bound to the app's command palette by default. The
+        # chat screen only intercepts it WHEN the dropdown is visible, via
+        # LilbeeApp.action_command_palette overriding to call
+        # ChatScreen.action_complete_prev. Action is exposed for direct
+        # callers / tests; not bound here so the app-level priority binding
+        # for ctrl+p (palette) wins by default.
         Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
         Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
@@ -303,6 +168,7 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
+        Binding("f2", "show_command_catalog", "Catalog", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -316,11 +182,27 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
+
+    def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
+        """Bind every COMMANDS entry to its handler method on this instance.
+
+        Run once at construction so /handle_slash dispatches via direct method
+        reference (no per-call getattr-by-string-name reflection).
+        """
+        from lilbee.cli.tui.command_registry import COMMANDS
+
+        handlers: dict[str, Callable[[str], None]] = {}
+        for cmd in COMMANDS:
+            method = getattr(self, cmd.handler)
+            for name in (cmd.name, *cmd.aliases):
+                handlers[name] = method
+        return handlers
 
     @property
     def _task_bar(self) -> TaskBarController:
         """The app-level TaskBarController (always set by LilbeeApp)."""
-        return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
+        return self.app.task_bar
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
@@ -341,8 +223,10 @@ class ChatScreen(Screen[None]):
                     placeholder=msg.CHAT_INPUT_PLACEHOLDER_DEFAULT,
                     id="chat-input",
                 )
+                yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
+            yield HelpHint(id="help-hint")
             yield Footer()
 
     def on_mount(self) -> None:
@@ -351,8 +235,7 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        if isinstance(self.app, LilbeeApp):
-            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -400,8 +283,7 @@ class ChatScreen(Screen[None]):
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
         # Re-detect after setup so a freshly-set-up vault gets the hint.
-        if isinstance(self.app, LilbeeApp):
-            self.app.task_bar.start_detect_pending()
+        self.app.task_bar.start_detect_pending()
         self.refresh_model_bar()
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
@@ -516,6 +398,12 @@ class ChatScreen(Screen[None]):
             # they want to redirect the model.
             self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
             return
+        # Enter when the completion dropdown is showing a different
+        # selection than the input itself: accept the highlight first
+        # (matches Tab's cycle-and-insert behavior) instead of submitting
+        # whatever bare prefix the user typed.
+        if self._accept_overlay_selection_on_enter():
+            return
         text = event.value.strip()
         if not text:
             return
@@ -528,13 +416,31 @@ class ChatScreen(Screen[None]):
             return
         self._send_message(text)
 
+    def _accept_overlay_selection_on_enter(self) -> bool:
+        """Accept the highlight as ``<selection> ``; True if Enter was consumed."""
+        overlay = self._completion_overlay
+        if not overlay.is_visible:
+            return False
+        selection = overlay.get_current()
+        inp = self._chat_input
+        if not selection or selection == inp.value.rstrip():
+            overlay.hide()
+            return False
+        cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+        self._completing = True
+        inp.value = f"{cmd_prefix}{selection} "
+        self._completing = False
+        inp.action_end()
+        overlay.hide()
+        return True
+
     def _handle_slash(self, text: str) -> None:
-        """Dispatch slash commands via the command registry."""
+        """Dispatch slash commands via the per-instance handler registry."""
         cmd = text.split()[0].lower()
         args = text[len(cmd) :].strip()
-        handler_name = _DISPATCH.get(cmd)
-        if handler_name:
-            getattr(self, handler_name)(args)
+        handler = self._command_handlers.get(cmd)
+        if handler is not None:
+            handler(args)
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
 
@@ -567,59 +473,81 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
-        path = Path(args).expanduser()
-        if not path.exists():
-            self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
+        # Platform-aware shell parsing: POSIX rules treat backslashes as
+        # escapes, so a Windows path like C:\Users\foo gets mangled to
+        # C:Usersfoo. shlex(posix=False) keeps backslashes literal but
+        # leaves surrounding quotes attached to tokens, so trim those
+        # before constructing Path objects.
+        try:
+            tokens = shlex.split(args, posix=os.name != "nt")
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if os.name == "nt":
+            tokens = [t.strip('"').strip("'") for t in tokens]
+        paths = [Path(token).expanduser() for token in tokens]
+        missing = [p for p in paths if not p.exists()]
+        if missing:
+            self.notify(
+                msg.CMD_ADD_NOT_FOUND.format(path=", ".join(str(p) for p in missing)),
+                severity="error",
+            )
             return
         # Directory adds are whole-tree copies handled by copy_files'
         # recursion; a same-named subdir in documents_dir is not a clean
         # "duplicate file" signal, so skip the prompt there and let
         # copy_files emit its per-file skipped notices.
-        dest = cfg.documents_dir / path.name
-        if path.is_file() and dest.exists():
-            self._prompt_overwrite(path)
+        duplicates = [p for p in paths if p.is_file() and (cfg.documents_dir / p.name).exists()]
+        if duplicates:
+            self._prompt_overwrite(paths, duplicates)
             return
-        self._submit_add(path, force=False)
+        self._submit_add(paths, force=False)
 
-    def _prompt_overwrite(self, path: Path) -> None:
-        """Ask to overwrite an existing copy before re-syncing."""
+    def _prompt_overwrite(self, paths: list[Path], duplicates: list[Path]) -> None:
+        """Ask to overwrite existing copies before re-syncing."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        names = ", ".join(p.name for p in duplicates)
 
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
-                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=path.name))
+                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=names))
                 return
-            self._submit_add(path, force=True)
+            self._submit_add(paths, force=True)
 
         self.app.push_screen(
             ConfirmDialog(
                 msg.CMD_ADD_DUPLICATE_TITLE,
-                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=path.name),
+                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=names),
             ),
             _on_confirm,
         )
 
-    def _submit_add(self, path: Path, *, force: bool) -> None:
+    def _submit_add(self, paths: list[Path], *, force: bool) -> None:
         """Spawn the add worker. Separated so overwrite confirm can reuse it."""
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
+        label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_add(path, reporter, force=force)
+                self._do_add(paths, reporter, force=force)
             finally:
                 self._sync_active = False
 
-        self._task_bar.start_task(f"Add {path.name}", TaskType.ADD, _target, indeterminate=True)
+        self._task_bar.start_task(f"Add {label}", TaskType.ADD, _target, indeterminate=True)
 
-    def _do_add(self, path: Path, reporter: ProgressReporter, *, force: bool = False) -> None:
+    def _do_add(
+        self, paths: list[Path], reporter: ProgressReporter, *, force: bool = False
+    ) -> None:
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import copy_files
         from lilbee.data.ingest import sync
 
-        reporter.update(0, f"Copying {path.name}...", indeterminate=True)
-        copy_result = copy_files([path], force=force)
+        label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
+        reporter.update(0, f"Copying {label}...", indeterminate=True)
+        copy_result = copy_files(paths, force=force)
         copied = copy_result.copied
         for name in copy_result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
@@ -627,7 +555,7 @@ class ChatScreen(Screen[None]):
 
         try:
             sync_result = asyncio_loop.run(
-                sync(quiet=True, on_progress=_build_add_progress_callback(reporter))
+                sync(quiet=True, on_progress=build_add_progress_callback(reporter))
             )
         except BaseException:
             # On cancel or any failure, remove the files we copied into
@@ -635,13 +563,13 @@ class ChatScreen(Screen[None]):
             # file the user just cancelled. Only files copied by
             # this /add invocation are removed; pre-existing files the user
             # put in documents/ themselves are never touched.
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise
         if sync_result.failed:
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
-            _remove_copied_files(copied)
+            remove_copied_files(copied)
             raise RuntimeError(msg.sync_skipped_message(", ".join(sync_result.skipped)))
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
@@ -811,9 +739,7 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Catalog")
-            return
+        self.app.switch_view("Catalog")
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         self.app.push_screen(CatalogScreen())
@@ -846,7 +772,23 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
-        self.app.action_show_help_panel()
+        self.action_show_command_catalog()
+
+    def action_show_command_catalog(self) -> None:
+        """Push the slash-command catalog modal; selected name is inserted into the input."""
+        self.app.push_screen(SlashCommandCatalog(), self._on_catalog_pick)
+
+    def insert_slash_command(self, name: str) -> None:
+        """Drop ``name + ' '`` into the chat input and focus it for argument entry."""
+        self._enter_insert_mode()
+        inp = self._chat_input
+        inp.value = f"{name} "
+        inp.action_end()
+
+    def _on_catalog_pick(self, name: str | None) -> None:
+        if name is None:
+            return
+        self.insert_slash_command(name)
 
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
@@ -978,12 +920,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Settings")
-            return
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        self.app.push_screen(SettingsScreen())
+        self.app.switch_view("Settings")
 
     def _cmd_setup(self, _args: str) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard
@@ -991,15 +928,10 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _cmd_status(self, _args: str) -> None:
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Status")
-            return
-        from lilbee.cli.tui.screens.status import StatusScreen
-
-        self.app.push_screen(StatusScreen())
+        self.app.switch_view("Status")
 
     def _cmd_theme(self, args: str) -> None:
-        if args and isinstance(self.app, LilbeeApp):
+        if args:
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:
@@ -1013,8 +945,7 @@ class ChatScreen(Screen[None]):
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Wiki")
+        self.app.switch_view("Wiki")
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
@@ -1073,7 +1004,7 @@ class ChatScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
-            _close_stream(stream)
+            close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
 
     def _consume_stream(
@@ -1178,7 +1109,11 @@ class ChatScreen(Screen[None]):
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: drop back into NORMAL mode (always). Stream cancel is on Ctrl+C."""
+        """Esc dismisses the overlay if visible; otherwise drops into NORMAL mode."""
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.hide()
+            return
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT
             # so the user can type their next prompt; routing through the
@@ -1266,7 +1201,7 @@ class ChatScreen(Screen[None]):
         from lilbee.data.ingest import sync
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
-        on_progress = _build_sync_progress_callback(reporter)
+        on_progress = build_sync_progress_callback(reporter)
         try:
             result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
         except asyncio.CancelledError as exc:
@@ -1345,9 +1280,13 @@ class ChatScreen(Screen[None]):
         inp.insert("\t")
 
     def action_complete_next(self) -> None:
-        """Ctrl+N: show completions or cycle forward."""
+        """Ctrl+N: highlight-only nav when open, else show + insert (vim ``<C-n>``)."""
         inp = self._chat_input
         if not inp.has_focus:
+            return
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
             return
         self._cycle_completion_forward(inp)
 
@@ -1383,18 +1322,13 @@ class ChatScreen(Screen[None]):
         return False
 
     def action_complete_prev(self) -> None:
-        """Ctrl+P: cycle backward through completions."""
-        overlay = self._completion_overlay
+        """Highlight-only nav when open, else show + insert (mirror of complete_next)."""
         inp = self._chat_input
-
+        if not inp.has_focus:
+            return
+        overlay = self._completion_overlay
         if overlay.is_visible:
-            selection = overlay.cycle_prev()
-            if selection:
-                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
-                self._completing = True
-                inp.value = cmd_prefix + selection
-                self._completing = False
-                inp.action_end()
+            overlay.cycle_prev()
             return
 
         options = get_completions(inp.value)
@@ -1412,11 +1346,19 @@ class ChatScreen(Screen[None]):
             self._completing = False
 
     def action_history_prev(self) -> None:
-        """Up arrow: recall previous input history entry."""
+        """Up arrow: cycle the dropdown if visible, else recall previous history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or not self._input_history:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Up navigates the dropdown
+        # (vim/Emacs-style) rather than recalling history.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_prev()
+            return
+        if not self._input_history:
             raise SkipAction()
         if self._history_index == -1:
             self._history_index = len(self._input_history) - 1
@@ -1428,11 +1370,18 @@ class ChatScreen(Screen[None]):
         inp.action_end()
 
     def action_history_next(self) -> None:
-        """Down arrow: recall next input history entry."""
+        """Down arrow: cycle the dropdown if visible, else recall next history entry."""
         if not self._insert_mode:
             raise SkipAction()
         inp = self._chat_input
-        if not inp.has_focus or self._history_index == -1:
+        if not inp.has_focus:
+            raise SkipAction()
+        # When the completion dropdown is up, Down navigates the dropdown.
+        overlay = self._completion_overlay
+        if overlay.is_visible:
+            overlay.cycle_next()
+            return
+        if self._history_index == -1:
             raise SkipAction()
         if self._history_index < len(self._input_history) - 1:
             self._history_index += 1
@@ -1444,12 +1393,31 @@ class ChatScreen(Screen[None]):
 
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
-        """Hide completion overlay when input changes manually."""
+        """Refresh arg-hint and auto-show or hide the completion dropdown."""
         if self._completing:
+            # Tab-completion is mid-flight; the cycler manages overlay state.
+            self._refresh_arg_hint()
             return
+        self._refresh_completion_overlay()
+        self._refresh_arg_hint()
+
+    def _refresh_completion_overlay(self) -> None:
+        """Auto-show the dropdown for COMMAND discovery only; arg completions stay on Tab."""
         overlay = self._completion_overlay
-        if overlay.is_visible:
+        text = self._chat_input.value
+        # Once the user has typed a space, they are in arg-completion mode.
+        # Leave any Tab-triggered overlay alone and don't auto-pop one.
+        if " " in text:
+            return
+        options = get_completions(text)
+        if options:
+            overlay.show_completions(options)
+        elif overlay.is_visible:
             overlay.hide()
+
+    def _refresh_arg_hint(self) -> None:
+        """Push the current input value into the ArgHintLine."""
+        self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
         """Re-scan installed models and refresh the dropdowns."""

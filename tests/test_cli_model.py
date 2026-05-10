@@ -20,8 +20,9 @@ from lilbee.app.models import (
     RemoveResult,
     ShowModelResult,
 )
+from lilbee.catalog.types import ModelSource
 from lilbee.cli import app
-from lilbee.modelhub.model_manager import ModelNotFoundError, ModelSource
+from lilbee.modelhub.model_manager import ModelNotFoundError
 from lilbee.modelhub.registry import ModelManifest
 
 runner = CliRunner()
@@ -250,6 +251,11 @@ class TestListCmd:
         data = json.loads(result.output.strip())
         assert "error" in data
         assert "bogus" in data["error"]
+
+    def test_invalid_task_raises_bad_param(self, fake_manager):
+        result = runner.invoke(app, ["model", "list", "--task", "bogus"])
+        assert result.exit_code != 0
+        assert "ModelTask" in result.output
 
 
 class TestShowModelData:

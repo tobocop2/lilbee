@@ -72,7 +72,7 @@ def _bad_protocol_worker_main(
 
 def _install_mock_services_with_provider(provider):
     """Install a mock Services container holding *provider* and a real pool."""
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
     from tests.conftest import make_mock_services
 
     services = make_mock_services(provider=provider)
@@ -117,7 +117,7 @@ def test_embed_routes_through_pool_when_enabled(pool_provider) -> None:
 
 
 def test_pool_is_lazy_no_spawn_until_first_call(pool_provider) -> None:
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     pool = get_services().worker_pool
     # Before any call, no roles registered yet.
@@ -130,7 +130,7 @@ def test_pool_is_lazy_no_spawn_until_first_call(pool_provider) -> None:
 
 
 def test_repeated_embed_calls_reuse_one_worker(pool_provider) -> None:
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     pool_provider.embed(["a"])
     first_accessor = get_services().worker_pool.accessor("embed")
@@ -308,15 +308,9 @@ def test_make_role_config_factory_raises_when_unset(monkeypatch, role, cfg_attr,
 
 def test_role_specs_cover_every_pool_role() -> None:
     """The data table maps every role the provider routes through the pool."""
-    from lilbee.providers.llama_cpp.provider import (
-        _CHAT_ROLE,
-        _EMBED_ROLE,
-        _RERANK_ROLE,
-        _ROLE_SPECS,
-        _VISION_ROLE,
-    )
+    from lilbee.providers.llama_cpp.provider import _ROLE_SPECS, WorkerRole
 
-    assert set(_ROLE_SPECS) == {_EMBED_ROLE, _RERANK_ROLE, _CHAT_ROLE, _VISION_ROLE}
+    assert set(_ROLE_SPECS) == set(WorkerRole)
 
 
 def _patched_rerank_worker_main(
@@ -943,7 +937,7 @@ def test_shutdown_handles_pool_release_failure(monkeypatch, tmp_path) -> None:
         _patched_embed_worker_main,
     )
 
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()

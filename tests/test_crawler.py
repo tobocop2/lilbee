@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lilbee.app.services import get_services, reset_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services, reset_services
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,

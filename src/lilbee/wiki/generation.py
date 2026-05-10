@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import TypedDict
 
+from lilbee.app.services import get_services
 from lilbee.core.config import Config, cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
@@ -28,11 +28,10 @@ from lilbee.wiki.entity_extractor import ExtractedEntity, get_entity_extractor
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.links import apply_rewriter, compile_rewriter
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
     MIN_CLUSTER_SOURCES,
     WIKI_CONTENT_SUBDIRS,
-    WIKI_LOG_ACTION_BUILD,
+    WikiLogAction,
+    WikiSubdir,
 )
 from lilbee.wiki.synthesis import (
     generate_source_batch,
@@ -42,7 +41,7 @@ from lilbee.wiki.synthesis import (
 
 log = logging.getLogger(__name__)
 
-_ENTITY_LIKE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
+_ENTITY_LIKE_SUBDIRS: tuple[str, ...] = (WikiSubdir.CONCEPTS, WikiSubdir.ENTITIES)
 
 
 def _generate_for_cluster(
@@ -290,7 +289,7 @@ def run_full_build(config: Config | None = None) -> WikiBuildSummary:
         extract_concepts=config.wiki_extract_concepts,
     )
     update_wiki_index()
-    append_wiki_log(WIKI_LOG_ACTION_BUILD, f"{len(pages)} pages from {len(entities)} records")
+    append_wiki_log(WikiLogAction.BUILD, f"{len(pages)} pages from {len(entities)} records")
     return {
         "paths": [str(p) for p in pages],
         "entities": len(entities),

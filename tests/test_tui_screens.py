@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -12,6 +14,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.app.services import set_services
 from lilbee.catalog import (
     FEATURED_EMBEDDING,
     CatalogModel,
@@ -39,9 +42,9 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -78,7 +81,7 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None
     store.delete_source.return_value = None
     services = make_mock_services(store=store)
@@ -114,11 +117,11 @@ def _settings_gates_open():
     installed in the test environment."""
     with (
         patch(
-            "lilbee.cli.tui.screens.settings._litellm_installed",
+            "lilbee.providers.litellm_sdk.litellm_available",
             return_value=True,
         ),
         patch(
-            "lilbee.cli.tui.screens.settings._crawler_installed",
+            "lilbee.crawler.crawler_available",
             return_value=True,
         ),
     ):
@@ -457,8 +460,8 @@ class TestGroupRowsForGrid:
         return catalog_to_row(model, installed=installed)
 
     def test_grid_contains_rerank_bucket(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.CHAT),
@@ -466,7 +469,7 @@ class TestGroupRowsForGrid:
             self._row(ModelTask.VISION),
             self._row(ModelTask.RERANK),
         ]
-        sections = _group_rows_for_grid(rows)
+        sections = group_rows_for_grid(rows)
         headings = [s.heading for s in sections]
         assert ModelTask.RERANK.capitalize() in headings
 
@@ -476,14 +479,14 @@ class TestGroupRowsForGrid:
 
     def test_featured_lives_at_top_of_task_section(self) -> None:
         """Featured rows merge into their task section with the pick first."""
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.RERANK, featured=False),
             self._row(ModelTask.RERANK, featured=True),
         ]
-        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        sections = {s.heading: s.rows for s in group_rows_for_grid(rows)}
         assert "Our picks" not in sections
         rerank = sections[ModelTask.RERANK.capitalize()]
         assert len(rerank) == 2
@@ -492,25 +495,25 @@ class TestGroupRowsForGrid:
 
     def test_installed_still_has_its_own_section(self) -> None:
         """Installed rows are pulled out of task sections into their own bucket."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         rows = [
             self._row(ModelTask.CHAT, installed=True),
             self._row(ModelTask.CHAT),
         ]
-        sections = {s.heading: s.rows for s in _group_rows_for_grid(rows)}
+        sections = {s.heading: s.rows for s in group_rows_for_grid(rows)}
         assert len(sections[msg.HEADING_INSTALLED]) == 1
         assert len(sections[ModelTask.CHAT.capitalize()]) == 1
 
     def test_unknown_task_gets_its_own_section(self) -> None:
-        """A row whose task is outside _TASK_BUCKET_ORDER still appears,
+        """A row whose task is outside TASK_BUCKET_ORDER still appears,
         in a section after the known buckets: never silently dropped."""
-        from lilbee.cli.tui.screens.catalog import _group_rows_for_grid
+        from lilbee.cli.tui.screens.catalog_grouping import group_rows_for_grid
 
         row = self._row("experimental")  # type: ignore[arg-type]
-        sections = _group_rows_for_grid([row])
+        sections = group_rows_for_grid([row])
         headings = [s.heading for s in sections]
         assert "Experimental" in headings
         experimental = next(s for s in sections if s.heading == "Experimental")
@@ -545,7 +548,7 @@ def _make_eager_settings_screen():
     return _EagerSettingsScreen
 
 
-class SettingsTestApp(App[None]):
+class SettingsTestApp(LilbeeAppHost):
     """Test fixture that pre-populates every Settings pane on mount."""
 
     CSS = ""
@@ -639,9 +642,9 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     """Clicking the picker runs discovery in a worker, then pushes the modal."""
     from unittest.mock import patch
 
+    from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.screens.model_picker import ModelPickerModal
     from lilbee.cli.tui.widgets.model_bar import ModelOption
-    from lilbee.modelhub.models import ModelTask
 
     fake_buckets = {
         ModelTask.CHAT: [ModelOption(label="fake-chat", ref="fake/chat.gguf")],
@@ -708,6 +711,353 @@ async def test_settings_persist_on_change():
         await pilot.press("enter")
         await pilot.pause()
         assert cfg.top_k == 20
+
+
+async def test_settings_cycle_pane_wraps_through_strip():
+    """> / < jump straight to the next/previous group tab; wraps off either end."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        tabs = screen.query_one("#settings-tabs", TabbedContent)
+        pane_ids = list(screen._pane_groups)
+        assert len(pane_ids) >= 2
+        # Start on the first pane.
+        first = pane_ids[0]
+        tabs.active = first
+        await pilot.pause()
+        # > moves to the next pane.
+        screen.action_cycle_pane(1)
+        await pilot.pause()
+        assert tabs.active == pane_ids[1]
+        # < wraps back when called from the first pane.
+        tabs.active = first
+        await pilot.pause()
+        screen.action_cycle_pane(-1)
+        await pilot.pause()
+        assert tabs.active == pane_ids[-1]
+
+
+async def test_catalog_cycle_tab_wraps_through_strip():
+    """Catalog > / < cycle across model categories with wrap-around."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            screen._active_tab_id_cache = ALL_TAB_IDS[0]
+            with patch.object(screen, "action_select_tab") as mock_select:
+                screen.action_cycle_tab(1)
+                mock_select.assert_called_with(1)
+                # Wrap from last back to first.
+                screen._active_tab_id_cache = ALL_TAB_IDS[-1]
+                mock_select.reset_mock()
+                screen.action_cycle_tab(1)
+                mock_select.assert_called_with(0)
+
+
+async def test_catalog_cycle_tab_skipped_while_search_focused():
+    """While the catalog search input has focus, > / < must not cycle.
+    Prevents the user from accidentally jumping tabs while typing a filter."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            with (
+                patch.object(
+                    type(screen),
+                    "_search_focused",
+                    new_callable=PropertyMock,
+                    return_value=True,
+                ),
+                patch.object(screen, "action_select_tab") as mock_select,
+            ):
+                screen.action_cycle_tab(1)
+                assert not mock_select.called
+
+
+async def test_catalog_cycle_tab_unknown_active_starts_from_zero():
+    """If _active_tab_id_cache is not in ALL_TAB_IDS, cycle starts at 0.
+
+    Constructs a bare CatalogScreen via ``__new__`` instead of running
+    inside an app: with a real app the bogus tab id propagates through
+    on_worker_state_changed -> _refresh_grid -> _grid_for_tab and
+    the framework explodes before action_cycle_tab even runs.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._active_tab_id_cache = "not-a-real-tab-id"
+    with (
+        patch.object(
+            CatalogScreen,
+            "_search_focused",
+            new_callable=PropertyMock,
+            return_value=False,
+        ),
+        patch.object(CatalogScreen, "action_select_tab") as mock_select,
+    ):
+        CatalogScreen.action_cycle_tab(screen, 1)
+    mock_select.assert_called_with(1)
+
+
+async def test_settings_cycle_pane_handles_missing_tabs():
+    """If TabbedContent isn't queryable (mid-mount), action_cycle_pane is a no-op
+    rather than raising."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {}
+    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not yet mounted")):
+        SettingsScreen.action_cycle_pane(screen, 1)
+
+
+async def test_settings_cycle_pane_no_panes_short_circuits():
+    """When ``_pane_groups`` is empty (compose hasn't run), cycle_pane returns
+    cleanly without indexing an empty list."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {}
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "settings-tab-models"
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+        SettingsScreen.action_cycle_pane(screen, 1)
+
+
+async def test_settings_cycle_pane_unknown_active_starts_from_zero():
+    """ValueError fallback: if tabs.active isn't in ``_pane_groups`` (stale id
+    from a hot-reload / refactor), cycle starts from index 0."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen, _PaneGroup
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._pane_groups = {
+        "settings-tab-models": _PaneGroup(
+            pane_id="settings-tab-models", group_name="Models", items=[]
+        ),
+        "settings-tab-ingest": _PaneGroup(
+            pane_id="settings-tab-ingest", group_name="Ingest", items=[]
+        ),
+    }
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "not-in-pane-groups"
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+        SettingsScreen.action_cycle_pane(screen, 1)
+    # Fell through to index 0 + delta 1 -> second pane.
+    assert fake_tabs.active == "settings-tab-ingest"
+
+
+async def test_settings_active_pane_body_handles_missing_tabs():
+    """``_active_pane_body`` returns None on every error path: TabbedContent
+    not queryable, no active pane, and body widget not yet mounted."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    with patch.object(SettingsScreen, "query_one", side_effect=Exception("not mounted")):
+        assert screen._active_pane_body() is None
+    fake_empty_tabs = MagicMock(spec=TabbedContent)
+    fake_empty_tabs.active = ""
+    with patch.object(SettingsScreen, "query_one", return_value=fake_empty_tabs):
+        assert screen._active_pane_body() is None
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "settings-tab-models"
+    calls = {"n": 0}
+
+    def _fake_query_one(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return fake_tabs
+        raise Exception("body not yet mounted")
+
+    with patch.object(SettingsScreen, "query_one", side_effect=_fake_query_one):
+        assert screen._active_pane_body() is None
+
+
+async def test_catalog_mouse_scroll_no_more_pages_short_circuits():
+    """on_mouse_scroll_down early-returns when there's nothing more to fetch."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._activation_settled = True
+            screen._grid_view = True
+            screen._hf_has_more = False  # nothing left to fetch
+            screen._loading_more = False
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with patch.object(screen, "_load_more") as load_more:
+                screen.on_mouse_scroll_down(event)
+                assert not load_more.called
+
+
+async def test_settings_persist_value_does_not_toast_on_success():
+    """Saving a setting (Input.Blurred / Input.Submitted / Checkbox.Changed
+    etc.) must NOT pop a success toast. The editor already shows the new
+    value and the write is persisted; the toast is noise that fires en
+    masse when a user pages through tabs and blurs the prior pane's
+    inputs. Errors still toast."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-top_k", Input)
+        editor.focus()
+        editor.value = "21"
+        with patch.object(app.screen, "notify") as mock_notify:
+            await pilot.press("enter")
+            await pilot.pause()
+        # Persist must have happened (cfg updated)...
+        assert cfg.top_k == 21
+        # ...but no success toast.
+        assert mock_notify.call_count == 0, (
+            f"unexpected toast on settings save: {mock_notify.call_args_list}"
+        )
+
+
+async def test_settings_persist_value_still_toasts_on_error():
+    """Error path keeps its toast: the user has to know why a value didn't take."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        from lilbee.cli.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["top_k"]
+        with patch.object(screen, "notify") as mock_notify:
+            screen._persist_value("top_k", defn, "not_an_int")
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.kwargs.get("severity") == "error"
+
+
+async def test_settings_first_pane_populate_is_deferred():
+    """The first-pane content build must be queued via call_after_refresh,
+    not invoked from on_mount. Running mount_all for ~25 editor widgets
+    inline with on_mount adds the layout pass to the screen-switch latency
+    budget; deferring lets the screen paint empty first.
+
+    Uses a stub instead of the eager test fixture because the fixture's
+    ``populate_all_panes`` would itself call ``_populate_pane`` and mask
+    the production code path under inspection.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    screen._eagerly_populate = "settings-tab-models"
+    with (
+        patch.object(SettingsScreen, "_populate_pane") as mock_populate,
+        patch.object(SettingsScreen, "call_after_refresh", MagicMock()) as mock_defer,
+    ):
+        SettingsScreen.on_mount(screen)
+        assert not mock_populate.called, (
+            "on_mount must defer first-pane populate via call_after_refresh"
+        )
+        mock_defer.assert_called_once()
+        args = mock_defer.call_args.args
+        assert args[1] == "settings-tab-models"
+
+
+async def test_settings_pane_body_owns_horizontal_padding():
+    """Padding on the inner pane VerticalScroll (not the outer Container)
+    keeps column 0 stable on rapid wheel-up; putting padding on the
+    Container leaked stale glyphs into the leftmost column when the
+    inner scroll repainted (filed bug bb-...-tear)."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import TabbedContent
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        # Outer Container must NOT carry left/right padding any more.
+        outer = app.screen.query_one("#settings-scroll")
+        assert outer.styles.padding.left == 0
+        assert outer.styles.padding.right == 0
+        # Each pane body's VerticalScroll owns the 1-char gutter instead.
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        for pane in tabs.query("TabPane"):
+            body = pane.query(VerticalScroll).first()
+            assert body.styles.padding.left == 1, (
+                f"{pane.id} body lost left padding; column-0 tear will return"
+            )
+            assert body.styles.padding.right == 1
+
+
+async def test_settings_outer_container_does_not_double_scroll():
+    """bb-e1e2: Settings tearing on Wiki tab scroll-up was caused by two
+    VerticalScrolls on the same column (outer #settings-scroll wrapping
+    the inner _LazyGroupBody per pane). Drop the outer to a Container so
+    only the active pane scrolls; this test pins that invariant."""
+    from textual.containers import Container, VerticalScroll
+
+    from lilbee.cli.tui.screens.settings import _LazyGroupBody
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        outer = app.screen.query_one("#settings-scroll")
+        assert isinstance(outer, Container)
+        assert not isinstance(outer, VerticalScroll), (
+            "#settings-scroll regressed to a VerticalScroll; nested-scroll "
+            "tearing on Settings → Wiki will return."
+        )
+        # Every pane body is itself a VerticalScroll, and from any pane body
+        # to the screen root there must be exactly one VerticalScroll on
+        # the chain (the body itself).
+        for body in app.screen.query(_LazyGroupBody):
+            scroll_ancestors = sum(
+                1 for n in body.ancestors_with_self if isinstance(n, VerticalScroll)
+            )
+            assert scroll_ancestors == 1, (
+                f"{body.id}: {scroll_ancestors} VerticalScroll ancestors, expected 1"
+            )
+
+
+async def test_settings_wiki_pane_scroll_clamps_past_top():
+    """Wheeling the Wiki settings pane up past its top edge must clamp at
+    scroll_y=0 cleanly. With the previous nested-scroll layout, this is
+    where Textual reflow tore the screen and lost the tab strip."""
+    from textual.widgets import TabbedContent
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        tabs.active = "settings-tab-wiki"
+        await pilot.pause()
+        body = app.screen.query_one("#settings-tab-wiki-body")
+        body.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        body.scroll_relative(y=-50, animate=False)
+        await pilot.pause()
+        assert body.scroll_y == 0.0
+        # Tabs strip must still be queryable -- the visual symptom of the
+        # original bug was that the strip vanished entirely on scroll-up.
+        assert app.screen.query_one("#settings-tabs", TabbedContent) is not None
 
 
 async def test_settings_exposes_wiki_fields():
@@ -806,14 +1156,17 @@ async def test_settings_vim_keys():
 
 
 async def test_settings_pop_screen():
-    """Pressing q pops the settings screen."""
+    """Pressing q switches the host to the Chat view via SettingsScreen.action_go_back."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert isinstance(app.screen, SettingsScreen)
-        await pilot.press("q")
-        assert not isinstance(app.screen, SettingsScreen)
+        with patch.object(app, "switch_view") as switch:
+            await pilot.press("q")
+            switch.assert_called_once_with("Chat")
 
 
 async def test_settings_crawl_exclude_patterns_renders_collapsible():
@@ -986,14 +1339,13 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
 
 async def test_list_text_area_posts_blurred():
     """ListTextArea posts its Blurred message when focus moves away."""
-    from textual.app import App
     from textual.widgets import Input
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
     captured: list[ListTextArea.Blurred] = []
 
-    class _TestApp(App[None]):
+    class _TestApp(LilbeeAppHost):
         CSS = ""
 
         def compose(self) -> ComposeResult:
@@ -1018,7 +1370,7 @@ async def test_settings_effective_value_shows_model_default():
     """When user hasn't set a value, model default is shown with suffix."""
     from dataclasses import dataclass
 
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     @dataclass(frozen=True)
     class FakeDefaults:
@@ -1034,15 +1386,15 @@ async def test_settings_effective_value_shows_model_default():
     try:
         cfg.apply_model_defaults(FakeDefaults())
         cfg.temperature = None
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert "0.7" in result
         assert "(model default)" in result
         cfg.num_ctx = None
-        result = _effective_value("num_ctx")
+        result = effective_value("num_ctx")
         assert "4096" in result
         assert "(model default)" in result
         cfg.top_p = None
-        result = _effective_value("top_p")
+        result = effective_value("top_p")
         assert result == "None"
     finally:
         cfg.temperature = old_temp
@@ -1051,10 +1403,10 @@ async def test_settings_effective_value_shows_model_default():
 
 def test_settings_effective_value_summarizes_list():
     """List values are shown as a line count, not Python repr, on the help line."""
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     cfg.crawl_exclude_patterns = ["a", "b", "c"]
-    result = _effective_value("crawl_exclude_patterns")
+    result = effective_value("crawl_exclude_patterns")
     assert result == "3 lines"
     # Specifically guards against the "current: ['a', 'b', 'c']" regression.
     assert "[" not in result
@@ -1063,14 +1415,14 @@ def test_settings_effective_value_summarizes_list():
     # Empty list must still be rendered as a count, not fall through to
     # "None" or model defaults. Guards off-by-one refactors of len().
     cfg.crawl_exclude_patterns = []
-    assert _effective_value("crawl_exclude_patterns") == "0 lines"
+    assert effective_value("crawl_exclude_patterns") == "0 lines"
 
 
 async def test_settings_effective_value_user_overrides_default():
     """When user has set a value, it takes precedence over model default."""
     from dataclasses import dataclass
 
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     @dataclass(frozen=True)
     class FakeDefaults:
@@ -1086,7 +1438,7 @@ async def test_settings_effective_value_user_overrides_default():
     try:
         cfg.apply_model_defaults(FakeDefaults())
         cfg.temperature = 0.9
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert result == "0.9"
         assert "(model default)" not in result
     finally:
@@ -1096,14 +1448,14 @@ async def test_settings_effective_value_user_overrides_default():
 
 async def test_settings_effective_value_no_defaults():
     """When no model defaults are loaded, None values show as 'None'."""
-    from lilbee.cli.tui.screens.settings import _effective_value
+    from lilbee.cli.tui.screens.settings_widgets import effective_value
 
     old_defaults = cfg._model_defaults
     old_temp = cfg.temperature
     try:
         cfg.clear_model_defaults()
         cfg.temperature = None
-        result = _effective_value("temperature")
+        result = effective_value("temperature")
         assert result == "None"
     finally:
         cfg.temperature = old_temp
@@ -1111,14 +1463,14 @@ async def test_settings_effective_value_no_defaults():
 
 
 async def test_settings_is_writable():
-    """_is_writable correctly identifies writable vs read-only fields."""
-    from lilbee.cli.tui.screens.settings import _is_writable
+    """is_writable correctly identifies writable vs read-only fields."""
+    from lilbee.cli.tui.screens.settings_widgets import is_writable
 
-    assert _is_writable("top_k")
-    assert _is_writable("temperature")
-    assert not _is_writable("chat_model")
-    assert not _is_writable("embedding_model")
-    assert not _is_writable("nonexistent_key_xyz")
+    assert is_writable("top_k")
+    assert is_writable("temperature")
+    assert not is_writable("chat_model")
+    assert not is_writable("embedding_model")
+    assert not is_writable("nonexistent_key_xyz")
 
 
 async def test_settings_persist_invalid_int():
@@ -1265,15 +1617,20 @@ async def test_ctrl_r_with_no_focus_is_noop():
 
 
 async def test_ctrl_r_on_non_row_focus_is_noop():
-    """action_reset_focused ignores focus that isn't inside a setting row."""
+    """action_reset_focused ignores focus that isn't inside a setting row.
+
+    AUTO_FOCUS targets ``#settings-tabs Tabs`` -- the Tabs strip widget,
+    which sits outside any setting row -- so the screen lands on a
+    non-row widget by construction. ``Tab`` would move into the first
+    row's editor (which IS a row), so do NOT press Tab here; assert
+    directly from the auto-focus state.
+    """
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        # Focus a non-row widget (the toolbar / view tabs strip).
-        await pilot.press("tab")
         await pilot.pause()
         with patch.object(screen, "_reset_to_default") as mock_reset:
             screen.action_reset_focused()
@@ -1715,7 +2072,7 @@ async def test_reset_all_action_opens_confirm_dialog():
         assert isinstance(pushed_screen, ConfirmDialog)
 
 
-class StatusTestApp(App[None]):
+class StatusTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -1856,14 +2213,18 @@ async def test_status_tab_moves_focus_between_sections(mock_svc):
         assert app.focused is not initial
 
 
-async def test_status_screen_escape_pops():
+async def test_status_screen_escape_invokes_switch_view():
+    """Pressing Escape on Status switches the host to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.status import StatusScreen
 
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         assert isinstance(app.screen, StatusScreen)
-        await _pilot.press("escape")
-        assert not isinstance(app.screen, StatusScreen)
+        with patch.object(app, "switch_view") as switch:
+            await _pilot.press("escape")
+            switch.assert_called_once_with("Chat")
 
 
 def test_ocr_label_enabled():
@@ -2131,12 +2492,12 @@ async def test_app_push_help():
         assert app.screen.query("HelpPanel")
 
 
-class ChatTestApp(App[None]):
+class ChatTestApp(LilbeeAppHost):
     CSS = ""
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -2233,12 +2594,11 @@ async def test_chat_current_chunk_type_without_scope_chip_returns_none():
     """Test apps without a ScopeChip (e.g. mounting ChatScreen in isolation)
     must get ``None`` from the helper, not a ``NoMatches`` crash.
     """
-    from textual.app import App
 
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.widgets.scope_chip import ScopeChip
 
-    class _BareChatApp(App):
+    class _BareChatApp(LilbeeAppHost):
         def on_mount(self) -> None:
             self.push_screen(ChatScreen())
 
@@ -2304,16 +2664,6 @@ async def test_chat_slash_theme_no_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme")
-            mock_notify.assert_called_once()
-            assert "Themes:" in mock_notify.call_args[0][0]
-
-
-async def test_chat_slash_theme_non_lilbee_app():
-    """Theme with arg on a non-LilbeeApp should just list themes."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._handle_slash("/theme dracula")
             mock_notify.assert_called_once()
             assert "Themes:" in mock_notify.call_args[0][0]
 
@@ -2551,6 +2901,71 @@ async def test_chat_slash_add_blocked_by_sync(tmp_path):
             assert "Sync in progress" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_add_multi_path(tmp_path):
+    """bb-n7mx: /add must accept multiple space-separated paths and submit them
+    as a single batch (one task, one sync), not silently drop everything past
+    the first token."""
+    a = tmp_path / "a.md"
+    a.write_text("alpha")
+    b = tmp_path / "b.md"
+    b.write_text("beta")
+    c = tmp_path / "c.md"
+    c.write_text("gamma")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_submit_add") as mock_submit:
+            app.screen._cmd_add(f"{a} {b} {c}")
+            mock_submit.assert_called_once()
+            paths_arg = mock_submit.call_args.args[0]
+            assert [p.name for p in paths_arg] == ["a.md", "b.md", "c.md"]
+
+
+async def test_chat_slash_add_strips_quotes_on_windows(tmp_path):
+    """On Windows, /add uses shlex(posix=False) so backslash paths survive,
+    but quote characters stay attached to tokens. Verify the quote-stripping
+    pass keeps Path resolution intact. Mocks os.name to avoid platform-gated
+    coverage gaps."""
+    src = tmp_path / "doc.md"
+    src.write_text("hello")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.chat.os") as mock_os,
+            patch.object(app.screen, "_submit_add") as mock_submit,
+        ):
+            mock_os.name = "nt"
+            app.screen._cmd_add(f'"{src}"')
+        mock_submit.assert_called_once()
+        paths_arg = mock_submit.call_args.args[0]
+        assert [p.name for p in paths_arg] == ["doc.md"]
+
+
+async def test_chat_slash_add_unbalanced_quote_notifies():
+    """An unmatched quote in /add args is a shlex.split ValueError; surface
+    it as an error toast rather than crashing."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_add('"unclosed')
+        assert mock_notify.call_count == 1
+        assert mock_notify.call_args.kwargs.get("severity") == "error"
+
+
+async def test_chat_slash_add_quoted_path_with_spaces(tmp_path):
+    """Quoted paths with spaces survive shlex parsing."""
+    spaced_dir = tmp_path / "with space"
+    spaced_dir.mkdir()
+    inner = spaced_dir / "doc.md"
+    inner.write_text("content")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_submit_add") as mock_submit:
+            app.screen._cmd_add(f'"{inner}"')
+            mock_submit.assert_called_once()
+            paths_arg = mock_submit.call_args.args[0]
+            assert [p.name for p in paths_arg] == ["doc.md"]
+
+
 async def test_chat_slash_cancel():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2561,11 +2976,13 @@ async def test_chat_slash_cancel():
 
 
 async def test_chat_slash_help():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/help")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_models():
@@ -2763,17 +3180,34 @@ async def test_chat_refresh_model_bar():
             mock_refresh.assert_called_once()
 
 
-async def test_chat_input_changed_hides_overlay():
+async def test_model_bar_refreshes_on_chat_model_signal():
+    """bb-q6zh: external activations (Catalog, /set chat_model, settings UI) publish on
+    settings_changed_signal; the bottom model-bar button must repaint without a
+    manual refresh."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        inp = app.screen.query_one("#chat-input", ChatInput)
-        inp.focus()
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 
-        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
-        inp.value = "/he"
-        await _pilot.pause()
-        assert not overlay.is_visible
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        chat_btn = bar.query_one("#chat-model-button", ModelPickerButton)
+        with patch.object(chat_btn, "_refresh") as mock_refresh:
+            app.settings_changed_signal.publish(("chat_model", "qwen3:0.6b"))
+            await _pilot.pause()
+            mock_refresh.assert_called()
+
+
+async def test_model_bar_refreshes_on_embedding_model_signal():
+    """Embedding-model picker button mirrors chat-button signal handling."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        embed_btn = bar.query_one("#embed-model-button", ModelPickerButton)
+        with patch.object(embed_btn, "_refresh") as mock_refresh:
+            app.settings_changed_signal.publish(("embedding_model", "nomic-embed-text:latest"))
+            await _pilot.pause()
+            mock_refresh.assert_called()
 
 
 async def test_chat_slash_quit():
@@ -2801,11 +3235,13 @@ async def test_chat_slash_exit():
 
 
 async def test_chat_slash_h():
+    from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/h")
         await _pilot.pause()
-        assert app.screen.query("HelpPanel")
+        assert isinstance(app.screen, SlashCommandCatalog)
 
 
 async def test_chat_slash_m():
@@ -3184,7 +3620,7 @@ async def test_command_provider_document_commands_empty_name(mock_svc):
         assert cmds == []
 
 
-class CatalogTestApp(App[None]):
+class CatalogTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -3283,7 +3719,10 @@ async def test_catalog_header_sort():
             assert screen._sort_column == "Name"
 
 
-async def test_catalog_pop_screen():
+async def test_catalog_action_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3294,12 +3733,10 @@ async def test_catalog_pop_screen():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            screen.action_go_back()
-            await _pilot.pause()
-            # action_go_back on non-LilbeeApp calls pop_screen
-            from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-            assert not isinstance(app.screen, CatalogScreen)
+            with patch.object(app, "switch_view") as switch:
+                screen.action_go_back()
+                await _pilot.pause()
+                switch.assert_called_once_with("Chat")
 
 
 async def test_catalog_vim_keys():
@@ -3418,7 +3855,7 @@ async def test_catalog_install_new_model():
             mock_mgr.is_installed.return_value = False
             with (
                 patch(
-                    "lilbee.core.services.get_services",
+                    "lilbee.app.services.get_services",
                     return_value=MagicMock(model_manager=mock_mgr),
                 ),
                 patch.object(screen, "_enqueue_download") as mock_enqueue,
@@ -3505,6 +3942,12 @@ async def test_catalog_action_load_more_triggers_fetch():
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
             screen._activation_settled = True
             screen._hf_has_more = True
+            # Explicit reset: the auto-fired _fetch_all_hf_models on mount can
+            # set _loading_more=True transiently; under xdist, depending on
+            # event-loop scheduling it may still be True when this test
+            # runs action_load_more, causing _load_more to early-return and
+            # the fetch mock to never be called.
+            screen._loading_more = False
             with patch.object(screen, "_fetch_more_hf") as fetch:
                 screen.action_load_more()
                 assert fetch.called
@@ -3884,6 +4327,49 @@ async def test_catalog_mouse_scroll_at_max_y_unsticks_pagination():
                 assert load_more.called
 
 
+async def test_catalog_mouse_scroll_with_no_overflow_loads_more():
+    """When initial render fits the viewport (max_scroll_y == 0) wheel events
+    produce no scroll delta either, so the watcher never fires. The bottom-CTA
+    'keep scrolling for more' must still respond to the first wheel down by
+    fetching the next page directly."""
+    from textual.events import MouseScrollDown
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._active_tab_id_cache = "chat"
+            screen._refresh_view = lambda: None  # type: ignore[method-assign]
+            screen._activation_settled = True
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._grid_container)
+            event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=0.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
+                screen.on_mouse_scroll_down(event)
+                assert load_more.called
+
+
 async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
     """When scroll_y < max_scroll_y the wheel handler must NOT fire so the
     scroll watcher's threshold logic stays in charge."""
@@ -3925,8 +4411,11 @@ async def test_catalog_mouse_scroll_below_max_y_defers_to_watcher():
                 assert not load_more.called
 
 
-async def test_catalog_mouse_scroll_skipped_in_list_view():
-    """List view must not pirate the wheel trigger from the list watcher."""
+async def test_catalog_mouse_scroll_loads_more_in_list_view_at_max():
+    """List view + scroll_y == max_scroll_y must fire _load_more, same as
+    grid view. Earlier the handler returned early on ``not self._grid_view``,
+    so a wheel at the bottom of the list silently did nothing -- user had
+    to press 'n' to paginate."""
     from textual.events import MouseScrollDown
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -3943,10 +4432,26 @@ async def test_catalog_mouse_scroll_skipped_in_list_view():
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._list_widget)
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
-            with patch.object(screen, "_load_more") as load_more:
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
                 screen.on_mouse_scroll_down(event)
-                assert not load_more.called
+                assert load_more.called
 
 
 async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
@@ -3991,8 +4496,11 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
                 assert not load_more.called
 
 
-async def test_catalog_mouse_scroll_in_list_view_is_ignored():
-    """on_mouse_scroll_down is a no-op outside grid view (list view paginates separately)."""
+async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
+    """List view + scroll_y < max_scroll_y must NOT fire _load_more from
+    the wheel handler. The list scroll watcher (_on_list_scrolled)
+    handles the prefetch threshold while there's still scroll budget;
+    the wheel handler is the safety net for the scroll_y == max_y case."""
     from textual.events import MouseScrollDown
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -4009,8 +4517,24 @@ async def test_catalog_mouse_scroll_in_list_view_is_ignored():
             screen._grid_view = False
             screen._hf_has_more = True
             screen._loading_more = False
+            screen._scroll_prefetch_armed_at = 0.0
+            container_type = type(screen._list_widget)
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
-            with patch.object(screen, "_load_more") as load_more:
+            with (
+                patch.object(
+                    container_type,
+                    "max_scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=100.0,
+                ),
+                patch.object(
+                    container_type,
+                    "scroll_y",
+                    new_callable=PropertyMock,
+                    return_value=50.0,
+                ),
+                patch.object(screen, "_load_more") as load_more,
+            ):
                 screen.on_mouse_scroll_down(event)
                 assert not load_more.called
 
@@ -4769,7 +5293,7 @@ async def test_chat_needs_setup_true_pushes_wizard():
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
-    class SetupTestApp(App[None]):
+    class SetupTestApp(LilbeeAppHost):
         CSS = ""
 
         def compose(self) -> ComposeResult:
@@ -5035,8 +5559,8 @@ def test_check_embedding_model_installed():
     """Cover _check_embedding_model_async lines 61-65 (model is installed)."""
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = True
-    with patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
-        from lilbee.core.services import get_services
+    with patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
+        from lilbee.app.services import get_services
 
         manager = get_services().model_manager
         assert manager.is_installed(cfg.embedding_model) is True
@@ -5047,13 +5571,13 @@ def test_check_embedding_model_remote_available():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
+        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch(
             "lilbee.modelhub.model_manager.detect_remote_embedding_models",
             return_value=[cfg.embedding_model],
         ),
     ):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         manager = get_services().model_manager
@@ -5068,10 +5592,10 @@ def test_check_embedding_model_not_found():
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
-        patch("lilbee.core.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
+        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
         patch("lilbee.modelhub.model_manager.detect_remote_embedding_models", return_value=[]),
     ):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
         from lilbee.modelhub.model_manager import detect_remote_embedding_models
 
         manager = get_services().model_manager
@@ -5529,6 +6053,101 @@ async def test_catalog_delete_second_press_confirms():
             assert screen._pending_delete is None
 
 
+async def test_catalog_delete_accepts_bare_hf_repo_row():
+    """Catalog rows store ref=hf_repo (bare). Pressing D must arm the
+    confirmation, not toast 'not installed', when that repo has an
+    installed manifest. Regression for bb-u2lj.
+    """
+    from datetime import UTC, datetime
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.modelhub.model_manager.core import ModelManager
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+    repo = "Qwen/Qwen3-0.6B-GGUF"
+    filename = "qwen3-0.6b-q8_0.gguf"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        models_dir = Path(tmp) / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        source_blob = Path(tmp) / "src.gguf"
+        source_blob.write_bytes(b"GGUFfake" * 64)
+        registry.install(
+            repo,
+            filename,
+            source_blob,
+            ModelManifest(
+                hf_repo=repo,
+                gguf_filename=filename,
+                size_bytes=source_blob.stat().st_size,
+                task="chat",
+                downloaded_at=datetime.now(UTC).isoformat(),
+            ),
+        )
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        services = MagicMock()
+        services.model_manager = mgr
+
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            with (
+                patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+                patch(
+                    "lilbee.modelhub.model_manager.classify_remote_models",
+                    return_value=[],
+                ),
+                patch(
+                    "lilbee.cli.tui.screens.catalog.get_services",
+                    return_value=services,
+                ),
+            ):
+                screen = CatalogScreen()
+                app.push_screen(screen)
+                await _pilot.pause()
+                screen._active_tab_id_cache = "chat"
+                screen._refresh_view = lambda: None  # type: ignore[method-assign]
+                await screen.workers.wait_for_complete()
+
+                with patch.object(screen, "_get_highlighted_model_name", return_value=repo):
+                    screen.action_delete_model()
+                # Gate passed: confirmation armed for the bare repo.
+                assert screen._pending_delete == repo
+
+                # Resolver maps the bare repo to the single installed full ref.
+                full_ref = f"{repo}/{filename}"
+                assert screen._resolve_delete_ref(repo) == full_ref
+
+
+async def test_catalog_resolve_delete_ref_picks_one_quant():
+    """Multi-quant repos resolve to a single full ref so a D press
+    deletes one model, never the whole repo."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            repo = "Qwen/Qwen3-0.6B-GGUF"
+            full_q4 = f"{repo}/Qwen3-0.6B-Q4_K_M.gguf"
+            full_q8 = f"{repo}/Qwen3-0.6B-Q8_0.gguf"
+            screen._installed_names = {repo, full_q4, full_q8}
+
+            # Bare repo resolves to one of the installed quants, never both.
+            assert screen._resolve_delete_ref(repo) == full_q4
+            # Full ref passes through unchanged.
+            assert screen._resolve_delete_ref(full_q8) == full_q8
+            # Remote SDK names pass through unchanged.
+            assert screen._resolve_delete_ref("qwen3:0.6b") == "qwen3:0.6b"
+
+
 async def test_catalog_delete_not_installed():
     """Pressing d on a model that is not installed shows warning."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -5679,12 +6298,12 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
     """
     from unittest.mock import MagicMock
 
-    from lilbee.cli.tui.screens.chat import _build_add_progress_callback
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.screens.chat import build_add_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EmbedEvent, EventType
 
     reporter = MagicMock(spec=ProgressReporter)
-    callback = _build_add_progress_callback(reporter)
+    callback = build_add_progress_callback(reporter)
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=1, total_chunks=10))
     # Second event arrives immediately; throttle returns early before reporter.update.
     callback(EventType.EMBED, EmbedEvent(file="x.txt", chunk=2, total_chunks=10))
@@ -5693,7 +6312,7 @@ def test_build_add_progress_callback_throttles_embed_updates() -> None:
 
 
 def test_build_sync_progress_callback_routes_extract_event() -> None:
-    """``_build_sync_progress_callback`` ticks per-page on EXTRACT events.
+    """``build_sync_progress_callback`` ticks per-page on EXTRACT events.
 
     Vision PDF OCR fires one EXTRACT event per page. Without the EXTRACT
     branch in this callback the periodic + manual sync TaskBar would
@@ -5702,12 +6321,12 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
     """
     from unittest.mock import MagicMock
 
-    from lilbee.cli.tui.screens.chat import _build_sync_progress_callback
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.screens.chat import build_sync_progress_callback
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.runtime.progress import EventType, ExtractEvent
 
     reporter = MagicMock(spec=ProgressReporter)
-    callback = _build_sync_progress_callback(reporter)
+    callback = build_sync_progress_callback(reporter)
     callback(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
     reporter.update.assert_called_once()
     args, kwargs = reporter.update.call_args
@@ -5730,7 +6349,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     from unittest.mock import MagicMock
 
     from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.ingest import SyncResult
     from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
 
@@ -5762,7 +6381,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             mock_copy.return_value = SimpleNamespace(copied=[test_file], skipped=[])
 
             def _run_worker() -> None:
-                app.screen._do_add(test_file, reporter)
+                app.screen._do_add([test_file], reporter)
 
             thread = threading.Thread(target=_run_worker)
             thread.start()
@@ -5788,7 +6407,7 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
     """
     import threading
 
-    from lilbee.cli.tui.widgets.task_bar import ProgressReporter
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.ingest import SyncResult
 
     app = ChatTestApp()
@@ -5802,12 +6421,12 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
             return fake_result
 
         reporter = ProgressReporter(app.task_bar, "fake-id")
-        captured: dict[str, BaseException] = {}
+        captured: dict[str, Exception] = {}
 
         def _run_worker() -> None:
             try:
-                app.screen._do_add(test_file, reporter)
-            except BaseException as exc:
+                app.screen._do_add([test_file], reporter)
+            except Exception as exc:
                 captured["exc"] = exc
 
         with (
@@ -5989,6 +6608,76 @@ async def test_chat_history_prev_skips_in_normal_mode():
             app.screen.action_history_prev()
 
 
+async def test_chat_history_prev_skips_when_input_unfocused():
+    """action_history_prev raises SkipAction when chat input is not focused."""
+    from textual.actions import SkipAction
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Insert mode is the default; explicitly drop input focus by focusing
+        # something else on the screen so action_history_prev hits its
+        # ``if not inp.has_focus`` early-return branch.
+        app.screen.set_focus(None)
+        await pilot.pause()
+        with pytest.raises(SkipAction):
+            app.screen.action_history_prev()
+
+
+async def test_chat_history_next_skips_when_input_unfocused():
+    """action_history_next mirrors action_history_prev for the unfocused-input branch."""
+    from textual.actions import SkipAction
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.set_focus(None)
+        await pilot.pause()
+        with pytest.raises(SkipAction):
+            app.screen.action_history_next()
+
+
+async def test_action_command_palette_falls_through_when_overlay_missing():
+    """LilbeeApp.action_command_palette: when on ChatScreen but the
+    CompletionOverlay isn't queryable, fall through to super() instead of
+    raising. Covers the ``except NoMatches: overlay = None`` branch."""
+    from textual.css.query import NoMatches
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Force query_one for the overlay to raise NoMatches; mock super()
+        # so we just assert the fall-through happened, not the platform's
+        # native palette behaviour.
+        with (
+            patch.object(app.screen, "query_one", side_effect=NoMatches("test")),
+            patch.object(LilbeeApp.__bases__[0], "action_command_palette") as super_palette,
+        ):
+            _ = Static  # silence "imported but unused"
+            app.action_command_palette()
+            super_palette.assert_called()
+
+
+async def test_chat_action_complete_prev_noop_when_input_unfocused():
+    """action_complete_prev returns early without touching the overlay when
+    the chat input doesn't have focus."""
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.set_focus(None)
+        await pilot.pause()
+        # Must not raise; must not alter overlay state.
+        app.screen.action_complete_prev()
+
+
 async def test_chat_enter_key_returns_to_insert_mode():
     """Enter key returns to insert mode from normal mode."""
     cfg.chat_model = TEST_LOCAL_REF
@@ -6070,15 +6759,20 @@ async def test_app_nav_switches_all_views():
         assert app.active_view == "Catalog"
 
 
-async def test_chat_ctrl_n_p_bindings_exist():
-    """Ctrl+N and Ctrl+P bindings exist on ChatScreen."""
+async def test_chat_ctrl_n_binding_exists():
+    """Ctrl+N is bound on ChatScreen for vim-style cycle-next.
+
+    Ctrl+P is intentionally NOT a screen binding any more; it stays on
+    the app-level command palette and dispatches through
+    LilbeeApp.action_command_palette only when the dropdown is visible.
+    """
     from textual.binding import Binding as B
 
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
     assert "ctrl+n" in keys
-    assert "ctrl+p" in keys
+    assert "ctrl+p" not in keys
 
 
 async def test_chat_input_history_tracking():
@@ -6603,7 +7297,7 @@ async def test_settings_group_titles_present():
         assert len(titles) >= 2
 
 
-class WikiTestApp(App[None]):
+class WikiTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -6877,14 +7571,15 @@ class TestWikiScreenSearch:
 
 
 class TestWikiScreenNavigation:
-    async def test_go_back_pops_screen(self):
-        """Pressing q pops the wiki screen in a non-LilbeeApp context."""
-        from lilbee.cli.tui.screens.wiki import WikiScreen
+    async def test_go_back_invokes_switch_view(self):
+        """Pressing q asks the host to switch to the Chat view."""
+        from unittest.mock import patch
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("q")
-            assert not isinstance(app.screen, WikiScreen)
+            with patch.object(app, "switch_view") as switch:
+                await pilot.press("q")
+                switch.assert_called_once_with("Chat")
 
     async def test_vim_keys(self):
         """Vim navigation keys work on the option list."""
@@ -6945,7 +7640,7 @@ class TestWikiViewRegistration:
         assert "Wiki" not in get_nav_views()
 
 
-class WikiDraftsTestApp(App[None]):
+class WikiDraftsTestApp(LilbeeAppHost):
     """Bare app that pushes the drafts screen directly for isolated tests."""
 
     CSS = ""
@@ -7731,6 +8426,23 @@ class TestWikiDisplayPageMissing:
 
 
 class TestWikiCoverageEdgeCases:
+    async def test_on_show_reloads_pages(self, tmp_path):
+        """bb-rfa6: out-of-band wiki builds (`lilbee wiki build` from another shell)
+        and incremental wiki updates must surface in the TUI without a restart;
+        on_show triggers a fresh sidebar scan."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch.object(screen, "_load_pages") as mock_load:
+                screen.on_show()
+                mock_load.assert_called_once_with()
+            await pilot.pause()
+
     async def test_load_pages_exception_path(self, tmp_path):
         """Exception in list_pages falls back to empty list."""
         cfg.wiki = True
@@ -7777,7 +8489,9 @@ class TestWikiCoverageEdgeCases:
             assert app.screen.query_one("#wiki-search", TextualInput).has_focus
 
     async def test_dismiss_or_back_empty_search(self, tmp_path):
-        """Escape with empty search calls go_back."""
+        """Escape with empty search invokes go_back, which switches to Chat."""
+        from unittest.mock import patch
+
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -7788,13 +8502,14 @@ class TestWikiCoverageEdgeCases:
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            # Search is empty, so dismiss_or_back should call go_back
-            screen.action_dismiss_or_back()
-            await pilot.pause()
+            with patch.object(app, "switch_view") as switch:
+                screen.action_dismiss_or_back()
+                await pilot.pause()
+                switch.assert_called_once_with("Chat")
 
-    async def test_go_back_pops_screen(self, tmp_path):
-        """action_go_back pops screen on non-LilbeeApp."""
-        from lilbee.cli.tui.screens.wiki import WikiScreen
+    async def test_go_back_invokes_switch_view(self, tmp_path):
+        """action_go_back asks the host to switch to the Chat view."""
+        from unittest.mock import patch
 
         cfg.wiki = True
         cfg.data_root = tmp_path
@@ -7802,9 +8517,10 @@ class TestWikiCoverageEdgeCases:
         wiki_root.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            app.screen.action_go_back()
-            await pilot.pause()
-            assert not isinstance(app.screen, WikiScreen)
+            with patch.object(app, "switch_view") as switch:
+                app.screen.action_go_back()
+                await pilot.pause()
+                switch.assert_called_once_with("Chat")
 
     async def test_go_back_switches_to_chat_on_lilbee_app(self, tmp_path):
         """action_go_back calls switch_view('Chat') on LilbeeApp."""
@@ -7938,7 +8654,7 @@ def test_installed_name_to_row_creates_row():
     assert row.size == "--"
 
 
-class SetupTestApp(App[None]):
+class SetupTestApp(LilbeeAppHost):
     CSS = ""
 
     def compose(self) -> ComposeResult:
@@ -8599,26 +9315,6 @@ async def test_catalog_install_model_already_exists(tmp_path):
                 assert "already installed" in mock_notify.call_args[0][0]
 
 
-async def test_catalog_enqueue_download_non_lilbee_app():
-    """_enqueue_download notifies error when not LilbeeApp."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._active_tab_id_cache = "chat"
-            screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            m = _make_catalog_model(name="dl-model")
-            # CatalogTestApp is not LilbeeApp, so this should show error
-            with patch.object(screen, "notify") as mock_notify:
-                screen._enqueue_download(m)
-                mock_notify.assert_called_once()
-                assert "task bar" in mock_notify.call_args[0][0].lower()
-
-
 async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
@@ -8967,24 +9663,24 @@ async def test_chat_on_chat_input_changed_completing():
 
 
 def test_settings_make_select_value_matches_choice():
-    """_make_select returns Select with value preset when it matches choices."""
+    """make_select returns Select with value preset when it matches choices."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_select
+    from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-    sel = _make_select("test_key", defn, "auto")
+    sel = make_select("test_key", defn, "auto")
     # When value matches, the Select is created with value= kwarg
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
 
 
 def test_settings_make_select_value_no_match():
-    """_make_select returns Select without preset value when no match."""
+    """make_select returns Select without preset value when no match."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_select
+    from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-    sel = _make_select("test_key", defn, "unknown")
+    sel = make_select("test_key", defn, "unknown")
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
 
@@ -9220,16 +9916,20 @@ async def test_settings_refresh_help_exception():
         screen._refresh_help("nonexistent_key_xyz", defn)
 
 
-async def test_settings_go_back_non_lilbee_app():
-    """action_go_back pops screen on non-LilbeeApp."""
+async def test_settings_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        screen.action_go_back()
-        await pilot.pause()
+        with patch.object(app, "switch_view") as switch:
+            screen.action_go_back()
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
 
 
 # ---------------------------------------------------------------------------
@@ -9237,14 +9937,14 @@ async def test_settings_go_back_non_lilbee_app():
 # ---------------------------------------------------------------------------
 
 
-class TaskCenterTestApp(App[None]):
+class TaskCenterTestApp(LilbeeAppHost):
     """Non-LilbeeApp for testing TaskCenter go_back fallback."""
 
     CSS = ""
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
@@ -9292,16 +9992,20 @@ async def test_task_center_advance_tick_skips_when_stack_empty():
             screen._advance_tick()
 
 
-async def test_task_center_go_back_non_lilbee_app():
-    """action_go_back pops screen on non-LilbeeApp."""
+async def test_task_center_go_back_invokes_switch_view():
+    """action_go_back asks the host to switch to the Chat view."""
+    from unittest.mock import patch
+
     from lilbee.cli.tui.screens.task_center import TaskCenter
 
     app = TaskCenterTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        app.screen.action_go_back()
-        await pilot.pause()
-        assert not isinstance(app.screen, TaskCenter)
+        assert isinstance(app.screen, TaskCenter)
+        with patch.object(app, "switch_view") as switch:
+            app.screen.action_go_back()
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
 
 
 async def test_app_action_quit_when_streaming():
@@ -9353,7 +10057,7 @@ async def test_action_quit_calls_cancel_inference_before_exit():
         await pilot.pause()
         parent = MagicMock()
 
-        from lilbee.core.services import get_services, set_services
+        from lilbee.app.services import get_services, set_services
         from tests.conftest import make_mock_services
 
         # Build a stub Services whose cancel_inference is a MagicMock so we
@@ -9363,7 +10067,7 @@ async def test_action_quit_calls_cancel_inference_before_exit():
         original_services = get_services()
         stub = make_mock_services(provider=original_services.provider)
         # Replace the method with our mock at the class level temporarily.
-        from lilbee.core import services as services_mod
+        from lilbee.app import services as services_mod
 
         cancel_calls: list[str] = []
 
@@ -9497,17 +10201,6 @@ async def test_app_switch_view_non_chat():
 # ---------------------------------------------------------------------------
 # commands.py coverage
 # ---------------------------------------------------------------------------
-
-
-async def test_command_provider_app_not_lilbee():
-    """_app property raises TypeError on non-LilbeeApp."""
-    from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)):
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with pytest.raises(TypeError, match="LilbeeApp"):
-            _ = provider._app
 
 
 async def test_command_provider_action_setup():
@@ -10017,28 +10710,28 @@ def test_is_installed_no_match():
 
 
 def test_type_pill_with_choices():
-    """_type_pill returns 'select' pill when defn has choices."""
+    """type_pill returns 'select' pill when defn has choices."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _type_pill
+    from lilbee.cli.tui.screens.settings_widgets import type_pill
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("a", "b"))
-    result = _type_pill(defn)
+    result = type_pill(defn)
     assert "select" in str(result).lower()
 
 
 def test_make_editor_with_choices():
-    """_make_editor returns a Select widget when defn has choices."""
+    """make_editor returns a Select widget when defn has choices."""
     from textual.widgets import Select
 
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _make_editor
+    from lilbee.cli.tui.screens.settings_widgets import make_editor
 
     with patch(
-        "lilbee.cli.tui.screens.settings._effective_value",
+        "lilbee.cli.tui.screens.settings_widgets.effective_value",
         return_value="auto",
     ):
         defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
-        widget = _make_editor("test_key", defn)
+        widget = make_editor("test_key", defn)
     assert isinstance(widget, Select)
 
 
@@ -10351,10 +11044,10 @@ async def test_task_bar_indeterminate_flag_propagated():
     from lilbee.cli.tui.task_queue import TaskStatus
     from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-    class _Harness(App[None]):
+    class _Harness(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+            from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
             self.task_bar = TaskBarController(self)
 
@@ -10387,11 +11080,11 @@ def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
     """Build a test app that pushes WikiScreen on mount."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
 
-    class _WikiApp(App[None]):
+    class _WikiApp(LilbeeAppHost):
         def __init__(self) -> None:
             super().__init__()
             if with_task_bar:
-                from lilbee.cli.tui.widgets.task_bar import TaskBarController
+                from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
                 self.task_bar = TaskBarController(self)
 
@@ -10777,42 +11470,42 @@ async def test_catalog_focused_list_index_returns_highlighted():
 
 
 def test_settings_env_pill_when_env_set(monkeypatch):
-    """_env_pill returns a pill when the LILBEE_* env var is exported."""
-    from lilbee.cli.tui.screens.settings import _env_pill
+    """env_pill returns a pill when the LILBEE_* env var is exported."""
+    from lilbee.cli.tui.screens.settings_widgets import env_pill
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    pill_content = _env_pill("chat_model")
+    pill_content = env_pill("chat_model")
     assert pill_content is not None
     assert "LILBEE_CHAT_MODEL" in pill_content.plain
 
 
 def test_settings_help_content_blank_when_no_help_text():
-    """_help_content returns empty Content when the setting has no help text."""
+    """help_content returns empty Content when the setting has no help text."""
     from lilbee.cli.settings_map import SettingDef
-    from lilbee.cli.tui.screens.settings import _help_content
+    from lilbee.cli.tui.screens.settings_widgets import help_content
 
     defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
-    content = _help_content("anon", defn)
+    content = help_content("anon", defn)
     assert content.plain == ""
 
 
 def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
-    """_title_content carries the env var name when LILBEE_* is exported."""
+    """title_content carries the env var name when LILBEE_* is exported."""
     from lilbee.cli.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import _title_content
+    from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" in content.plain
 
 
 def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
-    """_title_content omits the env pill when the LILBEE_* var is not set."""
+    """title_content omits the env pill when the LILBEE_* var is not set."""
     from lilbee.cli.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import _title_content
+    from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
-    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" not in content.plain
 
 
@@ -10894,7 +11587,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
 
     from textual.widgets import Button
 
-    from lilbee.cli.tui.screens.settings import _MODEL_PICKER_BUTTON_PREFIX
+    from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -10902,8 +11595,8 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
             mock_apply.assert_called_once()
-        button = app.screen.query_one(f"#{_MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
-        # Label was repainted via _model_picker_label; the chat_model field
+        button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
+        # Label was repainted via model_picker_label; the chat_model field
         # is still bound to whatever cfg currently holds, so the button
         # label is non-empty regardless of the picker outcome.
         assert str(button.label).strip() != ""
@@ -10984,23 +11677,23 @@ async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatc
 
 
 def test_settings_model_field_to_picker_scope_returns_all_four():
-    """_model_field_to_picker_scope returns the canonical 4-key map."""
-    from lilbee.cli.tui.screens.settings import _model_field_to_picker_scope
+    """model_field_to_picker_scope returns the canonical 4-key map."""
+    from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
 
-    mapping = _model_field_to_picker_scope()
+    mapping = model_field_to_picker_scope()
     assert set(mapping) == {"chat_model", "embedding_model", "vision_model", "reranker_model"}
     assert set(mapping.values()) == {"chat", "embed", "vision", "rerank"}
 
 
 def test_settings_picker_scope_to_task_covers_all_branches():
-    """_picker_scope_to_task maps every PickerScope to the right ModelTask."""
-    from lilbee.cli.tui.screens.settings import _picker_scope_to_task
-    from lilbee.modelhub.models import ModelTask
+    """picker_scope_to_task maps every PickerScope to the right ModelTask."""
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.screens.settings_widgets import picker_scope_to_task
 
-    assert _picker_scope_to_task("chat") is ModelTask.CHAT
-    assert _picker_scope_to_task("embed") is ModelTask.EMBEDDING
-    assert _picker_scope_to_task("vision") is ModelTask.VISION
-    assert _picker_scope_to_task("rerank") is ModelTask.RERANK
+    assert picker_scope_to_task("chat") is ModelTask.CHAT
+    assert picker_scope_to_task("embed") is ModelTask.EMBEDDING
+    assert picker_scope_to_task("vision") is ModelTask.VISION
+    assert picker_scope_to_task("rerank") is ModelTask.RERANK
 
 
 async def test_settings_push_model_picker_bails_when_unmounted(monkeypatch):
@@ -11075,16 +11768,14 @@ def test_settings_on_model_picker_pressed_ignores_unknown_key():
     """A button id that isn't in the scope map is ignored."""
     from unittest.mock import MagicMock
 
-    from lilbee.cli.tui.screens.settings import (
-        _MODEL_PICKER_BUTTON_PREFIX,
-        SettingsScreen,
-    )
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     screen = SettingsScreen.__new__(SettingsScreen)
     discover_calls: list[tuple] = []
     screen._discover_then_open_picker = lambda *a: discover_calls.append(a)
     event = MagicMock()
-    event.button.id = f"{_MODEL_PICKER_BUTTON_PREFIX}not_a_known_field"
+    event.button.id = f"{MODEL_PICKER_BUTTON_PREFIX}not_a_known_field"
     screen._on_model_picker_pressed(event)
     assert discover_calls == []
 

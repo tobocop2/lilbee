@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.wiki.browse import WikiPageInfo
 
 from textual import on
@@ -27,7 +28,6 @@ log = logging.getLogger(__name__)
 
 # Tree node data carries the full wiki-page slug when present. Group folders
 # (page-type headings, per-source branches, inner-section branches) use None.
-_LEAF_SUFFIX = ""
 _INDEX_STEM = "index"
 # Wiki slugs of the form ``<subdir>/<name>`` carry a meaningful page type;
 # bare slugs (no slash) do not.
@@ -76,6 +76,8 @@ def _breadcrumb_for_slug(slug: str, title: str) -> str:
 
 class WikiScreen(Screen[None]):
     """Wiki page browser with a tree sidebar and markdown content viewer."""
+
+    app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "wiki.tcss"
     AUTO_FOCUS = "#wiki-page-list"
@@ -134,6 +136,12 @@ class WikiScreen(Screen[None]):
             yield Footer()
 
     def on_mount(self) -> None:
+        self._load_pages()
+
+    def on_show(self) -> None:
+        """Re-scan on focus so out-of-band builds (`lilbee wiki build` from a
+        sibling shell) and incremental wiki updates land without a TUI restart.
+        """
         self._load_pages()
 
     def reload(self) -> None:
@@ -323,12 +331,7 @@ class WikiScreen(Screen[None]):
         self.action_go_back()
 
     def action_go_back(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def _tree_or_none(self) -> Tree[str | None] | None:
         if isinstance(self.focused, Input):

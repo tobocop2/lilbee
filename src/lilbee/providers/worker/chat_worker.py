@@ -9,13 +9,7 @@ from typing import Any
 
 from lilbee.providers.worker.transport import ChatRequest, RoleConfig
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.wire_kinds import (
-    CHAT_KIND,
-    ERROR_KIND,
-    RESULT_KIND,
-    STREAM_CHUNK_KIND,
-    STREAM_END_KIND,
-)
+from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
 _ABORT_BRIDGE_POLL_S = 0.025
@@ -74,7 +68,7 @@ class _ChatSession:
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
         from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
-        from lilbee.providers.model_cache import MODE_CHAT
+        from lilbee.providers.model_cache import LoaderMode
 
         target_path = (
             resolve_model_path(model_override) if model_override else self._role_config.model_path
@@ -86,7 +80,7 @@ class _ChatSession:
             # ggml's mid-token abort path crashes the worker on macOS Metal.
             # Cancel is enforced one token boundary later by the Python-side
             # polling loop in _handle_chat_streaming.
-            self._llm = load_llama(target_path, mode=MODE_CHAT)
+            self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
         return self._llm
 
@@ -151,7 +145,7 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
                 or (now - last_flush) >= _STREAM_BATCH_MAX_INTERVAL_S
             )
             if should_flush:
-                reply.send(STREAM_CHUNK_KIND, "".join(buffer))
+                reply.send(WireKind.STREAM_CHUNK, "".join(buffer))
                 buffer.clear()
                 last_flush = now
                 seen_first_token = True
@@ -161,9 +155,9 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
         # the user sees partial output before the error frame the outer
         # handler may emit.
         if buffer:
-            reply.send(STREAM_CHUNK_KIND, "".join(buffer))
+            reply.send(WireKind.STREAM_CHUNK, "".join(buffer))
     if completed_cleanly:
-        reply.send(STREAM_END_KIND, None)
+        reply.send(WireKind.STREAM_END, None)
 
 
 def _extract_non_streaming_content(response: Any) -> str:
@@ -186,7 +180,7 @@ def _extract_non_streaming_content(response: Any) -> str:
 def _handle_chat_non_streaming(reply: Reply, response: Any) -> None:
     """Emit one result frame with the full assistant message text."""
     text = _extract_non_streaming_content(response)
-    reply.send(RESULT_KIND, text)
+    reply.send(WireKind.RESULT, text)
 
 
 class _AbortBridge:
@@ -246,7 +240,7 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         try:
             raise TypeError(f"chat payload must be ChatRequest, got {type(payload).__name__}")
         except TypeError as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
         return
     session: _ChatSession = state.session
     with _AbortBridge(session._abort_flag):
@@ -258,7 +252,7 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
                 model=payload.model,
             )
         except Exception as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
             return
         try:
             if payload.stream:
@@ -266,7 +260,7 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             else:
                 _handle_chat_non_streaming(reply, response)
         except Exception as exc:
-            reply.send(ERROR_KIND, _serialize_exception(exc))
+            reply.send(WireKind.ERROR, _serialize_exception(exc))
 
 
 def chat_worker_main(
@@ -279,7 +273,7 @@ def chat_worker_main(
         abort_flag,
         role_config,
         session_factory=_ChatSession,
-        kind_handlers={CHAT_KIND: _handle_chat},
+        kind_handlers={WireKind.CHAT: _handle_chat},
     )
 
 

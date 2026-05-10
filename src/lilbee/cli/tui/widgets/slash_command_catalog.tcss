@@ -1,0 +1,63 @@
+SlashCommandCatalog {
+    align: center middle;
+}
+
+SlashCommandCatalog #catalog-root {
+    width: 70;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+SlashCommandCatalog #catalog-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    color: $text;
+    margin-bottom: 1;
+}
+
+SlashCommandCatalog #catalog-filter {
+    width: 100%;
+    margin-bottom: 1;
+    border: round $primary 40%;
+    background: $boost;
+}
+
+SlashCommandCatalog #catalog-filter:focus {
+    border: round $primary;
+}
+
+SlashCommandCatalog #catalog-list {
+    width: 100%;
+    height: 1fr;
+    min-height: 12;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+SlashCommandCatalog #catalog-list > .option-list--option {
+    padding: 0 1;
+}
+
+SlashCommandCatalog #catalog-list > .option-list--option-disabled {
+    color: $primary;
+    text-style: bold;
+    padding: 1 0 0 0;
+    background: transparent;
+}
+
+SlashCommandCatalog #catalog-list > .option-list--option-highlighted {
+    background: $primary 25%;
+}
+
+SlashCommandCatalog #catalog-hint {
+    width: 100%;
+    content-align: center middle;
+    color: $text-muted;
+    margin-top: 1;
+}

@@ -1,8 +1,9 @@
 """llama.cpp log dispatcher and native-stderr suppression.
 
 Routes llama.cpp's C-stream log messages through Python logging, coalescing
-CONT continuation chunks until a newline. The pending buffer is module-private
-because it tracks request-scoped state for a ctypes callback.
+CONT continuation chunks until a newline. The pending buffer is owned by the
+``_LogDispatcher`` singleton because it tracks request-scoped state for a
+ctypes callback.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from lilbee.providers.base import ProviderError
@@ -46,38 +48,6 @@ _GGML_ERROR_SOFT_DEMOTE = (
 
 _STDERR_LOCK = threading.Lock()
 
-# ctypes does not retain a Python reference to the wrapped callback;
-# this module-level handle keeps it alive for the process lifetime.
-_llama_log_callback: Any = None
-_llama_log_installed = False
-# Module-private buffer; not in Services because it's request-scoped state for a ctypes callback.
-_llama_log_pending: dict[int, str] = {}
-_llama_log_pending_level: int = _GGML_LOG_LEVEL_INFO
-
-
-def _llama_log_dispatch(level: int, text_bytes: bytes, _user_data: Any) -> None:
-    """Dispatch one llama.cpp log message; CONT chunks are coalesced on newline."""
-    global _llama_log_pending_level
-    try:
-        text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
-    except Exception:  # pragma: no cover
-        return
-
-    if level == _GGML_LOG_LEVEL_CONT:
-        _llama_log_pending[0] = _llama_log_pending.get(0, "") + text
-    else:
-        if 0 in _llama_log_pending:
-            buffered = _llama_log_pending.pop(0).rstrip()
-            if buffered:
-                _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, buffered), buffered)
-        _llama_log_pending_level = level
-        _llama_log_pending[0] = text
-
-    if "\n" in _llama_log_pending.get(0, ""):
-        full = _llama_log_pending.pop(0).rstrip()
-        if full:
-            _llama_log.log(_resolve_ggml_level(_llama_log_pending_level, full), full)
-
 
 def _resolve_ggml_level(ggml_level: int, text: str) -> int:
     """Translate ggml log level to Python, demoting known-advisory ERRORs to WARNING."""
@@ -85,6 +55,94 @@ def _resolve_ggml_level(ggml_level: int, text: str) -> int:
     if py_level == logging.ERROR and any(s in text for s in _GGML_ERROR_SOFT_DEMOTE):
         return logging.WARNING
     return py_level
+
+
+@dataclass
+class _LogDispatchSnapshot:
+    """Frozen snapshot of dispatcher state for test save/restore."""
+
+    callback: Any
+    installed: bool
+    pending: dict[int, str]
+    pending_level: int
+
+
+class _LogDispatcher:
+    """Owns the mutable state for routing llama.cpp logs through Python logging.
+
+    All four pieces of state (callback handle, installed flag, pending
+    buffer, pending-level) live here as instance fields so tests can
+    snapshot / restore the whole dispatcher in one call instead of
+    poking module globals directly.
+    """
+
+    def __init__(self) -> None:
+        # ctypes does not retain a Python reference to the wrapped callback;
+        # hanging it off the dispatcher keeps it alive for process lifetime.
+        self.callback: Any = None
+        self.installed: bool = False
+        # Request-scoped buffer for a ctypes callback; not on Services because
+        # the C side has no notion of dependency injection.
+        self.pending: dict[int, str] = {}
+        self.pending_level: int = _GGML_LOG_LEVEL_INFO
+
+    def dispatch(self, level: int, text_bytes: bytes, _user_data: Any) -> None:
+        """Dispatch one llama.cpp log message; CONT chunks coalesce on newline."""
+        try:
+            text = text_bytes.decode("utf-8", errors="replace") if text_bytes else ""
+        except Exception:  # pragma: no cover
+            return
+
+        if level == _GGML_LOG_LEVEL_CONT:
+            self.pending[0] = self.pending.get(0, "") + text
+        else:
+            if 0 in self.pending:
+                buffered = self.pending.pop(0).rstrip()
+                if buffered:
+                    _llama_log.log(_resolve_ggml_level(self.pending_level, buffered), buffered)
+            self.pending_level = level
+            self.pending[0] = text
+
+        if "\n" in self.pending.get(0, ""):
+            full = self.pending.pop(0).rstrip()
+            if full:
+                _llama_log.log(_resolve_ggml_level(self.pending_level, full), full)
+
+    def install(self) -> None:
+        """Route llama.cpp logs through Python logging. Idempotent."""
+        if self.installed:
+            return
+        llama_cpp = import_llama_cpp()
+        self.callback = llama_cpp.llama_log_callback(self.dispatch)
+        llama_cpp.llama_log_set(self.callback, None)
+        self.installed = True
+
+    def snapshot(self) -> _LogDispatchSnapshot:
+        """Return a frozen snapshot of dispatcher state for test save/restore."""
+        return _LogDispatchSnapshot(
+            callback=self.callback,
+            installed=self.installed,
+            pending=dict(self.pending),
+            pending_level=self.pending_level,
+        )
+
+    def restore(self, snap: _LogDispatchSnapshot) -> None:
+        """Reset dispatcher state to *snap*."""
+        self.callback = snap.callback
+        self.installed = snap.installed
+        self.pending = dict(snap.pending)
+        self.pending_level = snap.pending_level
+
+    def reset(self) -> None:
+        """Clear dispatcher state (for tests that want a known-clean baseline)."""
+        self.callback = None
+        self.installed = False
+        self.pending.clear()
+        self.pending_level = _GGML_LOG_LEVEL_INFO
+
+
+# Process-lifetime singleton. Tests treat this as the dispatcher boundary.
+_dispatcher = _LogDispatcher()
 
 
 _MISSING_VULKAN_HINT = (
@@ -116,14 +174,7 @@ def import_llama_cpp() -> Any:
 
 def install_llama_log_handler() -> None:
     """Route llama.cpp logs through Python logging. Idempotent."""
-    global _llama_log_callback, _llama_log_installed
-    if _llama_log_installed:
-        return
-    llama_cpp = import_llama_cpp()
-
-    _llama_log_callback = llama_cpp.llama_log_callback(_llama_log_dispatch)
-    llama_cpp.llama_log_set(_llama_log_callback, None)
-    _llama_log_installed = True
+    _dispatcher.install()
 
 
 @contextmanager

@@ -10,7 +10,7 @@ from litestar import delete, get, patch, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
-from lilbee.core import services as svc_mod
+from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
@@ -44,7 +44,7 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, WIKI_DISABLED_ERROR
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR, WikiSubdir
 
 
 def _wiki_root() -> Path:
@@ -270,8 +270,8 @@ async def wiki_status_route() -> WikiStatusResult:
     if not root.exists():
         return WikiStatusResult(wiki_enabled=cfg.wiki)
 
-    summaries_dir = root / SUMMARIES_SUBDIR
-    drafts_dir = root / DRAFTS_SUBDIR
+    summaries_dir = root / WikiSubdir.SUMMARIES
+    drafts_dir = root / WikiSubdir.DRAFTS
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 

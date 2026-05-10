@@ -23,10 +23,24 @@ _TOKEN_BYTES = 32
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+# Set of route-handler functions that bypass auth. Populated at import time by
+# the @read_only decorator; checked by AuthMiddleware via membership lookup.
+# Module-level set is intentional: route handlers are defined once at import,
+# the registry has no other lifecycle, and the alternative (mutating an
+# attribute on the function object) lands every check on a # type: ignore
+# because mypy cannot see the dynamic attribute on Callable.
+_READ_ONLY_HANDLERS: set[Callable[..., Any]] = set()
+
+
 def read_only(fn: F) -> F:
     """Mark a route handler as read-only (no auth required)."""
-    fn._lilbee_read_only = True  # type: ignore[attr-defined]
+    _READ_ONLY_HANDLERS.add(fn)
     return fn
+
+
+def is_read_only(fn: Callable[..., Any]) -> bool:
+    """True iff *fn* was decorated with :func:`read_only`."""
+    return fn in _READ_ONLY_HANDLERS
 
 
 def server_json_path() -> Path:
@@ -111,7 +125,7 @@ class AuthMiddleware:
             return
 
         handler = scope.get("route_handler")
-        if handler and getattr(handler.fn, "_lilbee_read_only", False):
+        if handler and is_read_only(handler.fn):
             await self.app(scope, receive, send)
             return
 

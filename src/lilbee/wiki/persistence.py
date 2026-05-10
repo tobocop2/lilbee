@@ -19,8 +19,8 @@ from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
-    WIKI_LOG_ACTION_GENERATED,
     PageTarget,
+    WikiLogAction,
 )
 
 log = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ def persist_and_finalize(
 
     update_wiki_index(config)
     append_wiki_log(
-        WIKI_LOG_ACTION_GENERATED,
+        WikiLogAction.GENERATED,
         f"{target.page_type} page for {target.label} -> {target.subdir}/{target.slug}.md",
         config,
     )

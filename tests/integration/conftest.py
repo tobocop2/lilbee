@@ -13,7 +13,6 @@ from lilbee.core.system import canonical_models_dir
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
-_CI_CHAT_MODEL = _CI_CHAT_REPO
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
@@ -87,8 +86,8 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
     """
+    from lilbee.app.services import reset_services as reset_provider
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()
@@ -147,8 +146,8 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     Session-scoped: downloads models once, creates documents + wiki dir,
     runs sync, yields pipeline data, then restores config.
     """
+    from lilbee.app.services import reset_services as reset_provider
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
-    from lilbee.core.services import reset_services as reset_provider
     from lilbee.data.ingest import sync
 
     snapshot = cfg.model_copy()

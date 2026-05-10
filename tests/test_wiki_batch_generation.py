@@ -24,10 +24,9 @@ from lilbee.wiki.entity_extractor import (
 from lilbee.wiki.generation import _all_sources_in_scope, build_wiki
 from lilbee.wiki.persistence import delete_pending_marker_if_present
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
-    ENTITIES_SUBDIR,
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+    WikiSubdir,
 )
 from lilbee.wiki.synthesis import (
     _prefix_heading,
@@ -324,7 +323,7 @@ class TestFinalizeSectionGuards:
         )
         # The page landed under drafts, not entities.
         assert len(pages) == 1
-        assert DRAFTS_SUBDIR in pages[0].parts
+        assert WikiSubdir.DRAFTS in pages[0].parts
         assert any("sending to drafts" in r.message for r in caplog.records)
 
 
@@ -457,7 +456,7 @@ class TestBatchGeneration:
         )
         assert len(pages) == 2
         assert provider.chat.call_count == 1
-        assert all(ENTITIES_SUBDIR in str(p) for p in pages)
+        assert all(WikiSubdir.ENTITIES in str(p) for p in pages)
 
     def test_batch_generation_llm_curates_concepts(self, stub_embedder):
         """extract_concepts=True includes the concept-curation paragraph."""
@@ -524,7 +523,7 @@ class TestBatchGeneration:
             extract_concepts=False,
             written_concept_slugs={},
         )
-        marker = cfg.data_root / cfg.wiki_dir / DRAFTS_SUBDIR / "ford-motor.md"
+        marker = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS / "ford-motor.md"
         assert marker.exists()
         body = marker.read_text()
         assert PENDING_MARKER_KEYWORD_PARSE in body
@@ -566,7 +565,7 @@ class TestBatchGeneration:
             extract_concepts=True,
             written_concept_slugs=written,
         )
-        drafts_dir = cfg.data_root / cfg.wiki_dir / DRAFTS_SUBDIR
+        drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
         collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
         assert len(collision_files) == 1
         assert PENDING_MARKER_KEYWORD_COLLISION in collision_files[0].read_text()
@@ -604,7 +603,7 @@ class TestBatchGeneration:
 
     def test_pending_marker_is_replaced_on_successful_regen(self, stub_embedder):
         """Rerun after a PENDING-PARSE marker and success → marker deleted."""
-        drafts_dir = cfg.data_root / cfg.wiki_dir / DRAFTS_SUBDIR
+        drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
         drafts_dir.mkdir(parents=True, exist_ok=True)
         # Simulate the previous failed build's marker.
         marker = drafts_dir / "henry-ford.md"

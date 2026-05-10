@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from lilbee.wiki.shared import is_valid_label
+from lilbee.core.text import is_valid_label
 
 log = logging.getLogger(__name__)
 

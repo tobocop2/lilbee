@@ -5,14 +5,15 @@ from __future__ import annotations
 import time
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 
 from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.task_row import TaskRow, _build_head, _format_elapsed
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
-class _Host(App[None]):
+class _Host(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="host")
 

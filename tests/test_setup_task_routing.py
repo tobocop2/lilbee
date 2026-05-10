@@ -11,13 +11,14 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = None):
@@ -31,7 +32,7 @@ def _patch_setup_ram(ram_gb: float = 16.0):
     return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
 
 
-class _PlainApp(App[None]):
+class _PlainApp(LilbeeAppHost):
     """Minimal host so the wizard can mount without LilbeeApp's auto-wizard."""
 
     def compose(self) -> ComposeResult:
@@ -137,7 +138,7 @@ async def test_enter_noop_outside_lilbee_app() -> None:
 @pytest.mark.asyncio
 async def test_commit_selection_with_no_ref_returns_early() -> None:
     """Defensive: _commit_selection bails out if _mark_selection left no ref."""
-    from lilbee.modelhub.models import ModelTask
+    from lilbee.catalog.types import ModelTask
 
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
@@ -174,7 +175,7 @@ async def test_escape_without_selection_dismisses_skipped() -> None:
             await pilot.pause()
             wizard = app.screen
             assert isinstance(wizard, SetupWizard)
-            from lilbee.modelhub.models import ModelTask
+            from lilbee.catalog.types import ModelTask
 
             wizard._selections[ModelTask.CHAT] = (None, None)
             wizard._selections[ModelTask.EMBEDDING] = (None, None)

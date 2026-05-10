@@ -21,10 +21,9 @@ from lilbee.data.store import Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import (
-    ARCHIVE_SUBDIR,
     MIN_CLUSTER_SOURCES,
-    SYNTHESIS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
+    WikiSubdir,
 )
 
 log = logging.getLogger(__name__)
@@ -81,7 +80,7 @@ def _archive_page(
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
-    archive_dir = wiki_root / ARCHIVE_SUBDIR
+    archive_dir = wiki_root / WikiSubdir.ARCHIVE
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / source_path.name
 
@@ -115,7 +114,7 @@ def _check_cluster_below_threshold(
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
-    if f"/{SYNTHESIS_SUBDIR}/" not in wiki_source:
+    if f"/{WikiSubdir.SYNTHESIS}/" not in wiki_source:
         return False
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:

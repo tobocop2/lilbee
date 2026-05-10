@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.core.config import Config
+from lilbee.core.text import make_slug
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import (
@@ -37,13 +38,9 @@ from lilbee.wiki.persistence import (
 )
 from lilbee.wiki.quality import check_faithfulness
 from lilbee.wiki.shared import (
-    ARCHIVE_SUBDIR,
-    CONCEPTS_SUBDIR,
-    DRAFTS_SUBDIR,
-    ENTITIES_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
     PageTarget,
-    make_slug,
+    WikiSubdir,
 )
 
 log = logging.getLogger(__name__)
@@ -60,8 +57,8 @@ _FOOTNOTE_MARKER_RE = re.compile(r"\[\^([a-zA-Z0-9_\-]+)\]")
 _LEGACY_CONCEPTS_MIGRATED_SENTINEL = ".phase-d-migrated"
 
 # Legacy wiki concepts that we move to archive/ as part of the one-time
-# migration. Matches wiki/<CONCEPTS_SUBDIR>/*.md recursively.
-_ARCHIVE_CONCEPTS_SUBPATH = Path(ARCHIVE_SUBDIR) / CONCEPTS_SUBDIR
+# migration. Matches wiki/<WikiSubdir.CONCEPTS>/*.md recursively.
+_ARCHIVE_CONCEPTS_SUBPATH = Path(WikiSubdir.ARCHIVE) / WikiSubdir.CONCEPTS
 
 
 def hash_existing_sources(source_names: list[str], documents_dir: Path) -> dict[str, str]:
@@ -137,7 +134,7 @@ def archive_legacy_concept_pages(wiki_root: Path, data_dir: Path) -> None:
     sentinel = data_dir / _LEGACY_CONCEPTS_MIGRATED_SENTINEL
     if sentinel.exists():
         return
-    concepts_dir = wiki_root / CONCEPTS_SUBDIR
+    concepts_dir = wiki_root / WikiSubdir.CONCEPTS
     archive_dir = wiki_root / _ARCHIVE_CONCEPTS_SUBPATH
     archived_slugs: list[str] = []
     if concepts_dir.is_dir():
@@ -232,9 +229,9 @@ def finalize_section(
 
     score = check_faithfulness(chunks, body, header_label, config)
     threshold = config.wiki_embedding_faithfulness_threshold
-    page_type = CONCEPTS_SUBDIR if kind is EntityKind.CONCEPT else ENTITIES_SUBDIR
-    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
-    if subdir == DRAFTS_SUBDIR:
+    page_type = WikiSubdir.CONCEPTS if kind is EntityKind.CONCEPT else WikiSubdir.ENTITIES
+    subdir = page_type if score >= threshold else WikiSubdir.DRAFTS
+    if subdir == WikiSubdir.DRAFTS:
         log.info(
             "Batched section %s scored %.2f (< %.2f), sending to drafts",
             header_label,
@@ -250,7 +247,7 @@ def finalize_section(
     # Concept collision: the second source proposing a slug loses
     # and writes to a drafts collision marker; the winning source's
     # page stays untouched.
-    if kind is EntityKind.CONCEPT and subdir == CONCEPTS_SUBDIR:
+    if kind is EntityKind.CONCEPT and subdir == WikiSubdir.CONCEPTS:
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
             return divert_concept_collision(

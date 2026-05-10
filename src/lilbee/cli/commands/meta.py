@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from lilbee.app.reset import perform_reset
+from lilbee.app.services import reset_store
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
 from lilbee.cli import theme
@@ -18,7 +19,6 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output, render_status
 from lilbee.core.config import cfg
-from lilbee.core.services import reset_store
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 

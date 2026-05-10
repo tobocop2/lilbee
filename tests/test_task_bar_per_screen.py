@@ -11,16 +11,15 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
-from lilbee.catalog import CatalogResult
-from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+from lilbee.app.services import set_services
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from lilbee.core.config import cfg
-from lilbee.core.services import set_services
-
-_EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +44,7 @@ def _mock_services():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     set_services(make_mock_services(store=store))
     yield
     set_services(None)
@@ -78,7 +77,7 @@ def _patch_chat_setup():
         yield
 
 
-class _ControllerApp(App[None]):
+class _ControllerApp(LilbeeAppHost):
     """Test harness that exposes a real TaskBarController plus a single screen."""
 
     CSS = ""
