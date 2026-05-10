@@ -515,7 +515,7 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                pass
+                pass  # fall through to bool() coercion below for unrecognised strings
         return bool(v)
 
     @field_validator("flash_attention", mode="before")

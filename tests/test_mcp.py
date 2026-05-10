@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.crawler.task import clear_tasks
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.mcp_server import (
@@ -33,7 +34,6 @@ from lilbee.mcp_server import (
     wiki_synthesize,
     wiki_update,
 )
-from lilbee.runtime.crawl_task import clear_tasks
 
 
 @pytest.fixture(autouse=True)
@@ -635,7 +635,7 @@ class TestCrawlStatus:
     @mock.patch("lilbee.mcp_server.get_task")
     def test_returns_task_state(self, mock_get_task, isolated_env):
         """Status returns current task state."""
-        from lilbee.runtime.crawl_task import CrawlTask, TaskStatus
+        from lilbee.crawler.task import CrawlTask, TaskStatus
 
         mock_get_task.return_value = CrawlTask(
             task_id="abc123",

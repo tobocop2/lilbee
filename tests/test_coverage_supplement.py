@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.fixture(autouse=True)
@@ -99,12 +100,12 @@ class TestSettingsLazyBody:
     async def test_populate_pane_unknown_pane_id_is_noop(self) -> None:
         """`_populate_pane('does-not-exist')` returns immediately when the
         pane id is not in the screen's group map."""
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -123,11 +124,11 @@ class TestChatInputNewline:
     """`ChatInput.action_newline` inserts a newline character."""
 
     async def test_action_newline_inserts_newline(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.chat_input import ChatInput
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ChatInput(id="probe-input")
 
@@ -149,11 +150,11 @@ class TestChatInputCheckConsumeKey:
         Help opens only via F1 / Ctrl+H while the input is focused, or
         via the non-priority App binding when no input is focused.
         """
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.chat_input import ChatInput
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ChatInput(id="probe-input")
 
@@ -164,42 +165,18 @@ class TestChatInputCheckConsumeKey:
             assert inp.check_consume_key("a", "a") is True
 
 
-class TestStatusBarSwitch:
-    """`ViewTab.action_activate` calls `_switch`; under a non-LilbeeApp
-    test parent the isinstance gate skips ``switch_view`` but still
-    executes the binding wiring (line 62)."""
-
-    async def test_action_activate_runs_switch(self) -> None:
-        from textual.app import App, ComposeResult
-
-        from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import ViewTab
-
-        class _Probe(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ViewTab(msg.DEFAULT_VIEW)
-
-        async with _Probe().run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            tab = pilot.app.query_one(ViewTab)
-            # Should not raise; LilbeeApp isinstance gate skips
-            # switch_view but ``_switch`` itself runs.
-            tab.action_activate()
-            tab.on_click()
-
-
 class TestCatalogUtilsFrontierFromRemote:
     """`frontier_row_from_remote` converts a RemoteModel into a
     FrontierCatalogRow. Direct unit call covers the constructor."""
 
     def test_converts_remote_to_frontier_row(self) -> None:
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.screens.catalog_utils import (
             FrontierCatalogRow,
             KeyStatus,
             frontier_row_from_remote,
         )
         from lilbee.modelhub.model_manager import RemoteModel
-        from lilbee.modelhub.models import ModelTask
 
         rm = RemoteModel(
             name="gemini-test",
@@ -261,12 +238,12 @@ class TestCatalogVimNavListView:
     action_jump_* that the existing grid-view tests don't reach."""
 
     async def test_list_view_cursor_down_with_no_focus(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -301,13 +278,13 @@ class TestTaskCenterOnHide:
     down)."""
 
     async def test_on_hide_unsubscribes_cleanly(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.task_center import TaskCenter
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def __init__(self) -> None:
                 super().__init__()
                 self.task_bar = TaskBarController(self)
@@ -329,49 +306,49 @@ class TestTaskCenterOnHide:
 
 
 class TestSettingsFeatureGating:
-    """`_group_settings()` hides API-Keys / Crawling / Wiki groups when
+    """`group_settings()` hides API-Keys / Crawling / Wiki groups when
     the corresponding feature is not available."""
 
     def test_wiki_group_hidden_when_cfg_wiki_off(self) -> None:
-        from lilbee.cli.tui.screens.settings import _group_settings
+        from lilbee.cli.tui.screens.settings_widgets import group_settings
 
         cfg.wiki = False
-        groups = _group_settings()
+        groups = group_settings()
         assert "Wiki" not in groups
 
     def test_wiki_group_visible_when_cfg_wiki_on(self) -> None:
-        from lilbee.cli.tui.screens.settings import _group_settings
+        from lilbee.cli.tui.screens.settings_widgets import group_settings
 
         cfg.wiki = True
-        groups = _group_settings()
+        groups = group_settings()
         assert "Wiki" in groups
 
     def test_api_keys_group_hidden_without_litellm(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch.object(settings_mod, "_litellm_installed", return_value=False):
-            groups = settings_mod._group_settings()
+        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
+            groups = settings_mod.group_settings()
         assert "API-Keys" not in groups
 
     def test_api_keys_group_visible_with_litellm(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch.object(settings_mod, "_litellm_installed", return_value=True):
-            groups = settings_mod._group_settings()
+        with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True):
+            groups = settings_mod.group_settings()
         assert "API-Keys" in groups
 
     def test_crawling_group_hidden_without_crawler(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch.object(settings_mod, "_crawler_installed", return_value=False):
-            groups = settings_mod._group_settings()
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            groups = settings_mod.group_settings()
         assert "Crawling" not in groups
 
     def test_crawling_group_visible_with_crawler(self) -> None:
         from lilbee.cli.tui.screens import settings as settings_mod
 
-        with mock.patch.object(settings_mod, "_crawler_installed", return_value=True):
-            groups = settings_mod._group_settings()
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            groups = settings_mod.group_settings()
         assert "Crawling" in groups
 
 
@@ -379,12 +356,12 @@ class TestSettingsTabActivatedEdges:
     """`_on_tab_activated` early-returns when pane / pane.id is None."""
 
     async def test_tab_activated_with_no_pane_id_is_noop(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -424,6 +401,67 @@ class TestStatusArchWorkerError:
             # Decorator wraps the method; access the underlying callable.
             result = screen._fetch_arch_worker.__wrapped__(screen)  # type: ignore[attr-defined]
         assert isinstance(result, ModelArchInfo)
+
+
+class TestTaskBarSpawningRoles:
+    """``mark_role_spawning`` / ``mark_role_spawned`` route worker spawn
+    lifecycle into the bottom TaskBar instead of toasting on each event.
+    Replaces the prior toast-per-role behaviour."""
+
+    def test_spawning_roles_set_grows_and_shrinks(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+
+        controller = TaskBarController(mock.MagicMock())
+        assert controller.spawning_roles == set()
+        controller.mark_role_spawning("chat")
+        controller.mark_role_spawning("embed")
+        assert controller.spawning_roles == {"chat", "embed"}
+        controller.mark_role_spawned("chat")
+        assert controller.spawning_roles == {"embed"}
+        controller.mark_role_spawned("embed")
+        assert controller.spawning_roles == set()
+
+    def test_spawned_unknown_role_is_noop(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+
+        controller = TaskBarController(mock.MagicMock())
+        # ``discard`` is the spec; should not raise even if the spawning
+        # event for the role was never seen (e.g. listener registered
+        # after a worker already finished).
+        controller.mark_role_spawned("rerank")
+        assert controller.spawning_roles == set()
+
+
+class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
+    """``_fetch_sources_worker`` returns None on read failure and ``[]``
+    when the store opened cleanly with no documents -- the docs table can
+    then choose between the error placeholder and the routine empty hint."""
+
+    def test_returns_none_on_failure(self) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        screen = StatusScreen.__new__(StatusScreen)
+        services = mock.MagicMock()
+        services.store.get_sources.side_effect = RuntimeError("disk error")
+        with mock.patch(
+            "lilbee.cli.tui.screens.status.get_services",
+            return_value=services,
+        ):
+            result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
+        assert result is None
+
+    def test_returns_empty_list_on_clean_empty_store(self) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        screen = StatusScreen.__new__(StatusScreen)
+        services = mock.MagicMock()
+        services.store.get_sources.return_value = []
+        with mock.patch(
+            "lilbee.cli.tui.screens.status.get_services",
+            return_value=services,
+        ):
+            result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
+        assert result == []
 
 
 class TestAppCanonicalizeFallbackNotice:
@@ -509,14 +547,14 @@ class TestCatalogSelectFrontierRow:
     path notifies and switches to Settings."""
 
     async def test_select_frontier_ready_applies_model(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
         from lilbee.core.config import cfg
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -549,13 +587,13 @@ class TestCatalogSelectFrontierRow:
                 assert cfg.chat_model == "gemini/gemini-2.0-flash"
 
     async def test_select_frontier_missing_key_notifies(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -591,12 +629,12 @@ class TestCatalogProviderAvailabilityDebounce:
     """`_on_provider_availability_changed` (re)arms a debounce timer."""
 
     async def test_signal_arms_timer(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -628,12 +666,12 @@ class TestSettingsPopulatePaneBodyMissing:
     isn't mounted yet (lines 392-394)."""
 
     async def test_pane_with_no_body_swallows_query_error(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import SettingsScreen, _PaneGroup
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -651,55 +689,35 @@ class TestSettingsPopulatePaneBodyMissing:
             screen._populate_pane("settings-tab-fake")
 
 
-class TestWorkerNotificationMessages:
-    """Helpers for spawn-lifecycle notifications route through messages.py."""
-
-    def test_worker_starting_title_cases_role_name(self) -> None:
-        from lilbee.cli.tui.messages import worker_starting
-
-        assert worker_starting("chat") == "Starting Chat worker..."
-        assert worker_starting("vision") == "Starting Vision worker..."
-
-    def test_worker_starting_handles_underscored_role(self) -> None:
-        from lilbee.cli.tui.messages import worker_starting
-
-        assert worker_starting("vector_embed") == "Starting Vector Embed worker..."
-
-    def test_worker_ready_title_cases_role_name(self) -> None:
-        from lilbee.cli.tui.messages import worker_ready
-
-        assert worker_ready("rerank") == "Rerank worker ready"
-        assert worker_ready("chat_v2") == "Chat V2 worker ready"
-
-
 class TestServicesPoolListener:
     """``Services.add_pool_listener`` forwards to the underlying WorkerPool."""
 
     def test_forwards_both_callbacks_to_pool(self) -> None:
+        from lilbee.providers.worker.transport import WorkerRole
         from tests.conftest import make_mock_services
 
-        seen_spawning: list[str] = []
-        seen_spawned: list[str] = []
+        seen_spawning: list[WorkerRole] = []
+        seen_spawned: list[WorkerRole] = []
 
         class _RecordingPool:
-            registered_roles: tuple[str, ...] = ()
+            registered_roles: tuple[WorkerRole, ...] = ()
 
             def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
                 # Re-fire with a synthetic role to verify both callbacks routed.
                 if on_spawning is not None:
-                    on_spawning("embed")
-                    seen_spawning.append("embed")
+                    on_spawning(WorkerRole.EMBED)
+                    seen_spawning.append(WorkerRole.EMBED)
                 if on_spawned is not None:
-                    on_spawned("embed")
-                    seen_spawned.append("embed")
+                    on_spawned(WorkerRole.EMBED)
+                    seen_spawned.append(WorkerRole.EMBED)
 
         services = make_mock_services(worker_pool=_RecordingPool())
         services.add_pool_listener(
             on_spawning=lambda _r: None,
             on_spawned=lambda _r: None,
         )
-        assert seen_spawning == ["embed"]
-        assert seen_spawned == ["embed"]
+        assert seen_spawning == [WorkerRole.EMBED]
+        assert seen_spawned == [WorkerRole.EMBED]
 
     def test_either_callback_is_optional(self) -> None:
         from tests.conftest import make_mock_services
@@ -753,7 +771,7 @@ class TestModelInfoModal:
         return LocalCatalogRow(**defaults)
 
     async def test_modal_compose_and_markdown_includes_known_fields(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.model_info import ModelInfoModal
@@ -761,7 +779,7 @@ class TestModelInfoModal:
         row = self._row(installed=True)
         modal = ModelInfoModal(row)
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -854,12 +872,12 @@ class TestCatalogHighlightedRow:
     """`_highlighted_row` covers list-view, no-grid, ModelGrid, GridSelect paths."""
 
     async def test_list_view_with_focused_list_returns_highlighted_row(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -884,12 +902,12 @@ class TestCatalogHighlightedRow:
                 assert screen._highlighted_row() is sentinel
 
     async def test_grid_view_no_focused_grid_returns_none(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -904,7 +922,7 @@ class TestCatalogHighlightedRow:
                 assert screen._highlighted_row() is None
 
     async def test_model_grid_returns_row_at_index(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -925,7 +943,7 @@ class TestCatalogHighlightedRow:
             ref="x/x",
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -947,7 +965,7 @@ class TestCatalogHighlightedRow:
                 assert screen._highlighted_row() is None
 
     async def test_grid_select_returns_row_when_child_is_model_card(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -968,7 +986,7 @@ class TestCatalogHighlightedRow:
             ref="y/y",
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -990,12 +1008,12 @@ class TestCatalogHighlightedRow:
                 assert screen._highlighted_row() is row
 
     async def test_grid_select_non_model_card_returns_none(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1018,7 +1036,7 @@ class TestCatalogActionShowInfoFrontierWarn:
     """`action_show_info` warns when the highlighted row is a frontier row."""
 
     async def test_frontier_row_emits_warning_toast(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -1027,7 +1045,7 @@ class TestCatalogActionShowInfoFrontierWarn:
             KeyStatus,
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1059,12 +1077,12 @@ class TestSettingsTabNavFallbacks:
     """`_move_focus_within_pane` and `_focus_pane_edge` fallback branches."""
 
     async def test_move_focus_falls_back_when_body_missing(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer, TabbedContent
 
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1086,12 +1104,12 @@ class TestSettingsTabNavFallbacks:
                 mock_prev.assert_called_once()
 
     async def test_move_focus_falls_back_when_focused_outside_pane(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1110,7 +1128,7 @@ class TestSettingsTabNavFallbacks:
                 mock_next.assert_called_once()
 
     async def test_move_focus_returns_when_active_pane_unknown(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer, TabbedContent
 
         from lilbee.cli.tui.screens.settings import (
@@ -1118,7 +1136,7 @@ class TestSettingsTabNavFallbacks:
             _LazyGroupBody,
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1147,12 +1165,12 @@ class TestSettingsTabNavFallbacks:
             assert tabs.active == active_pane_id
 
     async def test_focus_pane_edge_handles_missing_body(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1167,7 +1185,7 @@ class TestSettingsTabNavFallbacks:
             screen._focus_pane_edge("settings-tab-does-not-exist", direction=1)
 
     async def test_focus_pane_edge_no_focusables_returns(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.settings import (
@@ -1175,7 +1193,7 @@ class TestSettingsTabNavFallbacks:
             _LazyGroupBody,
         )
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1279,11 +1297,11 @@ class TestChatInputUnconsumedKey:
     """`ChatInput.check_consume_key` releases keys named in _UNCONSUMED_KEYS."""
 
     async def test_unconsumed_key_returns_false(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.chat_input import ChatInput
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ChatInput(id="probe")
 
@@ -1505,13 +1523,13 @@ class TestChatModeToggleAction:
     """`ChatModePill.action_select` switches the parent toggle's mode."""
 
     async def test_pill_action_select_routes_to_toggle(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_mode = "search"
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ChatModeToggle()
 
@@ -1524,11 +1542,11 @@ class TestChatModeToggleAction:
             assert cfg.chat_mode == "chat"
 
     async def test_pill_action_select_returns_when_no_toggle(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.model_bar import ChatModePill
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ChatModePill("Chat", id="chat-mode-chat")
 
@@ -1545,8 +1563,8 @@ class TestModelBarVisionSidecarPicker:
         from pathlib import Path
         from types import SimpleNamespace
 
+        from lilbee.catalog.types import ModelTask
         from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
-        from lilbee.modelhub.models import ModelTask
 
         manifest = SimpleNamespace(
             ref="acme/chat-with-vision",
@@ -1579,11 +1597,11 @@ class TestScopeChipPillNoChipReturns:
     """`ScopePill.action_select` returns when no ScopeChip ancestor exists."""
 
     async def test_orphaned_pill_select_returns_silently(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.scope_chip import ScopePill
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ScopePill("docs", id="scope-pill-both")
 
@@ -1777,13 +1795,13 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             screen._maybe_prefetch_on_grid_nav()
 
     async def test_prefetch_swallows_value_error_when_focused_not_in_grids(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1805,13 +1823,13 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 screen._maybe_prefetch_on_grid_nav()
 
     async def test_prefetch_returns_when_total_rows_zero(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1838,12 +1856,12 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 screen._maybe_prefetch_on_grid_nav()
 
     async def test_mount_remaining_grid_sections_restores_prior_scroll(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 
@@ -1951,7 +1969,7 @@ class TestScopeChipPillSelect:
     """`ScopePill.action_select` routes to the parent chip's scope setter."""
 
     async def test_pill_select_changes_chip_scope(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
 
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope
@@ -1959,7 +1977,7 @@ class TestScopeChipPillSelect:
         cfg.chat_mode = "search"
         cfg.wiki = True
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield ScopeChip()
 
@@ -2033,12 +2051,12 @@ class TestCatalogSmallEdgeBranches:
             assert screen._restore_focused_section(("Missing", None)) is False
 
     async def test_action_toggle_view_to_list_triggers_first_hf_fetch(self) -> None:
-        from textual.app import App, ComposeResult
+        from textual.app import ComposeResult
         from textual.widgets import Footer
 
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-        class _Probe(App[None]):
+        class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
                 yield Footer()
 

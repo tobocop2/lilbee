@@ -125,7 +125,6 @@ CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
 CATALOG_NEEDS_KEY = "{provider} needs an API key. Set {key_field} in Settings to enable this model."
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
-CATALOG_NO_TASK_BAR = "Cannot download: task bar not found"
 CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
 CATALOG_INSTALLED_OK = "{name} installed"
 CATALOG_GATED_REPO = "{name} requires login, run /login or lilbee login"
@@ -148,7 +147,14 @@ CATALOG_VIEW_LIST = "List"
 CATALOG_SORT_LIST_ONLY = "Sort is available in list view (press v)"
 CATALOG_SEARCHING_HF = "Searching HuggingFace…"
 CATALOG_SEARCH_HF_CTA = '→ Search HuggingFace for "{query}"'
-CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask a question or type / for commands"
+CHAT_INPUT_PLACEHOLDER_DEFAULT = "Ask…   /  commands   F1  keys   F2  catalog"
+SLASH_CATALOG_TITLE = "Slash Commands"
+SLASH_CATALOG_FILTER_PLACEHOLDER = "Filter commands..."
+SLASH_CATALOG_FOOTER_HINT = "↑↓ select   Enter run   Esc close"
+SLASH_CATALOG_NO_MATCH = "No commands match"
+HELP_HINT_COMMANDS = "/ commands"
+HELP_HINT_KEYS = "F1 keys"
+HELP_HINT_SEPARATOR = "  ·  "
 SCOPE_PILL_BOTH = "Both"
 SCOPE_PILL_WIKI = "Wiki"
 SCOPE_PILL_RAW = "Raw"
@@ -280,6 +286,11 @@ TASKBAR_HINT_INPUT = "Esc then t for Tasks"
 CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
 CHAT_SOURCES_LABEL = "sources"
 
+STATUS_DOCS_LOAD_FAILED = "(unable to read store)"
+STATUS_DOCS_EMPTY = "(no documents yet)"
+TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
+TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
+
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
 TASK_CENTER_HINT = "r refresh   c cancel   C clear done   q back   j/k navigate"
@@ -334,13 +345,3 @@ MODEL_PICKER_EMBED_TOOLTIP = (
 )
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
-
-
-def worker_starting(role: str) -> str:
-    """User-facing notification text fired immediately before a worker spawn."""
-    return f"Starting {role.replace('_', ' ').title()} worker..."
-
-
-def worker_ready(role: str) -> str:
-    """User-facing notification text fired once the spawned worker is live."""
-    return f"{role.replace('_', ' ').title()} worker ready"

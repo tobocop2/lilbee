@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.table import Table
 
+from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -18,10 +19,8 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
-    SUMMARIES_SUBDIR,
+    WikiSubdir,
 )
 
 if TYPE_CHECKING:
@@ -156,8 +155,8 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
-    drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
+    summaries = _count_md_files(wiki_root / WikiSubdir.SUMMARIES)
+    drafts = _count_md_files(wiki_root / WikiSubdir.DRAFTS)
 
     from lilbee.wiki.lint import lint_all as _lint_all
 
@@ -167,8 +166,8 @@ def wiki_status(
         json_output(
             {
                 "wiki_enabled": cfg.wiki,
-                SUMMARIES_SUBDIR: summaries,
-                DRAFTS_SUBDIR: drafts,
+                WikiSubdir.SUMMARIES: summaries,
+                WikiSubdir.DRAFTS: drafts,
                 "pages": summaries + drafts,
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,
@@ -405,7 +404,7 @@ def wiki_drafts_list(
 ) -> None:
     """List pending wiki drafts with drift, faithfulness, and pairing info."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.wiki.drafts import PENDING_KIND_DRIFT, list_drafts
+    from lilbee.wiki.drafts import PendingKind, list_drafts
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     drafts = list_drafts(wiki_root)
@@ -431,7 +430,7 @@ def wiki_drafts_list(
     table.add_column("Faithfulness")
     table.add_column("Published?", style=theme.MUTED)
     for d in drafts:
-        kind = d.pending_kind or PENDING_KIND_DRIFT
+        kind = d.pending_kind or PendingKind.DRIFT
         drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
         faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
         published = "yes" if d.published_exists else "no"

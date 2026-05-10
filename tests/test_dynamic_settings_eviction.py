@@ -45,7 +45,7 @@ def _isolated_cfg(tmp_path):
 
 def _install_recording_provider() -> _RecordingProvider:
     """Replace the services container with one whose provider records eviction calls."""
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     provider = _RecordingProvider()
     services = mock.MagicMock()
@@ -55,7 +55,7 @@ def _install_recording_provider() -> _RecordingProvider:
 
 
 def _restore_services() -> None:
-    from lilbee.core.services import set_services
+    from lilbee.app.services import set_services
 
     set_services(None)
 

@@ -143,7 +143,7 @@ def _restore_cursor() -> None:
         sys.stderr.write(_SHOW_CURSOR)
         sys.stderr.flush()
     except OSError:
-        pass
+        pass  # stderr may be closed during interpreter shutdown
 
 
 def _atexit_cleanup() -> None:

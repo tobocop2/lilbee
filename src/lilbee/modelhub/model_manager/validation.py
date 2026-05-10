@@ -21,6 +21,7 @@ from lilbee.modelhub.model_manager.discovery import discover_api_models
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
 
 log = logging.getLogger(__name__)
 
@@ -64,10 +65,9 @@ def _is_api_ref_with_key(ref: str) -> ValidationResult:
     except Exception:
         return ValidationResult.UNKNOWN
     provider = (parsed.provider or "").lower()
-    key_field = f"{provider}_api_key"
-    if not hasattr(cfg, key_field):
+    if provider not in PROVIDER_API_KEY_FIELD:
         return ValidationResult.UNKNOWN
-    return ValidationResult.OK if getattr(cfg, key_field) else ValidationResult.NO_KEY
+    return ValidationResult.OK if get_provider_api_key(provider) else ValidationResult.NO_KEY
 
 
 def validate_persisted_model(ref: str) -> ValidationResult:
@@ -91,7 +91,8 @@ def _first_available_api_chat_ref() -> str | None:
         return None
     for _provider, models in groups.items():
         if models:
-            return format_remote_ref(models[0])
+            first = models[0]
+            return format_remote_ref(first.name, first.provider)
     return None
 
 

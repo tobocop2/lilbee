@@ -12,14 +12,24 @@ different sources, so they're separate types under a sealed
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
+from typing import Any, Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
+from lilbee.catalog.types import ModelTask
 from lilbee.modelhub.model_manager import RemoteModel
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
+
+
+class CatalogRowKind(StrEnum):
+    """Discriminator for the sealed CatalogRow union."""
+
+    LOCAL = "local"
+    FRONTIER = "frontier"
+
 
 # Tab IDs for the 6-tab catalog shell. Discover is the curated landing,
 # the four task tabs each render a single per-task grid, Library is the
@@ -148,6 +158,7 @@ class LocalCatalogRow:
     remote_model: RemoteModel | None = None
     size_variants: list[SizeVariant] = field(default_factory=list)
     fit: FitChip | None = None
+    kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
 
 
 class KeyStatus(Enum):
@@ -172,10 +183,11 @@ class FrontierCatalogRow:
     provider: str  # Display label, e.g. "Gemini" / "OpenAI" / "Anthropic".
     provider_id: str  # Canonical id used for the API key field, e.g. "gemini".
     key_status: KeyStatus
+    kind: Literal[CatalogRowKind.FRONTIER] = CatalogRowKind.FRONTIER
 
 
-# Sealed union: any catalog renderer dispatches on isinstance of these
-# two types and exhaustively handles both.
+# Sealed union discriminated on .kind. Pattern-match (or compare) on row.kind
+# to dispatch instead of isinstance, so adding a new row type is one place.
 CatalogRow = LocalCatalogRow | FrontierCatalogRow
 
 
@@ -306,7 +318,7 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
         installed=True,
         sort_downloads=0,
         sort_size=0.0,
-        ref=format_remote_ref(rm),
+        ref=format_remote_ref(rm.name, rm.provider),
         backend=rm.provider.lower(),
         remote_model=rm,
     )
@@ -322,7 +334,7 @@ def frontier_row_from_remote(
     """
     return FrontierCatalogRow(
         name=rm.name,
-        ref=format_remote_ref(rm),
+        ref=format_remote_ref(rm.name, rm.provider),
         task=rm.task,
         provider=rm.provider,
         provider_id=provider_id,
@@ -330,18 +342,17 @@ def frontier_row_from_remote(
     )
 
 
-# Column sort key extractors. Frontier rows fold into Name sort (the
-# only sort the picker exposes today); the other keys read fields that
-# only LocalCatalogRow carries, so the catalog screen sorts local and
-# frontier rows independently and concatenates them.
-SORT_KEYS = {
+# Column sort key extractors. Local-only because every column except
+# Name reads a field FrontierCatalogRow doesn't carry, and the catalog
+# screen sorts local and frontier rows independently before concat.
+SORT_KEYS: dict[str, Callable[[LocalCatalogRow], Any]] = {
     "Name": lambda r: r.name.lower(),
-    "Task": lambda r: getattr(r, "task", ""),
-    "Backend": lambda r: getattr(r, "backend", "").lower(),
-    "Params": lambda r: _param_sort_value(getattr(r, "params", "")),
-    "Size": lambda r: getattr(r, "sort_size", 0.0),
-    "Quant": lambda r: getattr(r, "quant", ""),
-    "Downloads": lambda r: getattr(r, "sort_downloads", 0),
+    "Task": lambda r: r.task,
+    "Backend": lambda r: r.backend.lower(),
+    "Params": lambda r: _param_sort_value(r.params),
+    "Size": lambda r: r.sort_size,
+    "Quant": lambda r: r.quant,
+    "Downloads": lambda r: r.sort_downloads,
 }
 
 
@@ -358,7 +369,7 @@ def row_delete_id(row: CatalogRow) -> str | None:
     Ollama HTTP API keys models by bare name, while ``ref`` carries the
     canonical ``ollama/<name>`` chat_model form.
     """
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == CatalogRowKind.FRONTIER:
         return row.ref or None
     if row.remote_model is not None:
         return row.remote_model.name or None
@@ -375,7 +386,7 @@ def matches_search(row: CatalogRow, search: str) -> bool:
     if not search:
         return True
     needle = _normalize_for_search(search)
-    if isinstance(row, FrontierCatalogRow):
+    if row.kind == CatalogRowKind.FRONTIER:
         return any(
             needle in _normalize_for_search(field)
             for field in (row.name, row.provider, row.provider_id)

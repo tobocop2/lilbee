@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lilbee.core.services import get_services
+from lilbee.app.services import get_services
 from lilbee.data.code_chunker import CodeChunk, chunk_code
 from lilbee.data.ingest.types import ChunkRecord
 from lilbee.data.store import CHUNK_TYPE_RAW

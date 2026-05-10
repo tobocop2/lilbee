@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import logging
 import platform
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
 log = logging.getLogger(__name__)
 
-LoaderMode = Literal["chat", "embed", "rerank"]
-MODE_CHAT: LoaderMode = "chat"
-MODE_EMBED: LoaderMode = "embed"
-MODE_RERANK: LoaderMode = "rerank"
+
+class LoaderMode(StrEnum):
+    """Which task to configure llama.cpp for at load time."""
+
+    CHAT = "chat"
+    EMBED = "embed"
+    RERANK = "rerank"
+
 
 # Fallback KV cache estimate when GGUF metadata can't be read.
 # 2048 bytes/token undershoots real KV size for modern models (Gemma3-4B is

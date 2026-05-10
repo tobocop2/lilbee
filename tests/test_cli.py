@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from typer.testing import CliRunner
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
 from lilbee.app.search import clean_result
 from lilbee.app.version import get_version
 from lilbee.cli import app
@@ -814,7 +814,7 @@ class TestListInstalledModels:
             assert result == [self._CHAT_REF]
 
     def test_excludes_non_chat_remote_tasks(self):
-        from lilbee.modelhub.models import ModelTask
+        from lilbee.catalog.types import ModelTask
 
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
@@ -3433,7 +3433,7 @@ class TestSelfCheck:
         stack (dynamic ctx + FA + KV cache + GPU layers + OOM retry), not just
         a hand-rolled ``llama_cpp.Llama(...)`` call.
         """
-        from lilbee.providers.model_cache import MODE_CHAT, MODE_EMBED
+        from lilbee.providers.model_cache import LoaderMode
 
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
@@ -3460,8 +3460,8 @@ class TestSelfCheck:
             )
         assert result.exit_code == 0, result.output
         assert load_llama.call_count == 2
-        assert load_llama.call_args_list[0] == mock.call(chat, mode=MODE_CHAT)
-        assert load_llama.call_args_list[1] == mock.call(emb, mode=MODE_EMBED)
+        assert load_llama.call_args_list[0] == mock.call(chat, mode=LoaderMode.CHAT)
+        assert load_llama.call_args_list[1] == mock.call(emb, mode=LoaderMode.EMBED)
 
     def test_chat_download_failure_emits_json_error(self) -> None:
         with mock.patch(

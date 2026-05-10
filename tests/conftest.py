@@ -144,20 +144,15 @@ def _reset_services_after_test():
     yield
     from contextlib import suppress
 
-    import lilbee.core.services as services_mod
-    from lilbee.providers.worker.health_ticker import (
-        HealthTickerHandle,
-        stop_health_ticker,
-    )
+    from lilbee.app.services import peek_services, set_services
+    from lilbee.providers.worker.health_ticker import stop_health_ticker
 
-    svc = services_mod._svc
+    svc = peek_services()
     if svc is not None:
         # Stop the health ticker before draining the runtime so it cannot
         # schedule a fresh pool op against an already-stopped loop.
-        ticker = getattr(svc, "pool_health_ticker", None)
-        if isinstance(ticker, HealthTickerHandle):
-            with suppress(Exception):
-                stop_health_ticker(ticker, timeout=2.0)
+        with suppress(Exception):
+            stop_health_ticker(svc.pool_health_ticker, timeout=2.0)
         runtime = svc.pool_runtime
         pool = svc.worker_pool
         # Real pool/runtime have these methods. Mocks no-op safely.
@@ -166,7 +161,7 @@ def _reset_services_after_test():
                 runtime.run_sync(pool.shutdown(), timeout=5.0)
             with suppress(Exception):
                 runtime.shutdown(timeout=5.0)
-    services_mod.set_services(None)
+    set_services(None)
 
 
 @pytest.fixture(autouse=True)
@@ -246,7 +241,7 @@ def _default_store_mock():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
     return store
 
 
@@ -286,8 +281,8 @@ def make_mock_services(**overrides):
     override either with a :class:`MagicMock` to skip the runtime thread
     cost.
     """
+    from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.services import CrawlerSyncState, Services
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool

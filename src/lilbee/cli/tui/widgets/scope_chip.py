@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual import events
 from textual.app import ComposeResult
@@ -71,6 +74,8 @@ class ScopeChip(Widget):
     time to derive ``chunk_type``.
     """
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(
@@ -97,10 +102,7 @@ class ScopeChip(Widget):
     def on_mount(self) -> None:
         self._refresh_visibility()
         self._refresh()
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def _refresh_visibility(self) -> None:
         active = cfg.chat_mode == ChatMode.SEARCH.value and cfg.wiki

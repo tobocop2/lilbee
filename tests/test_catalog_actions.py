@@ -5,22 +5,20 @@ from __future__ import annotations
 
 import contextlib
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
-from lilbee.cli.tui.screens.catalog import (
-    CatalogScreen,
-    _for_you_sort_key,
-    _row_cache_signature,
-)
+from lilbee.catalog.types import ModelTask
+from lilbee.cli.tui.screens.catalog import CatalogScreen
+from lilbee.cli.tui.screens.catalog_grouping import for_you_sort_key, row_cache_signature
 from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
 )
-from lilbee.modelhub.models import ModelTask
 from lilbee.runtime.hardware import FitChip, FitLevel
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _row(
@@ -43,7 +41,7 @@ def _row(
     )
 
 
-class _CatalogTestApp(App):
+class _CatalogTestApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield CatalogScreen()
 
@@ -92,15 +90,23 @@ async def test_action_select_tab_out_of_range_is_noop() -> None:
 
 
 async def test_on_key_digit_calls_select_tab() -> None:
-    """The screen-level on_key handler intercepts digit keys outside Input focus."""
+    """The screen-level on_key handler intercepts digit keys outside Input focus.
+
+    Windows 3.12 needs a few extra event-loop ticks for the digit-key
+    activation to propagate through TabbedContent's TabActivated signal
+    chain; the polling loop tolerates that without slowing other platforms.
+    """
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         event = Key(key="3", character="3")
         screen.on_key(event)
-        await pilot.pause()
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        for _ in range(20):
+            await pilot.pause()
+            if tabs.active == "embed":
+                break
         assert tabs.active == "embed"
 
 
@@ -201,9 +207,9 @@ def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
         provider_id="openai",
         key_status=KeyStatus.READY,
     )
-    assert _row_cache_signature(frontier) == ("gpt-4o", False)
+    assert row_cache_signature(frontier) == ("gpt-4o", False)
     local = _row("Llama", installed=True)
-    assert _row_cache_signature(local) == ("Llama", True)
+    assert row_cache_signature(local) == ("Llama", True)
 
 
 async def test_handle_worker_more_hf_in_list_view_appends_to_list() -> None:
@@ -282,19 +288,20 @@ def test_for_you_sort_key_orders_fit_levels_then_name() -> None:
     tight = _row("b-tight", fit=FitChip(level=FitLevel.TIGHT, headroom_gb=0.5))
     wont = _row("c-wont", fit=FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0))
     none = _row("d-none")
-    ordered = sorted([none, wont, tight, fits], key=_for_you_sort_key)
+    ordered = sorted([none, wont, tight, fits], key=for_you_sort_key)
     assert [r.name for r in ordered] == ["a-fits", "b-tight", "c-wont", "d-none"]
 
 
-def test_probe_available_memory_returns_none_on_failure(monkeypatch) -> None:
+def test_available_memory_for_fit_returns_none_on_failure(monkeypatch) -> None:
     """Hardware probe failures fall through chip-less, never crash."""
     import lilbee.providers.model_cache as mc
+    from lilbee.runtime.hardware import available_memory_for_fit
 
     def boom(_fraction: float) -> int:
         raise RuntimeError("psutil missing")
 
     monkeypatch.setattr(mc, "get_available_memory", boom)
-    assert CatalogScreen._probe_available_memory() is None
+    assert available_memory_for_fit() is None
 
 
 def test_stamp_fit_no_op_without_probe() -> None:

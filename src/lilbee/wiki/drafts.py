@@ -21,25 +21,17 @@ from typing import Any
 from lilbee.data.store import Store
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    DRAFTS_SUBDIR,
-    ENTITIES_SUBDIR,
-    PENDING_KIND_COLLISION,
-    PENDING_KIND_DRIFT,
-    PENDING_KIND_PARSE,
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
+    PendingKind,
+    WikiSubdir,
     parse_frontmatter,
 )
 
 __all__ = [
-    "PENDING_KIND_COLLISION",
-    "PENDING_KIND_DRIFT",
-    "PENDING_KIND_PARSE",
     "AcceptResult",
     "DraftInfo",
+    "PendingKind",
     "accept_draft",
     "diff_draft",
     "list_drafts",
@@ -78,10 +70,10 @@ _PENDING_COLLISION_MARKER_RE = re.compile(
 # because they are the subdirs most drafts originate from (drift
 # detection runs on regen of an existing source or cluster page).
 _PUBLISHED_SUBDIRS: tuple[str, ...] = (
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
+    WikiSubdir.SUMMARIES,
+    WikiSubdir.SYNTHESIS,
+    WikiSubdir.CONCEPTS,
+    WikiSubdir.ENTITIES,
 )
 
 
@@ -153,7 +145,7 @@ class AcceptResult:
 
 
 def _draft_path(wiki_root: Path, slug: str) -> Path:
-    return wiki_root / DRAFTS_SUBDIR / f"{slug}.md"
+    return wiki_root / WikiSubdir.DRAFTS / f"{slug}.md"
 
 
 def _find_published(wiki_root: Path, slug: str) -> Path | None:
@@ -188,9 +180,9 @@ def _parse_pending_kind(text: str) -> str | None:
     does not get mis-classified.
     """
     if _PENDING_PARSE_MARKER_RE.search(text):
-        return PENDING_KIND_PARSE
+        return PendingKind.PARSE
     if _PENDING_COLLISION_MARKER_RE.search(text):
-        return PENDING_KIND_COLLISION
+        return PendingKind.COLLISION
     return None
 
 
@@ -231,7 +223,7 @@ def list_drafts(wiki_root: Path) -> list[DraftInfo]:
     frontmatter on the stripped body (so frontmatter parsing works
     uniformly whether or not a marker shifted it down).
     """
-    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    drafts_dir = wiki_root / WikiSubdir.DRAFTS
     if not drafts_dir.is_dir():
         return []
     infos: list[DraftInfo] = []
@@ -321,7 +313,7 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     raw = draft.read_text(encoding="utf-8")
     pending_kind = _parse_pending_kind(raw)
 
-    if pending_kind == PENDING_KIND_PARSE:
+    if pending_kind == PendingKind.PARSE:
         draft.unlink()
         log.info(
             "Accepted PENDING-PARSE marker %s; run `lilbee wiki build` "
@@ -332,16 +324,16 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
 
     clean = _strip_pending_markers(_strip_drift_marker(raw))
 
-    target_slug = _base_slug_for_collision(slug) if pending_kind == PENDING_KIND_COLLISION else slug
+    target_slug = _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
     published = _find_published(wiki_root, target_slug)
     if published is not None:
         target = published
     else:
-        target = wiki_root / SUMMARIES_SUBDIR / f"{target_slug}.md"
+        target = wiki_root / WikiSubdir.SUMMARIES / f"{target_slug}.md"
         log.info(
             "Draft %s has no published counterpart; accepting into %s",
             slug,
-            SUMMARIES_SUBDIR,
+            WikiSubdir.SUMMARIES,
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(clean, encoding="utf-8")

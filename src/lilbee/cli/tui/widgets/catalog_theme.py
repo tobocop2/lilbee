@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lilbee.modelhub.models import ModelTask
+from lilbee.catalog.types import ModelTask
 
 MIDDLE_DOT = "·"
 

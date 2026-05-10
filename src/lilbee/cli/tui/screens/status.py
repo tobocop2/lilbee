@@ -6,7 +6,10 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 from textual import work
 from textual.app import ComposeResult
@@ -17,9 +20,10 @@ from textual.screen import Screen
 from textual.widgets import Collapsible, DataTable, Static
 from textual.worker import Worker, WorkerState
 
+from lilbee.app.services import get_services
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SourceRecord
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
@@ -124,6 +128,8 @@ def _build_arch_content(info: ModelArchInfo) -> Content:
 class StatusScreen(Screen[None]):
     """Knowledge base status view with collapsible sections."""
 
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "status.tcss"
     AUTO_FOCUS = "CollapsibleTitle"
     HELP = (
@@ -147,6 +153,10 @@ class StatusScreen(Screen[None]):
         self._sections_mounted: bool = False
         self._pending_sources: list[SourceRecord] | None = None
         self._pending_arch: ModelArchInfo | None = None
+        # True only when ``store.get_sources()`` actually raised. An empty
+        # store with no documents yet is the routine "first run" state and
+        # must not surface the error placeholder.
+        self._sources_load_failed: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -235,12 +245,19 @@ class StatusScreen(Screen[None]):
             self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
-    def _fetch_sources_worker(self) -> list[SourceRecord]:
+    def _fetch_sources_worker(self) -> list[SourceRecord] | None:
+        """Return the source list, or None if the store read genuinely failed.
+
+        ``[]`` means "store opened but has no documents yet" -- a routine
+        empty-collection state, not an error. ``None`` means the read
+        raised, so the UI can distinguish "no docs yet" from "something is
+        wrong" instead of conflating both into one alarming message.
+        """
         try:
             return get_services().store.get_sources()
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
-            return []
+            return None
 
     @work(thread=True, name="status_fetch_arch", exit_on_error=False)
     def _fetch_arch_worker(self) -> ModelArchInfo:
@@ -254,9 +271,9 @@ class StatusScreen(Screen[None]):
         if event.state != WorkerState.SUCCESS:
             return
         if event.worker.name == "status_fetch_sources":
-            sources = event.worker.result
-            if not isinstance(sources, list):
-                sources = []
+            result = event.worker.result
+            sources = result if isinstance(result, list) else []
+            self._sources_load_failed = result is None
             if self._sections_mounted:
                 self._load_documents(sources)
                 self._load_storage(len(sources))
@@ -301,7 +318,10 @@ class StatusScreen(Screen[None]):
     def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
         """Fill the documents table with source data."""
         if not sources:
-            table.add_row("(unable to read store)", "")
+            placeholder = (
+                msg.STATUS_DOCS_LOAD_FAILED if self._sources_load_failed else msg.STATUS_DOCS_EMPTY
+            )
+            table.add_row(placeholder, "")
             return
         for src in sources:
             table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
@@ -314,12 +334,7 @@ class StatusScreen(Screen[None]):
             self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
     def action_go_back(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.switch_view("Chat")
-        else:
-            self.app.pop_screen()
+        self.app.switch_view("Chat")
 
     def action_cursor_down(self) -> None:
         self.query_one("#status-scroll", VerticalScroll).scroll_down()

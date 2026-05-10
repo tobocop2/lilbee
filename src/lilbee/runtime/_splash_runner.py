@@ -204,7 +204,7 @@ def animation_loop(pipe_fd: int) -> None:
             frame_idx += 1
             knight_idx += 1
     except OSError:
-        pass
+        pass  # parent closed the splash pipe; just stop drawing
     finally:
         with contextlib.suppress(OSError):
             os.write(fd, clear_screen(frame_height))

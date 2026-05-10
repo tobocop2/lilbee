@@ -16,6 +16,19 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
+# concurrent.futures raises this exact RuntimeError message when submitting to
+# a shutdown executor (Python 3.11+). There is no dedicated exception class to
+# catch, so callers have to string-match the message. The constant + helper
+# below give every caller one place to depend on instead of duplicating the
+# string + isinstance check inline.
+_EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
+
+
+def is_executor_shutdown(exc: BaseException) -> bool:
+    """True if ``exc`` is the concurrent.futures shutdown-race ``RuntimeError``."""
+    return isinstance(exc, RuntimeError) and _EXECUTOR_SHUTDOWN_MSG in str(exc)
+
+
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 _lock = threading.Lock()

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from lilbee.catalog import ModelFamily, ModelVariant
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _variant(
@@ -40,7 +41,7 @@ async def _build_screen_with_family(family: ModelFamily):
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield CatalogScreen()
 

@@ -11,9 +11,9 @@ from lilbee.core.security import validate_path_within
 from lilbee.wiki.grammar import CODE_FENCE_RE, H1_RE
 from lilbee.wiki.index import parse_source_count
 from lilbee.wiki.shared import (
-    DRAFTS_SUBDIR,
     SUBDIR_TO_TYPE,
     WIKI_CONTENT_SUBDIRS,
+    WikiSubdir,
     parse_frontmatter,
 )
 
@@ -158,7 +158,7 @@ def list_draft_pages(wiki_root: Path) -> list[WikiPageInfo]:
     """List draft pages that failed the quality gate (recurses into per-source dirs)."""
     return [
         build_page_info(path, wiki_root)
-        for path in _list_md_files_recursive(wiki_root / DRAFTS_SUBDIR)
+        for path in _list_md_files_recursive(wiki_root / WikiSubdir.DRAFTS)
     ]
 
 

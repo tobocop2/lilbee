@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.app.services import get_services
+from lilbee.app.services import reset_services as reset_provider
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
-from lilbee.core.services import reset_services as reset_provider
 from lilbee.data.ingest import sync
 
 pytestmark = pytest.mark.slow
@@ -34,8 +34,8 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
+    from lilbee.app.services import reset_services
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
-    from lilbee.core.services import reset_services
     from tests.integration.conftest import _resolve_installed_ref
 
     snapshot = cfg.model_copy()
@@ -179,7 +179,7 @@ class TestVisionOcrFallback:
     )
     async def test_vision_extracts_text(self):
         """Vision model OCR produces non-empty text from the scanned PDF fixture."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         page_texts = get_services().provider.pdf_ocr(
             SCANNED_PDF,
@@ -196,7 +196,7 @@ class TestVisionOcrFallback:
     )
     async def test_vision_extracts_known_phrases(self):
         """Vision model OCR captures key phrases from the scanned document."""
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         page_texts = get_services().provider.pdf_ocr(
             SCANNED_PDF,

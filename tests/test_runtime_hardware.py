@@ -1,8 +1,15 @@
-"""Tests for ``lilbee.runtime.hardware.compute_fit``."""
+"""Tests for ``lilbee.runtime.hardware``."""
 
 from __future__ import annotations
 
-from lilbee.runtime.hardware import FitLevel, compute_fit
+from lilbee.catalog.models import ModelFamily, ModelVariant
+from lilbee.runtime.hardware import (
+    FitLevel,
+    SizeVariantInfo,
+    available_memory_for_fit,
+    compute_fit,
+    family_size_variants,
+)
 
 _GB = 1024**3
 
@@ -46,3 +53,65 @@ def test_chip_is_immutable() -> None:
     except dataclasses.FrozenInstanceError:
         return
     raise AssertionError("FitChip should be frozen")
+
+
+def test_available_memory_for_fit_returns_bytes_from_probe(monkeypatch) -> None:
+    import lilbee.providers.model_cache as mc
+    from lilbee.core.config import cfg
+
+    cfg.gpu_memory_fraction = 0.5
+    monkeypatch.setattr(mc, "get_available_memory", lambda fraction: int(16 * _GB * fraction))
+    assert available_memory_for_fit() == 8 * _GB
+
+
+def test_available_memory_for_fit_returns_none_when_probe_raises(monkeypatch) -> None:
+    import lilbee.providers.model_cache as mc
+
+    def boom(_fraction: float) -> int:
+        raise RuntimeError("psutil missing")
+
+    monkeypatch.setattr(mc, "get_available_memory", boom)
+    assert available_memory_for_fit() is None
+
+
+def _variant(repo: str, params: str, quant: str, size_mb: int) -> ModelVariant:
+    return ModelVariant(
+        hf_repo=repo,
+        filename="*.gguf",
+        param_count=params,
+        quant=quant,
+        size_mb=size_mb,
+        recommended=False,
+    )
+
+
+def test_family_size_variants_orders_by_size_and_builds_label() -> None:
+    family = ModelFamily(
+        slug="qwen3",
+        name="Qwen3",
+        task="chat",
+        description="",
+        variants=(
+            _variant("Qwen/Qwen3-8B-GGUF", "8B", "Q4_K_M", 5 * 1024),
+            _variant("Qwen/Qwen3-0.6B-GGUF", "0.6B", "Q4_K_M", 512),
+        ),
+    )
+    out = family_size_variants(family)
+    assert [v.params for v in out] == ["0.6B", "8B"]
+    assert out[0] == SizeVariantInfo(
+        size_label="0.6B Q4_K_M", params="0.6B", size_gb=0.5, ref="Qwen/Qwen3-0.6B-GGUF"
+    )
+    assert out[1].size_label == "8B Q4_K_M"
+
+
+def test_family_size_variants_handles_missing_param_or_quant() -> None:
+    family = ModelFamily(
+        slug="anon",
+        name="Anon",
+        task="chat",
+        description="",
+        variants=(_variant("anon/repo", "", "", 100),),
+    )
+    [only] = family_size_variants(family)
+    assert only.size_label == "--"
+    assert only.params == ""

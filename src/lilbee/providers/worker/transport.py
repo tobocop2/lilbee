@@ -7,8 +7,21 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
+
+from lilbee.providers.worker.wire_kinds import WireKind
+
+
+class WorkerRole(StrEnum):
+    """Worker pool role identifier; addresses one llama.cpp worker process."""
+
+    EMBED = "embed"
+    RERANK = "rerank"
+    CHAT = "chat"
+    VISION = "vision"
+
 
 OcrBackend = Literal["vision"]
 """Backends supported by the PDF-OCR worker. Tesseract runs inline, not pooled."""
@@ -36,7 +49,7 @@ class RoleConfig:
     so adding fields does not change the Protocol signature).
     """
 
-    role: str
+    role: WorkerRole
     model_path: Path
     mode: str
     extras: dict[str, Any] | None = None
@@ -118,7 +131,7 @@ class WorkerHandle:
     """
 
     pid: int | None
-    role: str
+    role: WorkerRole
 
 
 @runtime_checkable
@@ -167,11 +180,11 @@ class WorkerChannel(Protocol):
         """
         ...
 
-    def call(self, kind: str, payload: Any, *, timeout: float) -> Awaitable[Any]:
+    def call(self, kind: WireKind, payload: Any, *, timeout: float) -> Awaitable[Any]:
         """Send one request, await one reply. Raises on worker error or timeout."""
         ...
 
-    def stream(self, kind: str, payload: Any) -> AsyncIterator[Any]:
+    def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
         """Send one request, yield streamed chunks until the worker terminates the stream."""
         ...
 
@@ -234,6 +247,7 @@ __all__ = [
     "WorkerChannel",
     "WorkerEntrypoint",
     "WorkerHandle",
+    "WorkerRole",
     "WorkerSpawner",
     "default_spawner",
 ]

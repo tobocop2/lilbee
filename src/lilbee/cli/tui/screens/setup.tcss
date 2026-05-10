@@ -30,22 +30,18 @@
     padding: 0 2;
 }
 
-ModelCard {
-    border: tall transparent;
-}
+/* Setup-wizard cards inherit ModelCard's catalog styling (tall $secondary 50%
+ * border, $accent focus/hover) verbatim; only the wizard-specific "-selected"
+ * state overlays an extra cue so the picked card reads as committed. */
 
 ModelCard.-selected {
-    border-left: thick $primary;
-    background: $primary 10%;
-}
-
-GridSelect:focus ModelCard.-highlight {
-    border: tall $primary;
-    background: $surface;
+    background: $primary 30%;
+    border: tall $accent;
 }
 
 GridSelect:focus ModelCard.-highlight.-selected {
-    border-left: thick $primary;
+    background: $primary 30%;
+    border: tall $accent;
 }
 
 GridSelect:focus ModelCard.-highlight #card-hint {

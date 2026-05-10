@@ -13,10 +13,10 @@ from collections import Counter
 
 import pytest
 
+from lilbee.app.services import get_services
+from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import FEATURED_EMBEDDING, download_model
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
-from lilbee.core.services import reset_services as reset_provider
 from lilbee.data.ingest import sync
 
 pytestmark = pytest.mark.slow

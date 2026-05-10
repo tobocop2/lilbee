@@ -17,22 +17,19 @@ from pathlib import Path
 
 from lilbee.core.config import Config, cfg
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
     SUBDIR_TO_TYPE,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
     WIKI_TYPE_HEADINGS,
+    WikiSubdir,
     parse_frontmatter,
 )
 
 log = logging.getLogger(__name__)
 
 _INDEX_SECTION_ORDER: tuple[str, ...] = (
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
+    WikiSubdir.CONCEPTS,
+    WikiSubdir.ENTITIES,
+    WikiSubdir.SUMMARIES,
+    WikiSubdir.SYNTHESIS,
 )
 
 

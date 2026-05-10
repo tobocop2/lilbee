@@ -24,14 +24,13 @@ from lilbee.wiki.citation import (
 from lilbee.wiki.grammar import WIKI_LINK_RE
 from lilbee.wiki.index import append_wiki_log
 from lilbee.wiki.shared import (
-    CONCEPTS_SUBDIR,
-    ENTITIES_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
-    WIKI_LOG_ACTION_LINT,
+    WikiLogAction,
+    WikiSubdir,
     parse_frontmatter,
 )
 
-_ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (CONCEPTS_SUBDIR, ENTITIES_SUBDIR)
+_ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (WikiSubdir.CONCEPTS, WikiSubdir.ENTITIES)
 
 log = logging.getLogger(__name__)
 
@@ -209,7 +208,7 @@ def lint_changed_sources(
 
     Callable from tools that already know the set of changed sources
     (e.g. a future `lilbee wiki check <source>` command); the sync
-    pipeline uses `_incremental_wiki_update` instead, which runs full
+    pipeline uses `lilbee.wiki.ingest.incremental_update` instead, which runs full
     extraction rather than citation replay.
     """
     if config is None:
@@ -259,7 +258,7 @@ def lint_all(
 
     report.issues.extend(_lint_orphans(wiki_root, config))
     append_wiki_log(
-        WIKI_LOG_ACTION_LINT,
+        WikiLogAction.LINT,
         f"{report.error_count} error(s), {report.warning_count} warning(s)",
         config,
     )

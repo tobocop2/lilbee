@@ -70,7 +70,7 @@ def isolated_env(tmp_path):
     cfg.crawl_timeout = 15
     # Reset services so the crawler semaphore + sync state are fresh for
     # every integration test.
-    from lilbee.core.services import reset_services
+    from lilbee.app.services import reset_services
 
     reset_services()
     yield tmp_path
@@ -305,7 +305,7 @@ class TestCrawlConcurrency:
             httpserver.expect_request(f"/conc{i}").respond_with_handler(slow_handler)
 
         cfg.crawl_max_concurrent = 2
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 
@@ -331,7 +331,7 @@ class TestCrawlConcurrency:
             )
 
         cfg.crawl_max_concurrent = 0
-        from lilbee.core.services import reset_services
+        from lilbee.app.services import reset_services
 
         reset_services()
 

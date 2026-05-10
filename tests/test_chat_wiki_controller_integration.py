@@ -15,7 +15,7 @@ import pytest
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
-from lilbee.cli.tui.widgets.task_bar import ProgressReporter, TaskBarController
+from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 
 
 def _fake_model() -> CatalogModel:
@@ -62,31 +62,6 @@ async def test_on_success_exception_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_catalog_enqueue_download_without_lilbee_app_notifies() -> None:
-    """When the host is not a LilbeeApp, catalog surfaces an error via notify."""
-    from textual.app import App, ComposeResult
-    from textual.widgets import Footer
-
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    class _PlainApp(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-    # Run under a plain app: CatalogScreen.app won't be a LilbeeApp.
-    with patch("lilbee.cli.tui.screens.catalog.get_catalog"):
-        app = _PlainApp()
-        async with app.run_test() as pilot:
-            screen = CatalogScreen()
-            await app.push_screen(screen)
-            await pilot.pause()
-            notified: list[str] = []
-            screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
-            screen._enqueue_download(_fake_model())
-            assert any("task" in n.lower() or "bar" in n.lower() for n in notified)
-
-
-@pytest.mark.asyncio
 async def test_queue_unsubscribe_removes_callback() -> None:
     """TaskQueue.unsubscribe removes a previously registered callback."""
     from lilbee.cli.tui.task_queue import TaskQueue
@@ -124,7 +99,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
 
         from lilbee.data.ingest import SyncResult
 
@@ -137,8 +112,8 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
                         "lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=SyncResult())
                     ),
                 ):
-                    screen._do_add(src, reporter)
-            except BaseException as e:  # pragma: no cover
+                    screen._do_add([src], reporter)
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -172,7 +147,7 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
         mock_copy = MagicMock(return_value=copy_result)
 
         def _worker() -> None:
@@ -188,8 +163,8 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
                         ),
                     ),
                 ):
-                    screen._do_add(src, reporter, force=True)
-            except BaseException as e:  # pragma: no cover
+                    screen._do_add([src], reporter, force=True)
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -225,7 +200,7 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         import threading as _th
 
-        exc: list[BaseException] = []
+        exc: list[Exception] = []
         mock_copy = MagicMock(return_value=copy_result)
 
         def _worker() -> None:
@@ -241,8 +216,8 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
                         ),
                     ),
                 ):
-                    screen._do_add(src, reporter)
-            except BaseException as e:  # pragma: no cover
+                    screen._do_add([src], reporter)
+            except Exception as e:  # pragma: no cover
                 exc.append(e)
 
         t = _th.Thread(target=_worker, daemon=True)
@@ -283,14 +258,14 @@ def test_do_crawl_reports_setup_progress() -> None:
         )
         return []
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
                 screen._do_crawl("https://x", 0, 2, reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -319,14 +294,14 @@ def test_do_crawl_reports_page_progress() -> None:
         )
         return [Path("/tmp/a")]
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
                 screen._do_crawl("https://x", 0, 2, reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -357,13 +332,13 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         return SyncResult()
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -392,13 +367,13 @@ def test_do_sync_done_event_reports_completion() -> None:
         )
         return SyncResult()
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover - re-raised
+        except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -431,13 +406,13 @@ def test_do_sync_raises_on_sync_failed() -> None:
     async def fake_sync(*, quiet, on_progress):
         return SyncResult(failed=["broken.pdf"])
 
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -462,13 +437,13 @@ def test_do_sync_translates_cancellation() -> None:
 
         raise _asyncio.CancelledError
 
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -632,7 +607,10 @@ async def test_start_crawl_submits_task_to_controller() -> None:
         screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         assert screen is not None
         with (
-            patch("lilbee.cli.tui.widgets.task_bar.chromium_installed", return_value=True),
+            patch(
+                "lilbee.cli.tui.widgets.task_bar_controller.chromium_installed",
+                return_value=True,
+            ),
             patch.object(app.task_bar, "start_task", return_value="tid") as mock_start,
         ):
             screen._start_crawl("https://x", 0, 5)
@@ -715,7 +693,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
         )
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
@@ -724,8 +702,8 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
                 patch("lilbee.app.ingest.copy_files", return_value=copy_result),
                 patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             ):
-                screen._do_add(src, reporter)
-        except BaseException as e:  # pragma: no cover
+                screen._do_add([src], reporter)
+        except Exception as e:  # pragma: no cover
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -791,7 +769,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
             # which may not be primed inside this worker thread (Windows CI).
             patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
-            screen._do_add(src, reporter)
+            screen._do_add([src], reporter)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -867,7 +845,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
             patch("lilbee.data.ingest.sync", side_effect=fake_sync),
             patch("lilbee.runtime.asyncio_loop.run", side_effect=lambda coro: asyncio.run(coro)),
         ):
-            screen._do_add(src, reporter)
+            screen._do_add([src], reporter)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -942,7 +920,7 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
     from lilbee.app.ingest import CopyResult
 
     copy_result = CopyResult(copied=[str(src)], skipped=[])
-    captured: list[BaseException] = []
+    captured: list[Exception] = []
 
     def _worker() -> None:
         try:
@@ -953,10 +931,10 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
                     "lilbee.runtime.asyncio_loop.run",
                     new=MagicMock(return_value=SyncResult(skipped=["scan.pdf"])),
                 ),
-                patch("lilbee.cli.tui.screens.chat._remove_copied_files"),
+                patch("lilbee.cli.tui.screens.chat.remove_copied_files"),
             ):
-                screen._do_add(src, reporter)
-        except BaseException as e:
+                screen._do_add([src], reporter)
+        except Exception as e:
             captured.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -997,13 +975,13 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
-    exc: list[BaseException] = []
+    exc: list[Exception] = []
 
     def _worker() -> None:
         try:
             with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
                 screen._do_sync(reporter)
-        except BaseException as e:  # pragma: no cover
+        except Exception as e:  # pragma: no cover
             exc.append(e)
 
     t = threading.Thread(target=_worker, daemon=True)
