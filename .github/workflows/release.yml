@@ -8,6 +8,16 @@ on:
       tag_name:
         description: 'Tag name for artifact uploads (use a -nuitka.N suffix for dry-runs).'
         required: true
+  workflow_call:
+    inputs:
+      publish:
+        description: "Attach binaries to the GitHub release named by `ref`/`tag_name` when true."
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to build (defaults to the calling workflow's ref)."
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -16,10 +26,21 @@ env:
   LLAMA_CPP_VERSION: "0.3.20"
 
 jobs:
+  # Skip the entire workflow if the release was created by
+  # github-actions[bot] — release-candidate.yml's promote step (or
+  # emergency-publish.yml) creates the GH release after binaries have
+  # already been built and attached. Re-running would just rebuild
+  # the binaries we already shipped. Manual UI-created releases still
+  # trigger the build.
   lint:
+    if: |
+      github.event_name != 'release' ||
+      github.event.release.author.login != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
@@ -30,9 +51,14 @@ jobs:
       - run: make typecheck
 
   test:
+    if: |
+      github.event_name != 'release' ||
+      github.event.release.author.login != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
@@ -67,6 +93,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -286,13 +314,16 @@ jobs:
         shell: bash
 
       - name: Upload to release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event_name == 'workflow_call' && (inputs.ref || github.ref_name) || '' }}
           files: dist/${{ matrix.asset_name }}
 
-      - name: Upload artifact (workflow_dispatch dry-run)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload artifact (no-publish lane)
+        # Fires on workflow_dispatch (existing dry-run) and on workflow_call
+        # with publish=false (release-candidate.yml's build phase).
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_call' && !inputs.publish)
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}

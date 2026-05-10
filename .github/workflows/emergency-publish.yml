@@ -1,0 +1,151 @@
+name: Emergency publish
+
+# Bypass-QA escape hatch. Builds wheels + binaries from an existing tag
+# and pushes them to PyPI + a GitHub release without running qa-matrix.
+# Use only when the QA matrix itself is broken or when there is a known
+# urgent fix the matrix would not yet exercise. Normal lane is
+# release-candidate.yml.
+#
+# Two-step confirm: provide a tag AND type "skip-qa" in the confirm field.
+# Guard job also refuses if the tag already has a published GH release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.6.66b458)."
+        required: true
+      confirm:
+        description: 'Type "skip-qa" to confirm you are bypassing the QA matrix.'
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: emergency-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Validate confirm token
+        run: |
+          if [ "${{ inputs.confirm }}" != "skip-qa" ]; then
+            echo "confirm token must be exactly 'skip-qa' to bypass the QA matrix" >&2
+            exit 1
+          fi
+
+      - name: Refuse if tag already has a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ inputs.tag }}" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "tag ${{ inputs.tag }} already has a published GH release; refusing to overwrite" >&2
+            exit 1
+          fi
+
+      # Implicit existence check: this fails loudly if the tag does not exist.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Parse version from pyproject.toml
+        id: parse
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          if [ "v${VERSION}" != "${EXPECTED_TAG}" ] && [ "${VERSION}" != "${EXPECTED_TAG}" ]; then
+            echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  build-wheels:
+    needs: [guard]
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      publish: false
+      ref: ${{ inputs.tag }}
+    secrets: inherit
+
+  build-binaries:
+    needs: [guard]
+    uses: ./.github/workflows/release.yml
+    with:
+      publish: false
+      ref: ${{ inputs.tag }}
+    secrets: inherit
+
+  promote:
+    needs: [guard, build-wheels, build-binaries]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+
+      - name: Stage wheels + sdist for PyPI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lilbee-*
+          path: bins/
+          merge-multiple: true
+
+      - name: Create GH release with binaries
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: bins/*
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.guard.outputs.version, 'a') || contains(needs.guard.outputs.version, 'b') || contains(needs.guard.outputs.version, 'rc') }}
+
+      - name: Trigger Publish Docker Image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish-docker.yml \
+            --repo ${{ github.repository }} \
+            -f tag=${{ inputs.tag }}
+
+      - name: Trigger Publish Packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish-packages.yml \
+            --repo ${{ github.repository }} \
+            -f tag=${{ inputs.tag }}

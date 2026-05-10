@@ -26,9 +26,27 @@ on:
         description: "lilbee version to QA (defaults to latest published)"
         required: false
         default: "latest"
+  # Reusable trigger for release-candidate.yml / emergency-publish.yml.
+  # When wheel_run_id / binary_run_id are set, the matrix consumes those
+  # workflow artifacts directly instead of fetching from PyPI / GH release.
+  workflow_call:
+    inputs:
+      wheel_run_id:
+        description: "Workflow run ID containing wheel-default-* artifacts (RC lane)."
+        type: string
+        default: ""
+      binary_run_id:
+        description: "Workflow run ID containing lilbee-<os>-<arch> artifacts (RC lane)."
+        type: string
+        default: ""
+      version:
+        description: "lilbee version string for the artifacts (e.g. 0.6.66b458)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: read   # download-artifact with run-id (workflow_call RC mode)
 
 concurrency:
   group: qa-matrix-${{ github.ref }}
@@ -69,14 +87,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.lilbee_version || 'latest' }}
+          RC_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
-          if [ "$TAG" = "latest" ]; then
-            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+          if [ -n "${RC_VERSION}" ]; then
+            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$TAG" = "latest" ]; then
+              TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+            fi
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            # Strip leading 'v' for PyPI version
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          # Strip leading 'v' for PyPI version
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Restore QA models cache
         id: models-cache
@@ -85,8 +109,40 @@ jobs:
           path: ~/.lilbee-qa-models
           key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
 
+      - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        shell: bash
+        # --find-links lets pip pick the OS/arch/Python-matching wheel from
+        # the directory; transitive deps still resolve via the default index.
+        # --pre matches today's PyPI install behavior for beta versions.
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+          SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          cat > "${SITE_PACKAGES}/sitecustomize.py" <<'PYEOF'
+          # QA matrix: allow loopback crawls for local fixture testing only.
+          import os
+          if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
+              try:
+                  from lilbee.crawler import url_filter
+                  url_filter._BLOCKED_NETWORKS = ()
+                  url_filter.get_blocked_networks = lambda: ()
+              except ImportError:
+                  pass
+          PYEOF
+
       - name: Install lilbee from PyPI (lane=pypi)
-        if: matrix.lane == 'pypi'
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
         shell: bash
         # Plain `lilbee` (no extras). Both [crawler] and [litellm] extras
         # add 30-60 s per `lilbee` invocation on macOS arm64 (crawl4ai +
@@ -119,8 +175,25 @@ jobs:
                   pass
           PYEOF
 
+      - name: Download lilbee binary from sibling run (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ./_bin
+          run-id: ${{ inputs.binary_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Make binary executable + set LILBEE_QA_BIN (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        shell: bash
+        run: |
+          ls -la _bin
+          if [ "${{ matrix.chmod }}" = "true" ]; then chmod +x "_bin/${{ matrix.asset }}"; fi
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/${{ matrix.asset }}" >> "$GITHUB_ENV"
+
       - name: Download lilbee binary from GH release (lane=binary)
-        if: matrix.lane == 'binary'
+        if: matrix.lane == 'binary' && inputs.binary_run_id == ''
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -231,21 +304,58 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.lilbee_version || 'latest' }}
+          RC_VERSION: ${{ inputs.version }}
         run: |
-          if [ "$TAG" = "latest" ]; then
-            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+          if [ -n "${RC_VERSION}" ]; then
+            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$TAG" = "latest" ]; then
+              TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+            fi
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels (lane=pypi, RC mode)
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
+        run: |
+          python3 -m pip install --break-system-packages --root-user-action=ignore --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
       - name: Install lilbee from PyPI (lane=pypi)
-        if: matrix.lane == 'pypi'
+        if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
         run: |
           python3 -m pip install --break-system-packages --root-user-action=ignore "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
+      - name: Download lilbee binary from sibling run (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: lilbee-linux-x86_64
+          path: ./_bin
+          run-id: ${{ inputs.binary_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Make binary executable + set LILBEE_QA_BIN (lane=binary, RC mode)
+        if: matrix.lane == 'binary' && inputs.binary_run_id != ''
+        run: |
+          chmod +x _bin/lilbee-linux-x86_64
+          echo "LILBEE_QA_BIN=${{ github.workspace }}/_bin/lilbee-linux-x86_64" >> "$GITHUB_ENV"
+
       - name: Download lilbee binary from GH release (lane=binary)
-        if: matrix.lane == 'binary'
+        if: matrix.lane == 'binary' && inputs.binary_run_id == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -317,10 +427,16 @@ jobs:
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
+          RC_VERSION: ${{ inputs.version }}
         run: |
-          TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [ -n "${RC_VERSION}" ]; then
+            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Restore QA models cache
         uses: actions/cache@v4
@@ -328,7 +444,24 @@ jobs:
           path: ~/.lilbee-qa-models
           key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
 
+      - name: Download wheel artifacts from sibling run (RC mode)
+        if: inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels with crawler + litellm extras (RC mode)
+        if: inputs.wheel_run_id != ''
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
       - name: Install lilbee from PyPI with crawler + litellm extras
+        if: inputs.wheel_run_id == ''
         run: |
           python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"

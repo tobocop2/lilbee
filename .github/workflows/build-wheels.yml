@@ -9,6 +9,20 @@ on:
         description: "llama-cpp-python version to vendor"
         default: "0.3.20"
         required: false
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publish wheels + sdist to PyPI when true."
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to build (defaults to the calling workflow's ref)."
+        type: string
+        default: ""
+      llama_cpp_version:
+        description: "llama-cpp-python version to vendor"
+        type: string
+        default: "0.3.20"
 
 permissions:
   contents: write
@@ -20,8 +34,15 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
+  # Skip if the release was created by github-actions[bot] — that means
+  # release-candidate.yml's promote step (or emergency-publish.yml) just
+  # created it, the wheels are already on PyPI, and rebuilding would only
+  # waste runner time and trip PyPI's immutability check. Manual
+  # UI-created releases (real-user author) still trigger the build.
   ci:
-    if: github.event_name == 'release'
+    if: |
+      github.event_name == 'workflow_call' ||
+      (github.event_name == 'release' && github.event.release.author.login != 'github-actions[bot]')
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
@@ -66,6 +87,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -183,6 +206,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -247,6 +272,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -266,7 +293,7 @@ jobs:
           path: dist/*.tar.gz
 
   publish-pypi:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
     needs: [build-default-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
@@ -297,7 +324,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   verify-pypi:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_call' && inputs.publish)
     needs: [publish-pypi]
     strategy:
       fail-fast: false
@@ -319,6 +346,8 @@ jobs:
       BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
