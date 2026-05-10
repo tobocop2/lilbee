@@ -107,7 +107,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
+          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -220,10 +220,10 @@ jobs:
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
-          ollama pull smollm:135m
+          ollama pull qwen3:0.6b
           echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
@@ -376,10 +376,10 @@ jobs:
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
-          ollama pull smollm:135m
+          ollama pull qwen3:0.6b
           echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
@@ -405,7 +405,7 @@ jobs:
           retention-days: 7
 
   # Dedicated Ollama lane: install [crawler,litellm], stand up an ollama
-  # daemon with smollm:135m, run only the litellm-backed ollama tests. We
+  # daemon with qwen3:0.6b, run only the litellm-backed ollama tests. We
   # isolate this from the main matrix because the [litellm] SDK adds 30-60s
   # per `lilbee` invocation on macOS arm64 and Linux native runners, which
   # blows the 60-min budget when applied to the full suite. Scoped to one
@@ -442,7 +442,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.lilbee-qa-models
-          key: lilbee-qa-models-v1-smollm2-135m-nomic-embed-v1.5
+          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
@@ -474,10 +474,10 @@ jobs:
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
-          ollama pull smollm:135m
+          ollama pull qwen3:0.6b
           echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=smollm:135m" >> "$GITHUB_ENV"
+          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
 
       - name: Run ollama tests only
         env:
@@ -497,6 +497,104 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qa-ollama-pypi
+          path: |
+            qa-*.xml
+            tools/qa/.pytest_cache/
+          retention-days: 7
+
+  # Dedicated crawler lane: install [crawler], bootstrap Chromium via
+  # `lilbee setup crawler`, run only the e2e crawl test against the local
+  # http.server fixture. Same isolation rationale as ollama-pypi: the
+  # crawl4ai + playwright SDK adds 30-60s to every `lilbee` invocation,
+  # which would blow the 60-min cap if applied to the full pypi matrix.
+  # Scoped to one cell on ubuntu-latest where Chromium install is reliable.
+  crawler-pypi:
+    name: crawler-pypi (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install QA harness deps
+        run: python -m pip install --root-user-action=ignore -r tools/qa/requirements.txt
+
+      - name: Resolve target lilbee version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "${RC_VERSION}" ]; then
+            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore QA models cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee-qa-models
+          key: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
+
+      - name: Download wheel artifacts from sibling run (RC mode)
+        if: inputs.wheel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-default-*
+          path: ./_wheels
+          run-id: ${{ inputs.wheel_run_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
+      - name: Install lilbee from local wheels with crawler extra (RC mode)
+        if: inputs.wheel_run_id != ''
+        run: |
+          python -m pip install --find-links ./_wheels --pre "lilbee[crawler]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Install lilbee from PyPI with crawler extra
+        if: inputs.wheel_run_id == ''
+        run: |
+          python -m pip install "lilbee[crawler]==${{ steps.ver.outputs.version }}"
+          echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
+
+      - name: Run crawler tests only
+        env:
+          LILBEE_QA_LANE: l1-pypi
+          LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
+          # Install a sitecustomize.py so the loopback fixture URL passes
+          # lilbee's URL filter, mirroring the native pypi-lane setup.
+          SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          cat > "${SITE_PACKAGES}/sitecustomize.py" <<'PYEOF'
+          import os
+          if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
+              try:
+                  from lilbee.crawler import url_filter
+                  url_filter._BLOCKED_NETWORKS = ()
+                  url_filter.get_blocked_networks = lambda: ()
+              except ImportError:
+                  pass
+          PYEOF
+          python -m pytest tools/qa/test_e2e_crawl.py -v --tb=short \
+            --junitxml=qa-crawler-pypi.xml
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-crawler-pypi
           path: |
             qa-*.xml
             tools/qa/.pytest_cache/

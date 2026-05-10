@@ -91,7 +91,7 @@ def lilbee_env_with_ollama(
 
     lilbee's config validator requires remote-provider models to carry an
     `ollama/` (or `openai/`, `anthropic/`, `gemini/`) prefix; bare
-    `smollm:135m` is rejected as ambiguous. Prefix the ref before passing
+    `qwen3:0.6b` is rejected as ambiguous. Prefix the ref before passing
     it to LILBEE_CHAT_MODEL.
     """
     chat_ref = ollama_chat_model
@@ -190,7 +190,7 @@ def test_model_list_includes_ollama_model(
     payload = json.loads(result.stdout)
     models = payload.get("models", [])
     remote_names = {m["name"] for m in models if m.get("source") == "remote"}
-    # The model may show up as 'smollm:135m' or 'ollama/smollm:135m' depending
+    # The model may show up as 'qwen3:0.6b' or 'ollama/qwen3:0.6b' depending
     # on how lilbee normalises remote refs in its registry view.
     bare = ollama_chat_model.removeprefix("ollama/")
     assert bare in remote_names or any(bare in name for name in remote_names), (

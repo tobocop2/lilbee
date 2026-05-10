@@ -1,0 +1,146 @@
+"""T6 model pull lifecycle.
+
+Validates `lilbee model pull` persists the model registry across server
+restarts (catalog state lives on disk, not in-memory) and that pulling a
+non-existent HF ref returns a clear error rather than a stack trace.
+
+Today /api/models/pull and `lilbee model pull` are smoke-tested only against
+an empty registry; a regression that broke disk persistence (e.g. only
+recording the model in a per-process cache) would not surface until a user
+restarted lilbee and discovered their model gone.
+"""
+
+from __future__ import annotations
+
+import socket
+import subprocess
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+from drivers.tui import lilbee_env
+
+from conftest import Lane
+
+_PULL_TIMEOUT = 60.0
+_SERVER_BOOT_TIMEOUT = 60.0
+_SERVER_HEALTH_POLL = 0.3
+_LIST_TIMEOUT = 180.0
+
+
+def _wait_for_health(base_url: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{base_url}/api/health", timeout=2.0).status_code == 200:
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(_SERVER_HEALTH_POLL)
+    pytest.fail(f"server at {base_url} never became healthy in {timeout:.0f}s")
+
+
+def _serve_once_and_query_installed(lane: Lane, env: dict[str, str]) -> list[dict[str, object]]:
+    """Boot lilbee serve on a free port, hit /api/models/installed, tear down."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        [lane.lilbee_bin, "serve", "--host", "127.0.0.1", "--port", str(port)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        _wait_for_health(base_url, _SERVER_BOOT_TIMEOUT)
+        response = httpx.get(f"{base_url}/api/models/installed", timeout=30.0)
+        assert response.status_code == httpx.codes.OK, response.text
+        payload = response.json()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    # Endpoint shape varies across releases: bare list OR {"models": [...]}.
+    if isinstance(payload, list):
+        return payload
+    return list(payload.get("models", []))
+
+
+@pytest.mark.catalog
+@pytest.mark.writer
+@pytest.mark.timeout(360)
+def test_pull_persists_across_server_restart(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+    models_pulled: dict[str, str],
+) -> None:
+    """Models pulled via the session fixture appear in /api/models/installed,
+    survive a server restart with the same data dir, and remain enumerable.
+
+    The session fixture already pulled chat + embed before this test runs;
+    that work is the on-disk registration we're checking. Two consecutive
+    serve+query cycles let us verify the second cold-start sees the same
+    set as the first.
+    """
+    first = _serve_once_and_query_installed(lane, lilbee_env_with_models)
+    second = _serve_once_and_query_installed(lane, lilbee_env_with_models)
+
+    def _names(rows: list[dict[str, object]]) -> set[str]:
+        out: set[str] = set()
+        for row in rows:
+            for key in ("name", "hf_repo", "ref"):
+                value = row.get(key)
+                if isinstance(value, str) and value:
+                    out.add(value)
+                    break
+        return out
+
+    first_names = _names(first)
+    second_names = _names(second)
+    assert first_names, f"first /api/models/installed returned empty: {first}"
+    assert first_names == second_names, (
+        "installed models diverged across server restart "
+        f"(first={first_names!r}, second={second_names!r})"
+    )
+
+    chat_repo = "/".join(models_pulled["chat"].split("/")[:2])
+    assert any(chat_repo in name for name in second_names), (
+        f"pulled chat model {chat_repo!r} missing after restart: {second_names!r}"
+    )
+
+
+@pytest.mark.catalog
+@pytest.mark.timeout(120)
+def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -> None:
+    """Pulling a non-existent HF ref fails with a recognizable error keyword
+    on stdout/stderr, not a bare stack trace and not a silent zero exit."""
+    env = lilbee_env(lilbee_data)
+    result = subprocess.run(
+        [
+            lane.lilbee_bin,
+            "model",
+            "pull",
+            "this-org-does-not-exist-1234/this-repo-does-not-exist-5678-GGUF",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_PULL_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        f"pull of non-existent model should fail; got rc=0\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    keywords = ("not found", "does not exist", "404", "no such", "error", "failed")
+    assert any(token in combined for token in keywords), (
+        f"expected a recognizable error keyword in output, got bare trace:\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
