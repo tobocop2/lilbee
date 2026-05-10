@@ -113,18 +113,43 @@ class TestGroupRowsForGrid:
 
 
 class TestGroupFrontierRows:
-    def test_provider_sections_alphabetical_within_group(self) -> None:
+    def test_provider_sections_follow_provider_keys_order(self) -> None:
+        """Sections appear in PROVIDER_KEYS order; rows alphabetical within."""
         from lilbee.cli.tui.screens.catalog_grouping import group_frontier_rows
 
         rows = [
             _frontier("gpt-4o", provider="OpenAI"),
             _frontier("gemini-2.0-flash", provider="Gemini"),
             _frontier("gemini-1.5-pro", provider="Gemini"),
+            _frontier("claude-3-5-sonnet", provider="Anthropic"),
+            _frontier("openrouter/anthropic/claude-3-haiku", provider="OpenRouter"),
         ]
         sections = group_frontier_rows(rows)
-        assert [s.heading for s in sections] == ["Gemini", "OpenAI"]
-        assert [r.name for r in sections[0].rows] == ["gemini-1.5-pro", "gemini-2.0-flash"]
-        assert [r.name for r in sections[1].rows] == ["gpt-4o"]
+        # Canonical display order from PROVIDER_KEYS.
+        assert [s.heading for s in sections] == [
+            "OpenRouter",
+            "Gemini",
+            "Anthropic",
+            "OpenAI",
+        ]
+        gemini_section = next(s for s in sections if s.heading == "Gemini")
+        assert [r.name for r in gemini_section.rows] == [
+            "gemini-1.5-pro",
+            "gemini-2.0-flash",
+        ]
+
+    def test_unknown_provider_appears_at_tail_alphabetically(self) -> None:
+        """Providers absent from PROVIDER_KEYS sort to the tail alphabetically."""
+        from lilbee.cli.tui.screens.catalog_grouping import group_frontier_rows
+
+        rows = [
+            _frontier("custom-a", provider="ZZZ-Custom"),
+            _frontier("gpt-4o", provider="OpenAI"),
+            _frontier("custom-b", provider="AAA-Custom"),
+        ]
+        sections = group_frontier_rows(rows)
+        # OpenAI is canonical, AAA-Custom and ZZZ-Custom are extras (alphabetical).
+        assert [s.heading for s in sections] == ["OpenAI", "AAA-Custom", "ZZZ-Custom"]
 
     def test_empty_input_returns_empty_list(self) -> None:
         from lilbee.cli.tui.screens.catalog_grouping import group_frontier_rows

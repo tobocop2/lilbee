@@ -335,15 +335,24 @@ class LitellmSdkBackend:
 
     @staticmethod
     def _all_chat_models_for(provider: str, litellm: Any) -> list[str]:
-        """Filter litellm's catalog down to chat-mode entries for ``provider``."""
+        """Filter litellm's catalog down to chat-mode entries for ``provider``.
+
+        litellm's catalog stores some providers' models bare (``gpt-4o``)
+        and others prefixed (``mistral/codestral-latest``,
+        ``openrouter/anthropic/claude-3.5-sonnet``). Strip any leading
+        ``{provider}/`` so callers see uniformly bare names; the canonical
+        ``provider/name`` form is reapplied at the routing layer via
+        :meth:`ProviderModelRef.for_openai_prefix`.
+        """
         models = litellm.models_by_provider.get(provider, set())
-        chat_models: list[str] = []
-        for model_name in sorted(models):
+        prefix = f"{provider}/"
+        bare: set[str] = set()
+        for model_name in models:
             info = litellm.model_cost.get(model_name, {})
             if info.get("mode") != "chat":
                 continue
-            chat_models.append(model_name)
-        return chat_models
+            bare.add(model_name.removeprefix(prefix))
+        return sorted(bare)
 
     @staticmethod
     def _list_ollama_models(base_url: str) -> list[str]:

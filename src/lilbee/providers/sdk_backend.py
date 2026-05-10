@@ -25,11 +25,16 @@ if TYPE_CHECKING:
 
 # Single source of truth for per-provider API key configuration.
 # Maps (provider_name, config_field, env_var, display_label). Backend-agnostic:
-# OpenAI-compatible SDKs all read these env vars at call time.
+# OpenAI-compatible SDKs all read these env vars at call time. Tuple order
+# is the canonical display order downstream consumers (TUI grouping, catalog
+# sections) honor when surfacing providers.
 PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
-    ("openai", "openai_api_key", "OPENAI_API_KEY", "OpenAI"),
-    ("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic"),
+    ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", "OpenRouter"),
     ("gemini", "gemini_api_key", "GEMINI_API_KEY", "Gemini"),
+    ("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic"),
+    ("openai", "openai_api_key", "OPENAI_API_KEY", "OpenAI"),
+    ("mistral", "mistral_api_key", "MISTRAL_API_KEY", "Mistral"),
+    ("deepseek", "deepseek_api_key", "DEEPSEEK_API_KEY", "DeepSeek"),
 )
 
 # Derived set of config field names (for checking which updates touch API keys).
@@ -59,10 +64,13 @@ def get_provider_api_key(provider: str) -> str | None:
 _BACKEND_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
     ("localhost:11434", BackendName.OLLAMA),
     ("ollama", BackendName.OLLAMA),
+    ("openrouter", BackendName.OPENROUTER),
     ("openai", BackendName.OPENAI),
     ("anthropic", BackendName.ANTHROPIC),
     ("googleapis", BackendName.GEMINI),
     ("gemini", BackendName.GEMINI),
+    ("mistral", BackendName.MISTRAL),
+    ("deepseek", BackendName.DEEPSEEK),
 )
 
 
