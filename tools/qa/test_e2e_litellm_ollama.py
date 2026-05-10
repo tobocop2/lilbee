@@ -6,7 +6,7 @@ when picking an Ollama-backed chat model (bb-m234). On POSIX, a SIGSEGV in
 the spawned lilbee process surfaces as a negative subprocess returncode;
 asserting `returncode >= 0` distinguishes a clean failure from a crash.
 
-Skips cleanly when no ollama daemon is reachable on the default port — the
+Skips cleanly when no ollama daemon is reachable on the default port. The
 matrix runs cells without ollama too, and the absence of the daemon is a
 test-environment fact, not a regression.
 """
@@ -24,7 +24,7 @@ import httpx
 import pytest
 from drivers.tui import lilbee_env
 
-from conftest import Lane, LaneName
+from conftest import Lane, LaneName, current_lane_name
 
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
@@ -108,15 +108,27 @@ def lilbee_env_with_ollama(
 
 
 def _has_litellm_extras(lane: Lane) -> bool:
-    """Probe whether the artifact has the litellm extras wired at runtime."""
+    """Probe whether the artifact has the [litellm] extra wired at runtime.
+
+    Runs ``lilbee --json self-check-extras`` and inspects the per-extra
+    boolean. The command exits 0 when every extra imports and 1 otherwise,
+    so we can't gate on rc alone: a missing crawler extra would mark this
+    probe False even when litellm is fine. Read the JSON payload directly
+    instead, matching the shape emitted by self_check_extras_cmd in
+    src/lilbee/cli/commands/setup.py: ``{"ok": bool, "<extra>": bool, ...}``.
+    """
     result = subprocess.run(
-        [lane.lilbee_bin, "--help"],
+        [lane.lilbee_bin, "--json", "self-check-extras"],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
-    return result.returncode == 0
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return payload.get("litellm") is True
 
 
 def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) -> None:
@@ -131,21 +143,24 @@ def _assert_no_segfault(result: subprocess.CompletedProcess[str], context: str) 
 @pytest.mark.writer
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
+    current_lane_name() is LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )
-def test_status_with_ollama_backend_does_not_crash(
+def test_status_with_ollama_backend_returns_chat_model(
     lane: Lane, lilbee_env_with_ollama: dict[str, str]
 ) -> None:
-    """`lilbee --json status` configured for ollama doesn't segfault.
+    """`lilbee --json status` configured for ollama exits 0 and includes the
+    chat_model in the rendered config payload.
 
     bb-m234 reproduces a SIGSEGV in the release executable when the
-    chat_model resolves to an ollama ref. Status doesn't run inference,
-    just touches the registry / provider resolution path.
+    chat_model resolves to an ollama ref. Status doesn't run inference;
+    it touches the registry / provider resolution path. Asserting both
+    "no signal kill" and "config payload renders chat_model" so the test
+    catches a silent regression where the path runs but drops the value.
     """
     if not _has_litellm_extras(lane):
-        pytest.skip("lane lacks litellm extras; ollama path not exercised")
+        pytest.skip("litellm not importable; ollama provider path not available")
 
     result = subprocess.run(
         [lane.lilbee_bin, "--json", "status"],
@@ -166,7 +181,7 @@ def test_status_with_ollama_backend_does_not_crash(
 @pytest.mark.writer
 @pytest.mark.timeout(120)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
+    current_lane_name() is LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )
@@ -175,7 +190,7 @@ def test_model_list_includes_ollama_model(
 ) -> None:
     """`lilbee --json model list` surfaces ollama-installed models with source=remote."""
     if not _has_litellm_extras(lane):
-        pytest.skip("lane lacks litellm extras")
+        pytest.skip("litellm not importable; ollama provider path not available")
 
     result = subprocess.run(
         [lane.lilbee_bin, "--json", "model", "list"],
@@ -202,7 +217,7 @@ def test_model_list_includes_ollama_model(
 @pytest.mark.writer
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
+    current_lane_name() is LaneName.L2_BINARY,
     reason="bb-m234: bundled binary segfaults when chat_model resolves to an ollama ref",
     strict=False,
 )
@@ -215,7 +230,7 @@ def test_ask_via_ollama_backend_completes(
     that the provider stack rendered tokens and exited cleanly.
     """
     if not _has_litellm_extras(lane):
-        pytest.skip("lane lacks litellm extras")
+        pytest.skip("litellm not importable; ollama provider path not available")
 
     if not shutil.which(lane.lilbee_bin):
         pytest.skip(f"lilbee binary not found at {lane.lilbee_bin}")

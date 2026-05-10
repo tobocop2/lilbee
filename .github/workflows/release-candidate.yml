@@ -35,6 +35,11 @@ jobs:
       - name: Compute version + tag from pyproject.toml
         id: ver
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+          INPUT_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
@@ -42,9 +47,9 @@ jobs:
             echo "could not parse version from pyproject.toml" >&2
             exit 1
           fi
-          if [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${{ github.ref_name }}"
-            REF="${{ github.ref }}"
+          if [ "${EVENT_NAME}" = "push" ]; then
+            TAG="${REF_NAME}"
+            REF="${GITHUB_REF}"
             # Sanity: tag should match pyproject.toml version (allow with-or-without 'v').
             if [ "${TAG}" != "v${VERSION}" ] && [ "${TAG}" != "${VERSION}" ]; then
               echo "tag ${TAG} does not match pyproject.toml version ${VERSION}" >&2
@@ -52,11 +57,13 @@ jobs:
             fi
           else
             TAG="v${VERSION}"
-            REF="${{ inputs.ref || github.ref }}"
+            REF="${INPUT_REF:-${GITHUB_REF}}"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "ref=${REF}"
+          } >> "$GITHUB_OUTPUT"
 
   build-wheels:
     needs: [resolve]
@@ -84,29 +91,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download binary artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
         with:
-          pattern: lilbee-*
-          path: bins/
-          merge-multiple: true
-
-      - name: List binary artifacts
-        shell: bash
-        run: ls -lh bins/
-
-      # generate_release_notes pulls commit messages since the previous
-      # tag; the published notes can be overwritten with `gh release edit`
-      # after the run completes if a hand-written body is preferred.
-      # prerelease=true on any PEP 440 a/b/rc segment so the GH UI badges
-      # them correctly and they stay off the "Latest release" surface.
-      - name: Create GH pre-release with binaries
-        uses: softprops/action-gh-release@v3
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: ./.github/actions/attach-prerelease
         with:
-          tag_name: ${{ needs.resolve.outputs.tag }}
-          files: bins/*
-          generate_release_notes: true
-          prerelease: ${{ contains(needs.resolve.outputs.version, 'a') || contains(needs.resolve.outputs.version, 'b') || contains(needs.resolve.outputs.version, 'rc') }}
+          tag: ${{ needs.resolve.outputs.tag }}
+          version: ${{ needs.resolve.outputs.version }}
 
   qa:
     needs: [resolve, build-wheels, build-binaries]
@@ -117,11 +108,11 @@ jobs:
       version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
-  # PyPI publish + downstream packaging only run after QA passes. By this
-  # point the GH pre-release with binaries is already public, so users
-  # exploring a release candidate can pull the executables before PyPI
-  # is updated. If QA fails, this job is skipped, the pre-release stays
-  # but no PyPI version is created (and can be retracted manually).
+  # PyPI publish + downstream packaging only run after QA passes. The GH
+  # pre-release with binaries is already public by this point, so users
+  # exploring an RC can pull the executables before PyPI is updated. If
+  # QA fails, this job is skipped, the pre-release stays, no PyPI version
+  # is created.
   promote-pypi-and-packaging:
     needs: [resolve, qa, attach-binaries-prerelease]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -132,45 +123,9 @@ jobs:
       id-token: write
       actions: write
     steps:
-      - name: Download wheel artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
         with:
-          pattern: wheel-default-*
-          path: dist/
-          merge-multiple: true
-
-      - name: Download sdist
-        uses: actions/download-artifact@v4
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: ./.github/actions/promote-pypi
         with:
-          name: sdist
-          path: dist/
-
-      - name: Stage wheels + sdist for PyPI
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ls -lh dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
-      # Manually fan out to downstream packaging. The workflow_run trigger
-      # on publish-docker.yml + publish-packages.yml is gated to
-      # event == 'release' so workflow_call invocations of build-wheels.yml /
-      # release.yml above do not auto-fire them; this step is the equivalent
-      # kick-off after PyPI is live.
-      - name: Trigger Publish Docker Image
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run publish-docker.yml \
-            --repo ${{ github.repository }} \
-            -f tag=${{ needs.resolve.outputs.tag }}
-
-      - name: Trigger Publish Packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run publish-packages.yml \
-            --repo ${{ github.repository }} \
-            -f tag=${{ needs.resolve.outputs.tag }}
+          tag: ${{ needs.resolve.outputs.tag }}

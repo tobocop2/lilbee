@@ -203,7 +203,6 @@ def test_tui_chat_advances_past_thinking_spinner(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """The TUI chat screen produces a response after the thinking spinner.
 

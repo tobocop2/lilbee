@@ -129,15 +129,15 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
 
 @pytest.mark.tui
 def test_settings_screen_omits_unavailable_tabs(tui: TuiSession, lane: Lane) -> None:
-    """Settings tabs for unavailable extras are hidden, not greyed out.
+    """Settings tabs that depend on optional extras are hidden, not greyed out.
 
-    The pypi lane installs plain ``lilbee`` (no [crawler] / [litellm]) and
-    leaves ``cfg.wiki=False``, so the API-Keys / Crawling / Wiki tabs are
-    absent. The binary lane bundles those extras and renders the tabs, so
-    skip on binary rather than asserting an inverted invariant.
+    The plain wheel install ships without [crawler] or [litellm] and leaves
+    ``cfg.wiki=False``, so the API-Keys / Crawling / Wiki tabs are absent.
+    The release binary bundles those extras, so the tabs render there and
+    this invariant doesn't apply.
     """
     if lane.is_binary:
-        pytest.skip("binary lane bundles [crawler] + [litellm]; the conditional tabs render")
+        pytest.skip("the release binary bundles the extras these tabs gate on")
     tui.wait_for("lilbee", timeout=_TUI_BOOT_TIMEOUT)
     tui.send("/settings\r")
     tui.wait_for("Settings", timeout=_TUI_SCREEN_TIMEOUT)

@@ -35,7 +35,12 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 _DEFAULT_CHAT_MODEL = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _DEFAULT_RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF"
-_LANE_ENV_VAR = "LILBEE_QA_LANE"
+# Public so xfail decorators that read the lane name at module-import time
+# (before any fixture runs) can compare against the same constant the
+# `lane` fixture uses. See `current_lane_name()` for the helper that
+# returns the resolved LaneName for use in those decorators.
+LANE_ENV_VAR = "LILBEE_QA_LANE"
+
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
 _MODELS_DIR_ENV_VAR = "LILBEE_QA_MODELS_DIR"
 _SERVER_PORT_BASE = 5000
@@ -58,6 +63,31 @@ class LaneName(StrEnum):
     L1_SOURCE = "l1-source"
     L1_PYPI = "l1-pypi"
     L2_BINARY = "l2-binary"
+
+
+class ModelTask(StrEnum):
+    """Task kinds reported by ``lilbee --json model list`` for each row."""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    RERANK = "rerank"
+    VISION = "vision"
+
+
+def current_lane_name() -> LaneName | None:
+    """Resolve the active lane from ``LILBEE_QA_LANE`` for use at module
+    import time (before fixtures run), e.g. inside ``@pytest.mark.xfail``
+    decorators. Returns ``None`` if the env var is unset or holds a value
+    that isn't a known lane (the ``lane`` fixture fails fast on that case;
+    here we just decline to xfail rather than raise during collection).
+    """
+    raw = os.environ.get(LANE_ENV_VAR)
+    if raw is None:
+        return None
+    try:
+        return LaneName(raw)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -174,25 +204,24 @@ def _pull_model(lilbee_bin: str, ref: str, env: dict[str, str]) -> None:
     _attempt()
 
 
-def _resolve_registered_name(
-    lilbee_bin: str, env: dict[str, str], task: str, repo_substring: str
+def resolve_registered_name(
+    lilbee_bin: str, env: dict[str, str], task: ModelTask, repo_substring: str
 ) -> str:
     """Return the registry name (incl. `.gguf` filename) for a pulled model.
 
     `lilbee model pull <hf_repo>` registers the model under a key like
-    `<owner>/<repo>/<filename>.gguf`. The chat / embedding role assignment
-    needs that full key, not the bare repo ID. This walks `model list`
-    output to find the entry matching `repo_substring` for the right task.
+    `<owner>/<repo>/<filename>.gguf`. Role assignment needs that full key,
+    not the bare repo ID. Walks `lilbee --json model list` and returns the
+    first entry whose `task` matches and whose `name` contains
+    `repo_substring`. Public (used by tools/qa/test_reranker_smoke.py).
     """
     result = subprocess.run(
         [lilbee_bin, "--json", "model", "list"],
         env=env,
         capture_output=True,
         text=True,
-        # PyInstaller binary cold-start on Windows can run 30+ seconds while it
-        # unpacks itself into a temp dir on every invocation (tracked as
-        # bb-rjez). 30s was racy; 180s leaves headroom for the slowest cell
-        # without masking a real hang.
+        # Cold-start on Windows can take 30+ seconds (bb-rjez). 180s leaves
+        # headroom for the slowest cell without masking a real hang.
         timeout=180,
         check=False,
     )
@@ -201,11 +230,13 @@ def _resolve_registered_name(
     payload = json.loads(result.stdout)
     models = payload.get("models", [])
     matches = [
-        m["name"] for m in models if m.get("task") == task and repo_substring in m.get("name", "")
+        m["name"]
+        for m in models
+        if m.get("task") == task.value and repo_substring in m.get("name", "")
     ]
     if not matches:
         raise RuntimeError(
-            f"no {task} model registered matching {repo_substring!r}; got {models!r}"
+            f"no {task.value} model registered matching {repo_substring!r}; got {models!r}"
         )
     return matches[0]
 
@@ -235,8 +266,10 @@ def models_pulled(
             _pull_model(lane.lilbee_bin, ref, env)
         except (RetryError, RuntimeError) as exc:
             pytest.fail(f"could not pull {ref} after retries: {exc}")
-    chat_name = _resolve_registered_name(lane.lilbee_bin, env, "chat", qa_chat_model)
-    embed_name = _resolve_registered_name(lane.lilbee_bin, env, "embedding", qa_embedding_model)
+    chat_name = resolve_registered_name(lane.lilbee_bin, env, ModelTask.CHAT, qa_chat_model)
+    embed_name = resolve_registered_name(
+        lane.lilbee_bin, env, ModelTask.EMBEDDING, qa_embedding_model
+    )
     return {"chat": chat_name, "embedding": embed_name}
 
 
@@ -264,12 +297,12 @@ def lilbee_env_with_models(
 
 @pytest.fixture(scope="session")
 def lane() -> Lane:
-    raw_name = os.environ.get(_LANE_ENV_VAR, LaneName.L1_SOURCE.value)
+    raw_name = os.environ.get(LANE_ENV_VAR, LaneName.L1_SOURCE.value)
     try:
         name = LaneName(raw_name)
     except ValueError:
         pytest.fail(
-            f"{_LANE_ENV_VAR}={raw_name!r} is not a known lane; "
+            f"{LANE_ENV_VAR}={raw_name!r} is not a known lane; "
             f"valid values: {[m.value for m in LaneName]}"
         )
     explicit = os.environ.get(_BIN_ENV_VAR)

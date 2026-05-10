@@ -4,12 +4,13 @@ Pulls a small cross-encoder reranker (gpustack/bge-reranker-v2-m3-GGUF, ~0.4 GB
 Q8_0), assigns it as the active reranker via env or via PUT, runs search,
 asserts the request completes cleanly with non-empty results.
 
-What this test does NOT prove: that the reranker actually loaded into memory
-or that it changed result ordering. The 2-doc fixture corpus is too small for
-a deterministic ordering flip, and lilbee may silently fall back to embedding
-ranking on a cross-encoder load failure. Both tests in this file are scoped
-as "search-with-reranker-set does not crash". An ordering-effect test belongs
-in a follow-up with a curated multi-doc corpus.
+What these tests do NOT prove: that the reranker actually loaded into memory,
+that it ran on the candidates, or that it changed result ordering. The 2-doc
+fixture corpus is too small for a deterministic ordering flip, and lilbee may
+silently fall back to embedding ranking on a cross-encoder load failure. The
+contract gated here is "search with a reranker configured returns the same
+shape of results it does without one". An ordering-effect test belongs in a
+follow-up with a curated multi-doc corpus.
 
 Reranker pull failures are hard-failed (not skipped) to match the conftest
 ``models_pulled`` policy: a broken pull is the regression the matrix exists
@@ -29,7 +30,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import Lane
+from conftest import Lane, ModelTask, resolve_registered_name
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 _PULL_TIMEOUT = 240.0
@@ -45,35 +46,15 @@ def _seed_corpus(lilbee_data: Path) -> None:
         shutil.copy(path, documents / path.name)
 
 
-def _resolve_registered_reranker(lane: Lane, env: dict[str, str], hf_repo: str) -> str:
-    """Return the full registered key for a pulled reranker model."""
-    result = subprocess.run(
-        [lane.lilbee_bin, "--json", "model", "list"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    models = json.loads(result.stdout).get("models", [])
-    matches = [
-        m["name"] for m in models if m.get("task") == "rerank" and hf_repo in m.get("name", "")
-    ]
-    assert matches, f"no rerank model registered matching {hf_repo!r}; got {models!r}"
-    return matches[0]
-
-
 @pytest.mark.http
 @pytest.mark.writer
 @pytest.mark.timeout(540)
-def test_cli_search_with_reranker_set_does_not_crash(
+def test_cli_search_with_reranker_set_returns_results(
     lane: Lane,
     lilbee_data: Path,
     qa_models_dir: Path,
     qa_reranker_model: str,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """Pull the reranker, point lilbee at it via env, sync, run a CLI search.
 
@@ -103,7 +84,9 @@ def test_cli_search_with_reranker_set_does_not_crash(
         f"{pull.stdout[-500:]}\nstderr tail:\n{pull.stderr[-500:]}"
     )
 
-    reranker_name = _resolve_registered_reranker(lane, pull_env, qa_reranker_model)
+    reranker_name = resolve_registered_name(
+        lane.lilbee_bin, pull_env, ModelTask.RERANK, qa_reranker_model
+    )
 
     env_with_reranker = dict(lilbee_env_with_models)
     env_with_reranker["LILBEE_RERANKER_MODEL"] = reranker_name
@@ -137,13 +120,12 @@ def test_cli_search_with_reranker_set_does_not_crash(
 @pytest.mark.http
 @pytest.mark.writer
 @pytest.mark.timeout(540)
-def test_http_search_with_reranker_set_does_not_crash(
+def test_http_search_with_reranker_set_returns_results(
     lane: Lane,
     lilbee_data: Path,
     qa_models_dir: Path,
     qa_reranker_model: str,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`PUT /api/models/reranker` followed by `GET /api/search` completes
     with non-empty results. Tests the PUT -> GET wiring in the running
@@ -167,7 +149,9 @@ def test_http_search_with_reranker_set_does_not_crash(
         f"reranker pull from HF failed (hard fail per conftest policy):\n"
         f"stdout tail: {pull.stdout[-500:]}\nstderr tail: {pull.stderr[-500:]}"
     )
-    reranker_name = _resolve_registered_reranker(lane, pull_env, qa_reranker_model)
+    reranker_name = resolve_registered_name(
+        lane.lilbee_bin, pull_env, ModelTask.RERANK, qa_reranker_model
+    )
 
     _seed_corpus(lilbee_data)
     pre_sync = subprocess.run(

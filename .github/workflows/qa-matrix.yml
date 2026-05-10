@@ -91,16 +91,20 @@ jobs:
         shell: bash
         run: |
           if [ -n "${RC_VERSION}" ]; then
-            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="v${RC_VERSION}"
+            RESOLVED_VERSION="${RC_VERSION}"
           else
             if [ "$TAG" = "latest" ]; then
               TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
             fi
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="$TAG"
             # Strip leading 'v' for PyPI version
-            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            RESOLVED_VERSION="${TAG#v}"
           fi
+          {
+            echo "tag=${RESOLVED_TAG}"
+            echo "version=${RESOLVED_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore QA models cache
         id: models-cache
@@ -129,51 +133,17 @@ jobs:
           python -m pip install --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
           SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-          cat > "${SITE_PACKAGES}/sitecustomize.py" <<'PYEOF'
-          # QA matrix: allow loopback crawls for local fixture testing only.
-          import os
-          if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
-              try:
-                  from lilbee.crawler import url_filter
-                  url_filter._BLOCKED_NETWORKS = ()
-                  url_filter.get_blocked_networks = lambda: ()
-              except ImportError:
-                  pass
-          PYEOF
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
 
       - name: Install lilbee from PyPI (lane=pypi)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id == ''
         shell: bash
-        # Plain `lilbee` (no extras). Both [crawler] and [litellm] extras
-        # add 30-60 s per `lilbee` invocation on macOS arm64 (crawl4ai +
-        # playwright in [crawler]; the litellm SDK in [litellm]), which
-        # blows every CLI test's per-test budget and overflows the 60-min
-        # job timeout. Crawler-on-pypi coverage comes from the bundled
-        # binary lanes; ollama coverage comes from the dedicated
-        # `ollama-pypi` cell which has full extras and runs only the 3
-        # ollama tests (small enough scope to absorb the slow imports).
+        # Plain `lilbee` without extras; [crawler] / [litellm] live in the dedicated cells.
         run: |
           python -m pip install "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
-          # Install a sitecustomize.py that monkey-patches lilbee's
-          # blocked-networks list to allow loopback for the QA harness's
-          # local http.server fixture. lilbee's URL filter rightly blocks
-          # private/reserved IPs in production but has no opt-in for
-          # development / testing — tracked as bb-235r. Until that env-var
-          # lands in lilbee, this site-startup hook does the equivalent
-          # in the QA pypi lane only. The binary lane is unaffected.
           SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-          cat > "${SITE_PACKAGES}/sitecustomize.py" <<'PYEOF'
-          # QA matrix: allow loopback crawls for local fixture testing only.
-          import os
-          if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
-              try:
-                  from lilbee.crawler import url_filter
-                  url_filter._BLOCKED_NETWORKS = ()
-                  url_filter.get_blocked_networks = lambda: ()
-              except ImportError:
-                  pass
-          PYEOF
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
 
       - name: Download lilbee binary from sibling run (lane=binary, RC mode)
         if: matrix.lane == 'binary' && inputs.binary_run_id != ''
@@ -216,14 +186,16 @@ jobs:
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
           ollama pull qwen3:0.6b
-          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
+          {
+            echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1"
+            echo "LILBEE_QA_OLLAMA_PORT=11434"
+            echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b"
+          } >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
@@ -307,15 +279,19 @@ jobs:
           RC_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${RC_VERSION}" ]; then
-            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="v${RC_VERSION}"
+            RESOLVED_VERSION="${RC_VERSION}"
           else
             if [ "$TAG" = "latest" ]; then
               TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
             fi
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="$TAG"
+            RESOLVED_VERSION="${TAG#v}"
           fi
+          {
+            echo "tag=${RESOLVED_TAG}"
+            echo "version=${RESOLVED_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -372,14 +348,16 @@ jobs:
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
           ollama pull qwen3:0.6b
-          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
+          {
+            echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1"
+            echo "LILBEE_QA_OLLAMA_PORT=11434"
+            echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b"
+          } >> "$GITHUB_ENV"
 
       - name: Run QA matrix
         env:
@@ -430,13 +408,17 @@ jobs:
           RC_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${RC_VERSION}" ]; then
-            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="v${RC_VERSION}"
+            RESOLVED_VERSION="${RC_VERSION}"
           else
             TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="${TAG}"
+            RESOLVED_VERSION="${TAG#v}"
           fi
+          {
+            echo "tag=${RESOLVED_TAG}"
+            echo "version=${RESOLVED_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore QA models cache
         uses: actions/cache@v4
@@ -470,14 +452,16 @@ jobs:
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
           ollama pull qwen3:0.6b
-          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_PORT=11434" >> "$GITHUB_ENV"
-          echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b" >> "$GITHUB_ENV"
+          {
+            echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1"
+            echo "LILBEE_QA_OLLAMA_PORT=11434"
+            echo "LILBEE_QA_OLLAMA_MODEL=qwen3:0.6b"
+          } >> "$GITHUB_ENV"
 
       - name: Run ollama tests only
         env:
@@ -523,13 +507,17 @@ jobs:
           RC_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${RC_VERSION}" ]; then
-            echo "tag=v${RC_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "version=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="v${RC_VERSION}"
+            RESOLVED_VERSION="${RC_VERSION}"
           else
             TAG=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            RESOLVED_TAG="${TAG}"
+            RESOLVED_VERSION="${TAG#v}"
           fi
+          {
+            echo "tag=${RESOLVED_TAG}"
+            echo "version=${RESOLVED_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore QA models cache
         uses: actions/cache@v4
@@ -569,19 +557,8 @@ jobs:
           if [ -d "$HOME/.lilbee-qa-models" ]; then
             cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
           fi
-          # Install a sitecustomize.py so the loopback fixture URL passes
-          # lilbee's URL filter, mirroring the native pypi-lane setup.
           SITE_PACKAGES=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-          cat > "${SITE_PACKAGES}/sitecustomize.py" <<'PYEOF'
-          import os
-          if os.environ.get("LILBEE_QA_LANE") in {"l1-pypi", "l2-binary"}:
-              try:
-                  from lilbee.crawler import url_filter
-                  url_filter._BLOCKED_NETWORKS = ()
-                  url_filter.get_blocked_networks = lambda: ()
-              except ImportError:
-                  pass
-          PYEOF
+          cp tools/qa/scripts/sitecustomize_loopback.py "${SITE_PACKAGES}/sitecustomize.py"
           python -m pytest tools/qa/test_e2e_crawl.py -v --tb=short \
             --junitxml=qa-crawler-pypi.xml
 

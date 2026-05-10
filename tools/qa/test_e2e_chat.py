@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import subprocess
+import time
 from pathlib import Path
 
 import httpx
@@ -51,7 +53,6 @@ def test_cli_ask_cites_correct_source(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee --json ask "battery question"` returns a result citing ev-notes."""
     _seed_corpus(lilbee_data)
@@ -80,7 +81,6 @@ def test_http_search_returns_battery_source(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """POST /api/search routes the query through embedding and returns ev-notes."""
     _seed_corpus(lilbee_data)
@@ -88,9 +88,6 @@ def test_http_search_returns_battery_source(
     assert sync.returncode == 0, sync.stderr
 
     # Spawn server inline since the server_url fixture uses lilbee_data with no models.
-    import socket
-    import time
-
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -116,7 +113,7 @@ def test_http_search_returns_battery_source(
         else:
             pytest.fail("server never came up")
 
-        # GET /api/search?q=...&top_k=N — POST returns 405; query param key is `q`.
+        # GET /api/search?q=...&top_k=N. POST returns 405; query param key is `q`.
         response = httpx.get(
             f"{base_url}/api/search",
             params={"q": "lithium-ion battery technology", "top_k": 3},
@@ -149,7 +146,6 @@ def test_mcp_search_routes_battery_to_ev_notes(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """MCP `search` tool routes the battery query to ev-notes."""
     _seed_corpus(lilbee_data)

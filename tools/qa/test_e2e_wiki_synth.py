@@ -58,7 +58,6 @@ def test_wiki_build_dry_run_extracts_entities(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee --json wiki build --dry-run` extracts at least one NER entity
     candidate from the seeded corpus, without making any LLM calls."""
@@ -121,7 +120,6 @@ def test_wiki_build_full_runs_clean(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee --json wiki build` runs to completion and emits a structured
     result with paths/count/entities keys.
@@ -174,7 +172,6 @@ def test_wiki_synthesize_runs_clean(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee --json wiki synthesize` runs to completion on a small corpus
     and returns a structured envelope.

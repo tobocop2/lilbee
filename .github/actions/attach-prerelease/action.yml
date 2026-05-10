@@ -1,0 +1,35 @@
+name: Attach binaries to GH pre-release
+description: |
+  Download lilbee-* binary artifacts from the current run and attach them
+  to a GitHub pre-release at the given tag, with auto-generated release
+  notes. Caller's job needs `permissions.contents: write`.
+
+inputs:
+  tag:
+    description: "Tag to attach to (release will be created if missing)."
+    required: true
+  version:
+    description: "PEP 440 version string used to compute prerelease=true."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download binary artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: lilbee-*
+        path: bins/
+        merge-multiple: true
+
+    - name: List binary artifacts
+      shell: bash
+      run: ls -lh bins/
+
+    - name: Create GH pre-release with binaries
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: ${{ inputs.tag }}
+        files: bins/*
+        generate_release_notes: true
+        prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}

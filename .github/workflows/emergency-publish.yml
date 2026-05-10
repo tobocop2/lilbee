@@ -28,8 +28,10 @@ jobs:
       version: ${{ steps.parse.outputs.version }}
     steps:
       - name: Validate confirm token
+        env:
+          CONFIRM: ${{ inputs.confirm }}
         run: |
-          if [ "${{ inputs.confirm }}" != "skip-qa" ]; then
+          if [ "${CONFIRM}" != "skip-qa" ]; then
             echo "confirm token must be exactly 'skip-qa' to bypass the QA matrix" >&2
             exit 1
           fi
@@ -89,56 +91,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
-
-      - name: Download wheel artifacts
-        uses: actions/download-artifact@v4
+      - uses: ./.github/actions/attach-prerelease
         with:
-          pattern: wheel-default-*
-          path: dist/
-          merge-multiple: true
-
-      - name: Download sdist
-        uses: actions/download-artifact@v4
+          tag: ${{ inputs.tag }}
+          version: ${{ needs.guard.outputs.version }}
+      - uses: ./.github/actions/promote-pypi
         with:
-          name: sdist
-          path: dist/
-
-      - name: Stage wheels + sdist for PyPI
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ls -lh dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
-      - name: Download binary artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: lilbee-*
-          path: bins/
-          merge-multiple: true
-
-      - name: Create GH release with binaries
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: bins/*
-          generate_release_notes: true
-          prerelease: ${{ contains(needs.guard.outputs.version, 'a') || contains(needs.guard.outputs.version, 'b') || contains(needs.guard.outputs.version, 'rc') }}
-
-      - name: Trigger Publish Docker Image
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run publish-docker.yml \
-            --repo ${{ github.repository }} \
-            -f tag=${{ inputs.tag }}
-
-      - name: Trigger Publish Packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run publish-packages.yml \
-            --repo ${{ github.repository }} \
-            -f tag=${{ inputs.tag }}
+          tag: ${{ inputs.tag }}

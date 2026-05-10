@@ -48,7 +48,6 @@ def test_sync_indexes_fixture_corpus(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee sync` indexes both notes; status reports the right counts."""
     _seed_corpus(lilbee_data)
@@ -74,7 +73,6 @@ def test_search_finds_battery_query_in_ev_notes(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """Semantic search routes a battery query to ev-notes, not coffee-notes."""
     _seed_corpus(lilbee_data)
@@ -102,7 +100,6 @@ def test_search_finds_coffee_query_in_coffee_notes(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """Mirror of the battery query: french press routes to coffee-notes."""
     _seed_corpus(lilbee_data)
@@ -128,7 +125,6 @@ def test_remove_clears_indexed_source(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
 ) -> None:
     """`lilbee remove <name>` purges chunks for that source."""
     _seed_corpus(lilbee_data)

@@ -25,7 +25,7 @@ from threading import Thread
 import pytest
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from conftest import Lane, LaneName
+from conftest import Lane, LaneName, current_lane_name
 
 _CHROMIUM_BOOTSTRAP_TIMEOUT = 600.0
 _CRAWL_TIMEOUT = 300.0
@@ -52,14 +52,12 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
 
     Behavior depends on the lane:
       * pypi lane installs plain `lilbee` (no [crawler] extra) so the
-        crawler stack is genuinely absent. Skip — there's nothing to test.
+        crawler stack is genuinely absent. Skip; there's nothing to test.
       * binary lane bundles crawler+playwright into the release artifact
         (the user-facing contract). If the bundled binary can't load the
         crawler stack that's a release defect we want surfaced, not
         skipped. Raise so the test xfail decorator on binary captures it.
     """
-    import os
-
     env = os.environ.copy()
     env["LILBEE_DATA"] = str(qa_models_dir / "data-crawl")
     env["LILBEE_MODELS_DIR"] = str(qa_models_dir)
@@ -173,12 +171,12 @@ def http_fixture_server(tmp_path: Path) -> Iterator[str]:
 @pytest.mark.writer
 @pytest.mark.timeout(420)
 @pytest.mark.xfail(
-    sys.platform == "win32" and os.environ.get("LILBEE_QA_LANE") == LaneName.L1_PYPI,
+    sys.platform == "win32" and current_lane_name() is LaneName.L1_PYPI,
     reason="bb-l7t4: Windows pypi lane crawl returns 0 pages from local http.server fixture",
     strict=False,
 )
 @pytest.mark.xfail(
-    os.environ.get("LILBEE_QA_LANE") == LaneName.L2_BINARY,
+    current_lane_name() is LaneName.L2_BINARY,
     reason=(
         "bb-sxsz: bundled binary's crawler stack is broken in b455 - "
         "lilbee add --help omits --crawl and lilbee setup crawler exits 2. "
@@ -190,7 +188,6 @@ def test_crawl_and_search_roundtrip(
     lane: Lane,
     lilbee_data: Path,
     lilbee_env_with_models: dict[str, str],
-    models_pulled: dict[str, str],
     chromium_ready: str,
     http_fixture_server: str,
 ) -> None:

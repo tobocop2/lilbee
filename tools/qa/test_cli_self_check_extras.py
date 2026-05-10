@@ -26,14 +26,14 @@ def test_self_check_extras_json_shape(lane: Lane, lilbee_data: Path) -> None:
 
 @pytest.mark.cli
 def test_self_check_extras_passes_on_binary_lane(lane: Lane, lilbee_data: Path) -> None:
-    """The Nuitka binary bundles all four extras; the binary lane must report ok=True.
+    """The release binary bundles all four extras; the binary lane reports ok=True.
 
     The pypi lane installs the bare wheel without extras, so it is excluded
     here; that lane's expected behavior is exit_code=1 with one or more
     extras reported False, which the JSON-shape test already covers.
     """
     if not lane.is_binary:
-        pytest.skip("self-check-extras gate only applies to the bundled binary lane")
+        pytest.skip("the bundled-extras invariant only applies to the release binary")
     result = run_lilbee(lane, ["--json", "self-check-extras"], data_dir=lilbee_data, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
