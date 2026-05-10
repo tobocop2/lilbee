@@ -96,9 +96,7 @@ jobs:
       - name: Install lilbee from local wheels (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
         shell: bash
-        # --find-links lets pip pick the OS/arch/Python-matching wheel from
-        # the directory; transitive deps still resolve via the default index.
-        # --pre matches today's PyPI install behavior for beta versions.
+        # --find-links picks the matching local wheel; --pre matches PyPI beta install behavior.
         run: |
           python -m pip install --find-links ./_wheels --pre "lilbee==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"

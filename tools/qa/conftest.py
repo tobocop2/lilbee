@@ -292,7 +292,7 @@ def models_pulled(
     qa_chat_model: str,
     qa_embedding_model: str,
 ) -> PulledModels:
-    """Pull chat + embedding once and return their registered names; hard-fails on pull failure."""
+    """Session-scoped pull of chat + embedding; returns registered names."""
     env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
     for ref in (qa_chat_model, qa_embedding_model):
         try:

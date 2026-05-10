@@ -208,9 +208,7 @@ jobs:
             exit 1
           fi
 
-          # Server starts, /api/health reports matching version.
-          # Capture server stderr to a log so we can scan it for the same
-          # subprocess-spawn failure pattern.
+          # Boot server, scan stderr for the spawn-loop pattern, verify /api/health version.
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"
           SERVER_LOG=$(mktemp)

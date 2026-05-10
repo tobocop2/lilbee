@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Lane, run_lilbee
+from conftest import CLI_FAST_TIMEOUT, Lane, run_lilbee
 
 
 @pytest.mark.cli
 def test_unknown_top_level_command_fails(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["this-is-not-a-command"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(
+        lane, ["this-is-not-a-command"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT
+    )
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
     # Drop the bare word "error" as a positive signal: it would also match
@@ -25,14 +27,16 @@ def test_unknown_top_level_command_fails(lane: Lane, lilbee_data: Path) -> None:
 
 @pytest.mark.cli
 def test_unknown_wiki_subcommand_fails(lane: Lane, lilbee_data: Path) -> None:
-    result = run_lilbee(lane, ["wiki", "not-a-subcommand"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(
+        lane, ["wiki", "not-a-subcommand"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT
+    )
     assert result.returncode != 0
 
 
 @pytest.mark.cli
 def test_search_without_query_fails(lane: Lane, lilbee_data: Path) -> None:
     """`lilbee search` without a query is a usage error, not a silent zero-result."""
-    result = run_lilbee(lane, ["search"], data_dir=lilbee_data, timeout=60)
+    result = run_lilbee(lane, ["search"], data_dir=lilbee_data, timeout=CLI_FAST_TIMEOUT)
     assert result.returncode != 0
 
 
@@ -40,6 +44,9 @@ def test_search_without_query_fails(lane: Lane, lilbee_data: Path) -> None:
 def test_invalid_global_flag_fails(lane: Lane, lilbee_data: Path) -> None:
     """Unknown global flags are rejected by Typer with non-zero exit."""
     result = run_lilbee(
-        lane, ["--this-flag-does-not-exist", "status"], data_dir=lilbee_data, timeout=60
+        lane,
+        ["--this-flag-does-not-exist", "status"],
+        data_dir=lilbee_data,
+        timeout=CLI_FAST_TIMEOUT,
     )
     assert result.returncode != 0

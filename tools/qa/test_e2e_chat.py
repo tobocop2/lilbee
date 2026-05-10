@@ -17,6 +17,7 @@ from drivers.mcp import MCPStdioClient
 from conftest import (
     ASK_TIMEOUT,
     MCP_CALL_TIMEOUT,
+    STATUS_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
     extract_search_results,
@@ -75,7 +76,7 @@ def test_http_search_returns_battery_source(
         response = httpx.get(
             f"{base_url}/api/search",
             params={"q": "lithium-ion battery technology", "top_k": 3},
-            timeout=60.0,
+            timeout=STATUS_TIMEOUT,
         )
         assert response.status_code in (
             httpx.codes.OK,

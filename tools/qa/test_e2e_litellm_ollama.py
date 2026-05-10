@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 from conftest import (
+    CLI_FAST_TIMEOUT,
     HTTP_FAST_TIMEOUT,
     OLLAMA_HOST_ENV_VAR,
     OLLAMA_MODEL_ENV_VAR,
@@ -128,7 +129,7 @@ def _has_litellm_extras(lane: Lane, lilbee_data: Path) -> bool:
     would falsely mark this probe False.
     """
     result = run_lilbee_with_env(
-        lane, ["--json", "self-check-extras"], env=lilbee_env(lilbee_data), timeout=60
+        lane, ["--json", "self-check-extras"], env=lilbee_env(lilbee_data), timeout=CLI_FAST_TIMEOUT
     )
     try:
         payload = json.loads(result.stdout)
