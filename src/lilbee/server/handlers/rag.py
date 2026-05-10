@@ -67,7 +67,7 @@ _CAP_CONTINUATION_PROMPT = (
 def _resolve_reasoning_cap() -> int:
     """Effective reasoning cap: per-model override beats the global setting."""
     defaults = cfg.model_defaults
-    override = getattr(defaults, "max_reasoning_chars", None) if defaults is not None else None
+    override = defaults.max_reasoning_chars if defaults is not None else None
     return override if isinstance(override, int) and override > 0 else cfg.max_reasoning_chars
 
 

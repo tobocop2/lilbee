@@ -2381,6 +2381,42 @@ class TestReasoningCapHandling:
         finally:
             cfg.max_reasoning_chars = snapshot_cap
 
+    def test_cancel_during_continuation_stops_emitting(self):
+        """Cancel set mid-second-wave breaks the continuation loop without crashing."""
+        import threading
+
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 512
+            cancel = threading.Event()
+            mock_provider = MagicMock()
+            long_reasoning = "<think>" + ("x " * 400) + "</think>"
+
+            def second_pass():
+                yield "first chunk "
+                cancel.set()
+                yield "second chunk should be ignored"
+
+            mock_provider.chat.side_effect = [iter([long_reasoning]), second_pass()]
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            error_holder: list[str] = []
+
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
+                mock_svc.return_value.provider = mock_provider
+                _rag_h._run_llm_stream(
+                    [{"role": "user", "content": "long question"}],
+                    None,
+                    queue,
+                    cancel,
+                    error_holder,
+                )
+
+            events = self._drain(queue)
+            assert any("first chunk" in e for e in events)
+            assert not any("second chunk" in e for e in events)
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+
 
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
