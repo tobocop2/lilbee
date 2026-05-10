@@ -504,7 +504,11 @@ class Searcher:
         opts = options if options is not None else self._config.generation_options()
         raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
         try:
-            for st in filter_reasoning(raw, show=self._config.show_reasoning):
+            for st in filter_reasoning(
+                raw,
+                show=self._config.show_reasoning,
+                cap_chars=self._config.max_reasoning_chars,
+            ):
                 if st.content:
                     yield st
         except (ConnectionError, OSError) as exc:
@@ -542,7 +546,11 @@ class Searcher:
         raw_stream = self._provider.chat(provider_messages, stream=True, options=opts or None)
         answer_parts: list[str] = []
         try:
-            for st in filter_reasoning(raw_stream, show=self._config.show_reasoning):
+            for st in filter_reasoning(
+                raw_stream,
+                show=self._config.show_reasoning,
+                cap_chars=self._config.max_reasoning_chars,
+            ):
                 if st.content:
                     answer_parts.append(st.content)
                     yield st

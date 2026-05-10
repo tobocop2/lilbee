@@ -2,21 +2,24 @@
 
 Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
 ``<think>...</think>`` tags. This module provides a stateful filter that
-classifies tokens as reasoning or response content.
+classifies tokens as reasoning or response content and notifies the
+caller when reasoning exceeds a caller-supplied cap.
 """
 
 from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Generator, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 
 from lilbee.providers.base import ClosableIterator
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*|<think>[\s\S]*$")
+_PROGRESS_TICK_CHARS = 256
+"""Coarseness of the progress callback: fire when reasoning grows by at least this many chars."""
 
 
 @dataclass
@@ -27,14 +30,19 @@ class StreamToken:
     is_reasoning: bool
 
 
+@dataclass
 class _TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 
-    def __init__(self, *, show: bool) -> None:
-        self.show = show
-        self.buf = ""
-        self.in_thinking = False
-        self.reasoning_chars = 0
+    show: bool
+    buf: str = ""
+    in_thinking: bool = False
+    reasoning_chars: int = 0
+    reasoning_text: list[str] = field(default_factory=list)
+
+    def captured_reasoning(self) -> str:
+        """Concatenated reasoning text seen so far, regardless of ``show``."""
+        return "".join(self.reasoning_text)
 
     def feed(self, token: str) -> list[StreamToken]:
         """Feed a token and return any complete StreamTokens."""
@@ -43,7 +51,7 @@ class _TagParser:
         while self.buf:
             emitted = self._process_thinking() if self.in_thinking else self._process_normal()
             if emitted is None:
-                break  # waiting for more data (partial tag)
+                break
             if emitted.content:
                 result.append(emitted)
         return result
@@ -53,26 +61,29 @@ class _TagParser:
         if not self.buf:
             return None
         if self.in_thinking:
+            self._absorb_reasoning(self.buf)
             return StreamToken(content=self.buf, is_reasoning=True) if self.show else None
         return StreamToken(content=self.buf, is_reasoning=False)
 
+    def _absorb_reasoning(self, content: str) -> None:
+        self.reasoning_chars += len(content)
+        self.reasoning_text.append(content)
+
     def _process_thinking(self) -> StreamToken | None:
-        """Process buffer while inside a <think> block. Returns None if waiting."""
         close_idx = self.buf.find(_CLOSE_TAG)
         if close_idx == -1:
             if _could_be_partial(_CLOSE_TAG, self.buf):
-                return None  # wait for more
+                return None
             content = self.buf
-            self.reasoning_chars += len(content)
+            self._absorb_reasoning(content)
             self.buf = ""
             return (
                 StreamToken(content=content, is_reasoning=True)
                 if self.show
                 else StreamToken(content="", is_reasoning=True)
             )
-
         thinking_content = self.buf[:close_idx]
-        self.reasoning_chars += len(thinking_content)
+        self._absorb_reasoning(thinking_content)
         self.buf = self.buf[close_idx + len(_CLOSE_TAG) :]
         self.in_thinking = False
         if thinking_content and self.show:
@@ -80,76 +91,62 @@ class _TagParser:
         return StreamToken(content="", is_reasoning=True)
 
     def _process_normal(self) -> StreamToken | None:
-        """Process buffer while outside thinking blocks. Returns None if waiting."""
         open_idx = self.buf.find(_OPEN_TAG)
         if open_idx == -1:
             if _could_be_partial(_OPEN_TAG, self.buf):
-                return None  # wait for more
+                return None
             content = self.buf
             self.buf = ""
             return StreamToken(content=content, is_reasoning=False)
-
         before = self.buf[:open_idx]
         self.buf = self.buf[open_idx + len(_OPEN_TAG) :]
         self.in_thinking = True
         return StreamToken(content=before, is_reasoning=False)
 
 
-_MAX_REASONING_CHARS = 16_000  # ~4K tokens, safety limit for runaway reasoning
-# Drain cap kept low: each token pull triggers a model inference step, so a
-# large cap hangs on slow CI runners after a `</think>` truncation.
-_DRAIN_CAP = 512
+def filter_reasoning(
+    tokens: Iterator[str],
+    *,
+    show: bool,
+    cap_chars: int,
+    on_cap: Callable[[str], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> Iterator[StreamToken]:
+    """Filter ``<think>...</think>`` tags and signal when reasoning exceeds the cap.
 
+    *cap_chars* bounds reasoning content. When exceeded, ``on_cap`` is
+    called with the captured reasoning text, the upstream iterator is
+    closed, and iteration stops; the caller decides what to do next
+    (stop the response, re-issue the chat with a continuation prompt,
+    etc.). *on_progress* is fired with the running reasoning-chars count
+    each time it grows by at least 256 characters.
 
-def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
-    """Filter ``<think>...</think>`` tags from a token stream; cap runaway reasoning.
-
-    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``;
-    when False, strips it. Always closes the upstream iterator on exit so a
-    runaway think loop doesn't leave llama.cpp holding the chat lock.
+    A non-positive *cap_chars* disables the cap.
     """
     parser = _TagParser(show=show)
+    last_progress_tick = 0
     try:
-        truncated = yield from _stream_until_cap(parser, tokens)
-        if truncated:
-            yield from _drain_after_truncation(parser, tokens)
+        for token in tokens:
+            for st in parser.feed(token):
+                if st.content:
+                    yield st
+            if (
+                on_progress is not None
+                and parser.reasoning_chars >= last_progress_tick + _PROGRESS_TICK_CHARS
+            ):
+                last_progress_tick = parser.reasoning_chars
+                on_progress(parser.reasoning_chars)
+            if cap_chars > 0 and parser.reasoning_chars > cap_chars:
+                if on_cap is not None:
+                    on_cap(parser.captured_reasoning())
+                return
         final = parser.flush()
         if final and final.content:
             yield final
+        if on_progress is not None and parser.reasoning_chars > last_progress_tick:
+            on_progress(parser.reasoning_chars)
     finally:
         _close_iterator(tokens)
-
-
-def _stream_until_cap(
-    parser: _TagParser, tokens: Iterator[str]
-) -> Generator[StreamToken, None, bool]:
-    """Yield from *tokens* until the reasoning cap fires. Returns True if truncated."""
-    for token in tokens:
-        for st in parser.feed(token):
-            if st.content:
-                yield st
-        if parser.reasoning_chars > _MAX_REASONING_CHARS:
-            parser.in_thinking = False
-            parser.buf = ""
-            yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
-            return True
-    return False
-
-
-def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
-    """Drain a bounded suffix after a ``</think>`` truncation.
-
-    Captures response content that follows a closed ``</think>`` tag without
-    pulling the whole stream; bounded by ``_DRAIN_CAP`` characters.
-    """
-    drain_chars = 0
-    for token in tokens:
-        drain_chars += len(token)
-        if drain_chars > _DRAIN_CAP:
-            return
-        for st in parser.feed(token):
-            if st.content and not st.is_reasoning:
-                yield st
 
 
 def _close_iterator(tokens: Iterator[str]) -> None:

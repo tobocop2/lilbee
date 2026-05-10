@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 from collections.abc import AsyncGenerator
@@ -57,6 +58,56 @@ async def ask(
     )
 
 
+_CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
+_CAP_CONTINUATION_PROMPT = (
+    "Stop thinking now. Give your final answer directly, without any further <think> blocks."
+)
+
+
+def _resolve_reasoning_cap() -> int:
+    """Effective reasoning cap: per-model override beats the global setting."""
+    defaults = cfg.model_defaults
+    override = getattr(defaults, "max_reasoning_chars", None) if defaults is not None else None
+    return override if isinstance(override, int) and override > 0 else cfg.max_reasoning_chars
+
+
+def _stream_continuation(
+    messages: list[ChatMessage],
+    opts: dict[str, Any] | None,
+    queue: asyncio.Queue[str | None],
+    cancel: threading.Event,
+    captured_reasoning: str,
+) -> None:
+    """Re-issue the chat with a 'stop thinking' nudge after the cap fires.
+
+    Sends the full original turn back to the model with the partial reasoning
+    surfaced as the previous assistant turn so the user can read what was
+    captured, then a fresh user message asking for a direct answer. Tokens
+    from the second pass stream as plain TOKEN events.
+    """
+    provider = get_services().provider
+    nudged_messages: list[dict[str, Any]] = [
+        *cast("list[dict[str, Any]]", messages),
+        {"role": "assistant", "content": f"<think>{captured_reasoning}</think>"},
+        {"role": "user", "content": _CAP_CONTINUATION_PROMPT},
+    ]
+    second_stream = provider.chat(
+        nudged_messages,
+        stream=True,
+        options=opts or None,
+        model=cfg.chat_model,
+    )
+    try:
+        for chunk in second_stream:
+            if cancel.is_set():
+                break
+            if chunk:
+                queue.put_nowait(sse_event(SseEvent.TOKEN, {"token": chunk}))
+    finally:
+        with contextlib.suppress(Exception):
+            second_stream.close()
+
+
 def _run_llm_stream(
     messages: list[ChatMessage],
     opts: dict[str, Any] | None,
@@ -67,6 +118,9 @@ def _run_llm_stream(
     """Stream LLM tokens into a queue from a worker thread."""
     from lilbee.retrieval.reasoning import filter_reasoning
 
+    cap_chars = _resolve_reasoning_cap()
+    cap_holder: list[str] = []
+
     try:
         provider = get_services().provider
         stream = provider.chat(
@@ -75,12 +129,26 @@ def _run_llm_stream(
             options=opts or None,
             model=cfg.chat_model,
         )
-        for st in filter_reasoning(stream, show=cfg.show_reasoning):
+        for st in filter_reasoning(
+            stream,
+            show=cfg.show_reasoning,
+            cap_chars=cap_chars,
+            on_cap=cap_holder.append,
+        ):
             if cancel.is_set():
                 break
             if st.content:
                 event_type = SseEvent.REASONING if st.is_reasoning else SseEvent.TOKEN
                 queue.put_nowait(sse_event(event_type, {"token": st.content}))
+
+        if cap_holder and not cancel.is_set():
+            queue.put_nowait(
+                sse_event(
+                    SseEvent.REASONING,
+                    {"token": _CAP_NOTICE_TEMPLATE.format(chars=cap_chars)},
+                )
+            )
+            _stream_continuation(messages, opts, queue, cancel, cap_holder[0])
     except Exception as exc:
         error_holder.append(str(exc))
     finally:

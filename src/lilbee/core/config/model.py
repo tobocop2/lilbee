@@ -192,6 +192,10 @@ class Config(BaseSettings):
     # if False, strip it silently.
     show_reasoning: bool = ConfigField(default=False, writable=True)
 
+    # Maximum reasoning characters before lilbee forces the model to answer.
+    # Per-model overrides apply on top of this default. Approx N/4 tokens.
+    max_reasoning_chars: int = ConfigField(default=64_000, ge=512, writable=True)
+
     # Web crawling.
 
     # Optional global ceilings. None = no ceiling.

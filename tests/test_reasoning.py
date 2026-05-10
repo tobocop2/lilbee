@@ -2,9 +2,16 @@
 
 from lilbee.retrieval.reasoning import StreamToken, filter_reasoning, strip_reasoning
 
+_NO_CAP = 1_000_000
 
-def _collect(tokens: list[str], *, show: bool) -> list[StreamToken]:
-    return list(filter_reasoning(iter(tokens), show=show))
+
+def _collect(
+    tokens: list[str],
+    *,
+    show: bool,
+    cap_chars: int = _NO_CAP,
+) -> list[StreamToken]:
+    return list(filter_reasoning(iter(tokens), show=show, cap_chars=cap_chars))
 
 
 class TestFilterReasoningShowFalse:
@@ -88,7 +95,6 @@ class TestFilterReasoningShowTrue:
 
 class TestCouldBePartial:
     def test_partial_open_tag(self):
-        """Token ending with '<thi' should wait for more data."""
         result = _collect(["text<thi", "nk>reasoning</think>done"], show=False)
         content = "".join(st.content for st in result)
         assert "reasoning" not in content
@@ -96,147 +102,155 @@ class TestCouldBePartial:
         assert "done" in content
 
     def test_partial_close_tag(self):
-        """Token ending with '</thi' inside thinking should wait."""
         result = _collect(["<think>thought</thi", "nk>done"], show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "thought" in reasoning
 
     def test_false_partial_not_tag(self):
-        """'<' at end that doesn't match tag prefix should not stall."""
         result = _collect(["text<", "b>not a tag"], show=False)
         content = "".join(st.content for st in result)
         assert "text" in content
 
     def test_unterminated_thinking_flushed_when_show(self):
-        """Thinking block never closed: buffer flushed as reasoning at end."""
         result = _collect(["<think>unterminated"], show=True)
         reasoning = [st for st in result if st.is_reasoning]
         assert len(reasoning) >= 1
         assert "unterminated" in "".join(st.content for st in reasoning)
 
     def test_unterminated_thinking_with_partial_close(self):
-        """Thinking with partial close tag at end: flushed as reasoning."""
         result = _collect(["<think>deep thought</thi"], show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "deep thought" in reasoning
 
     def test_unterminated_thinking_stripped_when_hidden(self):
-        """Thinking block never closed: buffer discarded when show=False."""
         result = _collect(["<think>unterminated"], show=False)
         content = "".join(st.content for st in result)
         assert content == ""
 
     def test_trailing_text_after_thinking(self):
-        """Normal text at end of stream flushed correctly."""
         result = _collect(["<think>thought</think>trailing"], show=True)
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "trailing" in response
 
     def test_normal_text_ending_with_partial_tag(self):
-        """Buffer has normal text ending with '<t': flushed as normal at end."""
         result = _collect(["hello<t"], show=False)
         content = "".join(st.content for st in result)
         assert "hello<t" in content
 
 
-class TestReasoningTruncation:
-    def test_runaway_reasoning_truncated(self):
-        """Reasoning exceeding _MAX_REASONING_CHARS is cut off."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        # Simulate realistic streaming: one char per token so the cap
-        # triggers mid-stream rather than after one giant token.
+class TestReasoningCap:
+    def test_cap_fires_on_long_reasoning(self):
+        """Cap callback fires when reasoning exceeds cap_chars."""
+        captured: list[str] = []
+        long_think = "x" * 1500
         tokens = list(f"<think>{long_think}</think>answer")
-        result = _collect(tokens, show=True)
-        reasoning = "".join(st.content for st in result if st.is_reasoning)
-        assert "[reasoning truncated]" in reasoning
-        assert len(reasoning) <= _MAX_REASONING_CHARS + 200
+        list(
+            filter_reasoning(
+                iter(tokens),
+                show=True,
+                cap_chars=1024,
+                on_cap=captured.append,
+            )
+        )
+        assert captured, "on_cap should fire when reasoning exceeds cap"
+        assert "x" in captured[0]
 
-    def test_content_after_truncated_reasoning(self):
-        """Content tokens after truncated reasoning are still yielded."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 500)
-        tokens = [f"<think>{long_think}</think>", "the answer"]
-        result = _collect(tokens, show=True)
+    def test_cap_yields_no_response_after_fire(self):
+        """When the cap fires, iteration stops; later tokens don't reach the consumer."""
+        long_think = "x" * 1500
+        tokens = list(f"<think>{long_think}</think>answer")
+        result = list(
+            filter_reasoning(
+                iter(tokens),
+                show=True,
+                cap_chars=1024,
+                on_cap=lambda _: None,
+            )
+        )
         response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "the answer" in response
+        assert "answer" not in response
 
-    def test_re_entered_thinking_is_not_yielded_as_response(self):
-        """After truncation, content the model emits inside a fresh <think>
-        tag is tagged as reasoning and excluded from the response stream."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+    def test_no_cap_when_zero(self):
+        """cap_chars=0 disables the cap entirely; no on_cap fires."""
+        captured: list[str] = []
+        long_think = "x" * 5000
+        tokens = list(f"<think>{long_think}</think>answer")
+        list(
+            filter_reasoning(
+                iter(tokens),
+                show=False,
+                cap_chars=0,
+                on_cap=captured.append,
+            )
+        )
+        assert captured == []
 
-        long_think = "x" * (_MAX_REASONING_CHARS + 500)
-        tokens = [f"<think>{long_think}", "</think>", "<think>", "more thinking"]
-        result = _collect(tokens, show=True)
+    def test_on_cap_optional(self):
+        """Cap firing without an on_cap callback still terminates cleanly."""
+        long_think = "x" * 1500
+        tokens = list(f"<think>{long_think}</think>answer")
+        result = list(filter_reasoning(iter(tokens), show=False, cap_chars=512))
         response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "more thinking" not in response
+        assert response == ""
 
-    def test_runaway_reasoning_truncated_show_false(self):
-        """Reasoning cap works even when show_reasoning=False.
+    def test_on_progress_fires_during_reasoning(self):
+        """on_progress receives running reasoning-chars counts as content arrives."""
+        progress: list[int] = []
+        # Ten tokens of 100 chars each: enough to cross the 256-char tick boundary.
+        chunks = ["<think>"] + ["x" * 100 for _ in range(10)] + ["</think>", "answer"]
+        list(
+            filter_reasoning(
+                iter(chunks),
+                show=False,
+                cap_chars=_NO_CAP,
+                on_progress=progress.append,
+            )
+        )
+        assert progress, "on_progress should fire as reasoning accumulates"
+        assert progress == sorted(progress), "progress values should be monotonic"
+        assert progress[-1] >= 1000
 
-        Previously, the cap only tracked visible reasoning content.
-        With show=False, reasoning tokens have empty content, so the
-        cap never triggered and the stream could loop forever.
-        """
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+    def test_on_progress_optional(self):
+        """Stream completes cleanly when on_progress is omitted."""
+        result = _collect(["<think>x" * 200 + "</think>answer"], show=False)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        assert response == "answer"
 
-        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        tokens = list(f"<think>{long_think}")  # no closing tag: infinite reasoning
-        result = _collect(tokens, show=False)
-        # Should terminate (not hang) and yield the truncation marker
-        truncation_markers = [st for st in result if "truncated" in st.content]
-        assert len(truncation_markers) == 1
+    def test_captured_text_matches_partial_reasoning(self):
+        """on_cap's payload is the reasoning content seen so far, not the cap value."""
+        captured: list[str] = []
+        partial = "thinking step one. " * 80
+        tokens = [f"<think>{partial}"]
+        list(
+            filter_reasoning(
+                iter(tokens),
+                show=False,
+                cap_chars=512,
+                on_cap=captured.append,
+            )
+        )
+        assert captured
+        assert "thinking step one" in captured[0]
 
     def test_unclosed_think_terminates_show_false(self):
-        """An unclosed <think> block with show=False terminates at the cap."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+        """An unclosed <think> with show=False still hits the cap, no hang."""
+        captured: list[str] = []
+        tokens = ["<think>"] + ["x"] * 2000
+        list(
+            filter_reasoning(
+                iter(tokens),
+                show=False,
+                cap_chars=512,
+                on_cap=captured.append,
+            )
+        )
+        assert captured
 
-        # Simulate streaming: chars come one at a time, never closing the tag
-        tokens = ["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100)
-        result = _collect(tokens, show=False)
-        # Must not hang, and must contain truncation marker
-        assert any("truncated" in st.content for st in result)
-
-    def test_drain_flushes_trailing_content(self):
-        """After truncation, trailing non-reasoning content in buffer is flushed."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 100)
-        # Reasoning truncated, then more tokens arrive with trailing content.
-        # End with a partial tag prefix so the parser buffers it until flush.
-        tokens = [*f"<think>{long_think}</think>", "final", "<th"]
-        result = _collect(tokens, show=True)
-        response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "final" in response
-        assert "<th" in response  # flushed by final flush()
-
-    def test_drain_cap_prevents_infinite_post_truncation(self):
-        """Drain loop stops after _MAX_REASONING_CHARS even if model keeps generating."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 100)
-        # After truncation, model keeps generating reasoning (no closing tag)
-        post_tokens = ["y"] * (_MAX_REASONING_CHARS + 100)
-        tokens = [*f"<think>{long_think}", *post_tokens]
-        result = _collect(tokens, show=True)
-        assert any("truncated" in st.content for st in result)
-
-    def test_upstream_generator_closed_on_truncation(self):
-        """Truncation closes the upstream iterator so llama.cpp doesn't hang.
-
-        Without this, a runaway think loop leaves llama.cpp suspended at
-        its yield point and the chat lock isn't released until garbage
-        collection eventually fires __del__.
-        """
-        from lilbee.retrieval.reasoning import filter_reasoning
-
+    def test_upstream_generator_closed_on_cap(self):
+        """Cap firing closes the upstream iterator, releasing llama.cpp's chat lock."""
         closed = {"value": False}
 
         def runaway_tokens():
-            """Yields forever; never emits </think>. Simulates a stuck model."""
             try:
                 yield "<think>"
                 while True:
@@ -245,18 +259,22 @@ class TestReasoningTruncation:
                 closed["value"] = True
                 raise
 
-        # Drive the filter to completion. Truncation should fire and the
-        # generator must be left in a suspended state for close() to act on.
-        list(filter_reasoning(runaway_tokens(), show=True))
+        list(
+            filter_reasoning(
+                runaway_tokens(),
+                show=True,
+                cap_chars=512,
+                on_cap=lambda _: None,
+            )
+        )
         assert closed["value"], "filter_reasoning must close upstream iterator"
 
     def test_close_called_on_stream_wrapper_early_exit(self):
-        """A stream-wrapper iterator with a ``close()`` method has it called."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS, filter_reasoning
+        """A stream wrapper exposing close() has it called when the cap fires."""
 
         class FakeStream:
             def __init__(self) -> None:
-                self.tokens = iter(["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100))
+                self.tokens = iter(["<think>"] + ["x"] * 2000)
                 self.closed = False
 
             def __iter__(self):
@@ -269,8 +287,15 @@ class TestReasoningTruncation:
                 self.closed = True
 
         stream = FakeStream()
-        list(filter_reasoning(stream, show=True))
-        assert stream.closed, "filter_reasoning must call close() on stream wrapper"
+        list(
+            filter_reasoning(
+                stream,
+                show=True,
+                cap_chars=512,
+                on_cap=lambda _: None,
+            )
+        )
+        assert stream.closed
 
 
 class TestStripReasoning:
