@@ -1,0 +1,231 @@
+"""T5 e2e streaming. Chat round-trip via SSE and TUI to catch reasoning softlocks.
+
+The non-streaming `lilbee ask` call won't catch the failure mode where the
+model emits a `<think>` block and then hangs without ever producing
+visible answer tokens. The streaming surfaces (HTTP /api/ask/stream and
+the TUI chat screen) DO surface that bug as a stuck event sequence or a
+spinner that never advances.
+
+These tests assert:
+  - TOKEN events fire after the reasoning phase
+  - DONE event arrives within a generous timeout
+  - The TUI advances past the 'thinking' spinner to actual response text
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import NamedTuple
+
+import httpx
+import pytest
+from drivers.tui import TuiSession
+from httpx_sse import EventSource
+
+from conftest import (
+    HTTP_FAST_TIMEOUT,
+    SERVER_BOOT_TIMEOUT_WITH_MODELS,
+    SYNC_TIMEOUT,
+    TOKEN_FETCH_TIMEOUT,
+    TUI_BOOT_TIMEOUT,
+    TUI_RESPONSE_TIMEOUT,
+    Lane,
+    run_lilbee_with_env,
+    seed_fixture_corpus,
+    serve_lilbee_with,
+)
+
+
+class ServedLilbee(NamedTuple):
+    """Tuple yielded by the ``served_lilbee`` fixture."""
+
+    base_url: str
+    env: dict[str, str]
+    headers: dict[str, str]
+
+
+_STREAM_TIMEOUT = 240.0
+
+
+def _fetch_token(lane: Lane, env: dict[str, str]) -> str:
+    """`lilbee token` prints the bearer for a running server. Empty string if
+    the binary doesn't expose the command (very old build) or it errors."""
+    result = run_lilbee_with_env(lane, ["token"], env=env, timeout=TOKEN_FETCH_TIMEOUT)
+    if result.returncode != 0:
+        return ""
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+@pytest.fixture
+def served_lilbee(lane: Lane, lilbee_env_with_models: dict[str, str]) -> Iterator[ServedLilbee]:
+    """Spawn `lilbee serve` and yield (url, env, headers).
+
+    Headers carry the bearer token that protected POST endpoints require.
+    180s boot budget covers Windows binary cold-start plus the initial
+    chat + embed model load on slow runners.
+    """
+    with serve_lilbee_with(
+        lane, lilbee_env_with_models, boot_timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS
+    ) as base_url:
+        token = _fetch_token(lane, lilbee_env_with_models)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        yield ServedLilbee(base_url=base_url, env=lilbee_env_with_models, headers=headers)
+
+
+@pytest.mark.wiki
+@pytest.mark.writer
+@pytest.mark.timeout(420)
+def test_ask_stream_completes_with_token_events(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+    served_lilbee: ServedLilbee,
+) -> None:
+    """`POST /api/ask/stream` emits TOKEN events and a DONE event within timeout.
+
+    A model that softlocks on the `<think>` phase would produce no TOKEN
+    events past the reasoning marker and never DONE. This asserts both:
+    (a) the stream advanced beyond reasoning, (b) it terminated cleanly.
+    """
+    seed_fixture_corpus(lilbee_data)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
+    assert sync.returncode == 0, sync.stderr
+
+    base_url, _env, headers = served_lilbee
+    events: list[tuple[str, str]] = []
+    saw_done = False
+    saw_error = False
+
+    deadline = time.monotonic() + _STREAM_TIMEOUT
+    with (
+        httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as client,
+        client.stream(
+            "POST",
+            f"{base_url}/api/ask/stream",
+            json={"question": "Answer in one short sentence: which document covers EV batteries?"},
+        ) as response,
+    ):
+        response.raise_for_status()
+        for sse in EventSource(response).iter_sse():
+            evt = sse.event.lower()
+            events.append((evt, sse.data[:120]))
+            if evt == "done":
+                saw_done = True
+                break
+            if evt == "error":
+                saw_error = True
+                break
+            if time.monotonic() > deadline:
+                break
+
+    summary = {
+        "events_seen": len(events),
+        "first_5": events[:5],
+        "last_5": events[-5:],
+        "saw_done": saw_done,
+        "saw_error": saw_error,
+    }
+    assert saw_done, f"stream never reached DONE within {_STREAM_TIMEOUT}s; {summary}"
+    assert not saw_error, f"stream ended with ERROR; {summary}"
+    token_events = [e for e, _ in events if e == "token"]
+    assert token_events, f"no token events emitted; {summary}"
+
+
+@pytest.mark.tui
+@pytest.mark.writer
+# 720s = seed + sync + boot + 360s polling + 30s margin so xfail beats pytest-timeout.
+@pytest.mark.timeout(720)
+@pytest.mark.xfail(
+    sys.platform in {"darwin", "win32"},
+    reason="bb-9c67: TUI chat softlocks on 'thinking...' on macOS/Windows.",
+    strict=False,
+)
+def test_tui_chat_advances_past_thinking_spinner(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+) -> None:
+    """The TUI chat screen produces a response after the thinking spinner.
+
+    This is the failure mode users have been reporting: the spinner /
+    'thinking...' indicator hangs forever, no actual response text renders.
+    Asserting that we eventually see content from the corpus (a phrase from
+    ev-notes that the model is highly likely to surface for a battery
+    question) catches the softlock. The unique seed phrase makes the
+    assertion deterministic without requiring exact token comparison.
+    """
+    seed_fixture_corpus(lilbee_data)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
+    assert sync.returncode == 0, sync.stderr
+
+    session = TuiSession([lane.lilbee_bin], env=lilbee_env_with_models)
+    try:
+        session.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
+        session.send("Answer in one short sentence: which document covers EV batteries?\r")
+        # The contract this test checks is "the TUI streams a response and
+        # doesn't softlock on 'thinking...'", not "the model answers the
+        # question correctly" (covered separately by CLI/HTTP cite-the-source
+        # assertions against the structured sources array). A 0.6B model
+        # may still pick the wrong chunk under contention. That's a
+        # model-quality issue, not a TUI bug. Assert the response section
+        # rendered SOMETHING from either source: any phrase that appears in
+        # one of the seed corpus files. If none appear within the timeout,
+        # the spinner softlocked.
+        corpus_markers = (
+            # ev-notes phrases
+            "lithium",
+            "battery",
+            "Wh/kg",
+            # coffee-notes phrases
+            "French press",
+            "extraction",
+            "grind",
+        )
+        deadline = time.monotonic() + TUI_RESPONSE_TIMEOUT
+        while time.monotonic() < deadline:
+            visible = session.text().lower()
+            if any(marker.lower() in visible for marker in corpus_markers):
+                return
+            time.sleep(1.0)
+        screenshot = lilbee_data / "tui-softlock.txt"
+        session.screenshot(screenshot)
+        raise AssertionError(
+            f"TUI never rendered a response derived from the corpus within "
+            f"{TUI_RESPONSE_TIMEOUT}s. Suggests softlock on 'thinking...'.\n"
+            f"Last visible screen:\n{session.text()}"
+        )
+    finally:
+        session.close()
+
+
+@pytest.mark.writer
+@pytest.mark.timeout(420)
+def test_chat_stream_rejects_concurrent_request_with_429(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+    served_lilbee: ServedLilbee,
+) -> None:
+    """A second concurrent /api/chat/stream request returns 429 with Retry-After."""
+    seed_fixture_corpus(lilbee_data)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
+    assert sync.returncode == 0, sync.stderr
+
+    base_url, _env, headers = served_lilbee
+    payload = {"messages": [{"role": "user", "content": "Say hi in one word."}]}
+
+    with (
+        httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as holder,
+        holder.stream("POST", f"{base_url}/api/chat/stream", json=payload) as held,
+    ):
+        held.raise_for_status()
+        # Pull a single chunk so the server-side handler is past lock acquisition.
+        next(iter(held.iter_lines()), None)
+        with httpx.Client(timeout=HTTP_FAST_TIMEOUT, headers=headers) as competitor:
+            second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
+        assert second.status_code == httpx.codes.TOO_MANY_REQUESTS, second.text
+        assert second.headers.get("Retry-After") == "1", dict(second.headers)
