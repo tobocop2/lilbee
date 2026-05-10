@@ -725,15 +725,21 @@ class CatalogScreen(Screen[None]):
         worker_name = event.worker.name
         if not self._apply_worker_result(worker_name, result):
             return
-        # FETCH_MORE_HF appends to the active view's tail; skip the full
-        # _refresh_view rebuild so scroll position and focus are preserved.
-        if worker_name == _WORKER_FETCH_MORE_HF:
-            if self._grid_view:
-                self._refresh_grid()
-            else:
-                self._append_more_hf_to_list(result)
-            return
-        self._refresh_view()
+        # A fast worker can complete before TabbedContent finishes mounting
+        # its panes; tolerate that and let the deferred _refresh_grid that
+        # _activate_initial_tab schedules rebuild against the applied state.
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            # FETCH_MORE_HF appends to the active view's tail; skip the full
+            # _refresh_view rebuild so scroll position and focus are preserved.
+            if worker_name == _WORKER_FETCH_MORE_HF:
+                if self._grid_view:
+                    self._refresh_grid()
+                else:
+                    self._append_more_hf_to_list(result)
+                return
+            self._refresh_view()
 
     def _append_more_hf_to_list(self, new_models: list[CatalogModel]) -> None:
         """Append newly-arrived HF rows to the virtualized list view."""
