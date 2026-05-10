@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 
 
@@ -44,7 +44,7 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.side_effect = lambda: list(_sources.values())
-    store.add_chunks.side_effect = lambda records: len(records)
+    store.add_chunks.side_effect = len
 
     def _upsert(fn, fh, cc, source_type="document"):
         from datetime import UTC, datetime

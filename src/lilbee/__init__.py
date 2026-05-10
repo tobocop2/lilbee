@@ -86,7 +86,7 @@ def _shrink_hf_download_chunk_size() -> None:
 
         _hf_constants.DOWNLOAD_CHUNK_SIZE = 200 * 1024
     except ImportError:
-        pass
+        pass  # huggingface_hub may be absent in stripped-down environments
 
 
 _shrink_hf_download_chunk_size()

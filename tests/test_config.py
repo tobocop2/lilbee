@@ -1036,16 +1036,12 @@ class TestDefaultCrawlExcludePatterns:
     accidentally rejecting real content URLs."""
 
     def _matches_any(self, url: str) -> bool:
-        import re
-
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         return any(re.search(p, url) for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
     def test_every_pattern_compiles(self):
         """Every shipped default must be valid Python regex."""
-        import re
-
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
         for pattern in DEFAULT_CRAWL_EXCLUDE_PATTERNS:
@@ -1360,9 +1356,9 @@ class TestValidateModelTaskAssignment:
 
     def test_task_mismatch_carries_structured_fields(self, _task_validation_enabled):
         """TaskMismatchError carries the structured fields each surface needs to format messages."""
+        from lilbee.catalog.types import ModelTask
         from lilbee.core.config import validate_model_task_assignment
         from lilbee.core.config.validators import TaskMismatchError
-        from lilbee.modelhub.models import ModelTask
 
         vision = "noctrex/LightOnOCR-2-1B-GGUF"
         with pytest.raises(TaskMismatchError) as exc_info:

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
+    from lilbee.providers.worker.transport import WorkerRole
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -77,8 +78,8 @@ class Services:
     def add_pool_listener(
         self,
         *,
-        on_spawning: Callable[[str], None] | None = None,
-        on_spawned: Callable[[str], None] | None = None,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
         """Subscribe to worker spawn lifecycle events.
 
@@ -90,6 +91,18 @@ class Services:
 
 
 _svc: Services | None = None
+"""Cached singleton, set on first ``get_services()`` call.
+
+Concurrency contract: lilbee runs the asyncio loop on a single worker
+thread + Textual's main thread. ``get_services()`` is idempotent (the
+``if _svc is not None: return`` early-out covers re-entry from a
+background thread). Tests that need a custom container call
+``set_services(make_mock_services(...))`` explicitly; ``peek_services()``
+is the read-only inspector for cleanup fixtures. The Services dataclass
+itself is logically immutable post-construction (its fields are
+references to long-lived service objects), so concurrent reads are safe
+without a lock.
+"""
 
 
 def get_services() -> Services:
@@ -183,6 +196,15 @@ def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
     global _svc
     _svc = services
+
+
+def peek_services() -> Services | None:
+    """Return the cached Services container, or None if not yet initialized.
+
+    Public read-only accessor for test cleanup helpers that need to
+    inspect the singleton without forcing initialization.
+    """
+    return _svc
 
 
 def reset_services() -> None:

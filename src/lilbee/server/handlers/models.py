@@ -10,22 +10,31 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
+from lilbee.app.services import get_services
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
     FEATURED_RERANK,
     FEATURED_VISION,
+    ModelFamily,
     enrich_catalog,
     find_catalog_entry,
     get_catalog,
+    get_families,
 )
+from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.core import settings
 from lilbee.core.config import cfg, validate_model_task_assignment
 from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
-from lilbee.core.services import get_services
-from lilbee.modelhub.model_manager import ModelSource
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.runtime.hardware import (
+    FitLevel,
+    SizeVariantInfo,
+    available_memory_for_fit,
+    compute_fit,
+    family_size_variants,
+)
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import (
@@ -41,6 +50,7 @@ from lilbee.server.models import (
 
 if TYPE_CHECKING:
     from lilbee.catalog import CatalogModel
+    from lilbee.catalog.formatting import EnrichedModel
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +114,7 @@ def _catalog_section(
     leading ``hf_repo`` segment. Bare ``hf_repo`` entries are accepted
     too (e.g. older clients that report just the repo).
     """
-    installed_repos = {ref.rsplit("/", 1)[0] if ref.endswith(".gguf") else ref for ref in installed}
+    installed_repos = {hf_repo_from_ref(ref) for ref in installed}
     return ModelCatalogSection(
         active=active,
         catalog=[
@@ -254,6 +264,65 @@ def _parse_source(source: str) -> ModelSource:
     return ModelSource(source)
 
 
+_BYTES_PER_GB = 1024**3
+
+
+def _row_fit(enriched: EnrichedModel, available_bytes: int | None) -> FitLevel | None:
+    """Fit level for *enriched*, or None when host memory or row size can't be measured."""
+    if available_bytes is None:
+        return None
+    if enriched.source != ModelSource.NATIVE.value:
+        return None
+    if enriched.size_gb <= 0:
+        return None
+    return compute_fit(int(enriched.size_gb * _BYTES_PER_GB), available_bytes).level
+
+
+def _families_by_repo() -> dict[str, ModelFamily]:
+    """Index featured ModelFamilies by every variant's ``hf_repo`` for size-variant lookup."""
+    index: dict[str, ModelFamily] = {}
+    for family in get_families():
+        for variant in family.variants:
+            index[variant.hf_repo] = family
+    return index
+
+
+def _row_size_variants(
+    enriched: EnrichedModel, families_by_repo: dict[str, ModelFamily]
+) -> list[SizeVariantInfo]:
+    """Size-variant strip for *enriched*; empty when the row isn't part of a family."""
+    family = families_by_repo.get(enriched.hf_repo)
+    if family is None:
+        return []
+    return family_size_variants(family)
+
+
+def _build_catalog_entry(
+    enriched: EnrichedModel,
+    *,
+    available_bytes: int | None,
+    families_by_repo: dict[str, ModelFamily],
+) -> CatalogEntryResponse:
+    """Translate one enriched catalog model into its HTTP response row."""
+    return CatalogEntryResponse(
+        hf_repo=enriched.hf_repo,
+        gguf_filename=enriched.gguf_filename,
+        task=enriched.task,
+        display_name=enriched.display_name,
+        param_count=enriched.param_count,
+        size_gb=enriched.size_gb,
+        min_ram_gb=enriched.min_ram_gb,
+        description=enriched.description,
+        quality_tier=enriched.quality_tier,
+        featured=enriched.featured,
+        downloads=enriched.downloads,
+        installed=enriched.installed,
+        source=enriched.source,
+        fit=_row_fit(enriched, available_bytes),
+        size_variants=_row_size_variants(enriched, families_by_repo),
+    )
+
+
 async def models_catalog(
     task: str | None = None,
     search: str = "",
@@ -265,8 +334,12 @@ async def models_catalog(
     offset: int = 0,
 ) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
+    # task arrives as a raw query-string; validate against the closed enum
+    # at the HTTP boundary instead of letting an unknown value silently
+    # short-circuit the catalog filter inside.
+    parsed_task = ModelTask(task) if task else None
     result = get_catalog(
-        task=task,
+        task=parsed_task,
         search=search,
         size=size,
         installed=installed,
@@ -280,26 +353,17 @@ async def models_catalog(
     installed_refs = {m.ref for m in registry.list_installed()}
     enriched = enrich_catalog(result, installed_refs)
 
+    available_bytes = available_memory_for_fit()
+    families_by_repo = _families_by_repo()
+
     return ModelsCatalogResponse(
         total=result.total,
         limit=result.limit,
         offset=result.offset,
         has_more=result.has_more,
         models=[
-            CatalogEntryResponse(
-                hf_repo=e.hf_repo,
-                gguf_filename=e.gguf_filename,
-                task=e.task,
-                display_name=e.display_name,
-                param_count=e.param_count,
-                size_gb=e.size_gb,
-                min_ram_gb=e.min_ram_gb,
-                description=e.description,
-                quality_tier=e.quality_tier,
-                featured=e.featured,
-                downloads=e.downloads,
-                installed=e.installed,
-                source=e.source,
+            _build_catalog_entry(
+                e, available_bytes=available_bytes, families_by_repo=families_by_repo
             )
             for e in enriched
         ],
@@ -313,8 +377,7 @@ async def models_installed() -> ModelsInstalledResponse:
     models = []
     for name in names:
         src = manager.get_source(name)
-        source_str = src.value if src is not None else ModelSource.REMOTE.value
-        models.append(InstalledModelEntry(name=name, source=source_str))
+        models.append(InstalledModelEntry(name=name, source=src or ModelSource.REMOTE))
     return ModelsInstalledResponse(models=models)
 
 

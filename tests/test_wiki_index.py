@@ -235,14 +235,11 @@ class TestLogActionConstants:
 
     def test_action_constants_exist(self):
         from lilbee.wiki.shared import (
-            WIKI_LOG_ACTION_BUILD,
-            WIKI_LOG_ACTION_GENERATED,
-            WIKI_LOG_ACTION_INGEST,
-            WIKI_LOG_ACTION_LINT,
+            WikiLogAction,
         )
 
-        assert WIKI_LOG_ACTION_BUILD == "build"
-        assert WIKI_LOG_ACTION_INGEST == "ingest"
-        assert WIKI_LOG_ACTION_LINT == "lint"
+        assert WikiLogAction.BUILD == "build"
+        assert WikiLogAction.INGEST == "ingest"
+        assert WikiLogAction.LINT == "lint"
         # Pre-existing constant is unchanged so old log entries still read the same.
-        assert WIKI_LOG_ACTION_GENERATED == "generated"
+        assert WikiLogAction.GENERATED == "generated"

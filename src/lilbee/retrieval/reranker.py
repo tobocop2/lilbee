@@ -132,7 +132,7 @@ def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] |
     """Call the active provider's rerank; return None on error after logging."""
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.services.get_services`` stays effective.
-    from lilbee.core.services import get_services
+    from lilbee.app.services import get_services
 
     try:
         provider = get_services().provider

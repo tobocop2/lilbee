@@ -21,10 +21,10 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
+from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.wiki.drafts import accept_draft, diff_draft, list_drafts, reject_draft
 
 if TYPE_CHECKING:

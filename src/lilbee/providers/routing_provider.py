@@ -6,7 +6,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import cfg
@@ -63,6 +63,26 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(cfg.embedding_model)
         return self._pick_backend(ref).embed(texts)
 
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[False] = False,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        stream: Literal[True],
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ClosableIterator[str]: ...
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -72,7 +92,13 @@ class RoutingProvider(LLMProvider):
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
         ref = parse_model_ref(model or cfg.chat_model)
-        return self._pick_backend(ref).chat(messages, stream=stream, options=options, model=model)
+        backend = self._pick_backend(ref)
+        # Split on stream so each call resolves to a specific overload; the
+        # base impl signature accepts bool but the @overloads on the LLMProvider
+        # Protocol require Literal narrowing at the boundary.
+        if stream:
+            return backend.chat(messages, stream=True, options=options, model=model)
+        return backend.chat(messages, stream=False, options=options, model=model)
 
     def vision_ocr(
         self,

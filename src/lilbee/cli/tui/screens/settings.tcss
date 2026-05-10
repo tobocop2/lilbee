@@ -3,7 +3,6 @@ SettingsScreen {
     #settings-scroll {
         height: 1fr;
         min-height: 0;
-        padding: 0 1;
     }
 
     #settings-tabs {
@@ -23,10 +22,20 @@ SettingsScreen {
         min-height: 0;
     }
 
-    /* Settings sub-tabs adopt the same airline-pill aesthetic as the
-     * top ViewTabs strip: active tab gets a bold accent underline,
-     * inactive tabs stay muted. Two navigation levels speak the same
-     * dialect.
+    /* Pane body owns its own horizontal padding so column 0 of the inner
+     * VerticalScroll always paints from the screen edge. Putting the
+     * padding on the outer Container instead (#settings-scroll) interacted
+     * badly with the inner scroll on rapid wheel-up: the compositor
+     * leaked stale glyphs into column 0 because the outer's padding box
+     * and the inner's scroll viewport disagreed about where row 0 starts.
+     */
+    #settings-tabs TabPane > VerticalScroll {
+        padding: 0 1;
+    }
+
+    /* Settings sub-tabs: bold $primary text on a $surface background pill
+     * for the active tab, dim text for inactive. Top-level ViewTabs share
+     * this aesthetic so navigation reads the same at both levels.
      */
     #settings-tabs Tab {
         padding: 0 2;

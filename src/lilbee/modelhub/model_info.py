@@ -58,7 +58,7 @@ def get_model_architecture() -> ModelArchInfo:
         info = _read_embed_arch(info)
         info = _read_vision_arch(info)
     except ImportError:
-        pass
+        pass  # llama_cpp is optional; arch info degrades gracefully
     _arch_cache[key] = info
     return info
 

@@ -20,7 +20,7 @@ def isolated_db(tmp_path, rag_pipeline):
     """Point store at a temp directory, force llama-cpp provider.
     Depends on rag_pipeline to guarantee the embedding model is downloaded.
     """
-    from lilbee.core.services import reset_services
+    from lilbee.app.services import reset_services
 
     original_dir = cfg.lancedb_dir
     original_provider = cfg.llm_provider
@@ -41,7 +41,7 @@ def store():
 
 class TestEmbedder:
     def test_embed_returns_float_vector(self):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         vec = get_services().embedder.embed("test sentence")
         assert isinstance(vec, list)
@@ -49,20 +49,20 @@ class TestEmbedder:
         assert all(isinstance(v, float) for v in vec)
 
     def test_embed_batch_returns_matching_count(self):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         vecs = get_services().embedder.embed_batch(["hello", "world"])
         assert len(vecs) == 2
 
     def test_embed_batch_empty(self):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         assert get_services().embedder.embed_batch([]) == []
 
 
 class TestStoreRoundTrip:
     def test_add_and_search(self, store):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         embedder = get_services().embedder
         vec = embedder.embed("oil capacity is 5 quarts")
@@ -88,7 +88,7 @@ class TestStoreRoundTrip:
         assert "5 quarts" in results[0].chunk
 
     def test_delete_by_source_removes_chunks(self, store):
-        from lilbee.core.services import get_services
+        from lilbee.app.services import get_services
 
         embedder = get_services().embedder
         vec = embedder.embed("tire pressure is 35 PSI")

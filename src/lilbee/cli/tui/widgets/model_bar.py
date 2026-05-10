@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.modelhub.registry import ModelRegistry
 
 from textual import events, work
@@ -17,15 +18,15 @@ from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Static
 
+from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model, apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
-from lilbee.core.services import get_services, reset_services
-from lilbee.modelhub.models import ModelTask
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.retrieval.embedder import is_model_available
@@ -182,7 +183,7 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             # doesn't render an empty " (Ollama)" row.
             if not model.name.strip():
                 continue
-            ref = format_remote_ref(model)
+            ref = format_remote_ref(model.name, model.provider)
             if ref in seen or _is_mmproj(model.name):
                 continue
             bucket = _lookup_bucket(buckets, model.task, ref)
@@ -208,7 +209,7 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         # expose embedding/vision/rerank.
         for display_name, models in discover_api_models().items():
             for model in models:
-                qualified = format_remote_ref(model)
+                qualified = format_remote_ref(model.name, model.provider)
                 if qualified in seen:
                     continue
                 seen.add(qualified)
@@ -420,6 +421,7 @@ class ChatModeToggle(Widget, can_focus=False):
 class ModelBar(Widget, can_focus=False):
     """Compact bar with picker buttons for active model assignments + mode toggle."""
 
+    app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self, id: str | None = None) -> None:
@@ -441,6 +443,23 @@ class ModelBar(Widget, can_focus=False):
     def on_mount(self) -> None:
         self._refresh_cloud_warning()
         self._scan_models()
+        # External activation paths (Catalog screen, /model setting, settings UI)
+        # publish on this signal but don't reach this widget's _refresh otherwise.
+        # ``app: LilbeeApp`` is declared on the class; test hosts inherit
+        # LilbeeAppHost so the signal attribute always exists. No isinstance
+        # guard needed (AGENTS.md "no test-aware production branches").
+        self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+
+    def _on_settings_changed(self, payload: tuple[str, object]) -> None:
+        key, _ = payload
+        if key == "chat_model":
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
+            self._refresh_cloud_warning()
+            self._refresh_chat_mode_toggle()
+        elif key == "embedding_model":
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
 
     @work(thread=True)
     def _scan_models(self) -> None:

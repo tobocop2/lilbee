@@ -1,7 +1,11 @@
 ViewTabs {
     height: 1;
     width: 100%;
-    background: $surface;
+    /* No strip background: inherit the screen's $background so the
+     * active tab's $surface pill pops against it the same way Settings
+     * sub-tabs do. With background: $surface here the active pill would
+     * be invisible against the strip. */
+    background: transparent;
 }
 
 ViewTabs > Horizontal {
@@ -22,10 +26,13 @@ ViewTabs Static {
     text-style: bold;
 }
 
-/* Visible focus ring when keyboard reaches a view tab via Tab. */
-.view-tab:focus {
-    text-style: bold underline;
-    color: $accent;
+/* Active tab gets the same highlighted pill as Settings sub-tabs
+ * (#settings-tabs Tab.-active in screens/settings.tcss). The pill is the
+ * SOLE indicator of which tab is current. No :focus override layered on
+ * top: a mouse click and a keyboard > / < cycle produce the exact same
+ * visual, no second highlight when the tab also has keyboard focus. */
+.view-tab.-active {
+    background: $surface;
 }
 
 .view-tab-sep {

@@ -13,11 +13,11 @@ import logging
 
 import numpy as np
 
+from lilbee.app.services import get_services
 from lilbee.core.config import Config
-from lilbee.core.services import get_services
+from lilbee.core.text import clean_label_for_display, is_valid_label
 from lilbee.data.store import SearchChunk
 from lilbee.wiki.citation import strip_citation_block
-from lilbee.wiki.shared import clean_label_for_display, is_valid_label
 
 log = logging.getLogger(__name__)
 

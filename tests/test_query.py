@@ -2,9 +2,9 @@
 
 import pytest
 
-import lilbee.core.services as svc_mod
+import lilbee.app.services as svc_mod
+from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query import (
     Searcher,

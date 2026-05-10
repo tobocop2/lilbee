@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
-from lilbee.modelhub.models import ModelTask
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 def _row(name: str, *, featured: bool = False, installed: bool = False) -> LocalCatalogRow:
@@ -28,7 +29,7 @@ def _row(name: str, *, featured: bool = False, installed: bool = False) -> Local
 
 
 async def test_three_rails_mount() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield DiscoverRails(id="discover-rails")
 
@@ -42,7 +43,7 @@ async def test_three_rails_mount() -> None:
 
 
 async def test_set_rails_pushes_rows_into_each_grid() -> None:
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield DiscoverRails(id="discover-rails")
 
@@ -65,7 +66,7 @@ async def test_set_rails_pushes_rows_into_each_grid() -> None:
 async def test_action_focus_grid_jumps_to_rail_grid() -> None:
     """Enter on a focused rail heading lands focus on that rail's grid."""
 
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield DiscoverRails(id="discover-rails")
 
@@ -89,7 +90,7 @@ async def test_action_focus_grid_swallows_missing_grid() -> None:
     """If the grid id is somehow missing, action_focus_grid no-ops gracefully."""
     from lilbee.cli.tui.widgets.discover_rails import _RailHeading
 
-    class _Bare(App):
+    class _Bare(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             # Heading without its sibling grid; query_one inside
             # action_focus_grid raises NoMatches and the action no-ops.
@@ -115,7 +116,7 @@ async def test_set_rail_swallows_missing_grid() -> None:
     """_set_rail no-ops when the rail's grid id is gone (post-remount race)."""
     from lilbee.cli.tui.widgets.discover_rails import DiscoverRails as DiscoverRailsCls
 
-    class _Empty(App):
+    class _Empty(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             return iter(())
 
@@ -130,7 +131,7 @@ async def test_set_rail_swallows_missing_grid() -> None:
 async def test_empty_lists_render_empty_grids() -> None:
     """Rails with zero rows still keep their headings; layout stays stable."""
 
-    class _App(App):
+    class _App(LilbeeAppHost):
         def compose(self) -> ComposeResult:
             yield DiscoverRails(id="discover-rails")
 

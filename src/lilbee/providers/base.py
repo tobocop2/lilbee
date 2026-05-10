@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -69,6 +69,26 @@ class LLMProvider(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts, return list of vectors."""
         ...
+
+    @overload
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        stream: Literal[False] = False,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        stream: Literal[True],
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ClosableIterator[str]: ...
 
     def chat(
         self,

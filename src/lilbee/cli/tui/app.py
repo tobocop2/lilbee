@@ -6,7 +6,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -14,12 +14,13 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.signal import Signal
 
+from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.core.services import get_services
+from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -129,8 +130,8 @@ class LilbeeApp(App[None]):
         # ``?`` is non-priority so a focused TextArea (chat input in INSERT
         # mode) can swallow it and type the literal character. F1 / Ctrl+H
         # remain priority routes that always open help, even mid-typing.
-        Binding("question_mark", "push_help", "Help", show=True),
-        Binding("f1", "push_help", "Help", show=False, priority=True),
+        Binding("question_mark", "push_help", "Help", show=False),
+        Binding("f1", "push_help", "Help", show=True, priority=True),
         Binding("ctrl+h", "push_help", "Help", show=False, priority=True),
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
@@ -177,14 +178,22 @@ class LilbeeApp(App[None]):
         self.provider_availability_changed_signal: Signal[tuple[str, object]] = Signal(
             self, "provider_availability_changed"
         )
-        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+        from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
 
+    # Test seam: the TUI test fixtures subclass LilbeeApp and set this to True
+    # so on_mount short-circuits before the heavyweight setup (model
+    # canonicalization, ChatScreen install, signal subscriptions, sync probe).
+    # Production never sets it. See tests/_lilbee_app_test_host.py.
+    _test_skip_auto_init: ClassVar[bool] = False
+
     def on_mount(self) -> None:
+        if self._test_skip_auto_init:
+            return
         self._canonicalize_persisted_models()
         self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
@@ -209,29 +218,20 @@ class LilbeeApp(App[None]):
         self.task_bar.start_detect_pending()
 
     def _wire_worker_pool_notifications(self) -> None:
-        """Surface worker spawn lifecycle as Textual notifications.
+        """Surface worker spawn lifecycle in the bottom TaskBar.
 
         Worker spawns happen on the pool runtime thread, not the TUI's main
         loop, so the listeners marshal back via :meth:`call_from_thread`
-        before touching ``self.notify``. The notifications give the user
-        feedback during the 1-3 s cold-start window per role.
+        before mutating controller state. A single TaskBar hint covers all
+        in-flight roles instead of one toast per role; the chat surface is
+        for user content, not implementation detail.
         """
 
-        def _on_spawning(role: str) -> None:
-            self.call_from_thread(
-                self.notify,
-                msg.worker_starting(role),
-                severity="information",
-                timeout=2,
-            )
+        def _on_spawning(role: WorkerRole) -> None:
+            self.call_from_thread(self.task_bar.mark_role_spawning, role.value)
 
-        def _on_spawned(role: str) -> None:
-            self.call_from_thread(
-                self.notify,
-                msg.worker_ready(role),
-                severity="information",
-                timeout=1,
-            )
+        def _on_spawned(role: WorkerRole) -> None:
+            self.call_from_thread(self.task_bar.mark_role_spawned, role.value)
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
@@ -294,8 +294,6 @@ class LilbeeApp(App[None]):
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         # settings.set_value persists into TOML, which only accepts strings.
-        # Mirror SettingsScreen._stringify_for_toml's contract: None -> "",
-        # list[str] -> newline-joined, everything else -> str().
         if normalized is None:
             persisted: str = ""
         elif isinstance(normalized, list):
@@ -381,6 +379,22 @@ class LilbeeApp(App[None]):
         else:
             self.action_show_help_panel()
 
+    def action_command_palette(self) -> None:
+        """Ctrl+P: cycle the chat dropdown if visible, else open the palette."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            try:
+                overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            except NoMatches:
+                overlay = None
+            if overlay is not None and overlay.is_visible:
+                overlay.cycle_prev()
+                return
+        super().action_command_palette()
+
     def action_dismiss_help_if_open(self) -> None:
         """Esc dismisses the HelpPanel when it is open; otherwise no-op.
 
@@ -462,18 +476,10 @@ class LilbeeApp(App[None]):
 
 
 def apply_active_model(host_app: App[Any], key: str, value: str) -> None:
-    """Route model writes through set_active_model, falling back to direct cfg+settings writes."""
-    if isinstance(host_app, LilbeeApp):
-        host_app.set_active_model(key, value)
-        return
-    setattr(cfg, key, value)
-    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+    """Route model writes through LilbeeApp.set_active_model."""
+    cast(LilbeeApp, host_app).set_active_model(key, value)
 
 
 def apply_setting(host_app: App[Any], key: str, value: object) -> None:
-    """Route non-model settings writes through set_setting, falling back to direct writes."""
-    if isinstance(host_app, LilbeeApp):
-        host_app.set_setting(key, value)
-        return
-    setattr(cfg, key, value)
-    settings.set_value(cfg.data_root, key, getattr(cfg, key))
+    """Route non-model settings writes through LilbeeApp.set_setting."""
+    cast(LilbeeApp, host_app).set_setting(key, value)

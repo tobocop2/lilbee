@@ -12,7 +12,7 @@ from lilbee.data.store import Store
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
     """Point store at a temp directory, clean up after."""
-    from lilbee.core.services import reset_services
+    from lilbee.app.services import reset_services
 
     original = cfg.lancedb_dir
     cfg.lancedb_dir = tmp_path / "lancedb_test"

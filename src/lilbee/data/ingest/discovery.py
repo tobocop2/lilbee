@@ -11,7 +11,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.code_chunker import is_code_file
-from lilbee.data.ingest.types import _DOCUMENT_EXTENSION_MAP
+from lilbee.data.ingest.types import DOCUMENT_EXTENSION_MAP
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _relative_name(path: Path) -> str:
 
 def classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
-    doc_type = _DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
+    doc_type = DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
     if doc_type is not None:
         return doc_type
     if is_code_file(path):
