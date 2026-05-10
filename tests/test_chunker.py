@@ -242,19 +242,6 @@ class Greeter:
         lines = ["aaa", "bbb", "ccc"]
         assert find_line("zzz", lines, 0) == 1
 
-    def test_extract_symbols_non_list_structure(self):
-        from lilbee.data.code_chunker import _extract_symbols
-
-        assert _extract_symbols({"structure": "not a list"}, "code") == []
-
-    def test_extract_symbols_non_dict_entry(self):
-        from lilbee.data.code_chunker import _extract_symbols
-
-        result = {"structure": ["not a dict", {"name": "fn", "kind": "function", "span": {}}]}
-        symbols = _extract_symbols(result, "code")
-        assert len(symbols) == 1
-        assert symbols[0].name == "fn"
-
     def test_ensure_language_false_triggers_fallback(self):
         from unittest.mock import patch
 
@@ -335,7 +322,7 @@ class Greeter:
         ships pre-installed for a given Python version."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import _ensure_language
+        from lilbee.data.code_chunker import PackConfig, _ensure_language
 
         with (
             patch("lilbee.data.code_chunker.has_language", side_effect=[False, True]) as has,
@@ -343,7 +330,7 @@ class Greeter:
         ):
             assert _ensure_language("python") is True
             assert has.call_count == 2
-            init_mock.assert_called_once_with({"languages": ["python"]})
+            init_mock.assert_called_once_with(PackConfig(languages=["python"]))
 
     def test_chunk_code_empty_source_returns_empty(self):
         """Empty (whitespace-only) source short-circuits before tree-sitter."""

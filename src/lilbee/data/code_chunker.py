@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from tree_sitter_language_pack import (
+    PackConfig,
     ProcessConfig,
     detect_language,
     has_language,
@@ -55,7 +56,10 @@ def _ensure_language(lang: str) -> bool:
     try:
         if has_language(lang):
             return True
-        init({"languages": [lang]})
+        # tslp 1.8.0 mistypes init() against _native.PackConfig, but the
+        # public re-export is options.PackConfig (a dataclass). Runtime is
+        # fine. Both share the same fields.
+        init(PackConfig(languages=[lang]))  # type: ignore[arg-type]
         return has_language(lang)
     except Exception:
         log.debug("Failed to download tree-sitter language: %s", lang)
@@ -96,23 +100,16 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
 
 def _extract_symbols(result: Any, source_text: str) -> list[SymbolInfo]:
     """Parse process() result into typed SymbolInfo objects."""
-    raw = result.get("structure", [])
-    if not isinstance(raw, list):
-        return []
     symbols: list[SymbolInfo] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        span = entry.get("span", {})
-        start_byte = span.get("start_byte", 0)
-        end_byte = span.get("end_byte", len(source_text))
+    for entry in result.structure:
+        span = entry.span
         symbols.append(
             SymbolInfo(
-                name=str(entry.get("name", "")),
-                kind=str(entry.get("kind", "")).lower(),
-                line_start=int(span.get("start_line", 0)) + 1,
-                line_end=int(span.get("end_line", 0)) + 1,
-                text=source_text[start_byte:end_byte],
+                name=str(entry.name),
+                kind=str(entry.kind).lower(),
+                line_start=span.start_line + 1,
+                line_end=span.end_line + 1,
+                text=source_text[span.start_byte : span.end_byte],
             )
         )
     return symbols
@@ -142,7 +139,7 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
             docstrings=True,
             chunk_max_size=cfg.chunk_size,
         )
-        result = process(source_text, config)
+        result = process(source_text, config)  # type: ignore[arg-type]  # tslp 1.8.0 typing bug, see init() above
     except Exception:
         log.debug("tree-sitter process() failed for %s", file_path, exc_info=True)
         return _fallback_chunks(source_text)
