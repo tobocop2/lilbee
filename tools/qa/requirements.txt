@@ -1,0 +1,21 @@
+# Pinned QA-matrix runner dependencies.
+# Installed in the dedicated QA venv (not the dev venv).
+# Runs on Linux/macOS/Windows; platform-specific PTY backends below.
+
+pytest>=8.3
+pytest-xdist>=3.8
+pytest-asyncio>=0.24
+pytest-timeout>=2.3
+pytest-rerunfailures>=14.0
+
+# HTTP + SSE
+httpx>=0.27
+httpx-sse>=0.4
+
+# Cross-platform PTY harness. POSIX uses stdlib pty.openpty + subprocess
+# (posix_spawn), so no ptyprocess dependency. Windows uses pywinpty (ConPTY).
+pyte>=0.8.2
+pywinpty>=2.0.13 ; sys_platform == "win32"
+
+# Network-flake retries
+tenacity>=8.5

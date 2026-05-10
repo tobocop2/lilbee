@@ -1,0 +1,29 @@
+name: Bring up an Ollama daemon and pull a tiny model
+description: "Install ollama, start daemon on 127.0.0.1:11434, pull the model, export LILBEE_QA_OLLAMA_* env vars (Linux-only)."
+
+inputs:
+  model:
+    description: "Ollama model ref to pull (e.g. qwen3:0.6b)."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install ollama, start daemon, pull model
+      shell: bash
+      env:
+        OLLAMA_MODEL: ${{ inputs.model }}
+      run: |
+        set -euo pipefail
+        curl -fsSL https://ollama.com/install.sh | sh
+        OLLAMA_HOST=127.0.0.1:11434 nohup ollama serve >/tmp/ollama.log 2>&1 &
+        for _ in $(seq 1 60); do
+          if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+          sleep 0.5
+        done
+        ollama pull "${OLLAMA_MODEL}"
+        {
+          echo "LILBEE_QA_OLLAMA_HOST=127.0.0.1"
+          echo "LILBEE_QA_OLLAMA_PORT=11434"
+          echo "LILBEE_QA_OLLAMA_MODEL=${OLLAMA_MODEL}"
+        } >> "$GITHUB_ENV"

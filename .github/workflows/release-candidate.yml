@@ -1,0 +1,131 @@
+name: Release candidate
+
+# Tag push: build + QA + auto-promote on green. Dispatch: build + QA dry-run.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or SHA to build a release candidate from (defaults to current ref)."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      ref: ${{ steps.ver.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Compute version + tag from pyproject.toml
+        id: ver
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          if [ -z "${VERSION}" ]; then
+            echo "could not parse version from pyproject.toml" >&2
+            exit 1
+          fi
+          if [ "${EVENT_NAME}" = "push" ]; then
+            TAG="${REF_NAME}"
+            REF="${GITHUB_REF}"
+            # Sanity: tag should match pyproject.toml version (allow with-or-without 'v').
+            if [ "${TAG}" != "v${VERSION}" ] && [ "${TAG}" != "${VERSION}" ]; then
+              echo "tag ${TAG} does not match pyproject.toml version ${VERSION}" >&2
+              exit 1
+            fi
+          else
+            TAG="v${VERSION}"
+            REF="${INPUT_REF:-${GITHUB_REF}}"
+          fi
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "ref=${REF}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-wheels:
+    needs: [resolve]
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      publish: false
+      ref: ${{ needs.resolve.outputs.ref }}
+    secrets: inherit
+
+  build-binaries:
+    needs: [resolve]
+    uses: ./.github/workflows/release.yml
+    with:
+      publish: false
+      ref: ${{ needs.resolve.outputs.ref }}
+    secrets: inherit
+
+  # Attach binaries to a GH pre-release as soon as they're built, before
+  # QA runs. PyPI publish is gated on QA green (see promote-pypi below)
+  # because PyPI is immutable; a GH release is reversible (delete + retag).
+  attach-binaries-prerelease:
+    needs: [resolve, build-binaries]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: ./.github/actions/attach-prerelease
+        with:
+          tag: ${{ needs.resolve.outputs.tag }}
+          version: ${{ needs.resolve.outputs.version }}
+
+  qa:
+    needs: [resolve, build-wheels, build-binaries]
+    uses: ./.github/workflows/qa-matrix.yml
+    with:
+      wheel_run_id: ${{ github.run_id }}
+      binary_run_id: ${{ github.run_id }}
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit
+
+  # PyPI publish + downstream packaging only run after QA passes. The GH
+  # pre-release with binaries is already public by this point, so users
+  # exploring an RC can pull the executables before PyPI is updated. If
+  # QA fails, this job is skipped, the pre-release stays, no PyPI version
+  # is created.
+  promote-pypi-and-packaging:
+    needs: [resolve, qa, attach-binaries-prerelease]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: ./.github/actions/promote-pypi
+        with:
+          tag: ${{ needs.resolve.outputs.tag }}
