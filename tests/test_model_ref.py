@@ -49,6 +49,26 @@ class TestParseModelRef:
         assert ref.provider == "gemini"
         assert ref.name == "gemini-2.5-pro"
 
+    def test_openrouter_prefix_carries_nested_path(self) -> None:
+        """OpenRouter model ids embed a nested path; only the leading segment is the provider."""
+        ref = parse_model_ref("openrouter/anthropic/claude-3.5-sonnet")
+        assert ref.provider == "openrouter"
+        assert ref.name == "anthropic/claude-3.5-sonnet"
+        assert ref.is_api is True
+        assert ref.for_openai_prefix() == "openrouter/anthropic/claude-3.5-sonnet"
+
+    def test_mistral_prefix(self) -> None:
+        ref = parse_model_ref("mistral/codestral-latest")
+        assert ref.provider == "mistral"
+        assert ref.name == "codestral-latest"
+        assert ref.is_api is True
+
+    def test_deepseek_prefix(self) -> None:
+        ref = parse_model_ref("deepseek/deepseek-chat")
+        assert ref.provider == "deepseek"
+        assert ref.name == "deepseek-chat"
+        assert ref.is_api is True
+
     def test_bare_name_tag_rejected(self) -> None:
         """A bare ``name:tag`` lacks a provider prefix and is rejected."""
         with pytest.raises(ValueError, match="must be a HuggingFace ref"):
@@ -146,6 +166,23 @@ class TestFormatRemoteRef:
             provider="Ollama",
         )
         assert format_remote_ref(model.name, model.provider) == "ollama/qwen3:8b"
+
+    def test_openrouter_with_nested_path(self) -> None:
+        """OpenRouter model ids carry a vendor/model path that must round-trip."""
+        ref = format_remote_ref("anthropic/claude-3.5-sonnet", "OpenRouter")
+        assert ref == "openrouter/anthropic/claude-3.5-sonnet"
+        # Round-trip back through the parser without double-prefixing.
+        parsed = parse_model_ref(ref)
+        assert parsed.provider == "openrouter"
+        assert parsed.for_openai_prefix() == ref
+
+    def test_mistral_provider(self) -> None:
+        ref = format_remote_ref("codestral-latest", "Mistral")
+        assert ref == "mistral/codestral-latest"
+
+    def test_deepseek_provider(self) -> None:
+        ref = format_remote_ref("deepseek-chat", "DeepSeek")
+        assert ref == "deepseek/deepseek-chat"
 
 
 class TestTranslateOptions:

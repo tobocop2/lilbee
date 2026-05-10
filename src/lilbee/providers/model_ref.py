@@ -12,7 +12,16 @@ from typing import Any
 
 from lilbee.providers.base import filter_options
 
-_API_PROVIDERS = {"openai", "anthropic", "gemini"}
+_API_PROVIDERS = frozenset(
+    {
+        "openrouter",
+        "gemini",
+        "anthropic",
+        "openai",
+        "mistral",
+        "deepseek",
+    }
+)
 
 # All provider prefixes that route a ref away from the local registry.
 # Includes API providers and ollama (which keeps its own name:tag shape).
@@ -26,7 +35,7 @@ class ProviderModelRef:
     """Parsed model reference with provider routing information."""
 
     raw: str
-    provider: str  # "local", "ollama", "openai", "anthropic", "gemini"
+    provider: str  # "local", "ollama", or any value in PROVIDER_PREFIXES
     name: str  # provider-specific name with tag normalization applied
 
     @property
@@ -80,14 +89,14 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     """Classify a model string by its prefix and return the routing ref.
 
     Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``. Remote
-    providers use prefixes: ``openai/``, ``anthropic/``, ``gemini/``,
-    ``ollama/``.
+    providers use prefixes from :data:`PROVIDER_PREFIXES` (``ollama/``
+    plus every API provider listed there).
     """
     if "/" not in raw:
+        known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
         raise ValueError(
             f"Model ref {raw!r} must be a HuggingFace ref "
-            "('<org>/<repo>/<filename>.gguf') or carry a provider prefix "
-            "('ollama/', 'openai/', 'anthropic/', 'gemini/')."
+            f"('<org>/<repo>/<filename>.gguf') or carry a known provider prefix ({known})."
         )
     prefix, rest = raw.split("/", 1)
     if prefix in _API_PROVIDERS:
