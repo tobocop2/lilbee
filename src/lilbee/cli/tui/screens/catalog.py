@@ -230,15 +230,18 @@ class CatalogScreen(Screen[None]):
         self._families: list[ModelFamily] = get_families()
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
-        self._hf_offset = 0
-        self._hf_has_more = True
+        # Per-task pagination state. Each task tab tracks its own HF offset
+        # and has-more flag so paginating in one tab (e.g. Chat) only fetches
+        # that task's next page; sibling tabs stay untouched.
+        self._hf_offset_by_task: dict[ModelTask, int] = dict.fromkeys(_ALL_TASKS, 0)
+        self._hf_has_more_by_task: dict[ModelTask, bool] = dict.fromkeys(_ALL_TASKS, True)
+        self._hf_fetched_tasks: set[ModelTask] = set()
         self._rows: list[LocalCatalogRow] = []
         self._sort_column: str = "Name"
         self._sort_ascending: bool = True
         self._pending_delete: str | None = None
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
-        self._hf_fetched: bool = False
         self._loading_more: bool = False
         # Per-tab grid/list cache keys. Each tab tracks its own last-rendered
         # shape; switching between already-populated tabs is a no-op refresh.
@@ -407,12 +410,11 @@ class CatalogScreen(Screen[None]):
         self.call_after_refresh(self._initial_focus_first_grid)
         self._fetch_remote_models()
         self._fetch_frontier_models()
-        # Eagerly load the HF catalog so the user lands on a populated
-        # browse view; no more "Browse more" CTA gating discovery behind
-        # an extra keypress. Featured + Installed paint immediately, HF
-        # task sections stream in as the worker completes.
-        self._hf_fetched = True
-        self._fetch_all_hf_models()
+        # Eagerly load the HF catalog for the initial chat tab. Sibling
+        # task tabs fetch lazily on first activation (see
+        # `_on_catalog_tab_activated`) so opening the catalog only costs
+        # one HF round-trip instead of four.
+        self._fetch_initial_hf_models_for_task(ModelTask.CHAT)
         self.app.provider_availability_changed_signal.subscribe(
             self, self._on_provider_availability_changed
         )
@@ -500,6 +502,28 @@ class CatalogScreen(Screen[None]):
         """
         return self._active_tab_id_cache
 
+    def _active_task(self) -> ModelTask | None:
+        """Return the active tab's task, or None on Discover / Library."""
+        return TAB_ID_TO_TASK.get(self._active_tab_id())
+
+    def _active_task_has_more(self) -> bool:
+        """True iff the active task tab has another HF page available.
+
+        Discover and Library tabs return False — they don't paginate.
+        """
+        task = self._active_task()
+        if task is None:
+            return False
+        return self._hf_has_more_by_task.get(task, False)
+
+    def _hf_fetched_any(self) -> bool:
+        """True iff any task has had its first HF page fetched.
+
+        Used by the rendering gates that should suppress HF sections until
+        at least one task page has landed.
+        """
+        return bool(self._hf_fetched_tasks)
+
     def action_toggle_view(self) -> None:
         """Toggle between grid and list view on the active task tab.
 
@@ -518,9 +542,9 @@ class CatalogScreen(Screen[None]):
                 self._grid_view = False
                 self.remove_class("-grid-view")
                 self.add_class("-list-view")
-                if not self._hf_fetched:
-                    self._hf_fetched = True
-                    self._fetch_all_hf_models()
+                active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
+                if active_task is not None and active_task not in self._hf_fetched_tasks:
+                    self._fetch_initial_hf_models_for_task(active_task)
                 with self.app.batch_update():
                     self._refresh_list()
                 self._focus_list_item(0)
@@ -590,15 +614,24 @@ class CatalogScreen(Screen[None]):
         self._trigger_remote_search(self._get_search_text())
 
     def _trigger_remote_search(self, query: str) -> None:
-        """Fire the HF search worker, unless one is already in flight."""
+        """Fire the HF search worker for the active task, unless one is in flight.
+
+        Search is task-scoped so typing on the Chat tab only surfaces chat
+        models; embedding/vision/rerank rows can never leak into the active
+        list. Non-task tabs (Discover/Library) can't reach this path because
+        the search Input is hidden on them.
+        """
         if self._search_in_flight or not query:
+            return
+        active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
+        if active_task is None:
             return
         self._search_in_flight = True
         self._update_sort_label()
         self._sync_loading_spinner()
         # Sort label is hidden in grid view, so the toast is the only feedback there.
         self.notify(msg.CATALOG_SEARCHING_HF, timeout=_NOTIFY_SEARCHING_TIMEOUT_SECONDS)
-        self._fetch_hf_search(query)
+        self._fetch_hf_search(query, active_task)
 
     @on(Click, ".search-hf-cta")
     def _on_search_hf_cta_clicked(self) -> None:
@@ -629,31 +662,32 @@ class CatalogScreen(Screen[None]):
                 self._list_widget.focus()
                 self._list_widget.action_select()
 
-    def _fetch_hf_page(self) -> list[CatalogModel]:
-        """Fetch one page of HF models for all task types (runs in worker thread)."""
-        all_models: list[CatalogModel] = []
-        seen_repos: set[str] = set()
-        any_has_more = False
-        for task in _ALL_TASKS:
-            result = get_catalog(
-                task=task,
-                featured=False,
-                limit=_HF_PAGE_SIZE,
-                offset=self._hf_offset,
-            )
-            if result.has_more:
-                any_has_more = True
-            for m in result.models:
-                if not m.featured and m.hf_repo not in seen_repos:
-                    seen_repos.add(m.hf_repo)
-                    all_models.append(m)
-        self._hf_has_more = any_has_more
-        return all_models
+    def _fetch_hf_page_for_task(self, task: ModelTask) -> list[CatalogModel]:
+        """Fetch one HF page for *task* at the task's own offset (worker thread).
+
+        Dedupes against repos already in ``self._hf_models`` so re-fetches
+        from a stale offset don't double-count rows. Records the per-task
+        ``has_more`` directly on the screen — matches the existing pattern
+        of writing worker state from the worker thread.
+        """
+        offset = self._hf_offset_by_task[task]
+        result = get_catalog(
+            task=task,
+            featured=False,
+            limit=_HF_PAGE_SIZE,
+            offset=offset,
+        )
+        self._hf_has_more_by_task[task] = result.has_more
+        existing_repos = {m.hf_repo for m in self._hf_models}
+        return [
+            m for m in result.models if not m.featured and m.hf_repo not in existing_repos
+        ]
 
     @work(thread=True, name=_WORKER_FETCH_HF)
-    def _fetch_all_hf_models(self) -> list[CatalogModel]:
-        """Fetch HF models for all task types (replaces current list)."""
-        return self._fetch_hf_page()
+    def _fetch_initial_hf_models_for_task(self, task: ModelTask) -> list[CatalogModel]:
+        """Fetch the first HF page for *task* (extends the merged store)."""
+        self._hf_fetched_tasks.add(task)
+        return self._fetch_hf_page_for_task(task)
 
     @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
@@ -689,28 +723,24 @@ class CatalogScreen(Screen[None]):
         return rows
 
     @work(thread=True, name=_WORKER_FETCH_MORE_HF)
-    def _fetch_more_hf(self) -> list[CatalogModel]:
-        """Fetch next page of HF models for all task types (extends current list)."""
-        return self._fetch_hf_page()
+    def _fetch_more_hf_for_task(self, task: ModelTask) -> list[CatalogModel]:
+        """Fetch the next HF page for *task* (extends the merged store)."""
+        return self._fetch_hf_page_for_task(task)
 
     @work(thread=True, name=_WORKER_FETCH_SEARCH, exit_on_error=False)
-    def _fetch_hf_search(self, query: str) -> list[CatalogModel]:
-        """Fetch HF models matching the user's search term (runs in worker thread)."""
+    def _fetch_hf_search(self, query: str, task: ModelTask) -> list[CatalogModel]:
+        """Fetch HF models matching *query* for *task* only (worker thread)."""
         existing_repos = {m.hf_repo for m in self._hf_models}
-        new_models: list[CatalogModel] = []
-        for task in _ALL_TASKS:
-            result = get_catalog(
-                task=task,
-                featured=False,
-                search=query,
-                limit=_HF_PAGE_SIZE,
-                offset=0,
-            )
-            for m in result.models:
-                if not m.featured and m.hf_repo not in existing_repos:
-                    existing_repos.add(m.hf_repo)
-                    new_models.append(m)
-        return new_models
+        result = get_catalog(
+            task=task,
+            featured=False,
+            search=query,
+            limit=_HF_PAGE_SIZE,
+            offset=0,
+        )
+        return [
+            m for m in result.models if not m.featured and m.hf_repo not in existing_repos
+        ]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # PENDING/RUNNING fire here too; only ERROR/CANCELLED should release latches.
@@ -742,10 +772,25 @@ class CatalogScreen(Screen[None]):
             self._refresh_view()
 
     def _append_more_hf_to_list(self, new_models: list[CatalogModel]) -> None:
-        """Append newly-arrived HF rows to the virtualized list view."""
+        """Append newly-arrived HF rows to the active task tab's list.
+
+        Guards against the rare race where the user switches tabs after
+        firing pagination but before the worker returns: the result still
+        belongs to the previously-active task, and a blind extend would
+        leak foreign rows into the new tab. Falls back to a full
+        refresh when the task no longer matches.
+        """
+        active_task = self._active_task()
+        if active_task is None:
+            self._refresh_view()
+            return
+        same_task = [m for m in new_models if m.task == active_task]
+        if len(same_task) != len(new_models):
+            self._refresh_view()
+            return
         new_rows = [
             catalog_to_row(m, installed=self._is_installed(m.ref, m.hf_repo, m.gguf_filename))
-            for m in new_models
+            for m in same_task
         ]
         new_rows = self._sort_rows(new_rows)
         if not new_rows:
@@ -774,13 +819,15 @@ class CatalogScreen(Screen[None]):
         the worker name is unrecognized (defensive: a future @work
         decorator name won't silently rebuild the grid)."""
         if name == _WORKER_FETCH_HF:
-            self._hf_models = result
+            # Per-task initial fetches all share this worker name; each
+            # one carries dedup-filtered new rows (see
+            # ``_fetch_hf_page_for_task``) so extend is correct here.
+            self._hf_models.extend(result)
             self._loading_more = False
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
             self._loading_more = False
         elif name == _WORKER_FETCH_SEARCH:
-            self._hf_fetched = True
             self._hf_models.extend(result)
             self._search_in_flight = False
             self._update_sort_label()
@@ -886,7 +933,7 @@ class CatalogScreen(Screen[None]):
             len(self._families),
             len(self._hf_models),
             len(self._remote_models),
-            self._hf_fetched,
+            len(self._hf_fetched_tasks),
             len(self._installed_names),
             self._data_version,
         )
@@ -1072,7 +1119,7 @@ class CatalogScreen(Screen[None]):
         search = self._get_search_text()
         family_rows = self._build_family_rows(search)
         remote_rows = self._build_remote_rows(search)
-        hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
+        hf_rows = self._build_hf_rows(search) if self._hf_fetched_any() else []
         all_rows = family_rows + remote_rows + hf_rows
         active_tab = self._active_tab_id_cache
         tab_rows = self._rows_for_active_tab(all_rows, active_tab)
@@ -1230,7 +1277,7 @@ class CatalogScreen(Screen[None]):
         """Pick the bottom scroll-hint text based on fetch state."""
         if self._loading_more:
             return msg.CATALOG_GRID_LOADING_MORE.format(frame=_SPINNER_FRAMES[self._spinner_frame])
-        if self._hf_has_more:
+        if self._active_task_has_more():
             return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
@@ -1439,7 +1486,7 @@ class CatalogScreen(Screen[None]):
             grids = list(self._grid_container.query(ModelGrid))
             if grids and event.grid is grids[-1]:
                 self._grid_container.scroll_end(animate=False, immediate=True)
-                if self._hf_has_more and not self._loading_more:
+                if self._active_task_has_more() and not self._loading_more:
                     self._load_more()
                 return
         self.focus_next()
@@ -1549,7 +1596,9 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = None
             self._spinner_frame = 0
             # Restore the post-load CTA text now that the fetch settled.
-            hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched else []
+            hf_rows = (
+                self._build_hf_rows(self._get_search_text()) if self._hf_fetched_any() else []
+            )
             self._refresh_grid_ctas(hf_count=len(hf_rows))
 
     def _tick_loading_spinner(self) -> None:
@@ -1587,7 +1636,7 @@ class CatalogScreen(Screen[None]):
         n_total = len(self._rows)
         if self._loading_more:
             count = f"{n_total} models · loading more…"
-        elif self._hf_has_more:
+        elif self._active_task_has_more():
             count = f"{n_total} models · press [b]n[/b] for more"
         else:
             count = f"{n_total} models"
@@ -1648,13 +1697,21 @@ class CatalogScreen(Screen[None]):
         self.app.switch_view("Settings")
 
     def _load_more(self) -> None:
-        """Load next page of HF models, if any remain and no fetch is in flight."""
-        if self._loading_more or not self._hf_has_more:
+        """Load the next HF page for the active task tab.
+
+        Pagination is per-task: only the active tab's offset advances, only
+        the active tab's task is fetched. Discover and Library short-circuit
+        because they have no associated task and can't paginate.
+        """
+        if self._loading_more:
+            return
+        task = self._active_task()
+        if task is None or not self._hf_has_more_by_task.get(task, False):
             return
         self._loading_more = True
         self._sync_loading_spinner()
-        self._hf_offset += _HF_PAGE_SIZE
-        self._fetch_more_hf()
+        self._hf_offset_by_task[task] += _HF_PAGE_SIZE
+        self._fetch_more_hf_for_task(task)
 
     def action_load_more(self) -> None:
         """Keyboard trigger (``n``) so users can page without scrolling."""
@@ -1684,6 +1741,12 @@ class CatalogScreen(Screen[None]):
         elif new_tab == TAB_DISCOVER:
             self._populate_discover_rails()
         elif new_tab in TASK_TAB_IDS:
+            # Lazy first-fetch: tabs other than Chat skip their HF round-trip
+            # at mount and hit the API only when first activated. Cached
+            # after — re-activations stay free.
+            task = TAB_ID_TO_TASK[new_tab]
+            if task not in self._hf_fetched_tasks:
+                self._fetch_initial_hf_models_for_task(task)
             # Refresh the newly active task tab. Per-tab cache key skips
             # the rebuild when the row shape hasn't changed since last paint.
             self._refresh_view()
@@ -1705,7 +1768,7 @@ class CatalogScreen(Screen[None]):
         except Exception:
             return
         family_rows = self._all_family_rows()
-        hf_rows = self._all_hf_rows() if self._hf_fetched else []
+        hf_rows = self._all_hf_rows() if self._hf_fetched_any() else []
         remote_rows = self._all_remote_rows()
         for_you = sorted(
             (r for r in family_rows + hf_rows if r.featured),
@@ -1949,7 +2012,7 @@ class CatalogScreen(Screen[None]):
         self._maybe_prefetch_on_nav()
 
     def _maybe_prefetch_on_nav(self) -> None:
-        if self._grid_view or not self._hf_has_more or self._loading_more:
+        if self._grid_view or not self._active_task_has_more() or self._loading_more:
             return
         idx = self._focused_list_index()
         if idx is None:
@@ -1964,7 +2027,7 @@ class CatalogScreen(Screen[None]):
         scroll_y too gradually to ever cross that threshold; this check
         guarantees keyboard reaches the same prefetch trigger.
         """
-        if not self._grid_view or not self._hf_has_more or self._loading_more:
+        if not self._grid_view or not self._active_task_has_more() or self._loading_more:
             return
         grids = list(self._grid_container.query(ModelGrid))
         if not grids:
@@ -2016,7 +2079,7 @@ class CatalogScreen(Screen[None]):
         ``_on_grid_scrolled``. Re-check here and fetch the next page
         directly. Cooldown prevents a cascade as new rows shift max_scroll_y.
         """
-        if not self._hf_has_more or self._loading_more:
+        if not self._active_task_has_more() or self._loading_more:
             return
         container = self._grid_container if self._grid_view else self._list_widget
         max_y = container.max_scroll_y
@@ -2033,7 +2096,7 @@ class CatalogScreen(Screen[None]):
         # Cooldown blocks a runaway cascade where appending rows shifts
         # max_scroll_y, the watcher refires, and load_more kicks off the
         # next fetch before the user notices.
-        if not self._hf_has_more or self._loading_more:
+        if not self._active_task_has_more() or self._loading_more:
             return False
         if self._scroll_prefetch_armed_at:
             elapsed = time.monotonic() - self._scroll_prefetch_armed_at

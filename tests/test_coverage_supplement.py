@@ -15,6 +15,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -1785,7 +1786,7 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             "rerank": "local",
         }
         screen._grid_view = True
-        screen._hf_has_more = True
+        screen._hf_has_more_by_task[ModelTask.CHAT] = True
         screen._loading_more = False
         fake_container = mock.MagicMock()
         fake_container.query.return_value = []
@@ -1812,7 +1813,7 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, CatalogScreen)
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             stranger = mock.MagicMock(spec=ModelGrid)
             stranger.highlighted = 0
@@ -1840,7 +1841,7 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             await pilot.pause()
             screen = pilot.app.screen
             assert isinstance(screen, CatalogScreen)
-            screen._hf_has_more = True
+            screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
             grids = list(screen.query(ModelGrid))
             if not grids:
@@ -2069,9 +2070,8 @@ class TestCatalogSmallEdgeBranches:
             assert isinstance(screen, CatalogScreen)
             screen._active_tab_id_cache = "chat"
             screen._activation_settled = True
-            screen._hf_fetched = False
+            screen._hf_fetched_tasks.discard(ModelTask.CHAT)
             screen._grid_view = True
-            with mock.patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
+            with mock.patch.object(screen, "_fetch_initial_hf_models_for_task") as mock_fetch:
                 screen.action_toggle_view()
-                assert screen._hf_fetched is True
-                mock_fetch.assert_called_once()
+                mock_fetch.assert_called_once_with(ModelTask.CHAT)
