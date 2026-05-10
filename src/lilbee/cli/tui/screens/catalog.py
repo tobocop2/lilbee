@@ -414,6 +414,7 @@ class CatalogScreen(Screen[None]):
         # task tabs fetch lazily on first activation (see
         # `_on_catalog_tab_activated`) so opening the catalog only costs
         # one HF round-trip instead of four.
+        self._hf_fetched_tasks.add(ModelTask.CHAT)
         self._fetch_initial_hf_models_for_task(ModelTask.CHAT)
         self.app.provider_availability_changed_signal.subscribe(
             self, self._on_provider_availability_changed
@@ -509,7 +510,7 @@ class CatalogScreen(Screen[None]):
     def _active_task_has_more(self) -> bool:
         """True iff the active task tab has another HF page available.
 
-        Discover and Library tabs return False — they don't paginate.
+        Discover and Library tabs return False; neither paginates.
         """
         task = self._active_task()
         if task is None:
@@ -544,6 +545,7 @@ class CatalogScreen(Screen[None]):
                 self.add_class("-list-view")
                 active_task = TAB_ID_TO_TASK.get(self._active_tab_id())
                 if active_task is not None and active_task not in self._hf_fetched_tasks:
+                    self._hf_fetched_tasks.add(active_task)
                     self._fetch_initial_hf_models_for_task(active_task)
                 with self.app.batch_update():
                     self._refresh_list()
@@ -667,7 +669,7 @@ class CatalogScreen(Screen[None]):
 
         Dedupes against repos already in ``self._hf_models`` so re-fetches
         from a stale offset don't double-count rows. Records the per-task
-        ``has_more`` directly on the screen — matches the existing pattern
+        ``has_more`` directly on the screen, matching the existing pattern
         of writing worker state from the worker thread.
         """
         offset = self._hf_offset_by_task[task]
@@ -679,14 +681,11 @@ class CatalogScreen(Screen[None]):
         )
         self._hf_has_more_by_task[task] = result.has_more
         existing_repos = {m.hf_repo for m in self._hf_models}
-        return [
-            m for m in result.models if not m.featured and m.hf_repo not in existing_repos
-        ]
+        return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     @work(thread=True, name=_WORKER_FETCH_HF)
     def _fetch_initial_hf_models_for_task(self, task: ModelTask) -> list[CatalogModel]:
         """Fetch the first HF page for *task* (extends the merged store)."""
-        self._hf_fetched_tasks.add(task)
         return self._fetch_hf_page_for_task(task)
 
     @work(thread=True, name=_WORKER_FETCH_REMOTE)
@@ -738,9 +737,7 @@ class CatalogScreen(Screen[None]):
             limit=_HF_PAGE_SIZE,
             offset=0,
         )
-        return [
-            m for m in result.models if not m.featured and m.hf_repo not in existing_repos
-        ]
+        return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # PENDING/RUNNING fire here too; only ERROR/CANCELLED should release latches.
@@ -1596,9 +1593,7 @@ class CatalogScreen(Screen[None]):
                 self._spinner_timer = None
             self._spinner_frame = 0
             # Restore the post-load CTA text now that the fetch settled.
-            hf_rows = (
-                self._build_hf_rows(self._get_search_text()) if self._hf_fetched_any() else []
-            )
+            hf_rows = self._build_hf_rows(self._get_search_text()) if self._hf_fetched_any() else []
             self._refresh_grid_ctas(hf_count=len(hf_rows))
 
     def _tick_loading_spinner(self) -> None:
@@ -1743,9 +1738,10 @@ class CatalogScreen(Screen[None]):
         elif new_tab in TASK_TAB_IDS:
             # Lazy first-fetch: tabs other than Chat skip their HF round-trip
             # at mount and hit the API only when first activated. Cached
-            # after — re-activations stay free.
+            # after, so re-activations stay free.
             task = TAB_ID_TO_TASK[new_tab]
             if task not in self._hf_fetched_tasks:
+                self._hf_fetched_tasks.add(task)
                 self._fetch_initial_hf_models_for_task(task)
             # Refresh the newly active task tab. Per-tab cache key skips
             # the rebuild when the row shape hasn't changed since last paint.

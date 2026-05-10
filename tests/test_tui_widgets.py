@@ -6076,8 +6076,8 @@ class TestCatalogFocusEdgeGuards:
         # Mimic the screen handler executing on the first grid's LeaveUp.
         event = ModelGrid.LeaveUp(grid_a)
         # Bind the catalog method to the stub; the real method only reads
-        # _grid_container, _active_task_has_more, and _loading_more — the
-        # stub provides all three.
+        # _grid_container, _active_task_has_more, and _loading_more, all of
+        # which the stub provides.
         CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
         assert screen.focus_previous_called is False
 
