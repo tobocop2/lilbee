@@ -74,6 +74,40 @@ jobs:
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
 
+  # Attach binaries to a GH pre-release as soon as they're built, before
+  # QA runs. PyPI publish is gated on QA green (see promote-pypi below)
+  # because PyPI is immutable; a GH release is reversible (delete + retag).
+  attach-binaries-prerelease:
+    needs: [resolve, build-binaries]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lilbee-*
+          path: bins/
+          merge-multiple: true
+
+      - name: List binary artifacts
+        shell: bash
+        run: ls -lh bins/
+
+      # generate_release_notes pulls commit messages since the previous
+      # tag; the published notes can be overwritten with `gh release edit`
+      # after the run completes if a hand-written body is preferred.
+      # prerelease=true on any PEP 440 a/b/rc segment so the GH UI badges
+      # them correctly and they stay off the "Latest release" surface.
+      - name: Create GH pre-release with binaries
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          files: bins/*
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.resolve.outputs.version, 'a') || contains(needs.resolve.outputs.version, 'b') || contains(needs.resolve.outputs.version, 'rc') }}
+
   qa:
     needs: [resolve, build-wheels, build-binaries]
     uses: ./.github/workflows/qa-matrix.yml
@@ -83,8 +117,13 @@ jobs:
       version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
-  promote:
-    needs: [resolve, qa]
+  # PyPI publish + downstream packaging only run after QA passes. By this
+  # point the GH pre-release with binaries is already public, so users
+  # exploring a release candidate can pull the executables before PyPI
+  # is updated. If QA fails, this job is skipped, the pre-release stays
+  # but no PyPI version is created (and can be retracted manually).
+  promote-pypi-and-packaging:
+    needs: [resolve, qa, attach-binaries-prerelease]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
@@ -93,10 +132,6 @@ jobs:
       id-token: write
       actions: write
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.resolve.outputs.ref }}
-
       - name: Download wheel artifacts
         uses: actions/download-artifact@v4
         with:
@@ -119,33 +154,11 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Download binary artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: lilbee-*
-          path: bins/
-          merge-multiple: true
-
-      - name: List binary artifacts
-        shell: bash
-        run: ls -lh bins/
-
-      # generate_release_notes pulls commit messages since the previous
-      # tag; keeps the release page populated without us hand-writing notes.
-      # prerelease=true for any PEP 440 a/b/rc segment so the GH UI badges
-      # them correctly and they stay off the "Latest release" surface.
-      - name: Create GH release with binaries
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.resolve.outputs.tag }}
-          files: bins/*
-          generate_release_notes: true
-          prerelease: ${{ contains(needs.resolve.outputs.version, 'a') || contains(needs.resolve.outputs.version, 'b') || contains(needs.resolve.outputs.version, 'rc') }}
-
-      # Manually fan out to the downstream packaging workflows. Their
-      # workflow_run trigger is gated to `event == 'release'` so the
-      # workflow_call invocations of build-wheels.yml / release.yml above
-      # do not auto-fire them; this step is the equivalent kick-off.
+      # Manually fan out to downstream packaging. The workflow_run trigger
+      # on publish-docker.yml + publish-packages.yml is gated to
+      # event == 'release' so workflow_call invocations of build-wheels.yml /
+      # release.yml above do not auto-fire them; this step is the equivalent
+      # kick-off after PyPI is live.
       - name: Trigger Publish Docker Image
         env:
           GH_TOKEN: ${{ github.token }}

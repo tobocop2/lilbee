@@ -71,10 +71,6 @@ class Lane:
     def is_binary(self) -> bool:
         return self.name is LaneName.L2_BINARY
 
-    @property
-    def is_pypi(self) -> bool:
-        return self.name is LaneName.L1_PYPI
-
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Assign xdist groups: writers serialize, others group by file.
