@@ -3140,6 +3140,47 @@ class TestViewTabsWikiVisibility:
                 await pilot.pause()
             assert wiki_tab.display is True
 
+    async def test_wiki_tab_hidden_at_mount_when_disabled(self) -> None:
+        """When cfg.wiki=False at startup, the Wiki tab must be hidden by the
+        time the first paint settles -- not just after the user toggles the
+        setting at runtime.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+        cfg.wiki = False
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
+            wiki_sep = app.screen.query_one("#view-tab-sep-wiki")
+            assert wiki_tab.display is False
+            assert wiki_sep.display is False
+
+    async def test_apply_wiki_visibility_noop_when_unmounted(self) -> None:
+        """The settings signal can fire after the widget unmounts (its
+        subscription persists). The apply helper must short-circuit on the
+        unmounted widget instead of crashing inside ``query()``.
+        """
+        from unittest.mock import PropertyMock, patch
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+
+        async with _ViewTabsApp().run_test() as pilot:
+            await pilot.pause()
+            bar = pilot.app.query_one(ViewTabs)
+            with (
+                patch.object(
+                    type(bar),
+                    "is_mounted",
+                    new_callable=PropertyMock,
+                    return_value=False,
+                ),
+                patch.object(bar, "query") as query,
+            ):
+                bar._apply_wiki_visibility()
+                assert not query.called
+
 
 class TestViewTabs:
     async def test_compose_yields_static(self) -> None:
@@ -6059,10 +6100,12 @@ class TestCatalogFocusEdgeGuards:
             _grid_container = type(
                 "C", (), {"query": staticmethod(lambda _cls: [grid_a, grid_b])}
             )()
-            _hf_has_more = False
             _loading_more = False
             focus_previous_called = False
             focus_next_called = False
+
+            def _active_task_has_more(self) -> bool:
+                return False
 
             def focus_previous(self) -> None:
                 self.focus_previous_called = True
@@ -6074,7 +6117,8 @@ class TestCatalogFocusEdgeGuards:
         # Mimic the screen handler executing on the first grid's LeaveUp.
         event = ModelGrid.LeaveUp(grid_a)
         # Bind the catalog method to the stub; the real method only reads
-        # _grid_container and _hf_has_more / _loading_more, so the stub fits.
+        # _grid_container, _active_task_has_more, and _loading_more, all of
+        # which the stub provides.
         CatalogScreen._on_grid_leave_up(screen, event)  # type: ignore[arg-type]
         assert screen.focus_previous_called is False
 
@@ -6101,10 +6145,12 @@ class TestCatalogFocusEdgeGuards:
                     "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
                 },
             )()
-            _hf_has_more = False
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _active_task_has_more(self) -> bool:
+                return False
 
             def focus_next(self) -> None:
                 self.focus_next_called = True
@@ -6127,7 +6173,7 @@ class TestCatalogFocusEdgeGuards:
         assert not scroll_end_calls
 
     async def test_leave_down_at_last_grid_with_more_loads_more(self) -> None:
-        """Last grid + _hf_has_more triggers load_more (existing behavior preserved)."""
+        """Last grid + active task has more pages triggers load_more."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -6143,10 +6189,12 @@ class TestCatalogFocusEdgeGuards:
                     "scroll_end": lambda self, **_kw: scroll_end_calls.append(True),
                 },
             )()
-            _hf_has_more = True
             _loading_more = False
             focus_next_called = False
             load_more_called = False
+
+            def _active_task_has_more(self) -> bool:
+                return True
 
             def focus_next(self) -> None:
                 self.focus_next_called = True
