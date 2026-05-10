@@ -6608,6 +6608,78 @@ async def test_chat_history_prev_skips_in_normal_mode():
             app.screen.action_history_prev()
 
 
+async def test_chat_history_prev_skips_when_input_unfocused():
+    """action_history_prev raises SkipAction when chat input is not focused."""
+    from textual.actions import SkipAction
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Insert mode is the default; explicitly drop input focus by focusing
+        # something else on the screen so action_history_prev hits its
+        # ``if not inp.has_focus`` early-return branch.
+        app.screen.set_focus(None)
+        await pilot.pause()
+        with pytest.raises(SkipAction):
+            app.screen.action_history_prev()
+
+
+async def test_chat_history_next_skips_when_input_unfocused():
+    """action_history_next mirrors action_history_prev for the unfocused-input branch."""
+    from textual.actions import SkipAction
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.set_focus(None)
+        await pilot.pause()
+        with pytest.raises(SkipAction):
+            app.screen.action_history_next()
+
+
+async def test_action_command_palette_falls_through_when_overlay_missing():
+    """LilbeeApp.action_command_palette: when on ChatScreen but the
+    CompletionOverlay isn't queryable, fall through to super() instead of
+    raising. Covers the ``except NoMatches: overlay = None`` branch."""
+    from textual.css.query import NoMatches
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Force query_one for the overlay to raise NoMatches; mock super()
+        # so we just assert the fall-through happened, not the platform's
+        # native palette behaviour.
+        with (
+            patch.object(app.screen, "query_one", side_effect=NoMatches("test")),
+            patch.object(
+                LilbeeApp.__bases__[0], "action_command_palette"
+            ) as super_palette,
+        ):
+            _ = Static  # silence "imported but unused"
+            app.action_command_palette()
+            super_palette.assert_called()
+
+
+async def test_chat_action_complete_prev_noop_when_input_unfocused():
+    """action_complete_prev returns early without touching the overlay when
+    the chat input doesn't have focus."""
+    cfg.chat_model = TEST_LOCAL_REF
+    cfg.embedding_model = TEST_EMBED_REF
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.set_focus(None)
+        await pilot.pause()
+        # Must not raise; must not alter overlay state.
+        app.screen.action_complete_prev()
+
+
 async def test_chat_enter_key_returns_to_insert_mode():
     """Enter key returns to insert mode from normal mode."""
     cfg.chat_model = TEST_LOCAL_REF
