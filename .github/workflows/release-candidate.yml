@@ -108,24 +108,5 @@ jobs:
       version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
-  # PyPI publish + downstream packaging only run after QA passes. The GH
-  # pre-release with binaries is already public by this point, so users
-  # exploring an RC can pull the executables before PyPI is updated. If
-  # QA fails, this job is skipped, the pre-release stays, no PyPI version
-  # is created.
-  promote-pypi-and-packaging:
-    needs: [resolve, qa, attach-binaries-prerelease]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: write
-      id-token: write
-      actions: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.resolve.outputs.ref }}
-      - uses: ./.github/actions/promote-pypi
-        with:
-          tag: ${{ needs.resolve.outputs.tag }}
+  # PyPI publish is intentionally NOT here. Run publish-pypi.yml manually
+  # after reviewing the pre-release + QA results.

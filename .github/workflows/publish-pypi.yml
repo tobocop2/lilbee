@@ -1,0 +1,89 @@
+name: Publish to PyPI
+
+# Manual trigger: build the named tag, attach binaries to its pre-release, publish to PyPI.
+# Run this after release-candidate.yml has built the tag, attached a pre-release, and run QA.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.6.66b469)."
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: publish-pypi-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Refuse if tag already has a non-prerelease published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ inputs.tag }}" --repo ${{ github.repository }} --json isPrerelease -q .isPrerelease 2>/dev/null | grep -q false; then
+            echo "tag ${{ inputs.tag }} already has a non-prerelease GH release; refusing to overwrite" >&2
+            exit 1
+          fi
+
+      # Implicit existence check: fails loudly if the tag does not exist.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Parse version from pyproject.toml
+        id: parse
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          if [ "v${VERSION}" != "${EXPECTED_TAG}" ] && [ "${VERSION}" != "${EXPECTED_TAG}" ]; then
+            echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  build-wheels:
+    needs: [guard]
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      publish: false
+      ref: ${{ inputs.tag }}
+    secrets: inherit
+
+  build-binaries:
+    needs: [guard]
+    uses: ./.github/workflows/release.yml
+    with:
+      publish: false
+      ref: ${{ inputs.tag }}
+    secrets: inherit
+
+  promote:
+    needs: [guard, build-wheels, build-binaries]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: ./.github/actions/attach-prerelease
+        with:
+          tag: ${{ inputs.tag }}
+          version: ${{ needs.guard.outputs.version }}
+      - uses: ./.github/actions/promote-pypi
+        with:
+          tag: ${{ inputs.tag }}
