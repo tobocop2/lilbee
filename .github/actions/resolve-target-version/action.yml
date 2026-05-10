@@ -1,10 +1,5 @@
 name: Resolve target lilbee version
-description: |
-  Resolve the lilbee tag and PEP-440 version the QA matrix should run
-  against. Precedence: ``rc_version`` (set when the matrix is a
-  workflow_call from release-candidate.yml) > ``lilbee_version`` (the
-  workflow_dispatch knob; "latest" picks the newest GH release) > the
-  repo's most-recent published release.
+description: "Resolve target lilbee tag/version for QA. Precedence: rc_version > lilbee_version > newest GH release."
 
 inputs:
   rc_version:

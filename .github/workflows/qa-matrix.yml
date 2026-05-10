@@ -1,18 +1,6 @@
 name: QA matrix
 
-# Runs the QA matrix against the published lilbee artifact in two lanes:
-#
-#   pypi   - `pip install lilbee==<v>` from PyPI; same path real users take
-#   binary - download lilbee-<os>-<arch> from the GH release; the standalone
-#            executable for users who don't want a Python install
-#
-# Across the native runners (ubuntu, macos, windows) and a curated set of
-# Linux distros (arch, fedora) that exercise the glibc / library-layout /
-# package-manager differences our Ubuntu runner doesn't.
-#
-# Triggers on push to the qa-matrix branch so the foundation PR can demonstrate
-# the matrix in action; the production trigger (tag-driven release pipeline)
-# arrives in a follow-up PR.
+# QA matrix runs published lilbee in two lanes (pypi wheel + standalone binary) across native + Linux-distro runners.
 
 on:
   push:
@@ -26,9 +14,7 @@ on:
         description: "lilbee version to QA (defaults to latest published)"
         required: false
         default: "latest"
-  # Reusable trigger for release-candidate.yml / emergency-publish.yml.
-  # When wheel_run_id / binary_run_id are set, the matrix consumes those
-  # workflow artifacts directly instead of fetching from PyPI / GH release.
+  # Reusable trigger: with wheel_run_id/binary_run_id set, consumes those run artifacts instead of PyPI/GH release.
   workflow_call:
     inputs:
       wheel_run_id:
@@ -49,15 +35,9 @@ permissions:
   actions: read   # download-artifact with run-id (workflow_call RC mode)
 
 env:
-  # Ollama-side analogue of the harness's `_DEFAULT_CHAT_MODEL`. The two
-  # name the same Qwen3 0.6B weights via different registries: the harness
-  # pulls a HF GGUF, ollama uses its own model registry. Keep both pinned
-  # to the same parameter count so cell-to-cell behaviour aligns.
+  # Ollama-registry analogue of conftest's _DEFAULT_CHAT_MODEL; keep param count aligned.
   OLLAMA_TINY_MODEL: qwen3:0.6b
-  # The actions/cache key encodes the active model defaults; bump along
-  # with `_DEFAULT_CHAT_MODEL` / `_DEFAULT_EMBEDDING_MODEL` /
-  # `_DEFAULT_RERANKER_MODEL` in conftest so a model change invalidates
-  # the cache instead of restoring a stale tree.
+  # Bump alongside conftest _DEFAULT_*_MODEL so model changes invalidate the cache.
   QA_MODELS_CACHE_KEY: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
 
 concurrency:
@@ -203,9 +183,7 @@ jobs:
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Linux distros: same lanes, but the runtime is the distro container.
-  # pypi lane on Arch / Fedora is the high-value one. That's where most
-  # Linux users hit install failures; binary lane is the fallback path.
+  # Same lanes against Arch/Fedora containers (where most Linux install bugs surface).
   linux-distros:
     name: linux-distros (${{ matrix.label }}, ${{ matrix.lane }})
     strategy:
@@ -222,21 +200,14 @@ jobs:
     steps:
       - name: Install Arch base toolchain
         if: matrix.install == 'arch'
-        # vulkan-icd-loader provides libvulkan.so.1, which the lilbee Linux
-        # wheel hard-depends on at module-import time. Without it the runtime
-        # fails with 'libvulkan.so.1: cannot open shared object file' on
-        # every model load. Tracked separately as a lilbee bug; install it
-        # here so the rest of the matrix can validate the surface that
-        # users-with-vulkan see. Users hitting this without vulkan installed
-        # is the bug the QA matrix exposed.
+        # vulkan-icd-loader provides libvulkan.so.1 (lilbee Linux wheel's import-time dep).
         run: |
           pacman -Sy --noconfirm
           pacman -S --noconfirm --needed python python-pip git github-cli ca-certificates base-devel vulkan-icd-loader
 
       - name: Install Fedora base toolchain
         if: matrix.install == 'fedora'
-        # vulkan-loader is the Fedora equivalent of vulkan-icd-loader; same
-        # rationale (see Arch step above).
+        # vulkan-loader is Fedora's vulkan-icd-loader equivalent.
         run: |
           dnf -y update
           dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make vulkan-loader
@@ -321,8 +292,13 @@ jobs:
           echo "Lane: $LILBEE_QA_LANE"
           echo "Binary: $LILBEE_QA_BIN"
           mkdir -p "$LILBEE_QA_MODELS_DIR"
+          if [ -d "$HOME/.lilbee-qa-models" ]; then
+            cp -R "$HOME/.lilbee-qa-models/." "$LILBEE_QA_MODELS_DIR/" 2>/dev/null || true
+          fi
           python3 -m pytest tools/qa/ -v --tb=short \
             --junitxml=qa-${{ matrix.label }}-${{ matrix.lane }}.xml
+          mkdir -p "$HOME/.lilbee-qa-models"
+          cp -R "$LILBEE_QA_MODELS_DIR/." "$HOME/.lilbee-qa-models/" 2>/dev/null || true
 
       - name: Upload artifacts on failure
         if: failure()
@@ -335,12 +311,7 @@ jobs:
             tools/qa/.pytest_cache/
           retention-days: 7
 
-  # Dedicated Ollama lane: install [crawler,litellm], stand up an ollama
-  # daemon with qwen3:0.6b, run only the litellm-backed ollama tests. We
-  # isolate this from the main matrix because the [litellm] SDK adds 30-60s
-  # per `lilbee` invocation on macOS arm64 and Linux native runners, which
-  # blows the 60-min budget when applied to the full suite. Scoped to one
-  # cell on ubuntu-latest where ollama install is straightforward.
+  # Dedicated Ollama lane (litellm SDK adds ~30-60s per lilbee call; isolated to keep main suite under budget).
   ollama-pypi:
     name: ollama-pypi (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -359,6 +330,7 @@ jobs:
         uses: ./.github/actions/resolve-target-version
         with:
           rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
         uses: actions/cache@v4
@@ -438,6 +410,7 @@ jobs:
         uses: ./.github/actions/resolve-target-version
         with:
           rc_version: ${{ inputs.version }}
+          lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
         uses: actions/cache@v4

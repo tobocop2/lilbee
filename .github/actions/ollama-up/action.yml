@@ -1,10 +1,5 @@
 name: Bring up an Ollama daemon and pull a tiny model
-description: |
-  Install ``ollama``, start the daemon on 127.0.0.1:11434, wait until
-  /api/tags is reachable, pull the requested model, and export the
-  LILBEE_QA_OLLAMA_HOST/PORT/MODEL env vars used by
-  tools/qa/test_e2e_litellm_ollama.py. Linux-only (binary is .deb-style);
-  callers that target macOS/Windows must skip this step.
+description: "Install ollama, start daemon on 127.0.0.1:11434, pull the model, export LILBEE_QA_OLLAMA_* env vars (Linux-only)."
 
 inputs:
   model:

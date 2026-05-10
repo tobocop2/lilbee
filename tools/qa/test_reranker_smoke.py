@@ -26,7 +26,9 @@ import httpx
 import pytest
 
 from conftest import (
+    HTTP_SLOW_TIMEOUT,
     MODEL_PULL_TIMEOUT,
+    STATUS_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
     ModelTask,
@@ -131,14 +133,14 @@ def test_http_search_with_reranker_set_returns_results(
         put = httpx.put(
             f"{base_url}/api/models/reranker",
             json={"model": reranker_name},
-            timeout=30.0,
+            timeout=HTTP_SLOW_TIMEOUT,
         )
         assert put.status_code in (httpx.codes.OK, httpx.codes.ACCEPTED), put.text
 
         response = httpx.get(
             f"{base_url}/api/search",
             params={"q": "lithium battery", "top_k": 3},
-            timeout=60.0,
+            timeout=STATUS_TIMEOUT,
         )
         skip_if_search_unauthenticated(response)
         assert response.status_code == httpx.codes.OK, response.text

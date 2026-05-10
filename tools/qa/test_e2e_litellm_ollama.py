@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import socket
 import subprocess
 from pathlib import Path
@@ -24,6 +23,7 @@ import httpx
 import pytest
 
 from conftest import (
+    HTTP_FAST_TIMEOUT,
     OLLAMA_HOST_ENV_VAR,
     OLLAMA_MODEL_ENV_VAR,
     OLLAMA_PORT_ENV_VAR,
@@ -81,7 +81,7 @@ def ollama_chat_model(ollama_url: str) -> str:
     explicit = os.environ.get(OLLAMA_MODEL_ENV_VAR)
     if explicit:
         return explicit
-    response = httpx.get(f"{ollama_url}/api/tags", timeout=10.0)
+    response = httpx.get(f"{ollama_url}/api/tags", timeout=HTTP_FAST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
     models = payload.get("models", [])
@@ -234,9 +234,6 @@ def test_ask_via_ollama_backend_completes(
     that the provider stack rendered tokens and exited cleanly.
     """
     _skip_without_litellm(lane, lilbee_data)
-
-    if not shutil.which(lane.lilbee_bin):
-        pytest.skip(f"lilbee binary not found at {lane.lilbee_bin}")
 
     result = run_lilbee_with_env(
         lane,

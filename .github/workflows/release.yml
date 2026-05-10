@@ -100,8 +100,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Compute version
-        # NUITKA_VERSION strips PEP 440 modifiers (b, rc, .dev) to a plain
-        # int-tuple Nuitka --product-version accepts (0.6.66.456 vs 0.6.66b456).
+        # NUITKA_VERSION: int-tuple form Nuitka --product-version accepts.
         shell: bash
         run: |
           VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
@@ -109,9 +108,7 @@ jobs:
           echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
 
-      # manylinux_2_34 container (AlmaLinux 9, glibc 2.34) is dnf-based;
-      # apt-based install_gpu_toolkit.sh skips it and we install the Vulkan
-      # SDK from LunarG instead.
+      # manylinux_2_34 (AlmaLinux 9) is dnf-based; install Vulkan SDK from LunarG.
       - name: Install Vulkan SDK (manylinux container)
         if: matrix.container != ''
         shell: bash
@@ -129,8 +126,7 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "/opt/vulkan/x86_64/bin" >> "$GITHUB_PATH"
 
-      # GPU build SDK on macOS / Windows runners. Linux is handled by the
-      # LunarG step above. Compile flags live in tools/wheel-build/cmake_args.sh.
+      # GPU build SDK on macOS/Windows; Linux uses the LunarG step above.
       - name: Install GPU build toolkit
         if: matrix.container == '' && matrix.backend != 'metal'
         shell: bash
@@ -154,17 +150,10 @@ jobs:
           max-size: '2G'
 
       - name: Install dependencies
-        # `pip` is added explicitly: uv-managed Python ships without it,
-        # but build_llama_cpp.sh shells out to `pip wheel` to build
-        # llama-cpp-python from source.
+        # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
-      # Build llama-cpp-python from source via the same script the wheel
-      # job uses. uv pip install --reinstall hit uv's package cache by
-      # version key (0.3.20) and reused a previously-built (AVX2-tuned)
-      # wheel regardless of CMAKE_ARGS, so the exe shipped with whatever
-      # the first cached build had baked in. Going through pip wheel +
-      # local-wheel install bypasses uv's cache entirely.
+      # uv's package cache reuses by version key, so build via pip wheel + local-wheel install bypasses it.
       - name: Build llama-cpp-python from source (GPU + AVX baseline)
         shell: bash
         env:
@@ -181,10 +170,7 @@ jobs:
 
       - name: Verify extras installed in build venv
         shell: bash
-        # --no-sync is load-bearing: a plain `uv run` re-syncs the venv
-        # against the lockfile, which reinstalls python-multipart after
-        # the explicit uninstall in "Install dependencies" and reproduces
-        # the multipart-shim shadowing failure at frozen-binary startup.
+        # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
       - name: Build executable
@@ -195,23 +181,13 @@ jobs:
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
-        # Prove the frozen binary actually works, not just that it starts.
-        # --version must match pyproject.toml; --help must succeed;
-        # the server must come up and /api/health must report the same
-        # version. This catches PyInstaller bundling regressions (missing
-        # data files like featured_models.toml, shadowed modules like
-        # python-multipart) that a bare --version would miss.
+        # End-to-end: --version, --help, server boot, /api/health version match, self-check inference, extras-import.
         run: |
           set -euxo pipefail
           EXE="./dist/${{ matrix.asset_name }}"
           EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
-          # --version matches pyproject.toml. Capture stderr too: a flood
-          # of "No such option: -B" means the frozen binary is looping on
-          # multiprocessing.resource_tracker spawn (sys.executable re-enters
-          # typer). stdout can still carry the right version while the
-          # process is actually broken, so stdout-only checks give false
-          # green. Same for --help.
+          # Capture stderr: stdout-only checks miss the multiprocessing spawn loop ("No such option: -B").
           STDERR=$(mktemp)
           ACTUAL=$("$EXE" --version 2>"$STDERR")
           echo "Expected: lilbee ${EXPECTED}"
@@ -270,14 +246,7 @@ jobs:
             exit 1
           fi
 
-          # END-TO-END INFERENCE: the self-check command downloads SmolLM2
-          # 135M (~90MB) and runs a tiny completion through the vendored
-          # llama.cpp bundled in the exe. This catches the missing-shared-
-          # library class of failures ("Shared library with base name 'llama'
-          # not found") that the previous smoke couldn't see because it
-          # never loaded a model. Passing proves llama_cpp + ggml .so/.dylib/
-          # .dll got bundled into the frozen binary AND that inference runs
-          # on this OS.
+          # End-to-end inference: self-check loads a tiny model through bundled llama.cpp and runs a completion.
           SELF_CHECK_LOG=$(mktemp)
           SELF_CHECK_RC=0
           "$EXE" --json self-check > "$SELF_CHECK_LOG" 2>&1 || SELF_CHECK_RC=$?
@@ -289,12 +258,7 @@ jobs:
           fi
           uv run --no-sync python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
 
-          # Confirm the optional extras were bundled. Their runtime guards
-          # keep them off the cold-start import path, so self-check above
-          # wouldn't notice if Nuitka dropped them. Replaces the byte-grep
-          # over the binary that worked under PyInstaller: Nuitka compiles
-          # to C and the literal package-name strings may not appear in the
-          # binary even when the modules are correctly bundled.
+          # Confirm optional extras were bundled (runtime guards hide them from the cold-start import path).
           EXTRAS_LOG=$(mktemp)
           EXTRAS_RC=0
           "$EXE" --json self-check-extras > "$EXTRAS_LOG" 2>&1 || EXTRAS_RC=$?
@@ -316,7 +280,7 @@ jobs:
           files: dist/${{ matrix.asset_name }}
 
       - name: Upload artifact (no-publish lane)
-        # Fires on workflow_dispatch (existing dry-run) and on workflow_call
+        # Fires on workflow_dispatch dry-run and on workflow_call
         # with publish=false (release-candidate.yml's build phase).
         if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_call' && !inputs.publish)
         uses: actions/upload-artifact@v7

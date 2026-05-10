@@ -27,9 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import SYNC_TIMEOUT, Lane, run_lilbee_with_env, seed_fixture_corpus
+from conftest import SYNC_TIMEOUT, WIKI_FAST_TIMEOUT, Lane, run_lilbee_with_env, seed_fixture_corpus
 
-_BUILD_DRY_RUN_TIMEOUT = 240.0
 _BUILD_FULL_TIMEOUT = 720.0
 
 
@@ -60,7 +59,7 @@ def test_wiki_build_dry_run_extracts_entities(
         lane,
         ["--json", "wiki", "build", "--dry-run"],
         env=env,
-        timeout=_BUILD_DRY_RUN_TIMEOUT,
+        timeout=WIKI_FAST_TIMEOUT,
     )
     assert result.returncode == 0, (
         f"wiki build --dry-run failed: rc={result.returncode}\n"
@@ -158,7 +157,7 @@ def test_wiki_synthesize_runs_clean(
     assert sync.returncode == 0, sync.stderr
 
     result = run_lilbee_with_env(
-        lane, ["--json", "wiki", "synthesize"], env=env, timeout=_BUILD_DRY_RUN_TIMEOUT
+        lane, ["--json", "wiki", "synthesize"], env=env, timeout=WIKI_FAST_TIMEOUT
     )
     assert result.returncode == 0, (
         f"wiki synthesize failed: rc={result.returncode}\n"

@@ -1,8 +1,5 @@
 name: Attach binaries to GH pre-release
-description: |
-  Download lilbee-* binary artifacts from the current run and attach them
-  to a GitHub pre-release at the given tag, with auto-generated release
-  notes. Caller's job needs `permissions.contents: write`.
+description: "Attach lilbee-* binary artifacts from this run to a pre-release at the given tag (caller needs contents:write)."
 
 inputs:
   tag:

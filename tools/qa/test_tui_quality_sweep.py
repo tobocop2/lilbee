@@ -21,11 +21,7 @@ _TUI_REDRAW_POLL = 0.25
 
 @pytest.mark.tui
 def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> None:
-    """Chat screen renders the chat + embed picker buttons and the
-    Search/Chat mode toggle. The search-mode label is the load-bearing
-    affordance: a missing toggle should fail the assertion, which the
-    previous "chat or chat" OR couldn't detect.
-    """
+    """Chat screen renders the chat + embed picker buttons and the Search/Chat mode toggle."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     visible = tui.text().lower()
     assert "chat" in visible
@@ -35,19 +31,20 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
 
 @pytest.mark.tui
 def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
-    """F3 flips the Search/Chat toggle and updates the bar label."""
+    """F3 flips the Search/Chat toggle: the visible bar must change."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     before = tui.text().lower()
     tui.send("\x1b[13~")  # F3 escape sequence
-    try:
-        tui.wait_for("mode:", timeout=TUI_SCREEN_TIMEOUT)
-    except AssertionError:
-        # Fall back to checking the bar label changed (toast is transient).
-        tui.send("")
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
+    while time.monotonic() < deadline:
         after = tui.text().lower()
-        assert after != before, (
-            f"F3 produced no visible change in the model bar. before:\n{before}\nafter:\n{after}"
-        )
+        if after != before:
+            return
+        time.sleep(_TUI_REDRAW_POLL)
+    final = tui.text().lower()
+    raise AssertionError(
+        f"F3 produced no visible change in the model bar. before:\n{before}\nafter:\n{final}"
+    )
 
 
 @pytest.mark.tui

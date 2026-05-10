@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 import pytest
@@ -36,10 +36,8 @@ from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 _DEFAULT_CHAT_MODEL = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 _DEFAULT_RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF"
-# Public so xfail decorators that read the lane name at module-import time
-# (before any fixture runs) can compare against the same constant the
-# `lane` fixture uses. See `current_lane_name()` for the helper that
-# returns the resolved LaneName for use in those decorators.
+# Public for module-import-time xfail decorators (use current_lane_name()).
+# Mirrored as a string literal in tools/qa/scripts/sitecustomize_loopback.py.
 LANE_ENV_VAR = "LILBEE_QA_LANE"
 
 _BIN_ENV_VAR = "LILBEE_QA_BIN"
@@ -55,9 +53,10 @@ MODEL_PULL_TIMEOUT = 240.0
 def worker_port_offset() -> int:
     """Translate PYTEST_XDIST_WORKER (gw0/gw1/.../master) into a port offset."""
     raw = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    if raw == "master" or not raw.startswith("gw"):
+    if not raw.startswith("gw"):
         return 0
-    return int(raw.removeprefix("gw"))
+    suffix = raw.removeprefix("gw")
+    return int(suffix) if suffix.isdigit() else 0
 
 
 def lilbee_env(
@@ -96,6 +95,11 @@ SERVER_BOOT_TIMEOUT_WITH_MODELS = 180.0
 HTTP_FAST_TIMEOUT = 15.0
 HTTP_SLOW_TIMEOUT = 30.0
 CLI_FAST_TIMEOUT = 60.0
+# MCP tool calls (call_tool, startup) can take longer than HTTP probes
+# because the MCP server cold-starts a fresh subprocess for every test.
+MCP_CALL_TIMEOUT = 60.0
+# Wiki build/synthesize/dry-run all share the same per-step CLI budget.
+WIKI_FAST_TIMEOUT = 240.0
 # Token / extras probes can run cold-start on Windows binary; bump
 # accordingly so a slow but-not-hung process doesn't trip pytest-timeout.
 TOKEN_FETCH_TIMEOUT = 90.0
@@ -106,13 +110,7 @@ MODEL_LIST_TIMEOUT = 180.0
 
 
 class LaneName(StrEnum):
-    """The artifact under test for this run.
-
-    ``L1_SOURCE`` is the local-dev default (whatever ``lilbee`` is on PATH).
-    ``L1_PYPI`` is the CI lane that installs from PyPI / a sibling-run wheel
-    artifact. ``L2_BINARY`` is the CI lane that runs the released onefile
-    binary downloaded from a GH release / sibling-run binary artifact.
-    """
+    """The artifact under test for this run."""
 
     L1_SOURCE = "l1-source"
     L1_PYPI = "l1-pypi"
@@ -120,12 +118,7 @@ class LaneName(StrEnum):
 
 
 class ModelTask(StrEnum):
-    """Task kinds reported by ``lilbee --json model list`` for each row.
-
-    Mirrors ``src/lilbee/catalog/types.ModelTask``. Keep the variant set
-    aligned with that source-of-truth so a row whose ``task`` field is
-    ``"vision"`` doesn't fall outside any harness enum.
-    """
+    """Mirrors src/lilbee/catalog/types.ModelTask."""
 
     CHAT = "chat"
     EMBEDDING = "embedding"
@@ -133,13 +126,15 @@ class ModelTask(StrEnum):
     VISION = "vision"
 
 
+class PulledModels(NamedTuple):
+    """Registered names for the session-pre-pulled chat + embedding models."""
+
+    chat: str
+    embedding: str
+
+
 def current_lane_name() -> LaneName | None:
-    """Resolve the active lane from ``LILBEE_QA_LANE`` for use at module
-    import time (before fixtures run), e.g. inside ``@pytest.mark.xfail``
-    decorators. Returns ``None`` if the env var is unset or holds a value
-    that isn't a known lane (the ``lane`` fixture fails fast on that case;
-    here we just decline to xfail rather than raise during collection).
-    """
+    """Resolve LILBEE_QA_LANE for use in module-scope xfail decorators; None if unset/unknown."""
     raw = os.environ.get(LANE_ENV_VAR)
     if raw is None:
         return None
@@ -196,13 +191,7 @@ def qa_embedding_model() -> str:
 
 @pytest.fixture(scope="session")
 def qa_reranker_model() -> str:
-    """HF repo for the reranker model.
-
-    Not pre-pulled by ``models_pulled``: the reranker is heavier than the
-    chat / embed models and only the rerank-lane tests need it, so the
-    pull is per-test. Tests that put the reranker into
-    ``lilbee_env_with_models`` must pull it explicitly first.
-    """
+    """HF repo for the reranker model (pulled per-test, not by models_pulled)."""
     return _DEFAULT_RERANKER_MODEL
 
 
@@ -302,45 +291,35 @@ def models_pulled(
     qa_models_dir: Path,
     qa_chat_model: str,
     qa_embedding_model: str,
-) -> dict[str, str]:
-    """Pull chat + embedding models once per session and return their
-    registered names (full `<owner>/<repo>/<filename>.gguf` keys).
-
-    Hard-fails on pull failure. If `lilbee model pull` doesn't work for the
-    artifact under test, that IS the regression this matrix is designed to
-    catch. Masquerading it as a skip lets a fundamental install bug ride
-    green CI.
-    """
+) -> PulledModels:
+    """Pull chat + embedding once and return their registered names; hard-fails on pull failure."""
     env = lilbee_env(qa_models_dir / "data", models_dir=qa_models_dir)
     for ref in (qa_chat_model, qa_embedding_model):
         try:
             _pull_model(lane.lilbee_bin, ref, env)
         except (RetryError, RuntimeError) as exc:
             pytest.fail(f"could not pull {ref} after retries: {exc}")
-    chat_name = resolve_registered_name(lane.lilbee_bin, env, ModelTask.CHAT, qa_chat_model)
-    embed_name = resolve_registered_name(
-        lane.lilbee_bin, env, ModelTask.EMBEDDING, qa_embedding_model
+    return PulledModels(
+        chat=resolve_registered_name(lane.lilbee_bin, env, ModelTask.CHAT, qa_chat_model),
+        embedding=resolve_registered_name(
+            lane.lilbee_bin, env, ModelTask.EMBEDDING, qa_embedding_model
+        ),
     )
-    return {"chat": chat_name, "embedding": embed_name}
 
 
 @pytest.fixture
 def lilbee_env_with_models(
     lilbee_data: Path,
     qa_models_dir: Path,
-    models_pulled: dict[str, str],
+    models_pulled: PulledModels,
 ) -> dict[str, str]:
-    """Env pointing lilbee at the QA models cache and the resolved role models.
-
-    Uses the registered names from `models_pulled` (full `<owner>/<repo>/<filename>.gguf`
-    keys) so role assignment resolves regardless of build-specific friendly aliases.
-    """
+    """Env pointing lilbee at the QA models cache with chat/embedding role keys assigned."""
     return lilbee_env(
         lilbee_data,
         models_dir=qa_models_dir,
         extra={
-            "LILBEE_CHAT_MODEL": models_pulled["chat"],
-            "LILBEE_EMBEDDING_MODEL": models_pulled["embedding"],
+            "LILBEE_CHAT_MODEL": models_pulled.chat,
+            "LILBEE_EMBEDDING_MODEL": models_pulled.embedding,
             "LILBEE_QUERY_EXPANSION_COUNT": "0",  # avoid loading chat model on search
         },
     )
@@ -551,7 +530,15 @@ def serve_lilbee_with(
         text=True,
     )
     try:
-        wait_for_server(f"{base_url}/api/health", timeout=boot_timeout)
+        try:
+            wait_for_server(f"{base_url}/api/health", timeout=boot_timeout)
+        except TimeoutError as exc:
+            proc.terminate()
+            stdout, stderr = proc.communicate(timeout=_SERVER_TEARDOWN_GRACE)
+            raise TimeoutError(
+                f"{exc}\n--- lilbee serve stdout tail ---\n{stdout[-1500:]}\n"
+                f"--- lilbee serve stderr tail ---\n{stderr[-1500:]}"
+            ) from exc
         yield base_url
     finally:
         with contextlib.suppress(Exception):

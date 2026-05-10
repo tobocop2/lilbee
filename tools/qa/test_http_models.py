@@ -5,10 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from conftest import HTTP_FAST_TIMEOUT, HTTP_SLOW_TIMEOUT
+
 
 @pytest.mark.http
 def test_models_installed_returns_200(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/models/installed", timeout=30.0)
+    response = httpx.get(f"{server_url}/api/models/installed", timeout=HTTP_SLOW_TIMEOUT)
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     # Response shape varies (sometimes a list, sometimes {"models": [...]}).
@@ -18,7 +20,7 @@ def test_models_installed_returns_200(server_url: str) -> None:
 @pytest.mark.http
 def test_models_catalog_returns_200(server_url: str) -> None:
     """Featured catalog should always be available; doesn't depend on installed models."""
-    response = httpx.get(f"{server_url}/api/models/catalog", timeout=30.0)
+    response = httpx.get(f"{server_url}/api/models/catalog", timeout=HTTP_SLOW_TIMEOUT)
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     assert isinstance(payload, dict | list)
@@ -39,7 +41,7 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
     response = httpx.get(
         f"{server_url}/api/models/catalog",
         params={"task": "chat", "limit": 5},
-        timeout=30.0,
+        timeout=HTTP_SLOW_TIMEOUT,
     )
     assert response.status_code == httpx.codes.OK, response.text
     payload = response.json()
@@ -75,6 +77,6 @@ def test_unknown_role_assignment_does_not_5xx(server_url: str) -> None:
     response = httpx.put(
         f"{server_url}/api/models/not-a-real-role",
         json={"model": "anything"},
-        timeout=15.0,
+        timeout=HTTP_FAST_TIMEOUT,
     )
     assert httpx.codes.BAD_REQUEST <= response.status_code < httpx.codes.INTERNAL_SERVER_ERROR

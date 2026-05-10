@@ -5,11 +5,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from conftest import HTTP_FAST_TIMEOUT
+
 
 @pytest.mark.http
 def test_documents_returns_empty_list(server_url: str) -> None:
     """An empty data dir should report zero documents, not error."""
-    response = httpx.get(f"{server_url}/api/documents", timeout=15.0)
+    response = httpx.get(f"{server_url}/api/documents", timeout=HTTP_FAST_TIMEOUT)
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     # Could be a bare list or {"documents": [...]}, depending on the version.
@@ -22,11 +24,10 @@ def test_documents_returns_empty_list(server_url: str) -> None:
 
 
 @pytest.mark.http
-def test_unknown_document_returns_404(server_url: str) -> None:
+def test_unknown_document_delete_does_not_5xx(server_url: str) -> None:
+    """Some versions 404, others accept the delete with deleted=0; both are fine, 5xx is not."""
     response = httpx.delete(
-        f"{server_url}/api/documents/this-source-does-not-exist.md", timeout=15.0
+        f"{server_url}/api/documents/this-source-does-not-exist.md", timeout=HTTP_FAST_TIMEOUT
     )
     assert response.status_code in (httpx.codes.NOT_FOUND, httpx.codes.OK)
-    # Some versions accept the delete and return ok with deleted=0; either
-    # is fine as long as the surface doesn't 500.
     assert response.status_code < httpx.codes.INTERNAL_SERVER_ERROR

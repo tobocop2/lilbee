@@ -28,9 +28,7 @@ permissions:
   contents: write
 
 env:
-  # 0.3.20 brings the Gemma 4 chat-template fix not in 0.3.19. abetlen
-  # has not published 0.3.20 prebuilts on any of their indexes, so every
-  # wheel builds from source on our runners.
+  # 0.3.20: Gemma 4 chat-template fix; no upstream prebuilts so we build from source.
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
@@ -43,17 +41,7 @@ jobs:
     permissions:
       contents: read
 
-  # Default-backend wheels for PyPI:
-  #   * Linux x86_64       → vulkan
-  #   * macOS arm64        → metal
-  #   * macOS x86_64       → cpu (cross-compiled from arm64 host)
-  #   * Windows x86_64     → vulkan
-  # `pip install lilbee` (no flags) gets these. The build runner can run
-  # the full self-check inference for native targets because Vulkan/Metal
-  # fall back to CPU when no GPU is present. The Intel Mac wheel is
-  # cross-compiled from the free arm64 runner (no free Intel runner since
-  # macos-13 was retired), so it gets a structural smoke only — verify-pypi
-  # exercises the real wheel under Rosetta.
+  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal, macOS x86_64=cpu cross-compiled).
   build-default-wheels:
     needs: [ci]
     if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
@@ -77,7 +65,6 @@ jobs:
 
     env:
       BACKEND: ${{ matrix.backend }}
-      TARGET_ARCH: ${{ matrix.target-arch }}
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -122,18 +109,8 @@ jobs:
           --wheel-platform ${{ matrix.wheel-plat }}
 
       - name: Smoke test (native)
-        if: matrix.target-arch != 'x86_64' || runner.arch == 'X64'
         shell: bash
         run: bash tools/wheel-build/smoke_wheel_full.sh 'dist/*.whl'
-
-      # Cross-compiled wheel (e.g. macOS arm64 host -> x86_64 wheel) cannot
-      # be imported on the build host because the bundled libllama.dylib is
-      # foreign-arch. Verify wheel structure + libllama arch instead. The
-      # x86_64 verify-pypi lane (Rosetta-driven) does the real import test.
-      - name: Smoke test (cross-compile, structural)
-        if: matrix.target-arch == 'x86_64' && runner.arch == 'ARM64'
-        shell: bash
-        run: python tools/wheel-build/smoke_wheel_structural.py --expect-arch x86_64
 
       - name: Upload default-backend wheel
         uses: actions/upload-artifact@v7
@@ -141,10 +118,7 @@ jobs:
           name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Extra-backend wheels: per-CUDA-version + pure CPU. Distributed via
-  # GitHub Pages PEP 503 simple repos; users opt in with --extra-index-url.
-  # These lanes can fail individually without blocking the PyPI publish
-  # of the default-backend wheels.
+  # Extra-backend wheels (CUDA + pure CPU); distributed via PEP 503 index, soft-fail.
   build-extra-wheels:
     needs: [ci]
     if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
@@ -152,7 +126,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux pure CPU (no Vulkan dep — for headless containers)
+          # Linux pure CPU (no Vulkan dep, for headless containers)
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
           - {os: ubuntu-latest, backend: cpu, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
@@ -161,7 +135,7 @@ jobs:
           - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.11", target-arch: x86_64}
           - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.12", target-arch: x86_64}
           - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.13", target-arch: x86_64}
-          # Linux CUDA — toolkit installed via Jimver/cuda-toolkit action,
+          # Linux CUDA. Toolkit installed via Jimver/cuda-toolkit action,
           # which handles network install of older CUDA versions that
           # NVIDIA's ubuntu2404 apt repo doesn't carry.
           - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0"}
@@ -177,11 +151,7 @@ jobs:
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.11"}
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.12"}
           - {os: windows-latest, backend: cpu, wheel-plat: win_amd64, python-version: "3.13"}
-          # Windows CUDA — same Jimver action.
-          # Windows cu121 dropped: MSVC 14.44 on windows-2022 emits
-          # static_assert "Unexpected compiler version, expected CUDA 12.4
-          # or newer." Older CUDA versions are incompatible with the
-          # Visual Studio shipped on the runner; cu124+ are fine.
+          # Windows CUDA via Jimver; cu121 dropped (MSVC 14.44 on windows-2022 requires CUDA 12.4+).
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.11", cuda: "12.4.0"}
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.12", cuda: "12.4.0"}
           - {os: windows-2022, backend: cu124, wheel-plat: win_amd64, python-version: "3.13", cuda: "12.4.0"}
@@ -240,15 +210,7 @@ jobs:
           --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
 
-      # CUDA-built wheels can't be imported on a CPU-only CI runner —
-      # the build host has no NVIDIA driver, so libcuda.so / nvcuda.dll
-      # is missing and `import llama_cpp` raises RuntimeError. CPU and
-      # Vulkan wheels are tested in the build-default-wheels job's full
-      # self-check; non-default extras get a *structural* smoke instead:
-      # unzip the wheel, confirm the vendored llama_cpp/lib/ contains a
-      # libllama.* shim of plausible size. This is the same gate
-      # abetlen, torch, etc. apply for GPU wheels — don't try to import
-      # a wheel whose runtime deps aren't present.
+      # CUDA wheels skip import: build host has no NVIDIA driver. Verify shape only.
       - name: Smoke test (structural, no import)
         shell: bash
         run: |

@@ -16,7 +16,7 @@ from drivers.mcp import MCPStdioClient
 
 from conftest import (
     ASK_TIMEOUT,
-    STATUS_TIMEOUT,
+    MCP_CALL_TIMEOUT,
     SYNC_TIMEOUT,
     Lane,
     extract_search_results,
@@ -104,13 +104,13 @@ def test_mcp_search_routes_battery_to_ev_notes(
     client = MCPStdioClient(
         [lane.lilbee_bin, "mcp"],
         env=lilbee_env_with_models,
-        startup_timeout=STATUS_TIMEOUT,
+        startup_timeout=MCP_CALL_TIMEOUT,
     )
     try:
         result = client.call_tool(
             "search",
             {"query": "lithium-ion battery technology", "top_k": 3},
-            timeout=STATUS_TIMEOUT,
+            timeout=MCP_CALL_TIMEOUT,
         )
         assert isinstance(result, dict), result
         # MCP returns content as text blocks; extract sources from the JSON-like text

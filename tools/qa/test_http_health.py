@@ -5,10 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from conftest import HTTP_FAST_TIMEOUT
+
 
 @pytest.mark.http
 def test_health_returns_ok(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/health", timeout=10.0)
+    response = httpx.get(f"{server_url}/api/health", timeout=HTTP_FAST_TIMEOUT)
     assert response.status_code == httpx.codes.OK
     payload = response.json()
     assert payload.get("status") == "ok"
@@ -16,7 +18,7 @@ def test_health_returns_ok(server_url: str) -> None:
 
 @pytest.mark.http
 def test_health_reports_version(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/health", timeout=10.0)
+    response = httpx.get(f"{server_url}/api/health", timeout=HTTP_FAST_TIMEOUT)
     payload = response.json()
     version = payload.get("version")
     assert isinstance(version, str)
@@ -25,5 +27,5 @@ def test_health_reports_version(server_url: str) -> None:
 
 @pytest.mark.http
 def test_unknown_route_returns_404(server_url: str) -> None:
-    response = httpx.get(f"{server_url}/api/this-route-does-not-exist", timeout=10.0)
+    response = httpx.get(f"{server_url}/api/this-route-does-not-exist", timeout=HTTP_FAST_TIMEOUT)
     assert response.status_code == httpx.codes.NOT_FOUND

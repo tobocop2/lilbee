@@ -26,6 +26,7 @@ from drivers.tui import TuiSession
 from httpx_sse import EventSource
 
 from conftest import (
+    HTTP_FAST_TIMEOUT,
     SERVER_BOOT_TIMEOUT_WITH_MODELS,
     SYNC_TIMEOUT,
     TOKEN_FETCH_TIMEOUT,
@@ -136,16 +137,11 @@ def test_ask_stream_completes_with_token_events(
 
 @pytest.mark.tui
 @pytest.mark.writer
-# Test budget: corpus seed (~30s on slow runners) + sync (up to 240s) + TUI
-# boot (60s) + 360s response polling = 690s worst case; 720s gives 30s margin
-# so the AssertionError fires before pytest-timeout, letting xfail catch it.
+# 720s = seed + sync + boot + 360s polling + 30s margin so xfail beats pytest-timeout.
 @pytest.mark.timeout(720)
 @pytest.mark.xfail(
     sys.platform in {"darwin", "win32"},
-    reason=(
-        "bb-9c67: TUI chat softlocks on 'thinking...' on macOS/Windows; "
-        "Linux pypi/binary lanes pass"
-    ),
+    reason="bb-9c67: TUI chat softlocks on 'thinking...' on macOS/Windows.",
     strict=False,
 )
 def test_tui_chat_advances_past_thinking_spinner(
@@ -229,7 +225,7 @@ def test_chat_stream_rejects_concurrent_request_with_429(
         held.raise_for_status()
         # Pull a single chunk so the server-side handler is past lock acquisition.
         next(iter(held.iter_lines()), None)
-        with httpx.Client(timeout=15.0, headers=headers) as competitor:
+        with httpx.Client(timeout=HTTP_FAST_TIMEOUT, headers=headers) as competitor:
             second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
         assert second.status_code == httpx.codes.TOO_MANY_REQUESTS, second.text
         assert second.headers.get("Retry-After") == "1", dict(second.headers)

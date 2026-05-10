@@ -1,11 +1,5 @@
 name: Publish to PyPI and fan out downstream packaging
-description: |
-  Download wheel + sdist artifacts from the current run, publish them to
-  PyPI via Trusted Publishing, then dispatch publish-docker.yml and
-  publish-packages.yml against the same tag. Caller is responsible for
-  the OIDC binding (`environment: pypi` on the calling job) and the
-  permissions block (`id-token: write`, `actions: write`); the OIDC
-  publish step fails-loud if either is missing.
+description: "Publish wheels + sdist to PyPI (Trusted Publishing) then trigger publish-docker.yml + publish-packages.yml; caller needs environment:pypi + id-token:write + actions:write."
 
 inputs:
   tag:
@@ -37,11 +31,7 @@ runs:
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
 
-    # Dispatch downstream packaging directly. The workflow_run trigger on
-    # publish-docker.yml + publish-packages.yml is gated to event=='release',
-    # so workflow_call invocations of build-wheels.yml / release.yml above
-    # do not auto-fire them; this step is the equivalent kick-off after PyPI
-    # is live.
+    # publish-docker.yml + publish-packages.yml gate on event=='release'; this fires them after PyPI is live.
     - name: Trigger Publish Docker Image
       shell: bash
       env:
