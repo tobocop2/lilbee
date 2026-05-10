@@ -120,10 +120,14 @@ jobs:
           name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Extra-backend wheels (CUDA + pure CPU); distributed via PEP 503 index, soft-fail.
+  # Extra-backend wheels (CUDA + pure CPU); only built on actual publish lanes
+  # so RC dry-runs / tag-push QA don't sit behind 90-min Windows CUDA builds.
   build-extra-wheels:
     needs: [ci]
-    if: always() && needs.ci.result != 'failure'
+    if: |
+      always()
+      && needs.ci.result != 'failure'
+      && (github.event_name == 'release' || inputs.publish)
     strategy:
       fail-fast: false
       matrix:
