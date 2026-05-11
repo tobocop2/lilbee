@@ -1397,3 +1397,20 @@ class TestBuildCfgFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             _, error = _build_cfg()
         assert error is None
+
+    def test_empty_string_persisted_nullable_uses_default(self, tmp_path):
+        """Legacy bug: set_setting wrote None as ""; pydantic can't coerce.
+
+        Empty-string TOML values must be treated as missing so a stale
+        config from before that fix doesn't crash the whole Config load.
+        """
+        from lilbee.core.config.model import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('max_tokens = ""\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is None
+        assert built_cfg.max_tokens == 4096

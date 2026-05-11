@@ -640,20 +640,27 @@ class TestThemes:
             assert app.theme == target
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_set_setting_stringifies_none_for_toml(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
-        """Nullable settings must serialize as empty string, not None, for TOML."""
+    async def test_set_setting_deletes_key_for_none(self, mock_catalog: mock.MagicMock) -> None:
+        """Nullable settings cleared to None drop the TOML key.
+
+        Pydantic-settings can't coerce a persisted "" back into int|None,
+        so persisting None as missing avoids a stale-config crash on the
+        next startup.
+        """
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+            with (
+                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set,
+                mock.patch("lilbee.cli.tui.app.settings.delete_value") as mock_delete,
+            ):
                 app.set_setting("seed", None)
-            mock_set.assert_called_once()
-            assert mock_set.call_args.args[2] == ""
+            mock_set.assert_not_called()
+            mock_delete.assert_called_once()
+            assert mock_delete.call_args.args[1] == "seed"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_setting_stringifies_list_for_toml(
