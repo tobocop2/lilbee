@@ -70,8 +70,12 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=8, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.65, ge=0.0, writable=True)
-    # Minimum RRF relevance score for hybrid search results (0.0 = no filtering).
-    min_relevance_score: float = ConfigField(default=0.05, ge=0.0, writable=True)
+    # Floor for hybrid-search relevance scores (0.0 = no filtering). lilbee
+    # surfaces LanceDB's raw RRF sum, not a normalized score: with K=60 a
+    # chunk ranked first in both the vector and FTS lists tops out near
+    # 1/61 + 1/61 ~= 0.033, so any positive floor above that silently drops
+    # every result. Keep this at 0.0 unless the RRF scores are normalized first.
+    min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
