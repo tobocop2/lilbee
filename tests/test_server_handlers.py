@@ -2230,6 +2230,164 @@ class TestRunLlmStreamCancel:
         assert items[-1] is None
 
 
+class TestReasoningCapHandling:
+    """SSE handler forwards events from the shared cap-aware orchestrator."""
+
+    def _drain(self, queue: asyncio.Queue[str | None]) -> list[str]:
+        items: list[str] = []
+        while not queue.empty():
+            value = queue.get_nowait()
+            if value is None:
+                break
+            items.append(value)
+        return items
+
+    def test_cap_fire_emits_notice_event(self):
+        """When the orchestrator yields a CapNotice, the handler turns it into an SSE event."""
+        import threading
+
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
+
+        notice_marker = CAP_NOTICE_TEMPLATE.format(chars=512).strip()
+
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 512
+
+            mock_provider = MagicMock()
+            long_reasoning = "<think>" + ("x " * 400) + "</think>not reached"
+            mock_provider.chat.side_effect = [iter([long_reasoning]), iter(["final ", "answer."])]
+
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            cancel = threading.Event()
+            error_holder: list[str] = []
+
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
+                mock_svc.return_value.provider = mock_provider
+                _rag_h._run_llm_stream(
+                    [{"role": "user", "content": "explain quantum tunneling"}],
+                    None,
+                    queue,
+                    cancel,
+                    error_holder,
+                )
+
+            events = self._drain(queue)
+            assert any(notice_marker in e for e in events)
+            assert any("final " in e for e in events)
+            assert any("answer." in e for e in events)
+            assert mock_provider.chat.call_count == 2
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+
+    def test_cap_does_not_fire_under_threshold(self):
+        """Short reasoning skips the re-issue path entirely."""
+        import threading
+
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
+
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 64_000
+
+            mock_provider = MagicMock()
+            mock_provider.chat.return_value = iter(["<think>brief</think>", "the ", "answer"])
+
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            cancel = threading.Event()
+            error_holder: list[str] = []
+
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
+                mock_svc.return_value.provider = mock_provider
+                _rag_h._run_llm_stream(
+                    [{"role": "user", "content": "hi"}],
+                    None,
+                    queue,
+                    cancel,
+                    error_holder,
+                )
+
+            assert mock_provider.chat.call_count == 1
+            events = self._drain(queue)
+            notice_marker = CAP_NOTICE_TEMPLATE.format(chars=64_000).strip()
+            assert not any(notice_marker in e for e in events)
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+
+    def test_cap_fire_with_cancel_skips_continuation(self):
+        """If the user cancels mid-stream, the continuation re-issue does not run."""
+        import threading
+
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 512
+
+            mock_provider = MagicMock()
+
+            def first_pass():
+                yield "<think>"
+                for _ in range(400):
+                    yield "x "
+                yield "</think>"
+
+            mock_provider.chat.return_value = first_pass()
+
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            cancel = threading.Event()
+            cancel.set()
+            error_holder: list[str] = []
+
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
+                mock_svc.return_value.provider = mock_provider
+                _rag_h._run_llm_stream(
+                    [{"role": "user", "content": "hi"}],
+                    None,
+                    queue,
+                    cancel,
+                    error_holder,
+                )
+
+            assert mock_provider.chat.call_count == 1
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+
+    def test_cancel_during_continuation_stops_emitting(self):
+        """Cancel set mid-second-wave breaks the continuation loop without crashing."""
+        import threading
+
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 512
+            cancel = threading.Event()
+            mock_provider = MagicMock()
+            long_reasoning = "<think>" + ("x " * 400) + "</think>"
+
+            def second_pass():
+                yield "first chunk "
+                cancel.set()
+                yield "second chunk should be ignored"
+
+            mock_provider.chat.side_effect = [iter([long_reasoning]), second_pass()]
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            error_holder: list[str] = []
+
+            with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
+                mock_svc.return_value.provider = mock_provider
+                _rag_h._run_llm_stream(
+                    [{"role": "user", "content": "long question"}],
+                    None,
+                    queue,
+                    cancel,
+                    error_holder,
+                )
+
+            events = self._drain(queue)
+            assert any("first chunk" in e for e in events)
+            assert not any("second chunk" in e for e in events)
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+
+
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
         """_parse_ocr_params coerces ocr_timeout to float."""
