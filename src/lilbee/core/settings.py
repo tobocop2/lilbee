@@ -100,6 +100,10 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, raw in persisted.items():
         if key not in overlayable:
             continue
+        # Legacy: set_setting used to persist None as "". Skip rather than
+        # warn so a stale config doesn't spam logs on every CLI invocation.
+        if raw == "":
+            continue
         try:
             setattr(cfg, key, raw)
         except (ValueError, TypeError) as exc:

@@ -514,7 +514,22 @@ class PoolRuntime:
         try:
             loop.run_forever()
         finally:
-            loop.close()
+            # Cancel and drain pending tasks while the loop is still alive.
+            # Otherwise an in-flight RoleAccessor.call awaiting an asyncio.Queue
+            # gets GC'd after loop.close() and its CancelledError cleanup tries
+            # to call_soon on a closed loop, spamming "Event loop is closed"
+            # tracebacks during Ctrl-C shutdown.
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                log.exception("Pool runtime loop drain failed; closing anyway")
+            finally:
+                loop.close()
 
     def run_sync(self, coro: Coroutine[Any, Any, _T], *, timeout: float | None = None) -> _T:
         """Submit *coro* to the background loop and block for the result.

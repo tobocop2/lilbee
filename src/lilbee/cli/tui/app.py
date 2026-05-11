@@ -294,13 +294,17 @@ class LilbeeApp(App[None]):
         setattr(cfg, key, value)
         normalized = getattr(cfg, key)
         # settings.set_value persists into TOML, which only accepts strings.
+        # Persisting None as "" used to break pydantic-settings load (no
+        # coercion from "" to int|None), so drop the key on None and let
+        # the field default apply on next startup.
         if normalized is None:
-            persisted: str = ""
-        elif isinstance(normalized, list):
-            persisted = "\n".join(str(x) for x in normalized)
+            settings.delete_value(cfg.data_root, key)
         else:
-            persisted = str(normalized)
-        settings.set_value(cfg.data_root, key, persisted)
+            if isinstance(normalized, list):
+                persisted = "\n".join(str(x) for x in normalized)
+            else:
+                persisted = str(normalized)
+            settings.set_value(cfg.data_root, key, persisted)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
             self.theme = normalized
             self._sync_theme_index_to_current()
