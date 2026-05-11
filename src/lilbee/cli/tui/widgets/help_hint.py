@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from textual import events
 from textual.content import Content
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
-
-if TYPE_CHECKING:
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
 _CSS_FILE = Path(__file__).parent / "help_hint.tcss"
 
@@ -36,7 +33,7 @@ class HelpHint(Static):
         # the /help slash command.
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        screen: ChatScreen = self.screen  # type: ignore[assignment]
+        screen = self.screen
         if not isinstance(screen, ChatScreen):
             return
         event.stop()

@@ -231,7 +231,7 @@ def test_reset_services_dependencies_load_eagerly():
     """
     import sys
 
-    import lilbee.app.services  # noqa: F401
+    from lilbee.app import services as _services  # noqa: F401
 
     assert "lilbee.providers.worker.pool" in sys.modules
     assert "concurrent.futures.thread" in sys.modules

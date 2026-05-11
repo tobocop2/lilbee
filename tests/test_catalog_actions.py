@@ -315,27 +315,8 @@ def test_stamp_fit_no_op_without_probe() -> None:
     assert rows[0].fit is None
 
 
-def test_action_select_tab_idempotent_when_already_active() -> None:
+async def test_action_select_tab_idempotent_when_already_active() -> None:
     """Re-activating the same tab is a no-op (no spurious TabActivated)."""
-
-    async def _run() -> None:
-        async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = pilot.app.query_one(CatalogScreen)
-            screen._activation_settled = True
-            tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            tabs.active = "rerank"
-            await pilot.pause()
-            screen.action_select_tab(4)  # Rerank again
-            await pilot.pause()
-            assert tabs.active == "rerank"
-
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(_run()) if False else None  # type: ignore[func-returns-value]
-
-
-async def test_action_select_tab_reactivation_idempotent() -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
@@ -734,16 +715,9 @@ async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:
         screen._loading_more = False
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        # Replace grid container query to return a single empty ModelGrid.
+        # Use a thin shim to redirect just the ModelGrid query to a single
+        # empty grid; everything else falls through to the real container.
         empty = ModelGrid()
-        original_query = screen._grid_container.query
-
-        def fake_query(*args: object, **kwargs: object) -> object:
-            if args and args[0] is ModelGrid:
-                return [empty]
-            return original_query(*args, **kwargs)
-
-        # Use a thin shim to redirect just the ModelGrid query.
         chat_container: VerticalScroll = screen._grid_container
 
         class _GridShim:

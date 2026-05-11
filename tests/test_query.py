@@ -2,8 +2,7 @@
 
 import pytest
 
-import lilbee.app.services as svc_mod
-from lilbee.app.services import get_services
+from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query import (
@@ -65,9 +64,9 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     services = make_mock_services()
-    svc_mod.set_services(services)
+    set_services(services)
     yield services
-    svc_mod.set_services(None)
+    set_services(None)
 
 
 def _make_result(
