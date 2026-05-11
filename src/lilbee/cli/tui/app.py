@@ -237,7 +237,13 @@ class LilbeeApp(App[None]):
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
     def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback and log the swap at WARNING."""
+        """Swap stale persisted refs to a working fallback, persist, and log once.
+
+        Persisting the swap via ``settings.set_value`` is what makes this a
+        one-time notice. The previous version only updated cfg in memory, so
+        the warning fired every restart for as long as the stale ref sat in
+        ``config.toml``.
+        """
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
@@ -251,6 +257,7 @@ class LilbeeApp(App[None]):
             if canon.status == ValidationResult.OK or canon.original == canon.effective:
                 continue
             setattr(cfg, field, canon.effective)
+            settings.set_value(cfg.data_root, field, canon.effective)
             log.warning(
                 msg.MODEL_FALLBACK_NOTICE.format(
                     label=label, original=canon.original, effective=canon.effective

@@ -125,6 +125,26 @@ async def _vision_ocr_fallback(
     return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
+def _run_tesseract_sync(path: Path) -> Any:
+    """Run kreuzberg Tesseract OCR with the worker's stderr redirected to /dev/null.
+
+    Tesseract writes "Line cannot be recognized!!", "Image too small to
+    scale!!", and "Detected N diacritics" directly to fd 2 from inside libc.
+    Without the redirect those lines flood the TUI log file (1 000+ entries
+    per scanned PDF) and can bleed into the TUI itself. We hold the
+    suppression for just the duration of the extraction call so other
+    threads' stderr writes still go through.
+    """
+    from kreuzberg import extract_file_sync
+
+    from lilbee.providers.llama_cpp.log_dispatch import stderr_suppressed
+
+    with stderr_suppressed():
+        return extract_file_sync(
+            str(path), config=extraction_config(ExtractMode.PAGINATED_OCR)
+        )
+
+
 async def _tesseract_ocr_fallback(
     path: Path,
     source_name: str,
@@ -138,13 +158,7 @@ async def _tesseract_ocr_fallback(
     unlimited. Failures (including timeout) log a warning and return an
     empty list so the caller can skip the file.
     """
-    from kreuzberg import extract_file_sync
-
-    coro = asyncio.to_thread(
-        extract_file_sync,
-        str(path),
-        config=extraction_config(ExtractMode.PAGINATED_OCR),
-    )
+    coro = asyncio.to_thread(_run_tesseract_sync, path)
     try:
         if cfg.tesseract_timeout > 0:
             result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)

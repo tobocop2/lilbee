@@ -44,6 +44,19 @@ _GGML_ERROR_SOFT_DEMOTE = (
     # 'n_ctx_seq (X) > n_ctx_train (Y)' -- our embed clamp prevents misuse.
     "n_ctx_seq",
     "tokenizer config may be incorrect",
+    # Reported at ERROR every model load on pre-M5/A19 macs (i.e. most macs);
+    # cosmetic.
+    "tensor API disabled for pre-M5",
+    # 'control-looking token: ... was not control-type'. Tokenizer-config
+    # quirk; llama.cpp auto-corrects.
+    "was not control-type",
+    # 'special_eog_ids contains "<|tool_response>", removing "</s>"'.
+    # Auto-correction of EOG list.
+    "removing '</s>' token from EOG list",
+    # Format-string bug in upstream tensor-name logging; harmless.
+    "cannot properly format tensor name",
+    # SWA full-size cache fallback for iSWA models; informational.
+    "using full-size SWA cache",
 )
 
 _STDERR_LOCK = threading.Lock()
