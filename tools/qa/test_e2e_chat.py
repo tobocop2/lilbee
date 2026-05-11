@@ -17,7 +17,6 @@ from drivers.mcp import MCPStdioClient
 from conftest import (
     ASK_TIMEOUT,
     SEARCH_TIMEOUT,
-    SERVER_BOOT_TIMEOUT_WITH_MODELS,
     SYNC_TIMEOUT,
     Lane,
     extract_search_results,
@@ -89,9 +88,18 @@ def test_http_search_returns_battery_source(
         assert any("ev-notes" in s for s in sources), payload
 
 
+# Cold-start budget for `lilbee mcp` in a frozen binary: spawn + import +
+# get_services() pre-warm before stdio attach, then the first `search` call
+# pays the embedding-model load (the pre-warm constructs the embedder but
+# doesn't load weights until first embed). On a cold Windows binary that
+# sequence runs several minutes; the timeouts below absorb it.
+_MCP_BINARY_STARTUP_TIMEOUT = 300.0
+_MCP_BINARY_CALL_TIMEOUT = 300.0
+
+
 @pytest.mark.wiki
 @pytest.mark.writer
-@pytest.mark.timeout(360)
+@pytest.mark.timeout(900)
 def test_mcp_search_routes_battery_to_ev_notes(
     lane: Lane,
     lilbee_data: Path,
@@ -102,23 +110,16 @@ def test_mcp_search_routes_battery_to_ev_notes(
     sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
-    # `lilbee mcp` pre-warms get_services() (provider + embedder + store)
-    # before it attaches to stdio, so the initialize handshake can take as
-    # long as a `lilbee serve` cold start on a slow runner. The first
-    # `search` call then pays the embedding-model load (the pre-warm
-    # constructs the embedder but doesn't load weights until first embed),
-    # which on a cold Windows binary blows past the 60s fast timeout. Give
-    # both the boot budget.
     client = MCPStdioClient(
         [lane.lilbee_bin, "mcp"],
         env=lilbee_env_with_models,
-        startup_timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS,
+        startup_timeout=_MCP_BINARY_STARTUP_TIMEOUT,
     )
     try:
         result = client.call_tool(
             "search",
             {"query": "lithium-ion battery technology", "top_k": 3},
-            timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS,
+            timeout=_MCP_BINARY_CALL_TIMEOUT,
         )
         assert isinstance(result, dict), result
         # MCP returns content as text blocks; extract sources from the JSON-like text

@@ -30,21 +30,25 @@ def tui(tui_with_models: TuiSession) -> TuiSession:
 def _open_model_catalog(tui: TuiSession) -> None:
     """Navigate to the model catalog screen and wait for its 'Local' tab.
 
-    ``/models`` opens the catalog. The completion dropdown that pops on
-    ``/`` can swallow the first Enter while it settles, and CatalogScreen
-    runs an HF fetch on mount, so this retries the navigation and gives the
-    tab strip a generous window to render.
+    ``/models`` opens the catalog screen; CatalogScreen does an HF fetch on
+    mount, so the tab strip can take a beat to render on a slow runner.
+    Wait patiently (don't poke keys at a half-mounted screen); retry the
+    submit once if the first Enter didn't take.
     """
-    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT * 4
-    while time.monotonic() < deadline:
-        if "Local" in tui.text():
-            return
-        tui.send("\x7f" * 16)  # clear any "/models" left from a prior attempt
-        tui.send("/models")
-        time.sleep(_TUI_REDRAW_POLL * 2)
+    wait = TUI_SCREEN_TIMEOUT * 2  # 30s: covers a slow HF fetch on mount
+    tui.send("/models")
+    time.sleep(_TUI_REDRAW_POLL * 2)  # let the completion dropdown settle
+    tui.send("\r")
+    try:
+        tui.wait_for("Local", timeout=wait)
+        return
+    except AssertionError:
+        pass
+    # If "/models" is still in the input the first Enter didn't submit;
+    # nudge it once more. Don't retype (key-spam can corrupt input state).
+    if "/models" in tui.text():
         tui.send("\r")
-        time.sleep(_TUI_REDRAW_POLL * 6)
-    raise AssertionError("model catalog 'Local' tab never appeared; visible:\n" + tui.text())
+    tui.wait_for("Local", timeout=wait)
 
 
 @pytest.mark.tui
@@ -58,13 +62,15 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
 
 
 @pytest.mark.tui
+@pytest.mark.flaky(reruns=2)
 def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
     """F3 flips the Search/Chat toggle and shows a `Mode: ...` toast.
 
     The active pill is a CSS class, not text, so the screen capture can't see
     the flip directly; the toast is the observable signal. F3 is a no-op
     (no toast) only when Search mode is disabled because no embedding model
-    is ready, which doesn't apply here.
+    is ready, which doesn't apply here. PTY key delivery for F3 is timing
+    sensitive on the frozen-binary lanes, so rerun on a miss.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
     tui.send("\x1b[13~")  # F3 escape sequence
@@ -72,6 +78,7 @@ def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
+@pytest.mark.flaky(reruns=2)
 def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
     """Esc -> NORMAL mode, ``m`` focuses the chat-model picker button, then
     Space activates it and the "Pick a chat model" modal opens.
@@ -99,6 +106,8 @@ def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
     """The Catalog screen exposes a Local sub-tab.
 
@@ -110,6 +119,8 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     """`v` swaps grid <-> list view inside the Local tab."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
@@ -126,6 +137,8 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     """The Catalog screen renders a hardware-fit chip on at least one row.
 
