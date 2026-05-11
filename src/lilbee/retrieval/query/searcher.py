@@ -36,11 +36,16 @@ from lilbee.retrieval.query.formatting import (
     strip_llm_citations,
 )
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
-from lilbee.retrieval.reasoning import strip_reasoning
+from lilbee.retrieval.reasoning import (
+    StreamToken,
+    cap_events_as_stream_tokens,
+    effective_reasoning_cap,
+    stream_chat_with_cap,
+    strip_reasoning,
+)
 
 if TYPE_CHECKING:
     from lilbee.retrieval.concepts import ConceptGraph
-    from lilbee.retrieval.reasoning import StreamToken
     from lilbee.retrieval.reranker import Reranker
 
 log = logging.getLogger(__name__)
@@ -497,34 +502,19 @@ class Searcher:
         options: dict[str, Any] | None,
     ) -> Generator[StreamToken, None, None]:
         """Streaming branch with the general system prompt (no RAG context)."""
-        from lilbee.retrieval.reasoning import (
-            CapNotice,
-            StreamToken,
-            effective_reasoning_cap,
-            stream_chat_with_cap,
-        )
-
         messages = self._direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
+        events = stream_chat_with_cap(
+            self._provider,
+            cast("list[dict[str, Any]]", provider_messages),
+            options=opts,
+            model=self._config.chat_model,
+            show_reasoning=self._config.show_reasoning,
+            cap_chars=effective_reasoning_cap(),
+        )
         try:
-            for event in stream_chat_with_cap(
-                self._provider,
-                cast("list[dict[str, Any]]", provider_messages),
-                options=opts,
-                model=self._config.chat_model,
-                show_reasoning=self._config.show_reasoning,
-                cap_chars=effective_reasoning_cap(),
-            ):
-                if isinstance(event, CapNotice):
-                    yield StreamToken(
-                        content=f"\n[reasoning capped at {event.cap_chars} chars, "
-                        "asking for a direct answer]\n",
-                        is_reasoning=True,
-                    )
-                    continue
-                if event.content:
-                    yield event
+            yield from cap_events_as_stream_tokens(events)
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
 
@@ -538,13 +528,6 @@ class Searcher:
         chunk_type: str | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
-        from lilbee.retrieval.reasoning import (
-            CapNotice,
-            StreamToken,
-            effective_reasoning_cap,
-            stream_chat_with_cap,
-        )
-
         if (
             self._config.chat_mode == ChatMode.CHAT.value
             or not self._embedder.embedding_available()
@@ -560,26 +543,19 @@ class Searcher:
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         answer_parts: list[str] = []
+        events = stream_chat_with_cap(
+            self._provider,
+            cast("list[dict[str, Any]]", provider_messages),
+            options=opts,
+            model=self._config.chat_model,
+            show_reasoning=self._config.show_reasoning,
+            cap_chars=effective_reasoning_cap(),
+        )
         try:
-            for event in stream_chat_with_cap(
-                self._provider,
-                cast("list[dict[str, Any]]", provider_messages),
-                options=opts,
-                model=self._config.chat_model,
-                show_reasoning=self._config.show_reasoning,
-                cap_chars=effective_reasoning_cap(),
-            ):
-                if isinstance(event, CapNotice):
-                    yield StreamToken(
-                        content=f"\n[reasoning capped at {event.cap_chars} chars, "
-                        "asking for a direct answer]\n",
-                        is_reasoning=True,
-                    )
-                    continue
-                if event.content:
-                    if not event.is_reasoning:
-                        answer_parts.append(event.content)
-                    yield event
+            for token in cap_events_as_stream_tokens(events):
+                if not token.is_reasoning:
+                    answer_parts.append(token.content)
+                yield token
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         # LLM-generated citation blocks in streamed tokens cannot be

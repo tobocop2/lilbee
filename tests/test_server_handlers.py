@@ -2246,6 +2246,10 @@ class TestReasoningCapHandling:
         """When the orchestrator yields a CapNotice, the handler turns it into an SSE event."""
         import threading
 
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
+
+        notice_marker = CAP_NOTICE_TEMPLATE.format(chars=512).strip()
+
         snapshot_cap = cfg.max_reasoning_chars
         try:
             cfg.max_reasoning_chars = 512
@@ -2269,7 +2273,7 @@ class TestReasoningCapHandling:
                 )
 
             events = self._drain(queue)
-            assert any("reasoning capped" in e for e in events)
+            assert any(notice_marker in e for e in events)
             assert any("final " in e for e in events)
             assert any("answer." in e for e in events)
             assert mock_provider.chat.call_count == 2
@@ -2279,6 +2283,8 @@ class TestReasoningCapHandling:
     def test_cap_does_not_fire_under_threshold(self):
         """Short reasoning skips the re-issue path entirely."""
         import threading
+
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
 
         snapshot_cap = cfg.max_reasoning_chars
         try:
@@ -2303,7 +2309,8 @@ class TestReasoningCapHandling:
 
             assert mock_provider.chat.call_count == 1
             events = self._drain(queue)
-            assert not any("reasoning capped" in e for e in events)
+            notice_marker = CAP_NOTICE_TEMPLATE.format(chars=64_000).strip()
+            assert not any(notice_marker in e for e in events)
         finally:
             cfg.max_reasoning_chars = snapshot_cap
 

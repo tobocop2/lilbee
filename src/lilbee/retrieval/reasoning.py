@@ -39,6 +39,9 @@ CAP_CONTINUATION_PROMPT = (
 )
 """The user-message nudge appended on the continuation call after the cap fires."""
 
+CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
+"""User-visible marker emitted between the truncated reasoning and the continuation answer."""
+
 
 @dataclass
 class StreamToken:
@@ -219,6 +222,25 @@ def stream_chat_with_cap(
                 yield StreamToken(content=chunk, is_reasoning=False)
     finally:
         _close_iterator(second_stream)
+
+
+def cap_events_as_stream_tokens(
+    events: Iterator[StreamToken | CapNotice],
+) -> Iterator[StreamToken]:
+    """Render ``CapNotice`` events as user-visible reasoning ``StreamToken``s.
+
+    Library and CLI surfaces speak ``StreamToken`` only. This helper lets
+    them consume the orchestrator's union output without a per-call
+    isinstance dance for the cap notice.
+    """
+    for event in events:
+        if isinstance(event, CapNotice):
+            yield StreamToken(
+                content=CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars),
+                is_reasoning=True,
+            )
+        elif event.content:
+            yield event
 
 
 def _close_iterator(tokens: Iterator[str]) -> None:

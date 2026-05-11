@@ -12,6 +12,12 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
+from lilbee.retrieval.reasoning import (
+    CAP_NOTICE_TEMPLATE,
+    CapNotice,
+    effective_reasoning_cap,
+    stream_chat_with_cap,
+)
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
@@ -57,9 +63,6 @@ async def ask(
     )
 
 
-_CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
-
-
 def _run_llm_stream(
     messages: list[ChatMessage],
     opts: dict[str, Any] | None,
@@ -68,12 +71,6 @@ def _run_llm_stream(
     error_holder: list[str],
 ) -> None:
     """Forward tokens from the cap-aware chat orchestrator into the SSE queue."""
-    from lilbee.retrieval.reasoning import (
-        CapNotice,
-        effective_reasoning_cap,
-        stream_chat_with_cap,
-    )
-
     try:
         events = stream_chat_with_cap(
             get_services().provider,
@@ -91,7 +88,7 @@ def _run_llm_stream(
                 queue.put_nowait(
                     sse_event(
                         SseEvent.REASONING,
-                        {"token": _CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
+                        {"token": CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
                     )
                 )
             elif event.content:
