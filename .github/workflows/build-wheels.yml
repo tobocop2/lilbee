@@ -1,8 +1,8 @@
 name: Build Platform Wheels
 
-# No release: published trigger. Wheels build via workflow_dispatch or
-# workflow_call (release-candidate.yml on tag push, publish-pypi.yml).
-# Creating a GH release must not auto-build or auto-publish.
+# Builds wheels (+ sdist) and uploads them as run artifacts. It never
+# publishes -- callers (release-candidate.yml, publish-pypi.yml,
+# emergency-publish.yml) collect the artifacts and decide what to do.
 on:
   workflow_dispatch:
     inputs:
@@ -12,10 +12,6 @@ on:
         required: false
   workflow_call:
     inputs:
-      publish:
-        description: "Publish wheels + sdist to PyPI when true."
-        type: boolean
-        default: false
       build_extras:
         description: "Build the CUDA + Intel-Mac CPU extras matrix (PEP 503 index)."
         type: boolean
@@ -30,7 +26,7 @@ on:
         default: "0.3.20"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # 0.3.20: Gemma 4 chat-template fix; no upstream prebuilts so we build from source.
@@ -42,7 +38,9 @@ jobs:
   # artifacts. Re-running CI here only let flaky Windows-3.12 TUI unit tests
   # block publish-pypi.yml.
 
-  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal).
+  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS
+  # arm64=metal). macOS stops at 3.13: no cp314 macOS-arm64 build for the
+  # vendored llama-cpp-python yet.
   build-default-wheels:
     strategy:
       fail-fast: false
@@ -247,120 +245,3 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
-
-  publish-pypi:
-    if: inputs.publish
-    needs: [build-default-wheels, build-sdist]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - name: Download default artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts/
-          pattern: "wheel-default-*"
-
-      - name: Download sdist
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts/
-          pattern: "sdist"
-
-      - name: Stage default wheels + sdist for PyPI
-        run: |
-          set -euxo pipefail
-          mkdir -p dist
-          find artifacts -name "lilbee-*.whl" -exec cp {} dist/ \;
-          find artifacts -name "lilbee-*.tar.gz" -exec cp {} dist/ \;
-          ls -lh dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
-  verify-pypi:
-    if: inputs.publish
-    needs: [publish-pypi]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-latest, backend: vulkan, python-version: "3.11"}
-          - {os: ubuntu-latest, backend: vulkan, python-version: "3.12"}
-          - {os: ubuntu-latest, backend: vulkan, python-version: "3.13"}
-          - {os: ubuntu-latest, backend: vulkan, python-version: "3.14"}
-          - {os: macos-latest,  backend: metal,  python-version: "3.11"}
-          - {os: macos-latest,  backend: metal,  python-version: "3.12"}
-          - {os: macos-latest,  backend: metal,  python-version: "3.13"}
-          # Intel Mac is published to the cpu extra-index, not PyPI.
-          - {os: windows-latest, backend: vulkan, python-version: "3.11"}
-          - {os: windows-latest, backend: vulkan, python-version: "3.12"}
-          - {os: windows-latest, backend: vulkan, python-version: "3.13"}
-    runs-on: ${{ matrix.os }}
-    env:
-      BACKEND: ${{ matrix.backend }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install GPU runtime loader
-        shell: bash
-        run: bash tools/wheel-build/install_gpu_runtime.sh
-
-      - name: Install Vulkan runtime (Windows)
-        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          install_runtime: true
-          cache: true
-          stripdown: true
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          # verify-pypi runs only via workflow_call (publish lanes pass ref=<tag>);
-          # fall back to pyproject.toml if ref is a branch name.
-          REF="${{ inputs.ref }}"
-          if [[ "${REF}" =~ ^v?[0-9] ]]; then
-            VERSION="${REF#v}"
-          else
-            VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Install from PyPI (poll until indexed)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          for i in $(seq 1 30); do
-            if pip install --pre --dry-run "lilbee==${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-              echo "PyPI indexed on attempt ${i}"
-              break
-            fi
-            sleep 6
-            if [ "$i" = "30" ]; then
-              echo "PyPI never indexed lilbee==${{ steps.version.outputs.version }}"
-              exit 1
-            fi
-          done
-          pip install --pre "lilbee==${{ steps.version.outputs.version }}"
-
-      - name: self-check end-to-end
-        shell: bash
-        run: |
-          set -euxo pipefail
-          OUT=$(mktemp)
-          RC=0
-          lilbee --json self-check > "$OUT" 2>&1 || RC=$?
-          echo "=== self-check (exit=${RC}) ==="
-          cat "$OUT"
-          [ "${RC}" = "0" ]
-          python tools/wheel-build/parse_self_check.py "$OUT"

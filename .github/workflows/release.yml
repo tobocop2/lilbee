@@ -1,23 +1,19 @@
 name: Release Executables
 
-# No release: published trigger. Binaries build via workflow_dispatch or
-# workflow_call (release-candidate.yml on tag push, publish-pypi.yml).
-# Creating a GH release must not auto-build.
+# Builds the standalone executables and uploads them as run artifacts. It never
+# attaches anything to a release -- callers (release-candidate.yml,
+# publish-pypi.yml, emergency-publish.yml) collect the artifacts and decide.
 on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      publish:
-        description: "Attach binaries to the GitHub release named by `ref` when true."
-        type: boolean
-        default: false
       ref:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   LLAMA_CPP_VERSION: "0.3.20"
@@ -260,15 +256,7 @@ jobs:
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference, extras-import all green"
         shell: bash
 
-      - name: Attach binary to GH release
-        if: inputs.publish
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.ref || github.ref_name }}
-          files: dist/${{ matrix.asset_name }}
-
-      - name: Upload artifact (no-publish lane)
-        if: ${{ !inputs.publish }}
+      - name: Upload binary as a run artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}

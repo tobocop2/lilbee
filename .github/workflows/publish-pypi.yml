@@ -56,7 +56,6 @@ jobs:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      publish: false
       build_extras: true
       ref: ${{ inputs.tag }}
     secrets: inherit
@@ -65,7 +64,6 @@ jobs:
     needs: [guard]
     uses: ./.github/workflows/release.yml
     with:
-      publish: false
       ref: ${{ inputs.tag }}
     secrets: inherit
 

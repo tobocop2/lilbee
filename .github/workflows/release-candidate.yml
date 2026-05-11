@@ -71,7 +71,6 @@ jobs:
     needs: [resolve]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      publish: false
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
 
@@ -79,7 +78,6 @@ jobs:
     needs: [resolve]
     uses: ./.github/workflows/release.yml
     with:
-      publish: false
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
 
