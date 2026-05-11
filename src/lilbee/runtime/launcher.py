@@ -7,13 +7,25 @@ launches the animation process, then performs the heavy
 
 from __future__ import annotations
 
+import os
 import sys
+
+# Shells fetch tab completions by running the console script with
+# ``_<PROG>_COMPLETE=...`` set (and an empty argv); click answers those itself.
+_COMPLETION_ENV_SUFFIX = "_COMPLETE"
+
+
+def _shell_completion_active() -> bool:
+    """True when this process was spawned by a shell's tab-completion."""
+    return any(
+        name.startswith("_") and name.endswith(_COMPLETION_ENV_SUFFIX) for name in os.environ
+    )
 
 
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     args = sys.argv[1:]
-    is_interactive = not args or args[0] in ("chat", "")
+    is_interactive = (not args or args[0] in ("chat", "")) and not _shell_completion_active()
 
     if not is_interactive:
         from lilbee.cli import app

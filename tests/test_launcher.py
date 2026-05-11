@@ -1,0 +1,78 @@
+"""Tests for the ``lilbee`` console-script entry point in ``runtime.launcher``."""
+
+from __future__ import annotations
+
+import os
+import sys
+from unittest.mock import Mock
+
+import pytest
+
+import lilbee.runtime.launcher as launcher
+from lilbee.runtime.launcher import _COMPLETION_ENV_SUFFIX
+
+
+@pytest.fixture
+def _no_completion_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip any ``_*_COMPLETE`` vars the surrounding shell may have set."""
+    for key in list(os.environ):
+        if key.startswith("_") and key.endswith(_COMPLETION_ENV_SUFFIX):
+            monkeypatch.delenv(key, raising=False)
+
+
+def _patch_app_and_splash(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock, Mock]:
+    fake_app = Mock(name="cli.app")
+    start_spy = Mock(name="splash.start", return_value=None)
+    stop_spy = Mock(name="splash.stop")
+    monkeypatch.setattr("lilbee.cli.app", fake_app)
+    monkeypatch.setattr("lilbee.runtime.splash.start", start_spy)
+    monkeypatch.setattr("lilbee.runtime.splash.stop", stop_spy)
+    return fake_app, start_spy, stop_spy
+
+
+def test_bare_invocation_shows_splash(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    launcher.main()
+
+    start_spy.assert_called_once()
+    fake_app.assert_called_once()
+
+
+def test_chat_subcommand_shows_splash(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    _, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "chat"])
+
+    launcher.main()
+
+    start_spy.assert_called_once()
+
+
+def test_non_interactive_subcommand_skips_splash(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    fake_app, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "--version"])
+
+    launcher.main()
+
+    start_spy.assert_not_called()
+    fake_app.assert_called_once()
+
+
+def test_shell_completion_skips_splash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``_LILBEE_COMPLETE`` invocation (zsh/bash tab completion) must not
+    start the splash animation even though its argv is empty."""
+    fake_app, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+    monkeypatch.setenv("_LILBEE_COMPLETE", "zsh_complete")
+
+    launcher.main()
+
+    start_spy.assert_not_called()
+    fake_app.assert_called_once()
