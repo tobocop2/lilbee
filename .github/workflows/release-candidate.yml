@@ -1,6 +1,8 @@
 name: Release candidate
 
-# Tag push: build + QA + auto-promote on green. Dispatch: build + QA dry-run.
+# Tag push (v*): build wheels + binaries, attach the binaries to a GH
+# pre-release, then run the QA matrix. Dispatch: build + QA dry-run, no release.
+# Publishing to PyPI is a separate manual step -- see publish-pypi.yml.
 
 on:
   push:
@@ -81,9 +83,10 @@ jobs:
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
 
-  # Attach binaries to a GH pre-release as soon as they're built, before
-  # QA runs. PyPI publish is gated on QA green (see promote-pypi below)
-  # because PyPI is immutable; a GH release is reversible (delete + retag).
+  # Attach binaries to a GH pre-release as soon as they're built, before QA
+  # runs. A GH release is reversible (delete + retag) so this is safe to do
+  # eagerly; the irreversible step (PyPI) waits for a human to run
+  # publish-pypi.yml after reviewing QA.
   attach-binaries-prerelease:
     needs: [resolve, build-binaries]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

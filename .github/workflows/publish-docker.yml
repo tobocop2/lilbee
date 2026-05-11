@@ -1,22 +1,23 @@
 name: Publish Docker Image
 
+# Dispatched by promote-pypi / the publish-pypi & emergency-publish workflows
+# (and by hand) once the tag's binaries are attached to its GH release.
 on:
-  workflow_run:
-    workflows: ["Build Platform Wheels"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to (re)publish (e.g. v0.6.66b456)"
+        description: "Release tag to (re)publish (e.g. v0.6.66b469)."
         required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-docker-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   docker:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'release' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,17 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Resolve tag
+      - name: Resolve version from tag
         id: info
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            tag="${{ github.event.workflow_run.head_branch }}"
-          else
-            tag="${{ inputs.tag }}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
