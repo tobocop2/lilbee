@@ -39,6 +39,17 @@ def _wiki_env(base: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def _skip_unless_spacy_bundled(lane: Lane) -> None:
+    """Wiki NER concept extraction needs spaCy + en_core_web_sm. Only the
+    standalone binary bundles them; the bare pip wheel ships neither (spaCy
+    lives in the [graph] extra), so the wiki pipeline degrades to zero
+    entities there rather than failing. Skip on non-binary lanes."""
+    if not lane.is_binary:
+        pytest.skip(
+            "wiki NER needs spaCy + en_core_web_sm; only the standalone binary bundles them"
+        )
+
+
 @pytest.mark.wiki
 @pytest.mark.writer
 @pytest.mark.timeout(360)
@@ -49,6 +60,7 @@ def test_wiki_build_dry_run_extracts_entities(
 ) -> None:
     """`lilbee --json wiki build --dry-run` extracts at least one NER entity
     candidate from the seeded corpus, without making any LLM calls."""
+    _skip_unless_spacy_bundled(lane)
     env = _wiki_env(lilbee_env_with_models)
     seed_fixture_corpus(lilbee_data)
 
@@ -108,6 +120,7 @@ def test_wiki_build_full_runs_clean(
     content-dependent outcome, not a regression. We assert on the envelope,
     not the page count.
     """
+    _skip_unless_spacy_bundled(lane)
     env = _wiki_env(lilbee_env_with_models)
     # Allow the LLM more time per call on slow runners; the build serially
     # invokes the chat model per source.
@@ -150,6 +163,7 @@ def test_wiki_synthesize_runs_clean(
     count; a larger fixture corpus would let an ordering / paths-non-empty
     assertion go in.
     """
+    _skip_unless_spacy_bundled(lane)
     env = _wiki_env(lilbee_env_with_models)
     seed_fixture_corpus(lilbee_data)
 

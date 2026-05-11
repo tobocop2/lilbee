@@ -321,6 +321,10 @@ def lilbee_env_with_models(
             "LILBEE_CHAT_MODEL": models_pulled.chat,
             "LILBEE_EMBEDDING_MODEL": models_pulled.embedding,
             "LILBEE_QUERY_EXPANSION_COUNT": "0",  # avoid loading chat model on search
+            # The shipped default max_distance (0.65) is tuned for a real corpus;
+            # the QA fixture corpus is a couple of notes, so loosen it here so
+            # ingest -> embed -> search -> cite is exercised end-to-end.
+            "LILBEE_MAX_DISTANCE": "2.0",
         },
     )
 

@@ -29,37 +29,18 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
     assert "search" in visible
 
 
-def _mode_toggle_lines(text: str) -> list[str]:
-    """Extract the mode-toggle row(s) (Search and Chat pills render side-by-side).
-
-    Requiring both labels on the same line excludes the welcome tagline
-    ("local search engine ... encyclopedia") and chat-history rows that
-    carry just one of the words.
-    """
-    return [line for line in text.lower().splitlines() if "search" in line and "chat" in line]
-
-
 @pytest.mark.tui
 def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
-    """F3 flips the Search/Chat toggle: the mode-bar text must change.
+    """F3 flips the Search/Chat toggle and shows a `Mode: ...` toast.
 
-    Compares only the mode-bar lines so an unrelated redraw (cursor blink,
-    status tick) doesn't satisfy the assertion.
+    The active pill is a CSS class, not text, so the screen capture can't see
+    the flip directly; the toast is the observable signal. F3 is a no-op
+    (no toast) only when Search mode is disabled because no embedding model
+    is ready, which doesn't apply here.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    before = _mode_toggle_lines(tui.text())
-    assert before, f"no mode bar found in initial chat screen:\n{tui.text()}"
     tui.send("\x1b[13~")  # F3 escape sequence
-    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
-    while time.monotonic() < deadline:
-        after = _mode_toggle_lines(tui.text())
-        if after != before:
-            return
-        time.sleep(_TUI_REDRAW_POLL)
-    final = _mode_toggle_lines(tui.text())
-    raise AssertionError(
-        f"F3 produced no change in the mode bar. before:\n{before}\nafter:\n{final}"
-    )
+    tui.wait_for("Mode:", timeout=TUI_SCREEN_TIMEOUT)
 
 
 @pytest.mark.tui
@@ -90,7 +71,9 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
     Frontier visibility is API-key dependent and exercised in the manual lane.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
+    tui.send("/models")
+    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
+    tui.send("\r")
     tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     visible = tui.text()
     assert "Local" in visible
@@ -100,7 +83,9 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
 def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     """`v` swaps grid <-> list view inside the Local tab."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
+    tui.send("/models")
+    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
+    tui.send("\r")
     tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     before = tui.text()
     tui.send("v")
@@ -125,7 +110,9 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     substrings like "benefits". "Won't run" is unambiguous as a phrase.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
+    tui.send("/models")
+    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
+    tui.send("\r")
     tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
     chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
     deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
