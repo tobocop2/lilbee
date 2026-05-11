@@ -2231,7 +2231,7 @@ class TestRunLlmStreamCancel:
 
 
 class TestReasoningCapHandling:
-    """Cap-fire path: re-issue with a continuation nudge so the user gets an answer."""
+    """SSE handler forwards events from the shared cap-aware orchestrator."""
 
     def _drain(self, queue: asyncio.Queue[str | None]) -> list[str]:
         items: list[str] = []
@@ -2242,36 +2242,8 @@ class TestReasoningCapHandling:
             items.append(value)
         return items
 
-    def test_resolve_cap_uses_global_when_no_override(self):
-        """Cap resolver returns the global cfg setting when no per-model override exists."""
-        from lilbee.providers.model_defaults import ModelDefaults
-
-        snapshot_cap = cfg.max_reasoning_chars
-        snapshot_defaults = cfg.model_defaults
-        try:
-            cfg.max_reasoning_chars = 8000
-            cfg.apply_model_defaults(ModelDefaults())
-            assert _rag_h._resolve_reasoning_cap() == 8000
-        finally:
-            cfg.max_reasoning_chars = snapshot_cap
-            cfg.apply_model_defaults(snapshot_defaults)
-
-    def test_resolve_cap_per_model_override_wins(self):
-        """A per-model max_reasoning_chars on ModelDefaults beats the global cap."""
-        from lilbee.providers.model_defaults import ModelDefaults
-
-        snapshot_cap = cfg.max_reasoning_chars
-        snapshot_defaults = cfg.model_defaults
-        try:
-            cfg.max_reasoning_chars = 8000
-            cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=20_000))
-            assert _rag_h._resolve_reasoning_cap() == 20_000
-        finally:
-            cfg.max_reasoning_chars = snapshot_cap
-            cfg.apply_model_defaults(snapshot_defaults)
-
-    def test_cap_fire_emits_notice_and_reissues(self):
-        """When reasoning exceeds the cap, the handler emits a notice and re-issues."""
+    def test_cap_fire_emits_notice_event(self):
+        """When the orchestrator yields a CapNotice, the handler turns it into an SSE event."""
         import threading
 
         snapshot_cap = cfg.max_reasoning_chars
@@ -2279,12 +2251,8 @@ class TestReasoningCapHandling:
             cfg.max_reasoning_chars = 512
 
             mock_provider = MagicMock()
-            long_reasoning = "<think>" + ("x " * 400) + "</think>answer never reached"
-            second_wave = ["final ", "answer."]
-            mock_provider.chat.side_effect = [
-                iter([long_reasoning]),
-                iter(second_wave),
-            ]
+            long_reasoning = "<think>" + ("x " * 400) + "</think>not reached"
+            mock_provider.chat.side_effect = [iter([long_reasoning]), iter(["final ", "answer."])]
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
@@ -2305,11 +2273,6 @@ class TestReasoningCapHandling:
             assert any("final " in e for e in events)
             assert any("answer." in e for e in events)
             assert mock_provider.chat.call_count == 2
-            second_call_messages = mock_provider.chat.call_args_list[1].args[0]
-            assert second_call_messages[-1]["role"] == "user"
-            assert "Stop thinking" in second_call_messages[-1]["content"]
-            assert second_call_messages[-2]["role"] == "assistant"
-            assert "<think>" in second_call_messages[-2]["content"]
         finally:
             cfg.max_reasoning_chars = snapshot_cap
 

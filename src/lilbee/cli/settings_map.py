@@ -545,7 +545,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text=(
             "Maximum reasoning characters before lilbee forces the model to answer "
-            "(per-model overrides apply on top)"
+            "(0 = unlimited; per-model overrides apply on top)"
         ),
     ),
     "model_keep_alive": SettingDef(

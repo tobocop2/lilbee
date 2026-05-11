@@ -194,7 +194,8 @@ class Config(BaseSettings):
 
     # Maximum reasoning characters before lilbee forces the model to answer.
     # Per-model overrides apply on top of this default. Approx N/4 tokens.
-    max_reasoning_chars: int = ConfigField(default=64_000, ge=512, writable=True)
+    # 0 disables the cap (unlimited reasoning; accept the runaway-loop risk).
+    max_reasoning_chars: int = ConfigField(default=64_000, ge=0, writable=True)
 
     # Web crawling.
 

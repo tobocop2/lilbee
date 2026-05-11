@@ -1,6 +1,20 @@
-"""Tests for reasoning token filter: <think>...</think> tag detection."""
+"""Tests for reasoning token filter and cap-aware chat orchestrator."""
 
-from lilbee.retrieval.reasoning import StreamToken, filter_reasoning, strip_reasoning
+from unittest.mock import MagicMock
+
+import pytest
+
+from lilbee.core.config import cfg
+from lilbee.providers.model_defaults import ModelDefaults
+from lilbee.retrieval.reasoning import (
+    CAP_CONTINUATION_PROMPT,
+    CapNotice,
+    StreamToken,
+    effective_reasoning_cap,
+    filter_reasoning,
+    stream_chat_with_cap,
+    strip_reasoning,
+)
 
 _NO_CAP = 1_000_000
 
@@ -140,50 +154,38 @@ class TestCouldBePartial:
 
 class TestReasoningCap:
     def test_cap_fires_on_long_reasoning(self):
-        """Cap callback fires when reasoning exceeds cap_chars."""
-        captured: list[str] = []
+        """on_cap is invoked when reasoning exceeds cap_chars."""
+        fired = [False]
+
+        def _on_cap() -> None:
+            fired[0] = True
+
         long_think = "x" * 1500
         tokens = list(f"<think>{long_think}</think>answer")
-        list(
-            filter_reasoning(
-                iter(tokens),
-                show=True,
-                cap_chars=1024,
-                on_cap=captured.append,
-            )
-        )
-        assert captured, "on_cap should fire when reasoning exceeds cap"
-        assert "x" in captured[0]
+        list(filter_reasoning(iter(tokens), show=True, cap_chars=1024, on_cap=_on_cap))
+        assert fired[0]
 
     def test_cap_yields_no_response_after_fire(self):
         """When the cap fires, iteration stops; later tokens don't reach the consumer."""
         long_think = "x" * 1500
         tokens = list(f"<think>{long_think}</think>answer")
         result = list(
-            filter_reasoning(
-                iter(tokens),
-                show=True,
-                cap_chars=1024,
-                on_cap=lambda _: None,
-            )
+            filter_reasoning(iter(tokens), show=True, cap_chars=1024, on_cap=lambda: None)
         )
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "answer" not in response
 
     def test_no_cap_when_zero(self):
-        """cap_chars=0 disables the cap entirely; no on_cap fires."""
-        captured: list[str] = []
+        """cap_chars=0 disables the cap entirely; on_cap never fires."""
+        fired = [False]
+
+        def _on_cap() -> None:
+            fired[0] = True
+
         long_think = "x" * 5000
         tokens = list(f"<think>{long_think}</think>answer")
-        list(
-            filter_reasoning(
-                iter(tokens),
-                show=False,
-                cap_chars=0,
-                on_cap=captured.append,
-            )
-        )
-        assert captured == []
+        list(filter_reasoning(iter(tokens), show=False, cap_chars=0, on_cap=_on_cap))
+        assert fired == [False]
 
     def test_on_cap_optional(self):
         """Cap firing without an on_cap callback still terminates cleanly."""
@@ -196,18 +198,14 @@ class TestReasoningCap:
     def test_on_progress_fires_during_reasoning(self):
         """on_progress receives running reasoning-chars counts as content arrives."""
         progress: list[int] = []
-        # Ten tokens of 100 chars each: enough to cross the 256-char tick boundary.
         chunks = ["<think>"] + ["x" * 100 for _ in range(10)] + ["</think>", "answer"]
         list(
             filter_reasoning(
-                iter(chunks),
-                show=False,
-                cap_chars=_NO_CAP,
-                on_progress=progress.append,
+                iter(chunks), show=False, cap_chars=_NO_CAP, on_progress=progress.append
             )
         )
-        assert progress, "on_progress should fire as reasoning accumulates"
-        assert progress == sorted(progress), "progress values should be monotonic"
+        assert progress
+        assert progress == sorted(progress)
         assert progress[-1] >= 1000
 
     def test_on_progress_optional(self):
@@ -216,35 +214,16 @@ class TestReasoningCap:
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert response == "answer"
 
-    def test_captured_text_matches_partial_reasoning(self):
-        """on_cap's payload is the reasoning content seen so far, not the cap value."""
-        captured: list[str] = []
-        partial = "thinking step one. " * 80
-        tokens = [f"<think>{partial}"]
-        list(
-            filter_reasoning(
-                iter(tokens),
-                show=False,
-                cap_chars=512,
-                on_cap=captured.append,
-            )
-        )
-        assert captured
-        assert "thinking step one" in captured[0]
-
     def test_unclosed_think_terminates_show_false(self):
         """An unclosed <think> with show=False still hits the cap, no hang."""
-        captured: list[str] = []
+        fired = [False]
+
+        def _on_cap() -> None:
+            fired[0] = True
+
         tokens = ["<think>"] + ["x"] * 2000
-        list(
-            filter_reasoning(
-                iter(tokens),
-                show=False,
-                cap_chars=512,
-                on_cap=captured.append,
-            )
-        )
-        assert captured
+        list(filter_reasoning(iter(tokens), show=False, cap_chars=512, on_cap=_on_cap))
+        assert fired[0]
 
     def test_upstream_generator_closed_on_cap(self):
         """Cap firing closes the upstream iterator, releasing llama.cpp's chat lock."""
@@ -259,15 +238,8 @@ class TestReasoningCap:
                 closed["value"] = True
                 raise
 
-        list(
-            filter_reasoning(
-                runaway_tokens(),
-                show=True,
-                cap_chars=512,
-                on_cap=lambda _: None,
-            )
-        )
-        assert closed["value"], "filter_reasoning must close upstream iterator"
+        list(filter_reasoning(runaway_tokens(), show=True, cap_chars=512, on_cap=lambda: None))
+        assert closed["value"]
 
     def test_close_called_on_stream_wrapper_early_exit(self):
         """A stream wrapper exposing close() has it called when the cap fires."""
@@ -287,15 +259,164 @@ class TestReasoningCap:
                 self.closed = True
 
         stream = FakeStream()
-        list(
-            filter_reasoning(
-                stream,
-                show=True,
-                cap_chars=512,
-                on_cap=lambda _: None,
+        list(filter_reasoning(stream, show=True, cap_chars=512, on_cap=lambda: None))
+        assert stream.closed
+
+
+class TestEffectiveReasoningCap:
+    """The single source of truth for which cap value applies right now."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self):
+        snapshot_cap = cfg.max_reasoning_chars
+        snapshot_defaults = cfg.model_defaults
+        cfg.clear_model_defaults()
+        yield
+        cfg.max_reasoning_chars = snapshot_cap
+        cfg.apply_model_defaults(snapshot_defaults)
+
+    def test_uses_cfg_when_no_per_model_override(self):
+        cfg.max_reasoning_chars = 8000
+        assert effective_reasoning_cap() == 8000
+
+    def test_per_model_override_wins(self):
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=20_000))
+        assert effective_reasoning_cap() == 20_000
+
+    def test_per_model_zero_means_unlimited_for_that_model(self):
+        """A per-model 0 is an explicit opt-out, not 'fall through to global'."""
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=0))
+        assert effective_reasoning_cap() == 0
+
+    def test_no_override_field_falls_through(self):
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(temperature=0.7))
+        assert effective_reasoning_cap() == 8000
+
+    def test_global_zero_means_unlimited(self):
+        cfg.max_reasoning_chars = 0
+        assert effective_reasoning_cap() == 0
+
+
+class TestStreamChatWithCap:
+    """End-to-end orchestrator: filter + cap-fire + continuation re-issue."""
+
+    def _make_provider(self, *responses: object) -> MagicMock:
+        provider = MagicMock()
+        provider.chat.side_effect = [iter(r) if not callable(r) else r() for r in responses]
+        return provider
+
+    def test_no_cap_fire_yields_only_stream_tokens(self):
+        provider = self._make_provider(["<think>brief</think>", "the answer"])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "hi"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=64_000,
             )
         )
-        assert stream.closed
+        assert not any(isinstance(e, CapNotice) for e in events)
+        assert provider.chat.call_count == 1
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "the answer" in response
+
+    def test_cap_fire_emits_notice_then_continuation_tokens(self):
+        long_think = "<think>" + ("x " * 400) + "</think>not reached"
+        provider = self._make_provider([long_think], ["final ", "answer."])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "explain X"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=512,
+            )
+        )
+        notices = [e for e in events if isinstance(e, CapNotice)]
+        assert len(notices) == 1
+        assert notices[0].cap_chars == 512
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "final " in response and "answer." in response
+        assert provider.chat.call_count == 2
+
+    def test_continuation_call_appends_user_nudge(self):
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        provider = self._make_provider([long_think], ["done"])
+        list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=512,
+            )
+        )
+        nudged = provider.chat.call_args_list[1].args[0]
+        assert nudged[-1] == {"role": "user", "content": CAP_CONTINUATION_PROMPT}
+        assert nudged[0] == {"role": "user", "content": "q"}
+
+    def test_unlimited_cap_skips_continuation_even_for_long_reasoning(self):
+        """cap_chars=0 disables the cap; the orchestrator never re-issues."""
+        very_long = "<think>" + ("x " * 5000) + "</think>real answer"
+        provider = self._make_provider([very_long])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "go deep"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=0,
+            )
+        )
+        assert not any(isinstance(e, CapNotice) for e in events)
+        assert provider.chat.call_count == 1
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "real answer" in response
+
+    def test_consumer_close_propagates_to_continuation_stream(self):
+        """If the consumer stops iterating, the continuation stream is closed too."""
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        second_closed = {"value": False}
+
+        def second_pass():
+            try:
+                yield "first "
+                yield "second"
+            except GeneratorExit:
+                second_closed["value"] = True
+                raise
+
+        provider = MagicMock()
+        provider.chat.side_effect = [iter([long_think]), second_pass()]
+        gen = stream_chat_with_cap(
+            provider,
+            [{"role": "user", "content": "q"}],
+            options=None,
+            model="test-model",
+            show_reasoning=False,
+            cap_chars=512,
+        )
+        produced: list[object] = []
+        for event in gen:
+            produced.append(event)
+            if isinstance(event, StreamToken) and event.content == "first ":
+                gen.close()
+                break
+        assert second_closed["value"]
 
 
 class TestStripReasoning:
