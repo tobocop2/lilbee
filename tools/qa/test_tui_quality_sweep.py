@@ -27,6 +27,26 @@ def tui(tui_with_models: TuiSession) -> TuiSession:
     return tui_with_models
 
 
+def _open_model_catalog(tui: TuiSession) -> None:
+    """Navigate to the model catalog screen and wait for its 'Local' tab.
+
+    ``/models`` opens the catalog. The completion dropdown that pops on
+    ``/`` can swallow the first Enter while it settles, and CatalogScreen
+    runs an HF fetch on mount, so this retries the navigation and gives the
+    tab strip a generous window to render.
+    """
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT * 4
+    while time.monotonic() < deadline:
+        if "Local" in tui.text():
+            return
+        tui.send("\x7f" * 16)  # clear any "/models" left from a prior attempt
+        tui.send("/models")
+        time.sleep(_TUI_REDRAW_POLL * 2)
+        tui.send("\r")
+        time.sleep(_TUI_REDRAW_POLL * 6)
+    raise AssertionError("model catalog 'Local' tab never appeared; visible:\n" + tui.text())
+
+
 @pytest.mark.tui
 def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> None:
     """Chat screen renders the chat + embed picker buttons and the Search/Chat mode toggle."""
@@ -53,23 +73,29 @@ def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
 
 @pytest.mark.tui
 def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
-    """Pressing Enter on the focused chat picker button opens the search modal.
+    """Esc -> NORMAL mode, ``m`` focuses the chat-model picker button, then
+    Space activates it and the "Pick a chat model" modal opens.
 
-    The modal title contains "Pick a chat model" and a search input is
-    focused; typing should narrow the visible row count.
+    Esc and ``m`` go out with a gap so the terminal doesn't fold them into a
+    single Alt+m event, and the whole sequence retries because a fast Esc
+    can land mid-redraw and not take. Space (not Enter) activates the button
+    so a stray keypress in INSERT mode can't submit a chat message.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("\x1b")  # Escape to normal mode
-    tui.send("m")  # focus the model bar (m binding)
-    try:
-        tui.wait_for("Pick a chat model", timeout=TUI_SCREEN_TIMEOUT)
-    except AssertionError:
-        # Some terminals reorder Enter handling; retry with explicit Enter.
-        tui.send("\r")
-        tui.wait_for("Pick", timeout=TUI_SCREEN_TIMEOUT)
-    # Escape closes; not asserting selection because available models depend
-    # on the lane's installed registry.
-    tui.send("\x1b")
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT * 3
+    while time.monotonic() < deadline:
+        if "Pick" in tui.text():
+            tui.send("\x1b")  # close the modal so teardown is clean
+            return
+        tui.send("\x1b")  # -> NORMAL mode
+        time.sleep(_TUI_REDRAW_POLL)
+        tui.send("m")  # focus the chat-model picker button
+        time.sleep(_TUI_REDRAW_POLL)
+        tui.send(" ")  # Space activates the focused button
+        time.sleep(_TUI_REDRAW_POLL * 4)
+    raise AssertionError(
+        "model picker modal ('Pick a chat model') never opened; visible:\n" + tui.text()
+    )
 
 
 @pytest.mark.tui
@@ -79,22 +105,15 @@ def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
     Frontier visibility is API-key dependent and exercised in the manual lane.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models")
-    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
-    tui.send("\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
-    visible = tui.text()
-    assert "Local" in visible
+    _open_model_catalog(tui)
+    assert "Local" in tui.text()
 
 
 @pytest.mark.tui
 def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     """`v` swaps grid <-> list view inside the Local tab."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models")
-    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
-    tui.send("\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
+    _open_model_catalog(tui)
     before = tui.text()
     tui.send("v")
     # The visible state changes (grid renders cards, list renders rows).
@@ -118,10 +137,7 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     substrings like "benefits". "Won't run" is unambiguous as a phrase.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models")
-    time.sleep(_TUI_REDRAW_POLL * 2)  # let the slash dropdown filter settle
-    tui.send("\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
+    _open_model_catalog(tui)
     chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
     deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
     while time.monotonic() < deadline:

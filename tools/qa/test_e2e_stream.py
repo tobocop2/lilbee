@@ -216,16 +216,24 @@ def test_chat_stream_rejects_concurrent_request_with_429(
     assert sync.returncode == 0, sync.stderr
 
     base_url, _env, headers = served_lilbee
-    payload = {"question": "Say hi in one word."}
+    # The chat lock is held only while the first request's generator runs.
+    # "Say hi in one word" finishes in milliseconds, so the lock is released
+    # before the competitor's round-trip lands and the race is lost. A
+    # deterministic long generation (counting) keeps even a 0.6B model busy
+    # for several seconds, which is the whole point of the in-flight check.
+    holder_payload = {
+        "question": "List the integers from 1 to 60, one number per line, nothing else."
+    }
 
     with (
         httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as holder,
-        holder.stream("POST", f"{base_url}/api/chat/stream", json=payload) as held,
+        holder.stream("POST", f"{base_url}/api/chat/stream", json=holder_payload) as held,
     ):
         held.raise_for_status()
-        # Pull a single chunk so the server-side handler is past lock acquisition.
+        # Pull a chunk so the server handler is past retrieval and actively
+        # streaming tokens (lock held).
         next(iter(held.iter_lines()), None)
         with httpx.Client(timeout=HTTP_FAST_TIMEOUT, headers=headers) as competitor:
-            second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
+            second = competitor.post(f"{base_url}/api/chat/stream", json={"question": "Say hi."})
         assert second.status_code == httpx.codes.TOO_MANY_REQUESTS, second.text
         assert second.headers.get("Retry-After") == "1", dict(second.headers)

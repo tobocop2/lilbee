@@ -16,7 +16,6 @@ from drivers.mcp import MCPStdioClient
 
 from conftest import (
     ASK_TIMEOUT,
-    MCP_CALL_TIMEOUT,
     SEARCH_TIMEOUT,
     SERVER_BOOT_TIMEOUT_WITH_MODELS,
     SYNC_TIMEOUT,
@@ -105,8 +104,11 @@ def test_mcp_search_routes_battery_to_ev_notes(
 
     # `lilbee mcp` pre-warms get_services() (provider + embedder + store)
     # before it attaches to stdio, so the initialize handshake can take as
-    # long as a `lilbee serve` cold start on a slow runner. Use the same
-    # boot budget; the search call itself stays on the fast timeout.
+    # long as a `lilbee serve` cold start on a slow runner. The first
+    # `search` call then pays the embedding-model load (the pre-warm
+    # constructs the embedder but doesn't load weights until first embed),
+    # which on a cold Windows binary blows past the 60s fast timeout. Give
+    # both the boot budget.
     client = MCPStdioClient(
         [lane.lilbee_bin, "mcp"],
         env=lilbee_env_with_models,
@@ -116,7 +118,7 @@ def test_mcp_search_routes_battery_to_ev_notes(
         result = client.call_tool(
             "search",
             {"query": "lithium-ion battery technology", "top_k": 3},
-            timeout=MCP_CALL_TIMEOUT,
+            timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS,
         )
         assert isinstance(result, dict), result
         # MCP returns content as text blocks; extract sources from the JSON-like text
