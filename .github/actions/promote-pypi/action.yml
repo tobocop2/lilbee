@@ -1,10 +1,5 @@
-name: Publish to PyPI and fan out downstream packaging
-description: "Publish wheels + sdist to PyPI (Trusted Publishing) then trigger publish-docker.yml + publish-packages.yml; caller needs environment:pypi + id-token:write + actions:write."
-
-inputs:
-  tag:
-    description: "Tag whose binaries are already on the GH release; passed to downstream packaging."
-    required: true
+name: Publish wheels + sdist to PyPI
+description: "Download the default-backend wheels + sdist built earlier in this run and publish them to PyPI via Trusted Publishing; caller needs environment:pypi + id-token:write."
 
 runs:
   using: composite
@@ -30,22 +25,3 @@ runs:
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
-
-    # publish-docker.yml + publish-packages.yml gate on event=='release'; this fires them after PyPI is live.
-    - name: Trigger Publish Docker Image
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh workflow run publish-docker.yml \
-          --repo ${{ github.repository }} \
-          -f tag=${{ inputs.tag }}
-
-    - name: Trigger Publish Packages
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh workflow run publish-packages.yml \
-          --repo ${{ github.repository }} \
-          -f tag=${{ inputs.tag }}

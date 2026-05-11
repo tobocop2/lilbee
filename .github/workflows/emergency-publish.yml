@@ -80,14 +80,11 @@ jobs:
       ref: ${{ inputs.tag }}
     secrets: inherit
 
-  promote:
-    needs: [guard, build-wheels, build-binaries]
+  # Binaries -> GH release; only needs build-binaries, so it and the packaging
+  # fan-out run in parallel with publish-pypi (which waits on the wheel matrix).
+  attach-binaries:
+    needs: [guard, build-binaries]
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: write
-      id-token: write
-      actions: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -96,6 +93,24 @@ jobs:
         with:
           tag: ${{ inputs.tag }}
           version: ${{ needs.guard.outputs.version }}
+
+  publish-pypi:
+    needs: [guard, build-wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
       - uses: ./.github/actions/promote-pypi
+
+  fanout-packaging:
+    needs: [attach-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}

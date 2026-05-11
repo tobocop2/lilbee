@@ -69,14 +69,12 @@ jobs:
       ref: ${{ inputs.tag }}
     secrets: inherit
 
-  promote:
-    needs: [guard, build-wheels, build-binaries]
+  # Attach the freshly built binaries to the tag's GH release. Only depends on
+  # build-binaries, so this and the packaging fan-out below run in parallel with
+  # publish-pypi -- they don't wait on the (slow) CUDA-extras wheel matrix.
+  attach-binaries:
+    needs: [guard, build-binaries]
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: write
-      id-token: write
-      actions: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -85,6 +83,27 @@ jobs:
         with:
           tag: ${{ inputs.tag }}
           version: ${{ needs.guard.outputs.version }}
+
+  # Default-backend wheels + sdist -> PyPI via Trusted Publishing.
+  publish-pypi:
+    needs: [guard, build-wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
       - uses: ./.github/actions/promote-pypi
+
+  # Docker / Homebrew / AUR / Nix -- all consume the GH-release binaries, not
+  # PyPI, so this only waits on attach-binaries.
+  fanout-packaging:
+    needs: [attach-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}

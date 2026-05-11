@@ -37,21 +37,13 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # Disabled: the standalone CI workflow already runs on every main push, and
-  # release-candidate.yml's QA matrix exercises the actual built artifacts.
-  # Running CI again here only let flaky Windows-3.12 TUI unit tests block
-  # publish-pypi.yml. Kept as a skipped no-op so downstream `needs: [ci]` /
-  # `needs.ci.result` references stay valid.
-  ci:
-    if: false
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
+  # No in-workflow CI gate: the standalone CI workflow already runs on every
+  # main push and release-candidate.yml's QA matrix exercises the actual built
+  # artifacts. Re-running CI here only let flaky Windows-3.12 TUI unit tests
+  # block publish-pypi.yml.
 
   # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS arm64=metal).
   build-default-wheels:
-    needs: [ci]
-    if: always() && needs.ci.result != 'failure'
     strategy:
       fail-fast: false
       matrix:
@@ -129,8 +121,7 @@ jobs:
   # tag-push QA don't sit behind 90-min Windows CUDA builds; publish lanes
   # opt in via inputs.build_extras=true to populate the PEP 503 index.
   build-extra-wheels:
-    needs: [ci]
-    if: always() && needs.ci.result != 'failure' && inputs.build_extras
+    if: inputs.build_extras
     strategy:
       fail-fast: false
       matrix:
