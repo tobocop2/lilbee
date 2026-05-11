@@ -539,6 +539,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Generation",
         help_text="Hard cap on generated tokens per response (blank = no cap)",
     ),
+    "max_reasoning_chars": SettingDef(
+        int,
+        nullable=False,
+        group="Generation",
+        help_text=(
+            "Maximum reasoning characters before lilbee forces the model to answer "
+            "(0 = unlimited; per-model overrides apply on top)"
+        ),
+    ),
     "model_keep_alive": SettingDef(
         int,
         nullable=False,
