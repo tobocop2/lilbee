@@ -46,8 +46,8 @@ class TestFromEnvDefaults:
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
             assert c.max_embed_chars == 2000
-            assert c.top_k == 10
-            assert c.max_distance == 0.9
+            assert c.top_k == 8
+            assert c.max_distance == 0.65
             assert c.json_mode is False
             # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
             # scope picker only appear when the user explicitly enables it.
@@ -999,12 +999,12 @@ class TestEmptyStringValidation:
 
 
 class TestEmptyStringToNone:
-    def test_empty_temperature_becomes_none(self, tmp_path):
+    def test_empty_temperature_falls_back_to_default(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.temperature is None
+        assert c.temperature == 0.2
 
     def test_whitespace_seed_becomes_none(self, tmp_path):
         env = _clean_env(tmp_path)
@@ -1397,3 +1397,20 @@ class TestBuildCfgFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             _, error = _build_cfg()
         assert error is None
+
+    def test_empty_string_persisted_nullable_uses_default(self, tmp_path):
+        """Legacy bug: set_setting wrote None as ""; pydantic can't coerce.
+
+        Empty-string TOML values must be treated as missing so a stale
+        config from before that fix doesn't crash the whole Config load.
+        """
+        from lilbee.core.config.model import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('max_tokens = ""\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is None
+        assert built_cfg.max_tokens == 4096
