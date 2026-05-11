@@ -632,6 +632,33 @@ def test_pool_runtime_submit_after_shutdown_raises() -> None:
         runtime.submit(_noop())
 
 
+def test_pool_runtime_drain_failure_still_closes_loop(monkeypatch, caplog) -> None:
+    """If task drain raises during shutdown the loop still closes and
+    the exception is logged, not propagated. Otherwise a crashed drain
+    would leak the asyncio loop on Ctrl-C teardown."""
+    import logging
+
+    from lilbee.providers.worker import pool as pool_module
+
+    original_gather = asyncio.gather
+
+    def _raising_gather(*args, **kwargs):
+        raise RuntimeError("simulated drain failure")
+
+    monkeypatch.setattr(pool_module.asyncio, "gather", _raising_gather)
+    runtime = PoolRuntime()
+    runtime.start()
+
+    async def _spawn_pending() -> None:
+        await asyncio.sleep(60)
+
+    runtime.submit(_spawn_pending())
+    with caplog.at_level(logging.ERROR, logger=pool_module.__name__):
+        runtime.shutdown()
+    assert any("Pool runtime loop drain failed" in r.message for r in caplog.records)
+    monkeypatch.setattr(pool_module.asyncio, "gather", original_gather)
+
+
 # =====================================================================
 # Lifecycle features: idle reap, restart bookkeeping, health pings.
 # =====================================================================
