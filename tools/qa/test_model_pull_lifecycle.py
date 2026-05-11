@@ -88,6 +88,7 @@ def test_pulled_models_survive_server_restart(
 
 
 @pytest.mark.catalog
+@pytest.mark.writer
 @pytest.mark.timeout(120)
 def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -> None:
     """Pulling a non-existent HF ref fails with a user-facing error message,
@@ -110,6 +111,8 @@ def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     combined = (result.stdout + result.stderr).lower()
+    # HF can't always tell "doesn't exist" from "exists but gated", so the
+    # message may say the repo "requires" auth; that's still user-facing.
     user_facing_phrases = (
         "not found",
         "does not exist",
@@ -117,6 +120,7 @@ def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -
         "no such",
         "could not",
         "unable to",
+        "requires",
     )
     assert any(phrase in combined for phrase in user_facing_phrases), (
         f"expected a user-facing error phrase, got something else:\n"

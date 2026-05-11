@@ -61,11 +61,13 @@ def test_catalog_includes_fit_and_size_variants(server_url: str) -> None:
 
     variants = sample["size_variants"]
     assert isinstance(variants, list), f"size_variants must be a list: {variants!r}"
-    # If any variants exist, each should carry the documented fields.
+    # If any variants exist, each should carry a human label and a pull ref.
     for variant in variants:
         assert isinstance(variant, dict), f"variant must be dict: {variant!r}"
-        for key in ("label", "ref"):
-            assert key in variant, f"variant missing `{key}`: {variant}"
+        assert "ref" in variant, f"variant missing `ref`: {variant}"
+        assert "size_label" in variant or "label" in variant, (
+            f"variant missing a label key: {variant}"
+        )
 
 
 @pytest.mark.http

@@ -28,7 +28,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: python
-          queries: security-and-quality
+          # security-extended, not security-and-quality: the +quality queries are
+          # code-style checks (import cycles, dead code), not security findings.
+          queries: security-extended
           config-file: ./.github/codeql-config.yml
 
       - name: Perform CodeQL analysis

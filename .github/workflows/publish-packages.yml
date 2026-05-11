@@ -1,22 +1,24 @@
 name: Publish Packages
 
+# Updates the Homebrew formula, AUR PKGBUILD, and Nix flake to pin a tag's
+# GH-release binaries. Dispatched by promote-pypi / publish-pypi.yml /
+# emergency-publish.yml (and by hand) once the binaries are attached.
 on:
-  workflow_run:
-    workflows: ["Release Executables"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to (re)publish (e.g. v0.6.66b456)"
+        description: "Release tag to (re)publish (e.g. v0.6.66b469)."
         required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-packages-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   resolve:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'release' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.info.outputs.tag }}
@@ -30,13 +32,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            tag="${{ github.event.workflow_run.head_branch }}"
-          else
-            tag="${{ inputs.tag }}"
-          fi
+          tag="${TAG}"
           version="${tag#v}"
           gh api "/repos/${REPO}/releases/tags/${tag}" \
             --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv

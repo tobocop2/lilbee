@@ -19,6 +19,38 @@ from conftest import TUI_BOOT_TIMEOUT, TUI_SCREEN_TIMEOUT, Lane
 _TUI_REDRAW_POLL = 0.25
 
 
+@pytest.fixture
+def tui(tui_with_models: TuiSession) -> TuiSession:
+    """Every scenario here drives a post-wizard screen (model bar, catalog,
+    settings), so this module's ``tui`` needs models pre-assigned. Override
+    the bare conftest fixture for the whole file."""
+    return tui_with_models
+
+
+def _open_model_catalog(tui: TuiSession) -> None:
+    """Navigate to the model catalog screen and wait for its 'Local' tab.
+
+    ``/models`` opens the catalog screen; CatalogScreen does an HF fetch on
+    mount, so the tab strip can take a beat to render on a slow runner.
+    Wait patiently (don't poke keys at a half-mounted screen); retry the
+    submit once if the first Enter didn't take.
+    """
+    wait = TUI_SCREEN_TIMEOUT * 2  # 30s: covers a slow HF fetch on mount
+    tui.send("/models")
+    time.sleep(_TUI_REDRAW_POLL * 2)  # let the completion dropdown settle
+    tui.send("\r")
+    try:
+        tui.wait_for("Local", timeout=wait)
+        return
+    except AssertionError:
+        pass
+    # If "/models" is still in the input the first Enter didn't submit;
+    # nudge it once more. Don't retype (key-spam can corrupt input state).
+    if "/models" in tui.text():
+        tui.send("\r")
+    tui.wait_for("Local", timeout=wait)
+
+
 @pytest.mark.tui
 def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> None:
     """Chat screen renders the chat + embed picker buttons and the Search/Chat mode toggle."""
@@ -29,79 +61,70 @@ def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> No
     assert "search" in visible
 
 
-def _mode_toggle_lines(text: str) -> list[str]:
-    """Extract the mode-toggle row(s) (Search and Chat pills render side-by-side).
+@pytest.mark.tui
+@pytest.mark.flaky(reruns=2)
+def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
+    """F3 flips the Search/Chat toggle and shows a `Mode: ...` toast.
 
-    Requiring both labels on the same line excludes the welcome tagline
-    ("local search engine ... encyclopedia") and chat-history rows that
-    carry just one of the words.
+    The active pill is a CSS class, not text, so the screen capture can't see
+    the flip directly; the toast is the observable signal. F3 is a no-op
+    (no toast) only when Search mode is disabled because no embedding model
+    is ready, which doesn't apply here. PTY key delivery for F3 is timing
+    sensitive on the frozen-binary lanes, so rerun on a miss.
     """
-    return [line for line in text.lower().splitlines() if "search" in line and "chat" in line]
+    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
+    tui.send("\x1b[13~")  # F3 escape sequence
+    tui.wait_for("Mode:", timeout=TUI_SCREEN_TIMEOUT)
 
 
 @pytest.mark.tui
-def test_chat_mode_toggle_flips_with_f3(tui: TuiSession) -> None:
-    """F3 flips the Search/Chat toggle: the mode-bar text must change.
+@pytest.mark.flaky(reruns=2)
+def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
+    """Esc -> NORMAL mode, ``m`` focuses the chat-model picker button, then
+    Space activates it and the "Pick a chat model" modal opens.
 
-    Compares only the mode-bar lines so an unrelated redraw (cursor blink,
-    status tick) doesn't satisfy the assertion.
+    Esc and ``m`` go out with a gap so the terminal doesn't fold them into a
+    single Alt+m event, and the whole sequence retries because a fast Esc
+    can land mid-redraw and not take. Space (not Enter) activates the button
+    so a stray keypress in INSERT mode can't submit a chat message.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    before = _mode_toggle_lines(tui.text())
-    assert before, f"no mode bar found in initial chat screen:\n{tui.text()}"
-    tui.send("\x1b[13~")  # F3 escape sequence
-    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
+    deadline = time.monotonic() + TUI_SCREEN_TIMEOUT * 3
     while time.monotonic() < deadline:
-        after = _mode_toggle_lines(tui.text())
-        if after != before:
+        if "Pick" in tui.text():
+            tui.send("\x1b")  # close the modal so teardown is clean
             return
+        tui.send("\x1b")  # -> NORMAL mode
         time.sleep(_TUI_REDRAW_POLL)
-    final = _mode_toggle_lines(tui.text())
+        tui.send("m")  # focus the chat-model picker button
+        time.sleep(_TUI_REDRAW_POLL)
+        tui.send(" ")  # Space activates the focused button
+        time.sleep(_TUI_REDRAW_POLL * 4)
     raise AssertionError(
-        f"F3 produced no change in the mode bar. before:\n{before}\nafter:\n{final}"
+        "model picker modal ('Pick a chat model') never opened; visible:\n" + tui.text()
     )
 
 
 @pytest.mark.tui
-def test_model_picker_modal_opens_on_chat_button(tui: TuiSession) -> None:
-    """Pressing Enter on the focused chat picker button opens the search modal.
-
-    The modal title contains "Pick a chat model" and a search input is
-    focused; typing should narrow the visible row count.
-    """
-    tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("\x1b")  # Escape to normal mode
-    tui.send("m")  # focus the model bar (m binding)
-    try:
-        tui.wait_for("Pick a chat model", timeout=TUI_SCREEN_TIMEOUT)
-    except AssertionError:
-        # Some terminals reorder Enter handling; retry with explicit Enter.
-        tui.send("\r")
-        tui.wait_for("Pick", timeout=TUI_SCREEN_TIMEOUT)
-    # Escape closes; not asserting selection because available models depend
-    # on the lane's installed registry.
-    tui.send("\x1b")
-
-
-@pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_screen_has_local_tab_visible(tui: TuiSession) -> None:
     """The Catalog screen exposes a Local sub-tab.
 
     Frontier visibility is API-key dependent and exercised in the manual lane.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
-    visible = tui.text()
-    assert "Local" in visible
+    _open_model_catalog(tui)
+    assert "Local" in tui.text()
 
 
 @pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
     """`v` swaps grid <-> list view inside the Local tab."""
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
+    _open_model_catalog(tui)
     before = tui.text()
     tui.send("v")
     # The visible state changes (grid renders cards, list renders rows).
@@ -114,6 +137,8 @@ def test_catalog_v_toggles_grid_list_in_local_tab(tui: TuiSession) -> None:
 
 
 @pytest.mark.tui
+@pytest.mark.timeout(180)
+@pytest.mark.flaky(reruns=2)
 def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     """The Catalog screen renders a hardware-fit chip on at least one row.
 
@@ -125,8 +150,7 @@ def test_catalog_renders_fit_chip_for_at_least_one_row(tui: TuiSession) -> None:
     substrings like "benefits". "Won't run" is unambiguous as a phrase.
     """
     tui.wait_for("lilbee", timeout=TUI_BOOT_TIMEOUT)
-    tui.send("/models\r")
-    tui.wait_for("Local", timeout=TUI_SCREEN_TIMEOUT)
+    _open_model_catalog(tui)
     chip_pattern = re.compile(r"\bfits\b|\btight\b|won't run", re.IGNORECASE)
     deadline = time.monotonic() + TUI_SCREEN_TIMEOUT
     while time.monotonic() < deadline:

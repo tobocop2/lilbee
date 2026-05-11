@@ -2,7 +2,9 @@
 
 Lithium-ion battery technology is the dominant energy storage chemistry in
 electric vehicles as of 2026. The cathode is typically NMC (nickel manganese
-cobalt) or LFP (lithium iron phosphate) depending on the use case.
+cobalt) or LFP (lithium iron phosphate) depending on the use case. Tesla, BYD,
+and CATL drive much of the global cell supply, with major manufacturing in
+China, Germany, and the United States.
 
 ## Energy density
 

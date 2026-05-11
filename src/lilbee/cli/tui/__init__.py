@@ -56,7 +56,7 @@ def _redirect_native_stderr_to(log_path: Path) -> _StderrRedirect | None:
     in ``tui.log`` instead of on top of the screen.
     """
     try:
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
     saved_fd = os.dup(2)
