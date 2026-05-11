@@ -37,10 +37,13 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # ci runs only on direct workflow_dispatch. Skipped when called as a reusable
-  # workflow from an orchestrator (already gated by main's CI on merge).
+  # Disabled: the standalone CI workflow already runs on every main push, and
+  # release-candidate.yml's QA matrix exercises the actual built artifacts.
+  # Running CI again here only let flaky Windows-3.12 TUI unit tests block
+  # publish-pypi.yml. Kept as a skipped no-op so downstream `needs: [ci]` /
+  # `needs.ci.result` references stay valid.
   ci:
-    if: github.event_name == 'workflow_dispatch'
+    if: false
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
