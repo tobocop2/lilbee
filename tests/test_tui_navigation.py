@@ -374,6 +374,35 @@ async def test_chat_m_key_skips_in_insert_mode():
         assert raised
 
 
+async def test_chat_footer_hides_models_hint_in_insert_mode():
+    """`m Models` is shown only in NORMAL mode -- in INSERT mode `m` types
+    a literal character, so the footer hint must disappear there."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen._insert_mode is True
+        assert screen.check_action("focus_model_bar", ()) is False
+        await pilot.press("escape")
+        await pilot.pause()
+        assert screen._insert_mode is False
+        assert screen.check_action("focus_model_bar", ()) is True
+
+
+async def test_app_footer_hides_tasks_hint_when_text_input_focused():
+    """`t Tasks` is shown only when no text input has focus -- otherwise the
+    focused Input/TextArea swallows `t` as a literal character."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Chat boots in INSERT mode with the prompt (a TextArea) focused.
+        assert app.check_action("open_tasks", ()) is False
+        await pilot.press("escape")
+        await pilot.pause()
+        # NORMAL mode: focus is off the prompt, so the hint is honest again.
+        assert app.check_action("open_tasks", ()) is True
+
+
 async def test_backward_nav_from_catalog_after_visiting_tasks():
     """Regression: [ from Catalog after visiting Task Center got stuck.
 

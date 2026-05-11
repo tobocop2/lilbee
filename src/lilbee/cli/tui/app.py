@@ -13,6 +13,7 @@ from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.signal import Signal
+from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
@@ -413,6 +414,19 @@ class LilbeeApp(App[None]):
             self.action_hide_help_panel()
             return
         raise SkipAction()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Hide ``t Tasks`` from the footer while a text input is focused.
+
+        ``t`` is not a priority binding, so a focused ``Input`` / ``TextArea``
+        (the chat prompt in INSERT mode, a catalog/settings search box) eats
+        it as a literal character. Showing ``t Tasks`` there would lie.
+        """
+        # isinstance: a focused Input/TextArea consumes printable keys before
+        # non-priority screen/app bindings see them, so `t` types a literal there.
+        if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
+            return False
+        return super().check_action(action, parameters)
 
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
