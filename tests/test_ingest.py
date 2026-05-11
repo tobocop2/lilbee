@@ -512,6 +512,55 @@ class TestCancellation:
                     quiet=True,
                 )
 
+    @mock.patch(
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
+    )
+    async def test_task_cancelled_error_does_not_orphan_siblings(
+        self, mock_extract_file, isolated_env
+    ):
+        """TaskCancelledError from on_progress must not leak past _process_one.
+
+        Regression test for the firehose where reporter.check_cancelled() raised
+        inside the progress callback, fell through the broad ``except Exception``
+        in ``_process_one``, then re-entered ``on_progress(FILE_DONE)`` and
+        raised again. The second raise leaked out of _process_one, _collect_results
+        exited on the first failure, and every sibling task ended up logging
+        "Task exception was never retrieved". After the fix the entire batch
+        winds down cleanly as a single asyncio.CancelledError.
+        """
+        import asyncio
+
+        from lilbee.data.ingest import ingest_batch
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        # The callback flips on the second invocation so the first file makes
+        # progress (which exercises the FILE_DONE re-entry path inside the error
+        # handler), then every subsequent event raises.
+        calls = [0]
+
+        def on_progress(event_type, data):
+            calls[0] += 1
+            if calls[0] >= 2:
+                raise TaskCancelledError
+
+        # Three files queued concurrently; first will receive FILE_START then
+        # error out, the other two get cancelled by _collect_results.
+        files = [
+            (f"f{i}.txt", isolated_env / f"f{i}.txt", "text", f"hash_{i}", False) for i in range(3)
+        ]
+        for _, path, *_ in files:
+            path.write_text("hello world")
+        added: list[str] = []
+        failed: list[str] = []
+        skipped: list[str] = []
+
+        # Should raise asyncio.CancelledError (not TaskCancelledError) so the
+        # surrounding try/except in _do_sync catches it cleanly.
+        with pytest.raises(asyncio.CancelledError):
+            await ingest_batch(
+                files, added, [], failed, skipped, quiet=True, on_progress=on_progress
+            )
+
 
 class TestDetectPending:
     """Cheap detection: filesystem walk + hash compare against the sources table."""

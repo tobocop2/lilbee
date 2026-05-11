@@ -136,6 +136,12 @@ def build_sync_progress_callback(
 
     def on_progress(event_type: EventType, data: ProgressEvent) -> None:
         nonlocal last_embed_update
+        # Mirror /add: explicit cancel check on every event so a SYNC task
+        # cancelled mid-batch stops at the next progress tick instead of
+        # finishing the current file. update() also checks, but events
+        # without a reporter.update call (e.g. BATCH_PROGRESS in the
+        # ingest_batch path) would otherwise miss the cooperative checkpoint.
+        reporter.check_cancelled()
         if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
             pct = int((data.current_file - 1) * 100 / data.total_files)
             status = msg.SYNC_FILE_PROGRESS.format(
