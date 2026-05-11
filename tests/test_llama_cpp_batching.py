@@ -11,7 +11,12 @@ from lilbee.providers.llama_cpp.batching import compute_rerank_scores, embed_bat
 
 
 class _RecordingLlama:
-    """Stub Llama whose tokens-per-text and per-call payload are configurable."""
+    """Stub Llama whose tokens-per-text and per-call payload are configurable.
+
+    The token-count returned by ``tokenize`` is decoupled from the actual
+    string content so tests can simulate "this short string secretly contains
+    1000 tokens" cases that the chars-per-token heuristic gets wrong.
+    """
 
     def __init__(self, *, n_batch: int, tokens_per_text: int) -> None:
         self.n_batch = n_batch
@@ -20,6 +25,10 @@ class _RecordingLlama:
 
     def tokenize(self, text: bytes, *, add_bos: bool = True, special: bool = False) -> list[int]:
         return [0] * self._tokens_per_text
+
+    def detokenize(self, tokens: list[int]) -> bytes:
+        # Stand-in: emit "T" per token so callers can verify truncation length.
+        return ("T" * len(tokens)).encode("utf-8")
 
     def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
         self.calls.append(list(input))
@@ -48,14 +57,21 @@ def test_embed_batch_empty_returns_empty() -> None:
     assert llm.calls == []
 
 
-def test_embed_batch_handles_oversize_text_by_running_alone() -> None:
-    """A single text larger than n_batch still runs (we do not silently drop input)."""
+def test_embed_batch_truncates_oversize_text_to_budget() -> None:
+    """A single text larger than n_batch is truncated to fit, not sent whole.
+
+    Before the truncation guard a chunk that tokenized denser than the chunker's
+    4-chars-per-token heuristic (medical codes, JSON, source code) overflowed
+    the embed model's n_ctx and ``llama_decode`` returned -1, failing the
+    whole file. We tokenize, slice to the cap, and detokenize back so the
+    embedder always sees a sequence that fits.
+    """
     llm = _RecordingLlama(n_batch=4, tokens_per_text=10)
     vectors = embed_batch(llm, ["huge", "small"])
     assert len(vectors) == 2
-    # First text (10 tokens) overflows the cap (4); it runs alone, then the
-    # second runs alone too because its 10 tokens also exceed the cap.
-    assert llm.calls == [["huge"], ["small"]]
+    # Each text tokenizes to 10 (> cap 4); the stub's detokenize emits one "T"
+    # per kept token, so both inputs become 4-character strings.
+    assert llm.calls == [["TTTT"], ["TTTT"]]
 
 
 def test_embed_batch_splits_when_sequence_cap_exceeded() -> None:
