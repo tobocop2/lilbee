@@ -50,6 +50,16 @@ def _reset_show_reasoning():
 
 
 @pytest.fixture(autouse=True)
+def _disable_hyde():
+    """Pin hyde off so the HyDE call_args does not shadow the primary search
+    in mock assertions that inspect call_args (single-call-only)."""
+    old = cfg.hyde
+    cfg.hyde = False
+    yield
+    cfg.hyde = old
+
+
+@pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so tests never hit real backends."""
     from tests.conftest import make_mock_services
@@ -260,9 +270,11 @@ class TestDiversifySources:
 
         assert diversify_sources([]) == []
 
-    def test_default_cap_is_three(self):
+    def test_default_cap_uses_cfg_value(self, monkeypatch):
+        from lilbee.core.config import cfg
         from lilbee.retrieval.query import diversify_sources
 
+        monkeypatch.setattr(cfg, "diversity_max_per_source", 3)
         results = [_make_result(source="a.md", distance=float(i) / 10) for i in range(5)]
         diverse = diversify_sources(results)
         assert len(diverse) == 3

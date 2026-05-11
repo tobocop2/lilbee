@@ -1528,7 +1528,7 @@ def test_get_default_for_nullable_scalar():
     """Nullable fields whose default is None return None."""
     from lilbee.cli.settings_map import get_default
 
-    assert get_default("temperature") is None
+    assert get_default("seed") is None
 
 
 def test_get_default_for_list_factory():
@@ -1668,17 +1668,17 @@ async def test_reset_nullable_to_none():
     """Resetting a nullable scalar clears cfg and empties the Input widget."""
     from textual.widgets import Button, Input
 
-    cfg.temperature = 0.9
+    cfg.seed = 42
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        button = app.screen.query_one("#reset-temperature", Button)
+        button = app.screen.query_one("#reset-seed", Button)
         button.press()
         for _ in range(10):
             await pilot.pause()
-            if cfg.temperature is None:
+            if cfg.seed is None:
                 break
-        assert cfg.temperature is None
-        editor = app.screen.query_one("#ed-temperature", Input)
+        assert cfg.seed is None
+        editor = app.screen.query_one("#ed-seed", Input)
         assert editor.value == ""
 
 

@@ -68,10 +68,10 @@ class Config(BaseSettings):
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     max_embed_chars: int = Field(default=2000, ge=1)
-    top_k: int = ConfigField(default=10, ge=1, writable=True)
-    max_distance: float = ConfigField(default=0.9, ge=0.0, writable=True)
+    top_k: int = ConfigField(default=8, ge=1, writable=True)
+    max_distance: float = ConfigField(default=0.65, ge=0.0, writable=True)
     # Minimum RRF relevance score for hybrid search results (0.0 = no filtering).
-    min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
+    min_relevance_score: float = ConfigField(default=0.05, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
@@ -107,9 +107,9 @@ class Config(BaseSettings):
     # single long-running vision OCR page can't starve the client into aborting.
     sse_heartbeat_interval: float = ConfigField(default=30.0, ge=0.0, writable=True)
     json_mode: bool = False
-    temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
-    top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
-    top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
+    temperature: float | None = ConfigField(default=0.2, ge=0.0, writable=True)
+    top_p: float | None = ConfigField(default=0.9, ge=0.0, le=1.0, writable=True)
+    top_k_sampling: int | None = ConfigField(default=40, ge=1, writable=True)
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
@@ -162,7 +162,7 @@ class Config(BaseSettings):
     expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
 
     # Chunks included in LLM context after adaptive selection.
-    max_context_sources: int = ConfigField(default=5, ge=1, writable=True)
+    max_context_sources: int = ConfigField(default=6, ge=1, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
@@ -183,7 +183,7 @@ class Config(BaseSettings):
     reranker_model: str = ConfigField(default="", public=True)
 
     # Candidate count sent to the reranker.
-    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=True)
+    rerank_candidates: int = ConfigField(default=60, ge=1, writable=True, public=True)
 
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
@@ -390,7 +390,7 @@ class Config(BaseSettings):
     concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
     # Max noun-phrase concepts extracted per chunk.
-    concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
+    concept_max_per_chunk: int = ConfigField(default=5, ge=1, writable=True)
 
     # spaCy NER labels kept by the wiki entity extractor. Anything not
     # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,

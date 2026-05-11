@@ -46,8 +46,8 @@ class TestFromEnvDefaults:
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
             assert c.max_embed_chars == 2000
-            assert c.top_k == 10
-            assert c.max_distance == 0.9
+            assert c.top_k == 8
+            assert c.max_distance == 0.65
             assert c.json_mode is False
             # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
             # scope picker only appear when the user explicitly enables it.
@@ -999,12 +999,12 @@ class TestEmptyStringValidation:
 
 
 class TestEmptyStringToNone:
-    def test_empty_temperature_becomes_none(self, tmp_path):
+    def test_empty_temperature_falls_back_to_default(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.temperature is None
+        assert c.temperature == 0.2
 
     def test_whitespace_seed_becomes_none(self, tmp_path):
         env = _clean_env(tmp_path)
