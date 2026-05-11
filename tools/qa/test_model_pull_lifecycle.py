@@ -88,6 +88,7 @@ def test_pulled_models_survive_server_restart(
 
 
 @pytest.mark.catalog
+@pytest.mark.writer
 @pytest.mark.timeout(120)
 def test_pull_unknown_model_returns_clear_error(lane: Lane, lilbee_data: Path) -> None:
     """Pulling a non-existent HF ref fails with a user-facing error message,
