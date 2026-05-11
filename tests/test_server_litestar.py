@@ -574,7 +574,7 @@ class TestConfigDefaultsRoute:
         data = resp.json()
         # Scalar defaults present.
         assert data["chunk_size"] == 512
-        assert data["top_k"] == 10
+        assert data["top_k"] == 8
         # Nullable defaults come through as null.
         assert data["crawl_max_depth"] is None
         assert data["crawl_max_pages"] is None
