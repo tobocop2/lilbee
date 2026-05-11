@@ -86,6 +86,10 @@ class TestParseKvParameters:
         result = parse_kv_parameters("max_tokens 2048")
         assert result.max_tokens == 2048
 
+    def test_max_reasoning_chars_parsed(self):
+        result = parse_kv_parameters("max_reasoning_chars 80000")
+        assert result.max_reasoning_chars == 80_000
+
 
 class TestReadGgufDefaults:
     def test_empty_dict(self):
@@ -128,6 +132,11 @@ class TestReadGgufDefaults:
         metadata = {"context_length": "abc"}
         result = read_gguf_defaults(metadata)
         assert result.num_ctx is None
+
+    def test_max_reasoning_chars_from_gguf(self):
+        metadata = {"general.max_reasoning_chars": "120000"}
+        result = read_gguf_defaults(metadata)
+        assert result.max_reasoning_chars == 120_000
 
 
 class TestCache:

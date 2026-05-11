@@ -22,6 +22,7 @@ _KNOWN_PARAM_TYPES: dict[str, type] = {
     "repeat_penalty": float,
     "num_ctx": int,
     "max_tokens": int,
+    "max_reasoning_chars": int,
 }
 
 # GGUF metadata keys mapped to ModelDefaults field names
@@ -30,6 +31,7 @@ _GGUF_KEY_MAP: dict[str, str] = {
     "general.top_p": "top_p",
     "general.top_k": "top_k",
     "general.repeat_penalty": "repeat_penalty",
+    "general.max_reasoning_chars": "max_reasoning_chars",
 }
 
 # ``str.split(None, 1)`` returns at most this many tokens for valid ``key value`` lines.
@@ -46,6 +48,7 @@ class ModelDefaults:
     repeat_penalty: float | None = None
     num_ctx: int | None = None
     max_tokens: int | None = None
+    max_reasoning_chars: int | None = None
 
 
 class _DefaultsCache:

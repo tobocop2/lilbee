@@ -711,6 +711,69 @@ class TestAskStreamError:
         assert "Connection lost" in combined
 
 
+@pytest.fixture
+def _disable_pre_chat_llm_calls():
+    """Pin ``query_expansion_count`` and ``hyde`` so RAG setup doesn't burn provider.chat calls."""
+    snapshot_expand = cfg.query_expansion_count
+    snapshot_hyde = cfg.hyde
+    cfg.query_expansion_count = 0
+    cfg.hyde = False
+    yield
+    cfg.query_expansion_count = snapshot_expand
+    cfg.hyde = snapshot_hyde
+
+
+class TestAskStreamCapNotice:
+    """Cap-fire surfaces a reasoning notice + the continuation answer in both streaming paths."""
+
+    def test_ask_stream_emits_cap_notice_then_answer(self, mock_svc, _disable_pre_chat_llm_calls):
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
+
+        mock_svc.store.search.return_value = [_make_result()]
+        long_reasoning = "<think>" + ("x " * 400) + "</think>"
+        mock_svc.provider.chat.side_effect = [
+            iter([long_reasoning]),
+            iter(["final ", "answer"]),
+        ]
+        snapshot_cap = cfg.max_reasoning_chars
+        try:
+            cfg.max_reasoning_chars = 512
+            stream_tokens = list(get_services().searcher.ask_stream("q"))
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+        body = "".join(st.content for st in stream_tokens)
+        assert CAP_NOTICE_TEMPLATE.format(chars=512) in body
+        assert "final answer" in body
+        assert mock_svc.provider.chat.call_count == 2
+
+    def test_direct_stream_emits_cap_notice_then_answer(
+        self, mock_svc, _disable_pre_chat_llm_calls
+    ):
+        """When the searcher takes the no-RAG branch (chat mode), cap-fire still surfaces."""
+        from lilbee.core.config.enums import ChatMode
+        from lilbee.retrieval.reasoning import CAP_NOTICE_TEMPLATE
+
+        mock_svc.store.search.return_value = []
+        long_reasoning = "<think>" + ("x " * 400) + "</think>"
+        mock_svc.provider.chat.side_effect = [
+            iter([long_reasoning]),
+            iter(["direct ", "answer"]),
+        ]
+        snapshot_cap = cfg.max_reasoning_chars
+        snapshot_mode = cfg.chat_mode
+        try:
+            cfg.max_reasoning_chars = 512
+            cfg.chat_mode = ChatMode.CHAT.value
+            stream_tokens = list(get_services().searcher.ask_stream("q"))
+        finally:
+            cfg.max_reasoning_chars = snapshot_cap
+            cfg.chat_mode = snapshot_mode
+        body = "".join(st.content for st in stream_tokens)
+        assert CAP_NOTICE_TEMPLATE.format(chars=512) in body
+        assert "direct answer" in body
+        assert mock_svc.provider.chat.call_count == 2
+
+
 class TestProviderError:
     """ProviderError from the provider should propagate."""
 
