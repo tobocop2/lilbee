@@ -422,6 +422,8 @@ class LilbeeApp(App[None]):
         (the chat prompt in INSERT mode, a catalog/settings search box) eats
         it as a literal character. Showing ``t Tasks`` there would lie.
         """
+        # isinstance: a focused Input/TextArea consumes printable keys before
+        # non-priority screen/app bindings see them, so `t` types a literal there.
         if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
             return False
         return super().check_action(action, parameters)
