@@ -1,32 +1,25 @@
 name: Release Executables
 
+# Builds the standalone executables and uploads them as run artifacts. It never
+# attaches anything to a release -- callers (release-candidate.yml,
+# publish-pypi.yml, emergency-publish.yml) collect the artifacts and decide.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
   workflow_call:
     inputs:
-      publish:
-        description: "Attach binaries to the GitHub release named by `ref` when true."
-        type: boolean
-        default: false
       ref:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   LLAMA_CPP_VERSION: "0.3.20"
 
 jobs:
-  # bot-author skip prevents the orchestrator's promote step from re-firing this workflow.
   lint:
-    if: |
-      github.event_name != 'release' ||
-      github.event.release.author.login != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -42,9 +35,6 @@ jobs:
       - run: make typecheck
 
   test:
-    if: |
-      github.event_name != 'release' ||
-      github.event.release.author.login != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -266,16 +256,7 @@ jobs:
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference, extras-import all green"
         shell: bash
 
-      - name: Upload to release
-        if: github.event_name == 'release' || inputs.publish
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.publish && (inputs.ref || github.ref_name) || '' }}
-          files: dist/${{ matrix.asset_name }}
-
-      - name: Upload artifact (no-publish lane)
-        # Fires on workflow_dispatch + workflow_call with publish=false.
-        if: github.event_name != 'release' && !inputs.publish
+      - name: Upload binary as a run artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}

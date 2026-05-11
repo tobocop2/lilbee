@@ -158,3 +158,18 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # None = auto/all
         assert get_default("n_gpu_layers") is None
+
+
+class TestOverlayPersistedSettings:
+    def test_empty_string_value_is_skipped(self, tmp_path):
+        """Legacy persisted empty strings (None written as "") skip overlay
+        instead of corrupting the in-memory config or spamming warnings."""
+        from lilbee.core.config import cfg
+
+        original = cfg.chat_model
+        try:
+            (tmp_path / "config.toml").write_text('chat_model = ""\n')
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.chat_model == original
+        finally:
+            cfg.chat_model = original
