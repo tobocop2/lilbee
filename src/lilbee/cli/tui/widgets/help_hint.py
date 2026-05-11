@@ -1,4 +1,4 @@
-"""Footer chip: passive ``/ commands · F1 keys`` hint; click defers to the host screen."""
+"""Footer chip: passive ``type / for commands · F1 for keys`` hint; click opens the list."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _CSS_FILE = Path(__file__).parent / "help_hint.tcss"
 
 
 class HelpHint(Static):
-    """One-row chip rendering ``/ commands · ? keys`` above the chat Footer."""
+    """One-row chip rendering ``type / for commands · F1 for keys`` above the chat Footer."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 

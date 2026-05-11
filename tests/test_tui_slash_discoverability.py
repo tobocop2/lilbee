@@ -600,6 +600,9 @@ class TestDiscoveryBindingsAsync:
         assert f2.show is True
         assert f2.priority is True
         assert f2.action == "show_command_catalog"
+        # F2 opens the slash-command list, not the model catalog -- the
+        # footer label must not say "Catalog" (that's `/models`).
+        assert f2.description == "All commands"
 
     def test_ctrl_n_is_priority_for_dropdown_navigation(self) -> None:
         """Ctrl+N stays a priority screen binding for vim-style cycle-next."""
