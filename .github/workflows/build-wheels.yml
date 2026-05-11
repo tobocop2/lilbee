@@ -1,8 +1,9 @@
 name: Build Platform Wheels
 
+# No release: published trigger. Wheels build via workflow_dispatch or
+# workflow_call (release-candidate.yml on tag push, publish-pypi.yml).
+# Creating a GH release must not auto-build or auto-publish.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       llama_cpp_version:
@@ -36,13 +37,10 @@ env:
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # ci runs on direct workflow_dispatch + release-published. Skipped when called as a
-  # reusable workflow from an orchestrator (already gated by main's CI on merge).
-  # bot-author skip prevents the orchestrator's promote step from re-firing this workflow.
+  # ci runs only on direct workflow_dispatch. Skipped when called as a reusable
+  # workflow from an orchestrator (already gated by main's CI on merge).
   ci:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'release' && github.event.release.author.login != 'github-actions[bot]')
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
@@ -129,10 +127,7 @@ jobs:
   # opt in via inputs.build_extras=true to populate the PEP 503 index.
   build-extra-wheels:
     needs: [ci]
-    if: |
-      always()
-      && needs.ci.result != 'failure'
-      && (github.event_name == 'release' || inputs.build_extras)
+    if: always() && needs.ci.result != 'failure' && inputs.build_extras
     strategy:
       fail-fast: false
       matrix:
@@ -260,7 +255,7 @@ jobs:
           path: dist/*.tar.gz
 
   publish-pypi:
-    if: github.event_name == 'release' || inputs.publish
+    if: inputs.publish
     needs: [build-default-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
@@ -291,7 +286,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   verify-pypi:
-    if: github.event_name == 'release' || inputs.publish
+    if: inputs.publish
     needs: [publish-pypi]
     strategy:
       fail-fast: false
@@ -337,8 +332,14 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"
+          # verify-pypi runs only via workflow_call (publish lanes pass ref=<tag>);
+          # fall back to pyproject.toml if ref is a branch name.
+          REF="${{ inputs.ref }}"
+          if [[ "${REF}" =~ ^v?[0-9] ]]; then
+            VERSION="${REF#v}"
+          else
+            VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install from PyPI (poll until indexed)
