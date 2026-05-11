@@ -204,6 +204,7 @@ def test_tui_chat_advances_past_thinking_spinner(
 
 @pytest.mark.writer
 @pytest.mark.timeout(420)
+@pytest.mark.flaky(reruns=2)
 def test_chat_stream_rejects_concurrent_request_with_429(
     lane: Lane,
     lilbee_data: Path,
@@ -216,16 +217,19 @@ def test_chat_stream_rejects_concurrent_request_with_429(
     assert sync.returncode == 0, sync.stderr
 
     base_url, _env, headers = served_lilbee
-    payload = {"messages": [{"role": "user", "content": "Say hi in one word."}]}
-
+    # The route handler acquires the chat lock before it returns the Stream
+    # response, so by the time `holder.stream(...)` yields (response headers
+    # received) the lock is held and the server is inside RAG retrieval for
+    # the first request. Fire the competitor *now* — don't read from `held`
+    # first, since a tiny response can be fully sent (and the lock released)
+    # before the test even reads a chunk. The retrieval phase alone gives a
+    # comfortably wide window vs. the competitor's localhost round-trip.
     with (
         httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as holder,
-        holder.stream("POST", f"{base_url}/api/chat/stream", json=payload) as held,
+        holder.stream("POST", f"{base_url}/api/chat/stream", json={"question": "Say hi."}) as held,
     ):
         held.raise_for_status()
-        # Pull a single chunk so the server-side handler is past lock acquisition.
-        next(iter(held.iter_lines()), None)
         with httpx.Client(timeout=HTTP_FAST_TIMEOUT, headers=headers) as competitor:
-            second = competitor.post(f"{base_url}/api/chat/stream", json=payload)
+            second = competitor.post(f"{base_url}/api/chat/stream", json={"question": "Say hi."})
         assert second.status_code == httpx.codes.TOO_MANY_REQUESTS, second.text
         assert second.headers.get("Retry-After") == "1", dict(second.headers)

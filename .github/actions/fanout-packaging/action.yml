@@ -1,0 +1,31 @@
+name: Fan out downstream packaging
+description: "Trigger publish-docker.yml and publish-packages.yml for a tag whose binaries are already attached to its GH release; caller needs actions:write."
+
+inputs:
+  tag:
+    description: "Tag whose binaries are on the GH release (e.g. v0.6.66b469)."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # publish-docker.yml curls the GH-release Linux binary; publish-packages.yml
+    # pins the GH-release binaries by hash. Both consume the release, not PyPI,
+    # so this only needs the binaries attached -- it does not wait on the wheels.
+    - name: Trigger Publish Docker Image
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh workflow run publish-docker.yml \
+          --repo ${{ github.repository }} \
+          -f tag=${{ inputs.tag }}
+
+    - name: Trigger Publish Packages
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh workflow run publish-packages.yml \
+          --repo ${{ github.repository }} \
+          -f tag=${{ inputs.tag }}

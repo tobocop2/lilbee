@@ -14,6 +14,18 @@ on:
         description: "lilbee version to QA (defaults to latest published)"
         required: false
         default: "latest"
+      wheel_run_id:
+        description: "Workflow run ID with wheel-default-* artifacts (pypi lane uses these instead of PyPI)."
+        required: false
+        default: ""
+      binary_run_id:
+        description: "Workflow run ID with lilbee-<os>-<arch> artifacts (binary lane uses these instead of the GH release)."
+        required: false
+        default: ""
+      version:
+        description: "lilbee version string for the supplied run artifacts (e.g. 0.6.66b469)."
+        required: false
+        default: ""
   # Reusable trigger: with wheel_run_id/binary_run_id set, consumes those run artifacts instead of PyPI/GH release.
   workflow_call:
     inputs:

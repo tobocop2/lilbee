@@ -27,3 +27,17 @@ reason = "SQL injection in the LiteLLM Proxy server's API-key verification path.
 [[IgnoredVulns]]
 id = "GHSA-v4p8-mg3p-g94g"
 reason = "Authenticated command execution via the LiteLLM Proxy MCP stdio test endpoints (POST /mcp-rest/test/connection and /mcp-rest/test/tools/list). Requires a valid proxy API key and only triggers when the proxy is running. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never starts the proxy, so neither endpoint is exposed. Patched in 1.83.7; bump is blocked by the same click==8.1.8 vs typer click>=8.2.1 conflict noted on GHSA-xqmj-j6mv-4862."
+
+# pygments is never a runtime or dev dependency; it is only resolved
+# transitively under tools/qa/requirements.txt (the QA-matrix runner venv,
+# pulled in via pytest). That harness is not published to PyPI or shipped to
+# users, and uv.lock pins pygments 2.20.0 (patched) for everything else.
+# pip-audit scans uv.lock and so does not flag these; osv-scanner resolves the
+# QA requirements file and does. Revisit if the QA runner is ever distributed.
+[[IgnoredVulns]]
+id = "PYSEC-2023-117"
+reason = "ReDoS in pygments lexers (CVE-2022-40896 / GHSA-mrwq-x4v8-fh7p). pygments is only resolved transitively under tools/qa/requirements.txt, the QA-matrix runner venv, which is never shipped. The dev and runtime environments pin pygments 2.20.0 (patched) via uv.lock."
+
+[[IgnoredVulns]]
+id = "GHSA-5239-wwwm-4pmq"
+reason = "ReDoS in pygments GUID matching (CVE-2026-4539). pygments is only resolved transitively under tools/qa/requirements.txt, the QA-matrix runner venv, which is never shipped. The dev and runtime environments pin pygments 2.20.0 (patched) via uv.lock."
