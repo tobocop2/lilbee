@@ -12,6 +12,12 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
+from lilbee.retrieval.reasoning import (
+    CAP_NOTICE_TEMPLATE,
+    CapNotice,
+    effective_reasoning_cap,
+    stream_chat_with_cap,
+)
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
@@ -64,23 +70,30 @@ def _run_llm_stream(
     cancel: threading.Event,
     error_holder: list[str],
 ) -> None:
-    """Stream LLM tokens into a queue from a worker thread."""
-    from lilbee.retrieval.reasoning import filter_reasoning
-
+    """Forward tokens from the cap-aware chat orchestrator into the SSE queue."""
     try:
-        provider = get_services().provider
-        stream = provider.chat(
+        events = stream_chat_with_cap(
+            get_services().provider,
             cast("list[dict[str, Any]]", messages),
-            stream=True,
-            options=opts or None,
+            options=opts,
             model=cfg.chat_model,
+            show_reasoning=cfg.show_reasoning,
+            cap_chars=effective_reasoning_cap(),
         )
-        for st in filter_reasoning(stream, show=cfg.show_reasoning):
+        for event in events:
             if cancel.is_set():
+                events.close()
                 break
-            if st.content:
-                event_type = SseEvent.REASONING if st.is_reasoning else SseEvent.TOKEN
-                queue.put_nowait(sse_event(event_type, {"token": st.content}))
+            if isinstance(event, CapNotice):
+                queue.put_nowait(
+                    sse_event(
+                        SseEvent.REASONING,
+                        {"token": CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
+                    )
+                )
+            elif event.content:
+                kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
+                queue.put_nowait(sse_event(kind, {"token": event.content}))
     except Exception as exc:
         error_holder.append(str(exc))
     finally:

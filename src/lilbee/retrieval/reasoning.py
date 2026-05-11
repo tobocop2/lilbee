@@ -1,22 +1,46 @@
-"""Reasoning token filter: detects <think>...</think> tags in streaming output.
+"""Reasoning token filter and cap-aware chat orchestrator.
 
 Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
-``<think>...</think>`` tags. This module provides a stateful filter that
-classifies tokens as reasoning or response content.
+``<think>...</think>`` tags. This module provides:
+
+- ``filter_reasoning``: a stateful streaming filter that classifies
+  tokens as reasoning vs response and signals when reasoning exceeds a
+  caller-supplied cap.
+- ``stream_chat_with_cap``: the high-level orchestrator. Wraps a
+  provider call with the filter; when the cap fires, re-issues the
+  chat with a "stop thinking, answer directly" nudge. All chat surfaces
+  (HTTP/SSE, CLI, TUI) consume this so cap behavior is uniform.
+- ``effective_reasoning_cap``: resolves the cap from the global config
+  with per-model ``ModelDefaults`` overrides.
 """
 
 from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
+from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator
+
+if TYPE_CHECKING:
+    from lilbee.providers.base import LLMProvider
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*|<think>[\s\S]*$")
+_PROGRESS_TICK_CHARS = 256
+"""Coarseness of the progress callback: fire when reasoning grows by at least this many chars."""
+
+CAP_CONTINUATION_PROMPT = (
+    "Stop thinking now. Give your final answer directly, without any further <think> blocks."
+)
+"""The user-message nudge appended on the continuation call after the cap fires."""
+
+CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
+"""User-visible marker emitted between the truncated reasoning and the continuation answer."""
 
 
 @dataclass
@@ -27,14 +51,21 @@ class StreamToken:
     is_reasoning: bool
 
 
+@dataclass
+class CapNotice:
+    """Emitted once when the reasoning cap fires, before the continuation stream."""
+
+    cap_chars: int
+
+
+@dataclass
 class _TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 
-    def __init__(self, *, show: bool) -> None:
-        self.show = show
-        self.buf = ""
-        self.in_thinking = False
-        self.reasoning_chars = 0
+    show: bool
+    buf: str = ""
+    in_thinking: bool = False
+    reasoning_chars: int = 0
 
     def feed(self, token: str) -> list[StreamToken]:
         """Feed a token and return any complete StreamTokens."""
@@ -43,7 +74,7 @@ class _TagParser:
         while self.buf:
             emitted = self._process_thinking() if self.in_thinking else self._process_normal()
             if emitted is None:
-                break  # waiting for more data (partial tag)
+                break
             if emitted.content:
                 result.append(emitted)
         return result
@@ -53,15 +84,15 @@ class _TagParser:
         if not self.buf:
             return None
         if self.in_thinking:
+            self.reasoning_chars += len(self.buf)
             return StreamToken(content=self.buf, is_reasoning=True) if self.show else None
         return StreamToken(content=self.buf, is_reasoning=False)
 
     def _process_thinking(self) -> StreamToken | None:
-        """Process buffer while inside a <think> block. Returns None if waiting."""
         close_idx = self.buf.find(_CLOSE_TAG)
         if close_idx == -1:
             if _could_be_partial(_CLOSE_TAG, self.buf):
-                return None  # wait for more
+                return None
             content = self.buf
             self.reasoning_chars += len(content)
             self.buf = ""
@@ -70,7 +101,6 @@ class _TagParser:
                 if self.show
                 else StreamToken(content="", is_reasoning=True)
             )
-
         thinking_content = self.buf[:close_idx]
         self.reasoning_chars += len(thinking_content)
         self.buf = self.buf[close_idx + len(_CLOSE_TAG) :]
@@ -80,76 +110,137 @@ class _TagParser:
         return StreamToken(content="", is_reasoning=True)
 
     def _process_normal(self) -> StreamToken | None:
-        """Process buffer while outside thinking blocks. Returns None if waiting."""
         open_idx = self.buf.find(_OPEN_TAG)
         if open_idx == -1:
             if _could_be_partial(_OPEN_TAG, self.buf):
-                return None  # wait for more
+                return None
             content = self.buf
             self.buf = ""
             return StreamToken(content=content, is_reasoning=False)
-
         before = self.buf[:open_idx]
         self.buf = self.buf[open_idx + len(_OPEN_TAG) :]
         self.in_thinking = True
         return StreamToken(content=before, is_reasoning=False)
 
 
-_MAX_REASONING_CHARS = 16_000  # ~4K tokens, safety limit for runaway reasoning
-# Drain cap kept low: each token pull triggers a model inference step, so a
-# large cap hangs on slow CI runners after a `</think>` truncation.
-_DRAIN_CAP = 512
+def filter_reasoning(
+    tokens: Iterator[str],
+    *,
+    show: bool,
+    cap_chars: int,
+    on_cap: Callable[[], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> Iterator[StreamToken]:
+    """Classify ``<think>...</think>`` tokens and stop when reasoning exceeds the cap.
 
-
-def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
-    """Filter ``<think>...</think>`` tags from a token stream; cap runaway reasoning.
-
-    When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``;
-    when False, strips it. Always closes the upstream iterator on exit so a
-    runaway think loop doesn't leave llama.cpp holding the chat lock.
+    *cap_chars* bounds reasoning content. When exceeded, ``on_cap`` is
+    fired (no payload), the upstream iterator is closed, and iteration
+    stops. The caller decides what to do next via the higher-level
+    ``stream_chat_with_cap`` orchestrator. *on_progress* is fired with
+    the running reasoning-chars count each time it grows by at least 256
+    characters. A non-positive *cap_chars* disables the cap.
     """
     parser = _TagParser(show=show)
+    last_progress_tick = 0
     try:
-        truncated = yield from _stream_until_cap(parser, tokens)
-        if truncated:
-            yield from _drain_after_truncation(parser, tokens)
+        for token in tokens:
+            for st in parser.feed(token):
+                if st.content:
+                    yield st
+            if (
+                on_progress is not None
+                and parser.reasoning_chars >= last_progress_tick + _PROGRESS_TICK_CHARS
+            ):
+                last_progress_tick = parser.reasoning_chars
+                on_progress(parser.reasoning_chars)
+            if cap_chars > 0 and parser.reasoning_chars > cap_chars:
+                if on_cap is not None:
+                    on_cap()
+                return
         final = parser.flush()
         if final and final.content:
             yield final
+        if on_progress is not None and parser.reasoning_chars > last_progress_tick:
+            on_progress(parser.reasoning_chars)
     finally:
         _close_iterator(tokens)
 
 
-def _stream_until_cap(
-    parser: _TagParser, tokens: Iterator[str]
-) -> Generator[StreamToken, None, bool]:
-    """Yield from *tokens* until the reasoning cap fires. Returns True if truncated."""
-    for token in tokens:
-        for st in parser.feed(token):
-            if st.content:
-                yield st
-        if parser.reasoning_chars > _MAX_REASONING_CHARS:
-            parser.in_thinking = False
-            parser.buf = ""
-            yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
-            return True
-    return False
+def effective_reasoning_cap() -> int:
+    """Return the active reasoning cap; 0 means unlimited.
 
-
-def _drain_after_truncation(parser: _TagParser, tokens: Iterator[str]) -> Iterator[StreamToken]:
-    """Drain a bounded suffix after a ``</think>`` truncation.
-
-    Captures response content that follows a closed ``</think>`` tag without
-    pulling the whole stream; bounded by ``_DRAIN_CAP`` characters.
+    A per-model ``ModelDefaults.max_reasoning_chars`` value (including
+    ``0`` for "this model is allowed to think forever") beats the global
+    ``cfg.max_reasoning_chars`` setting. Only ``None`` falls through to
+    the global, so a per-model 0 means the user explicitly opted that
+    model out of the cap.
     """
-    drain_chars = 0
-    for token in tokens:
-        drain_chars += len(token)
-        if drain_chars > _DRAIN_CAP:
-            return
-        for st in parser.feed(token):
-            if st.content and not st.is_reasoning:
-                yield st
+    defaults = cfg.model_defaults
+    override = defaults.max_reasoning_chars if defaults is not None else None
+    return override if isinstance(override, int) and override >= 0 else cfg.max_reasoning_chars
+
+
+def stream_chat_with_cap(
+    provider: LLMProvider,
+    messages: list[dict[str, Any]],
+    *,
+    options: dict[str, Any] | None,
+    model: str,
+    show_reasoning: bool,
+    cap_chars: int,
+) -> Generator[StreamToken | CapNotice, None, None]:
+    """Stream chat tokens; on cap-fire, re-issue with a stop-thinking nudge.
+
+    Yields ``StreamToken`` events for both reasoning and response tokens
+    in the first pass. If reasoning exceeds *cap_chars*, the upstream
+    iterator is closed, a single ``CapNotice`` is yielded, and the
+    continuation stream starts (same messages plus a user message asking
+    the model to answer directly). Continuation tokens stream as
+    ``StreamToken(is_reasoning=False)``.
+    """
+    cap_fired = False
+
+    def _on_cap() -> None:
+        nonlocal cap_fired
+        cap_fired = True
+
+    first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
+    yield from filter_reasoning(
+        first_stream,
+        show=show_reasoning,
+        cap_chars=cap_chars,
+        on_cap=_on_cap,
+    )
+    if not cap_fired:
+        return
+    yield CapNotice(cap_chars=cap_chars)
+    nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
+    second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
+    try:
+        for chunk in second_stream:
+            if chunk:
+                yield StreamToken(content=chunk, is_reasoning=False)
+    finally:
+        _close_iterator(second_stream)
+
+
+def cap_events_as_stream_tokens(
+    events: Iterator[StreamToken | CapNotice],
+) -> Iterator[StreamToken]:
+    """Render ``CapNotice`` events as user-visible reasoning ``StreamToken``s.
+
+    Library and CLI surfaces speak ``StreamToken`` only. This helper lets
+    them consume the orchestrator's union output without a per-call
+    isinstance dance for the cap notice.
+    """
+    for event in events:
+        if isinstance(event, CapNotice):
+            yield StreamToken(
+                content=CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars),
+                is_reasoning=True,
+            )
+        elif event.content:
+            yield event
 
 
 def _close_iterator(tokens: Iterator[str]) -> None:

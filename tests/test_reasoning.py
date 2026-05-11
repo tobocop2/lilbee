@@ -1,10 +1,31 @@
-"""Tests for reasoning token filter: <think>...</think> tag detection."""
+"""Tests for reasoning token filter and cap-aware chat orchestrator."""
 
-from lilbee.retrieval.reasoning import StreamToken, filter_reasoning, strip_reasoning
+from unittest.mock import MagicMock
+
+import pytest
+
+from lilbee.core.config import cfg
+from lilbee.providers.model_defaults import ModelDefaults
+from lilbee.retrieval.reasoning import (
+    CAP_CONTINUATION_PROMPT,
+    CapNotice,
+    StreamToken,
+    effective_reasoning_cap,
+    filter_reasoning,
+    stream_chat_with_cap,
+    strip_reasoning,
+)
+
+_NO_CAP = 1_000_000
 
 
-def _collect(tokens: list[str], *, show: bool) -> list[StreamToken]:
-    return list(filter_reasoning(iter(tokens), show=show))
+def _collect(
+    tokens: list[str],
+    *,
+    show: bool,
+    cap_chars: int = _NO_CAP,
+) -> list[StreamToken]:
+    return list(filter_reasoning(iter(tokens), show=show, cap_chars=cap_chars))
 
 
 class TestFilterReasoningShowFalse:
@@ -88,7 +109,6 @@ class TestFilterReasoningShowTrue:
 
 class TestCouldBePartial:
     def test_partial_open_tag(self):
-        """Token ending with '<thi' should wait for more data."""
         result = _collect(["text<thi", "nk>reasoning</think>done"], show=False)
         content = "".join(st.content for st in result)
         assert "reasoning" not in content
@@ -96,147 +116,120 @@ class TestCouldBePartial:
         assert "done" in content
 
     def test_partial_close_tag(self):
-        """Token ending with '</thi' inside thinking should wait."""
         result = _collect(["<think>thought</thi", "nk>done"], show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "thought" in reasoning
 
     def test_false_partial_not_tag(self):
-        """'<' at end that doesn't match tag prefix should not stall."""
         result = _collect(["text<", "b>not a tag"], show=False)
         content = "".join(st.content for st in result)
         assert "text" in content
 
     def test_unterminated_thinking_flushed_when_show(self):
-        """Thinking block never closed: buffer flushed as reasoning at end."""
         result = _collect(["<think>unterminated"], show=True)
         reasoning = [st for st in result if st.is_reasoning]
         assert len(reasoning) >= 1
         assert "unterminated" in "".join(st.content for st in reasoning)
 
     def test_unterminated_thinking_with_partial_close(self):
-        """Thinking with partial close tag at end: flushed as reasoning."""
         result = _collect(["<think>deep thought</thi"], show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "deep thought" in reasoning
 
     def test_unterminated_thinking_stripped_when_hidden(self):
-        """Thinking block never closed: buffer discarded when show=False."""
         result = _collect(["<think>unterminated"], show=False)
         content = "".join(st.content for st in result)
         assert content == ""
 
     def test_trailing_text_after_thinking(self):
-        """Normal text at end of stream flushed correctly."""
         result = _collect(["<think>thought</think>trailing"], show=True)
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "trailing" in response
 
     def test_normal_text_ending_with_partial_tag(self):
-        """Buffer has normal text ending with '<t': flushed as normal at end."""
         result = _collect(["hello<t"], show=False)
         content = "".join(st.content for st in result)
         assert "hello<t" in content
 
 
-class TestReasoningTruncation:
-    def test_runaway_reasoning_truncated(self):
-        """Reasoning exceeding _MAX_REASONING_CHARS is cut off."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+class TestReasoningCap:
+    def test_cap_fires_on_long_reasoning(self):
+        """on_cap is invoked when reasoning exceeds cap_chars."""
+        fired = [False]
 
-        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        # Simulate realistic streaming: one char per token so the cap
-        # triggers mid-stream rather than after one giant token.
+        def _on_cap() -> None:
+            fired[0] = True
+
+        long_think = "x" * 1500
         tokens = list(f"<think>{long_think}</think>answer")
-        result = _collect(tokens, show=True)
-        reasoning = "".join(st.content for st in result if st.is_reasoning)
-        assert "[reasoning truncated]" in reasoning
-        assert len(reasoning) <= _MAX_REASONING_CHARS + 200
+        list(filter_reasoning(iter(tokens), show=True, cap_chars=1024, on_cap=_on_cap))
+        assert fired[0]
 
-    def test_content_after_truncated_reasoning(self):
-        """Content tokens after truncated reasoning are still yielded."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 500)
-        tokens = [f"<think>{long_think}</think>", "the answer"]
-        result = _collect(tokens, show=True)
+    def test_cap_yields_no_response_after_fire(self):
+        """When the cap fires, iteration stops; later tokens don't reach the consumer."""
+        long_think = "x" * 1500
+        tokens = list(f"<think>{long_think}</think>answer")
+        result = list(
+            filter_reasoning(iter(tokens), show=True, cap_chars=1024, on_cap=lambda: None)
+        )
         response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "the answer" in response
+        assert "answer" not in response
 
-    def test_re_entered_thinking_is_not_yielded_as_response(self):
-        """After truncation, content the model emits inside a fresh <think>
-        tag is tagged as reasoning and excluded from the response stream."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+    def test_no_cap_when_zero(self):
+        """cap_chars=0 disables the cap entirely; on_cap never fires."""
+        fired = [False]
 
-        long_think = "x" * (_MAX_REASONING_CHARS + 500)
-        tokens = [f"<think>{long_think}", "</think>", "<think>", "more thinking"]
-        result = _collect(tokens, show=True)
+        def _on_cap() -> None:
+            fired[0] = True
+
+        long_think = "x" * 5000
+        tokens = list(f"<think>{long_think}</think>answer")
+        list(filter_reasoning(iter(tokens), show=False, cap_chars=0, on_cap=_on_cap))
+        assert fired == [False]
+
+    def test_on_cap_optional(self):
+        """Cap firing without an on_cap callback still terminates cleanly."""
+        long_think = "x" * 1500
+        tokens = list(f"<think>{long_think}</think>answer")
+        result = list(filter_reasoning(iter(tokens), show=False, cap_chars=512))
         response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "more thinking" not in response
+        assert response == ""
 
-    def test_runaway_reasoning_truncated_show_false(self):
-        """Reasoning cap works even when show_reasoning=False.
+    def test_on_progress_fires_during_reasoning(self):
+        """on_progress receives running reasoning-chars counts as content arrives."""
+        progress: list[int] = []
+        chunks = ["<think>"] + ["x" * 100 for _ in range(10)] + ["</think>", "answer"]
+        list(
+            filter_reasoning(
+                iter(chunks), show=False, cap_chars=_NO_CAP, on_progress=progress.append
+            )
+        )
+        assert progress
+        assert progress == sorted(progress)
+        assert progress[-1] >= 1000
 
-        Previously, the cap only tracked visible reasoning content.
-        With show=False, reasoning tokens have empty content, so the
-        cap never triggered and the stream could loop forever.
-        """
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        tokens = list(f"<think>{long_think}")  # no closing tag: infinite reasoning
-        result = _collect(tokens, show=False)
-        # Should terminate (not hang) and yield the truncation marker
-        truncation_markers = [st for st in result if "truncated" in st.content]
-        assert len(truncation_markers) == 1
+    def test_on_progress_optional(self):
+        """Stream completes cleanly when on_progress is omitted."""
+        result = _collect(["<think>x" * 200 + "</think>answer"], show=False)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        assert response == "answer"
 
     def test_unclosed_think_terminates_show_false(self):
-        """An unclosed <think> block with show=False terminates at the cap."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+        """An unclosed <think> with show=False still hits the cap, no hang."""
+        fired = [False]
 
-        # Simulate streaming: chars come one at a time, never closing the tag
-        tokens = ["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100)
-        result = _collect(tokens, show=False)
-        # Must not hang, and must contain truncation marker
-        assert any("truncated" in st.content for st in result)
+        def _on_cap() -> None:
+            fired[0] = True
 
-    def test_drain_flushes_trailing_content(self):
-        """After truncation, trailing non-reasoning content in buffer is flushed."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
+        tokens = ["<think>"] + ["x"] * 2000
+        list(filter_reasoning(iter(tokens), show=False, cap_chars=512, on_cap=_on_cap))
+        assert fired[0]
 
-        long_think = "x" * (_MAX_REASONING_CHARS + 100)
-        # Reasoning truncated, then more tokens arrive with trailing content.
-        # End with a partial tag prefix so the parser buffers it until flush.
-        tokens = [*f"<think>{long_think}</think>", "final", "<th"]
-        result = _collect(tokens, show=True)
-        response = "".join(st.content for st in result if not st.is_reasoning)
-        assert "final" in response
-        assert "<th" in response  # flushed by final flush()
-
-    def test_drain_cap_prevents_infinite_post_truncation(self):
-        """Drain loop stops after _MAX_REASONING_CHARS even if model keeps generating."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS
-
-        long_think = "x" * (_MAX_REASONING_CHARS + 100)
-        # After truncation, model keeps generating reasoning (no closing tag)
-        post_tokens = ["y"] * (_MAX_REASONING_CHARS + 100)
-        tokens = [*f"<think>{long_think}", *post_tokens]
-        result = _collect(tokens, show=True)
-        assert any("truncated" in st.content for st in result)
-
-    def test_upstream_generator_closed_on_truncation(self):
-        """Truncation closes the upstream iterator so llama.cpp doesn't hang.
-
-        Without this, a runaway think loop leaves llama.cpp suspended at
-        its yield point and the chat lock isn't released until garbage
-        collection eventually fires __del__.
-        """
-        from lilbee.retrieval.reasoning import filter_reasoning
-
+    def test_upstream_generator_closed_on_cap(self):
+        """Cap firing closes the upstream iterator, releasing llama.cpp's chat lock."""
         closed = {"value": False}
 
         def runaway_tokens():
-            """Yields forever; never emits </think>. Simulates a stuck model."""
             try:
                 yield "<think>"
                 while True:
@@ -245,18 +238,15 @@ class TestReasoningTruncation:
                 closed["value"] = True
                 raise
 
-        # Drive the filter to completion. Truncation should fire and the
-        # generator must be left in a suspended state for close() to act on.
-        list(filter_reasoning(runaway_tokens(), show=True))
-        assert closed["value"], "filter_reasoning must close upstream iterator"
+        list(filter_reasoning(runaway_tokens(), show=True, cap_chars=512, on_cap=lambda: None))
+        assert closed["value"]
 
     def test_close_called_on_stream_wrapper_early_exit(self):
-        """A stream-wrapper iterator with a ``close()`` method has it called."""
-        from lilbee.retrieval.reasoning import _MAX_REASONING_CHARS, filter_reasoning
+        """A stream wrapper exposing close() has it called when the cap fires."""
 
         class FakeStream:
             def __init__(self) -> None:
-                self.tokens = iter(["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100))
+                self.tokens = iter(["<think>"] + ["x"] * 2000)
                 self.closed = False
 
             def __iter__(self):
@@ -269,8 +259,164 @@ class TestReasoningTruncation:
                 self.closed = True
 
         stream = FakeStream()
-        list(filter_reasoning(stream, show=True))
-        assert stream.closed, "filter_reasoning must call close() on stream wrapper"
+        list(filter_reasoning(stream, show=True, cap_chars=512, on_cap=lambda: None))
+        assert stream.closed
+
+
+class TestEffectiveReasoningCap:
+    """The single source of truth for which cap value applies right now."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self):
+        snapshot_cap = cfg.max_reasoning_chars
+        snapshot_defaults = cfg.model_defaults
+        cfg.clear_model_defaults()
+        yield
+        cfg.max_reasoning_chars = snapshot_cap
+        cfg.apply_model_defaults(snapshot_defaults)
+
+    def test_uses_cfg_when_no_per_model_override(self):
+        cfg.max_reasoning_chars = 8000
+        assert effective_reasoning_cap() == 8000
+
+    def test_per_model_override_wins(self):
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=20_000))
+        assert effective_reasoning_cap() == 20_000
+
+    def test_per_model_zero_means_unlimited_for_that_model(self):
+        """A per-model 0 is an explicit opt-out, not 'fall through to global'."""
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(max_reasoning_chars=0))
+        assert effective_reasoning_cap() == 0
+
+    def test_no_override_field_falls_through(self):
+        cfg.max_reasoning_chars = 8000
+        cfg.apply_model_defaults(ModelDefaults(temperature=0.7))
+        assert effective_reasoning_cap() == 8000
+
+    def test_global_zero_means_unlimited(self):
+        cfg.max_reasoning_chars = 0
+        assert effective_reasoning_cap() == 0
+
+
+class TestStreamChatWithCap:
+    """End-to-end orchestrator: filter + cap-fire + continuation re-issue."""
+
+    def _make_provider(self, *responses: object) -> MagicMock:
+        provider = MagicMock()
+        provider.chat.side_effect = [iter(r) if not callable(r) else r() for r in responses]
+        return provider
+
+    def test_no_cap_fire_yields_only_stream_tokens(self):
+        provider = self._make_provider(["<think>brief</think>", "the answer"])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "hi"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=64_000,
+            )
+        )
+        assert not any(isinstance(e, CapNotice) for e in events)
+        assert provider.chat.call_count == 1
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "the answer" in response
+
+    def test_cap_fire_emits_notice_then_continuation_tokens(self):
+        long_think = "<think>" + ("x " * 400) + "</think>not reached"
+        provider = self._make_provider([long_think], ["final ", "answer."])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "explain X"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=512,
+            )
+        )
+        notices = [e for e in events if isinstance(e, CapNotice)]
+        assert len(notices) == 1
+        assert notices[0].cap_chars == 512
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "final " in response and "answer." in response
+        assert provider.chat.call_count == 2
+
+    def test_continuation_call_appends_user_nudge(self):
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        provider = self._make_provider([long_think], ["done"])
+        list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=512,
+            )
+        )
+        nudged = provider.chat.call_args_list[1].args[0]
+        assert nudged[-1] == {"role": "user", "content": CAP_CONTINUATION_PROMPT}
+        assert nudged[0] == {"role": "user", "content": "q"}
+
+    def test_unlimited_cap_skips_continuation_even_for_long_reasoning(self):
+        """cap_chars=0 disables the cap; the orchestrator never re-issues."""
+        very_long = "<think>" + ("x " * 5000) + "</think>real answer"
+        provider = self._make_provider([very_long])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "go deep"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=0,
+            )
+        )
+        assert not any(isinstance(e, CapNotice) for e in events)
+        assert provider.chat.call_count == 1
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "real answer" in response
+
+    def test_consumer_close_propagates_to_continuation_stream(self):
+        """If the consumer stops iterating, the continuation stream is closed too."""
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        second_closed = {"value": False}
+
+        def second_pass():
+            try:
+                yield "first "
+                yield "second"
+            except GeneratorExit:
+                second_closed["value"] = True
+                raise
+
+        provider = MagicMock()
+        provider.chat.side_effect = [iter([long_think]), second_pass()]
+        gen = stream_chat_with_cap(
+            provider,
+            [{"role": "user", "content": "q"}],
+            options=None,
+            model="test-model",
+            show_reasoning=False,
+            cap_chars=512,
+        )
+        produced: list[object] = []
+        for event in gen:
+            produced.append(event)
+            if isinstance(event, StreamToken) and event.content == "first ":
+                gen.close()
+                break
+        assert second_closed["value"]
 
 
 class TestStripReasoning:
