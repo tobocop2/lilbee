@@ -18,6 +18,7 @@ from conftest import (
     ASK_TIMEOUT,
     MCP_CALL_TIMEOUT,
     SEARCH_TIMEOUT,
+    SERVER_BOOT_TIMEOUT_WITH_MODELS,
     SYNC_TIMEOUT,
     Lane,
     extract_search_results,
@@ -102,10 +103,14 @@ def test_mcp_search_routes_battery_to_ev_notes(
     sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
     assert sync.returncode == 0, sync.stderr
 
+    # `lilbee mcp` pre-warms get_services() (provider + embedder + store)
+    # before it attaches to stdio, so the initialize handshake can take as
+    # long as a `lilbee serve` cold start on a slow runner. Use the same
+    # boot budget; the search call itself stays on the fast timeout.
     client = MCPStdioClient(
         [lane.lilbee_bin, "mcp"],
         env=lilbee_env_with_models,
-        startup_timeout=MCP_CALL_TIMEOUT,
+        startup_timeout=SERVER_BOOT_TIMEOUT_WITH_MODELS,
     )
     try:
         result = client.call_tool(

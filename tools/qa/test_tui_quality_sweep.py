@@ -19,6 +19,14 @@ from conftest import TUI_BOOT_TIMEOUT, TUI_SCREEN_TIMEOUT, Lane
 _TUI_REDRAW_POLL = 0.25
 
 
+@pytest.fixture
+def tui(tui_with_models: TuiSession) -> TuiSession:
+    """Every scenario here drives a post-wizard screen (model bar, catalog,
+    settings), so this module's ``tui`` needs models pre-assigned. Override
+    the bare conftest fixture for the whole file."""
+    return tui_with_models
+
+
 @pytest.mark.tui
 def test_model_bar_shows_picker_buttons_and_search_toggle(tui: TuiSession) -> None:
     """Chat screen renders the chat + embed picker buttons and the Search/Chat mode toggle."""

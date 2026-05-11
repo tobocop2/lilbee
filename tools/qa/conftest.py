@@ -447,8 +447,39 @@ def run_lilbee(
 
 @pytest.fixture
 def tui(lane: Lane, lilbee_data: Path) -> Iterator[TuiSession]:
-    """Spawn `lilbee` as a TUI in a PTY; tear down on exit."""
+    """Spawn `lilbee` as a TUI in a PTY; tear down on exit.
+
+    Bare env, no models configured: the TUI boots straight into the
+    first-run setup wizard. Fine for boot-smoke and logging assertions;
+    use ``tui_with_models`` for anything that needs the chat/catalog
+    screens.
+    """
     session = TuiSession([lane.lilbee_bin], env=lilbee_env(lilbee_data))
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def tui_with_models(
+    lane: Lane,
+    lilbee_data: Path,
+    lilbee_env_with_models: dict[str, str],
+) -> Iterator[TuiSession]:
+    """`tui`, but with chat/embedding roles pre-assigned and an indexed
+    corpus so the TUI skips the setup wizard and lands on the chat screen
+    with a live model bar.
+
+    ``ChatScreen._needs_setup()`` returns True when the LanceDB dir is
+    missing *or* a configured model can't be resolved. ``lilbee_env_with_models``
+    covers the second case; seeding + ``sync`` covers the first (it creates
+    and populates the LanceDB dir), so the wizard never fires.
+    """
+    seed_fixture_corpus(lilbee_data)
+    sync = run_lilbee_with_env(lane, ["sync"], env=lilbee_env_with_models, timeout=SYNC_TIMEOUT)
+    assert sync.returncode == 0, sync.stderr
+    session = TuiSession([lane.lilbee_bin], env=lilbee_env_with_models)
     try:
         yield session
     finally:

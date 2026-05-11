@@ -216,7 +216,7 @@ def test_chat_stream_rejects_concurrent_request_with_429(
     assert sync.returncode == 0, sync.stderr
 
     base_url, _env, headers = served_lilbee
-    payload = {"messages": [{"role": "user", "content": "Say hi in one word."}]}
+    payload = {"question": "Say hi in one word."}
 
     with (
         httpx.Client(timeout=_STREAM_TIMEOUT, headers=headers) as holder,
