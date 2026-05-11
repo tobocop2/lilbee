@@ -288,6 +288,7 @@ CHAT_SOURCES_LABEL = "sources"
 
 STATUS_DOCS_LOAD_FAILED = "(unable to read store)"
 STATUS_DOCS_EMPTY = "(no documents yet)"
+STATUS_DOCS_TITLE = "Documents"
 TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 

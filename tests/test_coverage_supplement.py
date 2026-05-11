@@ -434,11 +434,12 @@ class TestTaskBarSpawningRoles:
 
 
 class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
-    """``_fetch_sources_worker`` returns None on read failure and ``[]``
-    when the store opened cleanly with no documents -- the docs table can
-    then choose between the error placeholder and the routine empty hint."""
+    """``_fetch_sources_worker`` flags ``load_failed`` on a read error and
+    leaves it False when the store opened cleanly with no documents -- the
+    docs table can then choose between the error placeholder and the routine
+    empty hint."""
 
-    def test_returns_none_on_failure(self) -> None:
+    def test_load_failed_true_on_read_error(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 
         screen = StatusScreen.__new__(StatusScreen)
@@ -449,9 +450,10 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
             return_value=services,
         ):
             result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
-        assert result is None
+        assert result.load_failed is True
+        assert result.sources == []
 
-    def test_returns_empty_list_on_clean_empty_store(self) -> None:
+    def test_load_failed_false_on_clean_empty_store(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 
         screen = StatusScreen.__new__(StatusScreen)
@@ -462,15 +464,23 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
             return_value=services,
         ):
             result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
-        assert result == []
+        assert result.load_failed is False
+        assert result.sources == []
 
 
 class TestAppCanonicalizeFallbackNotice:
     """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
     when canonicalize returns a different effective ref."""
 
-    async def test_fallback_writes_cfg_and_logs_silently(self, caplog) -> None:
-        """Fallback writes cfg.<field> = effective, logs a WARNING, and does not toast the user."""
+    async def test_fallback_writes_cfg_and_persists_so_warning_does_not_repeat(
+        self, caplog
+    ) -> None:
+        """Fallback writes cfg, persists via settings, logs WARNING, does not toast.
+
+        Persisting (the ``settings.set_value`` call) is what makes this a
+        one-time notice. Without it the warning fires every restart for as
+        long as the stale ref sits in config.toml.
+        """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import (
@@ -504,9 +514,11 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch.object(
                     app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
                 ),
+                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
                 app._canonicalize_persisted_models()
+                mock_set_value.assert_any_call(cfg.data_root, "chat_model", "fallback/model")
             assert cfg.chat_model == "fallback/model"
             assert not notifications, "fallback must not toast the user"
             assert any("fallback/model" in record.getMessage() for record in caplog.records), (
