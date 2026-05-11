@@ -132,7 +132,11 @@ class ChatScreen(Screen[None]):
     _arg_hint = getters.query_one("#arg-hint", ArgHintLine)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("slash", "focus_commands", "Commands", show=True),
+        # `/` opens the slash-command line (Tab completes it -- the
+        # adjacent `Tab Complete` hint spells that out). The label says
+        # "Slash commands" rather than the bare "Commands" so the footer
+        # tells the user what `/` actually does.
+        Binding("slash", "focus_commands", "Slash commands", show=True),
         Binding("tab", "complete", "Complete", show=True, priority=True),
         Binding("ctrl+n", "complete_next", "Next match", show=False, priority=True),
         # Ctrl+P stays bound to the app's command palette by default. The
@@ -166,9 +170,15 @@ class ChatScreen(Screen[None]):
         # nothing is streaming.
         Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
+        # `m` is a NORMAL-mode shortcut to the model bar; in INSERT mode the
+        # focused chat input types the literal "m". `check_action` hides it
+        # from the footer there so the hint matches what the key does.
         Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
-        Binding("f2", "show_command_catalog", "Catalog", show=True, priority=True),
+        # F2 opens the searchable list of every slash command
+        # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
+        # Labeled "All commands" so it reads distinctly from `/ Slash commands`.
+        Binding("f2", "show_command_catalog", "All commands", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -1103,9 +1113,18 @@ class ChatScreen(Screen[None]):
         self._chat_log.scroll_page_down()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Footer-binding gating: show 'Cancel stream' only while streaming + INSERT."""
+        """Keep the footer honest about mode-dependent bindings.
+
+        - ``cancel_stream`` (Ctrl+C) only does something while streaming in
+          INSERT mode; otherwise the App's Quit binding takes the slot.
+        - ``focus_model_bar`` (``m``) is a NORMAL-mode shortcut; in INSERT
+          mode the focused chat input types the literal character, so the
+          ``m Models`` hint would lie.
+        """
         if action == "cancel_stream":
             return self.streaming and self._insert_mode
+        if action == "focus_model_bar":
+            return not self._insert_mode
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
