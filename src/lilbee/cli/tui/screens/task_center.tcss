@@ -1,9 +1,10 @@
 /* Task Center — flight-deck aesthetic.
  *
- * Each task is a TaskRow: thick left rail in the state's color,
- * three stacked lines (title + elapsed, detail + percent, block bar).
- * Active rows pulse the rail at 1 Hz via an alternating -pulse class
- * toggled by TaskCenter's poll. */
+ * Each task is a TaskRow: heavy left rail in the state's color (the
+ * `┃` line tiles seamlessly; the `█` of a `thick` border shows sub-cell
+ * gaps in some terminal fonts), three stacked lines (title + elapsed,
+ * detail + percent, block bar). Active rows pulse the rail at 1 Hz via
+ * an alternating -pulse class toggled by TaskCenter's poll. */
 
 TaskCenter {
     #task-center-title {
@@ -49,13 +50,13 @@ TaskRow {
     height: auto;
     padding: 0 1;
     margin-bottom: 1;
-    border-left: thick $surface-lighten-2;
+    border-left: heavy $surface-lighten-2;
 
-    &.-active { border-left: thick $primary; }
-    &.-active.-pulse { border-left: thick $primary-lighten-3; }
-    &.-done { border-left: thick $success; }
-    &.-failed { border-left: thick $error; }
-    &.-cancelled { border-left: thick $warning; }
+    &.-active { border-left: heavy $primary; }
+    &.-active.-pulse { border-left: heavy $primary-lighten-3; }
+    &.-done { border-left: heavy $success; }
+    &.-failed { border-left: heavy $error; }
+    &.-cancelled { border-left: heavy $warning; }
     &.-just-completed { background: $primary 20%; }
 
     .row-head { padding: 0 0 0 1; }
