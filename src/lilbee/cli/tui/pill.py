@@ -1,9 +1,9 @@
-"""Pill badge: a colored inline label with a single space of padding each side.
+"""Pill badge: a colored inline label with one space of ``{background}``-fill padding each side.
 
-The padding is part of the ``{background}`` fill, not a separate styled cap:
-half-block caps over a ``transparent`` background take their color from whatever
-is behind the pill, which on a near-black terminal reads as a black sliver. A
-flat fill renders the same on any terminal and theme.
+Adapted from toad (https://github.com/batrachianai/toad); the padding is part
+of the solid fill rather than toad's reversed half-block caps, which take their
+color from the cell behind the pill and read as a black sliver on a near-black
+terminal.
 """
 
 from textual.content import Content

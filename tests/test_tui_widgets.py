@@ -638,7 +638,7 @@ class TestModelBar:
             assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
     async def test_labels_rendered(self) -> None:
-        """Chat/Embed labels render as pills, not plain text."""
+        """Chat/Embed labels render as pills (label inside the styled-space padding)."""
         from textual.widgets import Static
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -647,8 +647,8 @@ class TestModelBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
-            assert any("Chat" in p for p in pills)
-            assert any("Embed" in p for p in pills)
+            assert any(" Chat " in p for p in pills)
+            assert any(" Embed " in p for p in pills)
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle

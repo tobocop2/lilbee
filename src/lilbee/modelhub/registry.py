@@ -108,23 +108,16 @@ class ModelRegistry:
     def resolve(self, ref: str) -> Path:
         """Return the blob path for *ref*; ``KeyError`` if not installed.
 
-        The canonical *ref* shape is ``<org>/<repo>/<file>.gguf`` resolved via
-        the lilbee manifest. The two other shapes handled here are **deliberate
-        backwards-compatibility concessions** for builds already in the wild,
-        not the intended contract:
-
-        * a bare ``<org>/<repo>`` (older builds persisted these into
-          ``config.toml`` for the chat / embedding model) resolves to the one
-          quant of that repo that's installed; and
-        * if the lilbee manifest is missing / unparseable (an older build's
-          format) / blob-less, ``resolve`` falls back to whatever GGUF
-          ``huggingface_hub`` says is in the cache for that ref.
-
-        The HF cache layout is stable, so upgrading lilbee never strands an
-        already-downloaded model. This is the exception, not the rule, and it
-        stays here because the alternative is telling users to wipe their
-        lilbee data directory after an upgrade. It's a small amount of code to
-        carry for that.
+        The canonical *ref* is ``<org>/<repo>/<file>.gguf`` resolved via the
+        lilbee manifest. Two other shapes are accepted as a backwards-compat
+        concession for builds already published (whose on-disk layout differs),
+        not as the intended contract: a bare ``<org>/<repo>`` (older builds
+        persisted these into ``config.toml``) resolves to the one quant of that
+        repo that's installed, and a manifest that's missing / unparseable /
+        blob-less falls back to whatever GGUF ``huggingface_hub`` reports the
+        cache holds for that ref. The HF cache layout is stable, so this lets an
+        upgrade keep working without anyone purging their lilbee data dir; it is
+        deliberately the exception here, not a pattern to follow elsewhere.
         """
         if not ref.endswith(".gguf") and ref.count("/") == 1:
             return self._resolve_repo_only(_validate_hf_repo(ref))
@@ -212,22 +205,22 @@ class ModelRegistry:
         return resolved
 
     def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
-        """After recovering a model from the HF cache, write a fresh manifest for it.
+        """Write a fresh manifest for a model just recovered from the HF cache.
 
-        ``resolve`` works without the manifest, but ``list_installed`` (and
-        therefore ``lilbee model list``, the TUI catalog, and the "already
-        installed" check the pull command uses) only walks ``manifests/``, so
-        without this a recovered model would be resolvable but invisible. The
-        ``task`` comes from the featured catalog; for a ref that isn't a catalog
-        entry it's unknown, so the rewrite is skipped. The write is best-effort:
-        a read-only models dir or a write race must not break the resolve that
-        already succeeded.
+        ``list_installed`` only walks ``manifests/``, so a cache-recovered model
+        is resolvable but otherwise invisible (``lilbee model list``, the TUI
+        catalog, the pull command's "already installed" check) until a manifest
+        exists. The ``task`` comes from the featured catalog; for a non-catalog
+        ref it's unknown, so the rewrite is skipped. Best-effort: a read-only
+        models dir or a write race must not break the resolve that succeeded.
         """
         from datetime import UTC, datetime
 
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
-            from lilbee.catalog import find_catalog_entry  # function-local: catalog imports cfg
+            from lilbee.catalog import (
+                find_catalog_entry,
+            )  # deferred: lilbee.catalog is a heavy import
 
             entry = find_catalog_entry(ref)
             if entry is None:
@@ -412,11 +405,9 @@ class ModelRegistry:
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
-    The bytes are already in the HF cache (the caller just downloaded them
-    there), and ``ModelRegistry.resolve`` falls back to the cache when the
-    manifest is absent, so a manifest-write hiccup leaves the model usable and
-    is logged, not raised. If the GGUF can't even be found in the cache the
-    download itself is broken; that re-raises so the caller reports a failure.
+    A failed manifest write is logged, not raised, when the GGUF is still in the
+    HF cache (``resolve`` recovers from it); if it isn't, the download itself is
+    broken and the failure propagates so the caller reports it.
     """
     from datetime import UTC, datetime
 
