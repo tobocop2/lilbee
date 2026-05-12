@@ -1,15 +1,9 @@
 name: Publish to PyPI
 
-# Fast PyPI lane. Builds only the default-backend wheels + sdist for the named
-# tag and publishes them via Trusted Publishing -- no Nuitka executables, no
-# CUDA-extras matrix. Everything that needs the release executable (binaries on
-# the GH release, Docker, Homebrew/AUR/Nix) and the CUDA wheels for the PEP 503
-# index live in release-artifacts.yml, which this workflow dispatches once the
-# PyPI upload lands. Run this after release-candidate.yml has built the tag,
-# attached a pre-release, and run QA.
-#
-# The filename `publish-pypi.yml` and the `pypi` environment name are load-
-# bearing -- PyPI's trusted-publisher config is keyed to them. Don't rename.
+# Fast lane: build default wheels + sdist, upload via Trusted Publishing, then
+# dispatch release-artifacts.yml for the slow rest (executables, CUDA wheels,
+# Docker/Homebrew/AUR/Nix). Filename + the `pypi` env name are pinned by PyPI's
+# trusted-publisher config -- don't rename.
 
 on:
   workflow_dispatch:
@@ -20,8 +14,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # OIDC for Trusted Publishing
-  actions: write    # dispatch release-artifacts.yml
+  id-token: write
+  actions: write
 
 concurrency:
   group: publish-pypi-${{ inputs.tag }}
@@ -39,13 +33,10 @@ jobs:
             echo "tag ${{ inputs.tag }} already has a non-prerelease GH release; refusing to overwrite" >&2
             exit 1
           fi
-
-      # Implicit existence check: fails loudly if the tag does not exist.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
-
-      - name: Parse version from pyproject.toml
+      - name: Check tag matches pyproject version
         shell: bash
         env:
           EXPECTED_TAG: ${{ inputs.tag }}
@@ -56,13 +47,11 @@ jobs:
             exit 1
           fi
 
-  # Default-backend wheels + sdist only. build_extras stays false so this never
-  # sits behind the 90-min CUDA-from-source matrix.
   build-wheels:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      build_extras: false
+      build_extras: false   # CUDA matrix lives in release-artifacts.yml
       ref: ${{ inputs.tag }}
     secrets: inherit
 
@@ -76,10 +65,7 @@ jobs:
           ref: ${{ inputs.tag }}
       - uses: ./.github/actions/promote-pypi
 
-  # Kick off the slow lane (release executables -> GH release, CUDA wheels for
-  # the PEP 503 index, Docker, Homebrew/AUR/Nix) only after the PyPI upload
-  # succeeds. Decoupled so a flaky CUDA cell or a 30-min Nuitka build can't hold
-  # up the PyPI publish.
+  # Kick off the slow lane only after the PyPI upload lands.
   dispatch-release-artifacts:
     needs: [publish-pypi]
     runs-on: ubuntu-latest

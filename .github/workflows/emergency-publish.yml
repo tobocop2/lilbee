@@ -1,9 +1,8 @@
 name: Emergency publish
 
-# Fast PyPI lane that bypasses the QA matrix. Two-step confirm (tag + "skip-qa"
-# token). Like publish-pypi.yml: builds only the default-backend wheels + sdist
-# and uploads them, then dispatches release-artifacts.yml for the executables /
-# CUDA wheels / packaging once the upload lands.
+# Like publish-pypi.yml but skips the QA review -- two-step confirm (tag +
+# "skip-qa" token). Builds default wheels + sdist, uploads, then dispatches
+# release-artifacts.yml.
 
 on:
   workflow_dispatch:
@@ -17,8 +16,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # OIDC for Trusted Publishing
-  actions: write    # dispatch release-artifacts.yml
+  id-token: write
+  actions: write
 
 concurrency:
   group: emergency-publish-${{ inputs.tag }}
@@ -36,7 +35,6 @@ jobs:
             echo "confirm token must be exactly 'skip-qa' to bypass the QA matrix" >&2
             exit 1
           fi
-
       - name: Refuse if tag already has a published release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,13 +43,10 @@ jobs:
             echo "tag ${{ inputs.tag }} already has a published GH release; refusing to overwrite" >&2
             exit 1
           fi
-
-      # Implicit existence check: this fails loudly if the tag does not exist.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
-
-      - name: Parse version from pyproject.toml
+      - name: Check tag matches pyproject version
         shell: bash
         env:
           EXPECTED_TAG: ${{ inputs.tag }}
@@ -66,7 +61,7 @@ jobs:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      build_extras: false
+      build_extras: false   # CUDA matrix lives in release-artifacts.yml
       ref: ${{ inputs.tag }}
     secrets: inherit
 

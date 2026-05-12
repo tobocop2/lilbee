@@ -1,10 +1,9 @@
 name: Build Platform Wheels
 
-# Builds wheels (+ sdist) and uploads them as run artifacts. It never
-# publishes -- callers (release-candidate.yml, publish-pypi.yml,
-# emergency-publish.yml, release-artifacts.yml) collect the artifacts and
-# decide what to do. build_extras=true (release-artifacts.yml only) adds the
-# CUDA + Intel-Mac CPU matrix for the PEP 503 index.
+# Builds wheels (+ sdist) and uploads them as run artifacts -- never publishes;
+# callers (release-candidate.yml, publish-pypi.yml, emergency-publish.yml,
+# release-artifacts.yml) collect the artifacts. build_extras=true adds the CUDA
+# + Intel-Mac CPU matrix (release-artifacts.yml only, for the PEP 503 index).
 on:
   workflow_dispatch:
     inputs:

@@ -1,12 +1,9 @@
 name: Release artifacts
 
-# Slow lane, fired by publish-pypi.yml once the PyPI upload lands (or run
-# manually). Builds everything a PyPI publish doesn't need and the packaging
-# workflows do: the Nuitka standalone executables (re-attached to the tag's GH
-# release in place), the CUDA + Intel-Mac CPU extra wheels (for the per-backend
-# PEP 503 index pages.yml builds), then dispatches Docker / Homebrew / AUR / Nix
-# -- those consume the GH-release executable, so they wait on attach-binaries.
-# None of this gates the PyPI upload.
+# Slow lane, dispatched by publish-pypi.yml after the PyPI upload (or run by
+# hand): rebuild the standalone executables -> re-attach to the tag's GH
+# release, build the CUDA + Intel-Mac CPU extra wheels for the PEP 503 index,
+# then fan out to Docker/Homebrew/AUR/Nix. None of this gates the PyPI upload.
 
 on:
   workflow_dispatch:
@@ -29,11 +26,10 @@ jobs:
     outputs:
       version: ${{ steps.parse.outputs.version }}
     steps:
-      # Implicit existence check: fails loudly if the tag does not exist.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
-      - name: Parse version from pyproject.toml
+      - name: Check tag matches pyproject version
         id: parse
         shell: bash
         env:
@@ -46,16 +42,14 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-  # Default + CUDA/Intel-Mac extra wheels -> run artifacts -> pages.yml's PEP 503 index.
   build-wheels:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      build_extras: true
+      build_extras: true   # default + CUDA/Intel-Mac wheels -> pages.yml's PEP 503 index
       ref: ${{ inputs.tag }}
     secrets: inherit
 
-  # The canonical release executables, built fresh from the tagged commit.
   build-binaries:
     needs: [guard]
     uses: ./.github/workflows/release.yml
@@ -75,8 +69,7 @@ jobs:
           tag: ${{ inputs.tag }}
           version: ${{ needs.guard.outputs.version }}
 
-  # Docker / Homebrew / AUR / Nix all consume the GH-release executable -> wait
-  # on attach-binaries.
+  # Docker/Homebrew/AUR/Nix consume the GH-release executable -> wait on attach-binaries.
   fanout-packaging:
     needs: [attach-binaries]
     runs-on: ubuntu-latest
