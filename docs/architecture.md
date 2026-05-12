@@ -572,7 +572,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 ## Release pipeline
 
-Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing to PyPI / package managers is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream.
+Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream. The PyPI publish needs only the default wheels + sdist (they finish ~25 min into the run), so it doesn't wait on the executables, the CUDA matrix, or QA — only the downstream packaging fan-out (which consumes the executables on the GH release) waits for those.
 
 ```mermaid
 flowchart TD
@@ -580,9 +580,9 @@ flowchart TD
 
     subgraph RC["release-candidate.yml — builds every artifact once"]
         direction TB
-        DW["build-default-wheels.yml<br/>vulkan / metal wheels + sdist"]
-        EW["build-extra-wheels.yml<br/>CUDA / CPU / Intel-Mac wheels"]
-        BIN["release.yml<br/>Nuitka onefile executables"]
+        DW["build-default-wheels.yml<br/>vulkan / metal wheels + sdist<br/>(~25 min)"]
+        EW["build-extra-wheels.yml<br/>CUDA / CPU / Intel-Mac wheels<br/>(hours, soft-fail)"]
+        BIN["release.yml<br/>Nuitka onefile executables<br/>(hours)"]
         PRE["attach-binaries-prerelease<br/>GH pre-release with the executables"]
         QA["qa-matrix.yml<br/>installs THIS run's wheels + binaries"]
         DW --> QA
@@ -590,15 +590,13 @@ flowchart TD
         BIN --> PRE
     end
 
-    RC -. "artifacts stay as run artifacts; nothing public yet" .-> GATE{"QA green?"}
+    DW -. "default wheels + sdist uploaded" .-> PUB["publish-pypi.yml<br/>-f tag=v0.6.66bN<br/>(manual; no rebuild)"]
+    RC -. "QA flaked / a wheel cell failed" .-> EMG["emergency-publish.yml<br/>-f tag=... -f confirm=skip-qa"]
 
-    GATE -->|"yes — run manually"| PUB["publish-pypi.yml<br/>-f tag=v0.6.66bN"]
-    GATE -->|"QA flaked — manual override"| EMG["emergency-publish.yml<br/>-f tag=... -f confirm=skip-qa"]
-
-    PUB --> RESOLVE["resolve the release-candidate run<br/>that built this tag"]
+    PUB --> RESOLVE["resolve the release-candidate run<br/>+ check its default wheels are complete"]
     EMG --> RESOLVE
-    RESOLVE --> PROMOTE["promote-pypi: download wheel-default-* + sdist<br/>→ pypa/gh-action-pypi-publish (Trusted Publishing)"]
-    PROMOTE --> FANOUT["fanout-packaging:<br/>dispatch publish-docker.yml + publish-packages.yml"]
+    RESOLVE --> PROMOTE["promote-pypi: download wheel-default-* + sdist<br/>→ pypa/gh-action-pypi-publish (skip-existing)"]
+    PROMOTE --> FANOUT["fanout-packaging:<br/>executables on the GH release? → dispatch<br/>publish-docker.yml + publish-packages.yml,<br/>else warn + skip (re-run after they land)"]
     FANOUT --> DOCKER["publish-docker.yml<br/>ghcr.io/&lt;owner&gt;/lilbee:N and :latest"]
     FANOUT --> PKG["publish-packages.yml<br/>Homebrew / AUR / Nix bumped to N"]
 
@@ -610,15 +608,16 @@ flowchart TD
 | Lane | Trigger | Builds | QA | Publishes |
 |---|---|---|---|---|
 | **Release candidate** | `git push v0.6.66bN` | default wheels, sdist, extra (CUDA) wheels, executables — once | yes | no (artifacts only); attaches executables to a GH **pre-release** |
-| **Publish to PyPI** | `gh workflow run publish-pypi.yml -f tag=v0.6.66bN` | nothing — downloads the RC run's artifacts | n/a | PyPI + dispatches Docker / Homebrew / AUR / Nix |
-| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing — downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI |
+| **Publish to PyPI** | `gh workflow run publish-pypi.yml -f tag=v0.6.66bN` | nothing — downloads the RC run's artifacts | n/a — needs only the default wheels (no wait on executables/CUDA/QA) | PyPI, then dispatches Docker / Homebrew / AUR / Nix once the executables are on the release |
+| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing — downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI; tolerates an incomplete artifact set |
 
 `release-candidate.yml` can also be dispatched manually against a branch/SHA — same build + QA, no pre-release attach, never publishes. That's a dry run.
 
 ### Notes
 
-- **Single build location.** Wheels, sdist, and executables are produced only by the `release-candidate.yml` run for the tag. `publish-pypi.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up the publish.
-- **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure.
+- **Single build location.** Wheels, sdist, and executables are produced only by the `release-candidate.yml` run for the tag. `publish-pypi.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up anything.
+- **PyPI publishes early; the fan-out waits.** `publish-pypi.yml` gates only on the default-wheel + sdist artifacts being complete in the RC run, so PyPI gets the release ~30 min after the tag push regardless of the executables/CUDA/QA still running. The Homebrew/AUR/Nix/Docker fan-out pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish-pypi.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
+- **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates.
 - **Package versions auto-increment.** `publish-docker.yml` and `publish-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formula, the AUR `PKGBUILD`, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish-pypi.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
 - **`llama-cpp-python` version comes from `uv.lock`.** It's built from source in CI (no upstream prebuilts for our backends). The version isn't hardcoded in the workflows: `tools/wheel-build/build_llama_cpp.sh` reads the resolved version out of `uv.lock`, so `uv lock`-ing a new release is all it takes. Set `LLAMA_CPP_VERSION` (or the `llama_cpp_version` workflow input) to override for a one-off build.
