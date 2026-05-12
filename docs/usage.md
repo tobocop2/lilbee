@@ -95,11 +95,10 @@ lilbee add manual.pdf --force
 
 ## OCR
 
-OCR is about *getting text out of* scanned PDFs and images; it's a separate
-step from indexing. However the text is extracted (native parsers for files with
-embedded text, Tesseract, or a vision model), it still has to be embedded to be
-searchable, so you always need the embedding model from
-[Getting started](#getting-started); Tesseract does not replace it.
+OCR is how lilbee gets text out of scanned PDFs and images. It's one step in
+indexing, not a substitute for it: however the text comes out (a native parser,
+Tesseract, or a vision model), it still gets embedded, so you still need an
+embedding model installed (see [Getting started](#getting-started)).
 
 For PDFs without embedded text, lilbee supports two OCR backends. When a vision model is configured, it takes precedence.
 
