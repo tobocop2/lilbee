@@ -189,19 +189,22 @@ async def sync(
     *,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: threading.Event | None = None,
+    retry_skipped: bool = False,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, processing stops between files without data loss.
+    When *retry_skipped* (or *force_rebuild*) is set, the skip markers for
+    previously-failed files are cleared so this sync tries them again.
     """
     _store = get_services().store
 
     if force_rebuild:
         _store.drop_all()
-        # The user explicitly asked to rebuild; honor "retry everything"
-        # by also dropping skip markers so previously-failed files get
-        # another chance.
+    if force_rebuild or retry_skipped:
+        # Drop the "this file failed last time" markers so the previously
+        # skipped files get another attempt this run.
         clear_skip_markers(cfg.data_root)
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -427,9 +430,7 @@ async def _collect_results(
             _apply_result(result, added, updated, failed, skipped)
             if progress is not None and ptask is not None:
                 desc = (
-                    f"Ingested {result.name}"
-                    if result.error is None
-                    else f"Failed {result.name}"
+                    f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
                 )
                 progress.update(ptask, description=desc)
                 progress.advance(ptask)

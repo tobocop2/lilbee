@@ -34,6 +34,11 @@ from lilbee.core.config import cfg
 from lilbee.crawler import is_url
 
 _ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")
+_retry_skipped_option = typer.Option(
+    False,
+    "--retry-skipped",
+    help="Retry files that were skipped on a previous sync (clears the failed-file markers).",
+)
 _ocr_timeout_option = typer.Option(
     None,
     "--ocr-timeout",
@@ -234,6 +239,7 @@ def sync_cmd(
     use_global: bool = global_option,
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
+    retry_skipped: bool = _retry_skipped_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -241,7 +247,7 @@ def sync_cmd(
     from lilbee.data.ingest import sync
 
     try:
-        result = asyncio.run(sync(quiet=cfg.json_mode))
+        result = asyncio.run(sync(quiet=cfg.json_mode, retry_skipped=retry_skipped))
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})

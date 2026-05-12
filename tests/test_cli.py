@@ -155,6 +155,18 @@ class TestSync:
         assert "Failed: 1" in result.output
         assert "bad.txt" in result.output
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_retry_skipped_flag(self, mock_sync):
+        """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
+        result = runner.invoke(app, ["sync", "--retry-skipped"])
+        assert result.exit_code == 0
+        assert mock_sync.call_args.kwargs.get("retry_skipped") is True
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_without_flag_does_not_retry_skipped(self, mock_sync):
+        runner.invoke(app, ["sync"])
+        assert mock_sync.call_args.kwargs.get("retry_skipped") is False
+
 
 class TestRebuild:
     def test_rebuild_empty(self):

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from textual.command import Hit, Hits, Provider
 
 from lilbee.app.services import get_services
+from lilbee.cli.tui import messages as msg
 from lilbee.core import settings
 from lilbee.core.config import cfg
 
@@ -46,6 +47,11 @@ class LilbeeCommandProvider(Provider):
             ("Help", "Show keybinding reference", app.action_push_help),
             ("Cycle theme", "Switch to next color theme", app.action_cycle_theme),
             ("Sync documents", "Sync knowledge base", self._action_sync),
+            (
+                "Retry skipped documents",
+                "Re-attempt files that failed a previous sync",
+                self._action_retry_skipped,
+            ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
             ("Show version", "Display lilbee version", self._action_version),
             (
@@ -112,6 +118,20 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.notify(f"Deleted {name}")
 
     def _action_sync(self) -> None:
+        self._app.action_run_sync()
+
+    def _action_retry_skipped(self) -> None:
+        """Clear the failed-file markers and kick off a sync to retry them.
+
+        Clearing the marker cache and then running a normal sync is
+        equivalent to ``lilbee sync --retry-skipped`` / ``POST /api/sync``
+        with ``retry_skipped=true``.
+        """
+        from lilbee.data.ingest.skip_marker import clear_skip_markers, load_skip_markers
+
+        cleared = len(load_skip_markers(cfg.data_root))
+        clear_skip_markers(cfg.data_root)
+        self.screen.app.notify(msg.retry_skipped_message(cleared))
         self._app.action_run_sync()
 
     def _action_version(self) -> None:

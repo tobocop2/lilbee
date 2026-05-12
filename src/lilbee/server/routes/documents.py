@@ -32,11 +32,16 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     Pass ``{"force_rebuild": true}`` to wipe the store and re-ingest every file
     under the current ``cfg.embedding_model``. This is the recovery path after
     a ``PUT /api/models/embedding`` that returned ``reindex_required=true``.
+    Pass ``{"retry_skipped": true}`` for the lighter path: retry the files that
+    failed a previous sync without dropping the store.
     """
     enable_ocr = data.enable_ocr if data else None
     force_rebuild = data.force_rebuild if data else False
+    retry_skipped = data.retry_skipped if data else False
     return Stream(
-        handlers.sync_stream(enable_ocr=enable_ocr, force_rebuild=force_rebuild),
+        handlers.sync_stream(
+            enable_ocr=enable_ocr, force_rebuild=force_rebuild, retry_skipped=retry_skipped
+        ),
         media_type="text/event-stream",
     )
 

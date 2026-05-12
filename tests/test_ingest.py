@@ -19,6 +19,7 @@ def isolated_env(tmp_path):
     docs = tmp_path / "documents"
     docs.mkdir()
     cfg.documents_dir = docs
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.concept_graph = False
@@ -560,6 +561,49 @@ class TestCancellation:
             await ingest_batch(
                 files, added, [], failed, skipped, quiet=True, on_progress=on_progress
             )
+
+
+class TestSkipMarkerLifecycle:
+    """A file that produces no chunks gets a skip marker; the next sync skips it
+    until the file changes or retry_skipped / force_rebuild clears the marker."""
+
+    @staticmethod
+    def _zero_chunks(*_args, **_kwargs) -> int:
+        # Simulate "OCR found no usable text": the file is recorded as skipped.
+        return 0
+
+    async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+            first = await sync(quiet=True)
+            assert "scanned.pdf" in first.skipped
+            assert "scanned.pdf" in load_skip_markers(cfg.data_root)
+            # Second sync: same content, same hash -> skipped, not retried.
+            second = await sync(quiet=True)
+            assert "scanned.pdf" not in second.skipped
+            assert "scanned.pdf" not in second.added
+
+    async def test_retry_skipped_clears_markers(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+            await sync(quiet=True)
+            # retry_skipped drops the marker so the file is attempted again.
+            retried = await sync(quiet=True, retry_skipped=True)
+            assert "scanned.pdf" in retried.skipped  # attempted again (still 0 chunks)
+
+    async def test_force_rebuild_also_clears_markers(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+            await sync(quiet=True)
+            rebuilt = await sync(quiet=True, force_rebuild=True)
+            assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
 
 
 class TestDetectPending:

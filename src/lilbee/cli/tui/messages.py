@@ -43,6 +43,8 @@ SYNC_SKIPPED_VISION_FAILED = (
     "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
     "for the underlying error."
 )
+CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
+CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
 
 
 def sync_skipped_message(files: str) -> str:
@@ -56,6 +58,11 @@ def sync_skipped_message(files: str) -> str:
     if cfg.vision_model:
         return SYNC_SKIPPED_VISION_FAILED.format(files=files)
     return SYNC_SKIPPED_NO_VISION.format(files=files)
+
+
+def retry_skipped_message(count: int) -> str:
+    """Toast for the 'Retry skipped documents' command."""
+    return CMD_RETRY_SKIPPED_NONE if count == 0 else CMD_RETRY_SKIPPED_SOME.format(count=count)
 
 
 CMD_DELETE_NO_DOCS = "No documents indexed"

@@ -3515,6 +3515,25 @@ async def test_command_provider_open_wiki_action():
             mock_switch.assert_called_once_with("Wiki")
 
 
+async def test_command_provider_retry_skipped_action(tmp_path):
+    """Palette 'Retry skipped documents' clears the marker file and starts a sync."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+
+    cfg.data_root = tmp_path
+    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef"})
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        with patch.object(app, "action_run_sync") as mock_sync:
+            provider._action_retry_skipped()
+            mock_sync.assert_called_once()
+        assert load_skip_markers(tmp_path) == {}
+
+
 async def test_command_provider_delete_doc(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
