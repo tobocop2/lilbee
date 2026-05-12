@@ -1,8 +1,8 @@
-# lilbee — terminal-first local RAG for files, code, and the web
+# lilbee: a batteries-included terminal app for local AI
 
 [Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/)
 
-A terminal-first local RAG and search engine for your own files, code, websites, and scanned documents. One install, no sidecar services, fully offline by default.
+lilbee is a terminal app: a model catalog, a search engine over your own files and code, and a chat, all in one program. The same program is also a CLI, an MCP server (point opencode or any AI agent at it), an HTTP API, and a Python library. One install command, sane defaults out of the box; it runs on your computer, and connects to cloud models only when you choose.
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
@@ -18,7 +18,7 @@ A terminal-first local RAG and search engine for your own files, code, websites,
 
 > ## ⚠️ Beta software
 >
-> lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome — that's the whole point of the beta.
+> lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome; that's the whole point of the beta.
 >
 > Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/)
 
@@ -44,9 +44,9 @@ Local AI tools have gotten great at getting you to a chat window fast. The first
 
 Local AI can be made more substantial than a chatbot. lilbee lets you pair the chatbot with a real search engine reviewing a curated set of documents. Make a library of what matters to you, let a local model reason over it, and get answers with citations you can click back to the source. Now the model knows your world.
 
-To acheive this in the past a user would manage a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal; including a built-in model browser.
+To achieve this in the past a user would manage a background daemon, a separate inference server, model files fetched by hand from the web, and a retrieval layer glued on top. lilbee bundles all of it into one install. Everything lives in one process, in the terminal, including a built-in model catalog.
 
-The same executable ships a Textual TUI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Curated documents with topic-specificity produce better answers than a single catch-all vault of personal documents, white papers, instruction manuals, codebases, and so on.
+The same executable is a CLI and a Textual TUI, and it ships a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses. Curated documents with topic-specificity produce better answers than a single catch-all vault of personal documents, white papers, instruction manuals, codebases, and so on.
 
 An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
@@ -363,13 +363,13 @@ The Linux binary is built on `manylinux_2_28` and requires **glibc 2.28 or newer
 
 ### Optional extras
 
-lilbee works out of the box. Extras unlock additional capabilities. Both `pip` and `uv tool install` syntax shown:
+**lilbee works out of the box.** Three optional extras add more: `[crawler]` indexes websites, `[litellm]` bridges to popular hosted model providers, `[graph]` adds concept-graph search. Append the name in brackets to a `pip` or `uv tool install`:
 
-| Extra                                                                                                                           | What it adds                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Web crawling** — `pip install --pre 'lilbee[crawler]'` / `uv tool install --prerelease=allow 'lilbee[crawler]'`               | Index websites alongside local files. Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits.                                                                                                                                                                       |
-| **Ollama and frontier models** — `pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'` | Keep compatibility with existing Ollama setups, or use a popular frontier model (OpenAI, Anthropic, Gemini, etc.) for chat, vision, or embeddings while keeping other roles local. You provide the API key. Chunks sent to the provider leave your machine, and the TUI shows a persistent warning while a cloud model is active. |
-| **Concept graph** — `pip install --pre 'lilbee[graph]'` / `uv tool install --prerelease=allow 'lilbee[graph]'`                  | Topic clustering and search boosting. Extracts concepts from your documents and uses their relationships to find results pure text matching misses. Zero extra LLM calls.                                                                                                                                                         |
+| Extra            | What it does, and how to add it                                                                                                                                                                                                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`[crawler]`**  | **Index websites alongside your files.** Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. `pip install --pre 'lilbee[crawler]'`                                                                                       |
+| **`[litellm]`**  | **Bridge to popular hosted model providers** for chat, vision, or embeddings while other roles stay local. You provide the API key; the TUI shows a persistent warning whenever a hosted model is active, and chunks sent to that provider leave your machine. `pip install --pre 'lilbee[litellm]'` |
+| **`[graph]`**    | **Concept-graph search.** Extracts the ideas in your documents and uses how they relate to surface results plain keyword matching misses. No extra model calls. `pip install --pre 'lilbee[graph]'`                                                                                        |
 
 Install multiple at once:
 
