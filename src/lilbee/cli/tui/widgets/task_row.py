@@ -158,10 +158,13 @@ class TaskRow(Widget, can_focus=True):
         elapsed = _format_elapsed(task)
         head.update(_build_head(task, elapsed))
 
-        detail = task.detail or ""
-        pct = "" if task.indeterminate else f"[b]{task.progress:.1f}%[/b]"
-        meta_parts = [detail, pct]
-        meta.update("  ".join(p for p in meta_parts if p))
+        # A DONE task's detail is whatever the last progress tick wrote
+        # ("442/610 MB", "Syncing foo.md..."): stale and confusing now that the
+        # bar reads 100%. FAILED / CANCELLED keep their detail: it's the reason.
+        is_done = task.status == TaskStatus.DONE
+        detail = "" if is_done else (task.detail or "")
+        pct = "" if task.indeterminate or is_done else f"[b]{task.progress:.1f}%[/b]"
+        meta.update("  ".join(p for p in (detail, pct) if p))
 
         if task.indeterminate:
             # Terminal rows freeze the bar so a cancelled/failed/done

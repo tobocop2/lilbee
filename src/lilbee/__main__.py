@@ -12,10 +12,11 @@ def _multiprocessing_child_code(argv: list[str]) -> str | None:
     Python's ``multiprocessing.resource_tracker`` respawns ``sys.executable``
     with interpreter flags followed by ``-c "<code>"`` (e.g.
     ``-B -s -E -c "from multiprocessing.resource_tracker import main;main(7)"``).
-    Under a PyInstaller ``--onefile`` bundle ``sys.executable`` is this exe,
-    so those interpreter flags leak into the typer parser and raise
-    ``No such option: -B``. The stdlib ``freeze_support()`` hook only covers
-    spawn children (``--multiprocessing-fork``), not resource_tracker.
+    In a frozen build (Nuitka onefile) ``sys.executable`` is this exe, so those
+    interpreter flags leak into the typer parser and raise ``No such option: -B``
+    (or, once typer has eaten the flags, ``No such command '<N>'`` for the
+    leftover fd number). The stdlib ``freeze_support()`` hook only covers spawn
+    children (``--multiprocessing-fork``), not resource_tracker.
 
     Require the payload to mention ``multiprocessing`` or ``spawn_main`` so a
     stray ``lilbee -c …`` typed by a human never reaches ``exec``.
@@ -40,7 +41,7 @@ def _dispatch_frozen_child() -> bool:
     if code is None:
         return False
     exec(  # noqa: S102  payload is emitted by Python's own stdlib into sys.executable
-        compile(code, "<pyi-mp-child>", "exec"),
+        compile(code, "<frozen-mp-child>", "exec"),
         {"__name__": "__main__", "__builtins__": __builtins__},
     )
     return True

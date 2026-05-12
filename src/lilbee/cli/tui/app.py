@@ -25,7 +25,7 @@ from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
+_DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
 DARK_THEMES = (
     "monokai",
@@ -198,7 +198,7 @@ class LilbeeApp(App[None]):
         self._canonicalize_persisted_models()
         self.title = f"lilbee: {cfg.chat_model}"
         # Restore the persisted theme so the TUI opens in whatever the user
-        # picked last session, not always the gruvbox default.
+        # picked last session, not always the default.
         persisted = cfg.theme or _DEFAULT_THEME
         self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
         self._sync_theme_index_to_current()
