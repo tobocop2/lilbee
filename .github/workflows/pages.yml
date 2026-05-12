@@ -3,8 +3,9 @@ name: Pages
 # Marketing site at https://tobocop2.github.io/lilbee/ plus the per-backend
 # PEP 503 wheel indexes under /<backend>/. Decoupled from package
 # distribution: the site rebuilds on every push to main and after a
-# successful Build Platform Wheels run, so wheel index subdirs stay
-# current without making site updates wait for a 3h release cycle.
+# successful PyPI publish (which is what builds the wheel-* artifacts), so
+# wheel index subdirs stay current without making site updates wait for a
+# 3h release cycle.
 #
 # build-site and build-wheel-indexes run in parallel; deploy merges both.
 
@@ -12,7 +13,7 @@ on:
   push:
     branches: [main]
   workflow_run:
-    workflows: ["Build Platform Wheels"]
+    workflows: ["Publish to PyPI"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -23,6 +24,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read   # cross-run download-artifact for the wheel-* indexes
   pages: write
   id-token: write
 
@@ -82,21 +84,21 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             run_id="${{ github.event.workflow_run.id }}"
           else
-            # Build Platform Wheels runs on `release: published` against
-            # tag refs, not branches, so --branch=main returns nothing.
+            # Plain main pushes / manual runs: pull from the last successful
+            # Publish to PyPI run -- build-wheels runs as a reusable call
+            # inside it, so that run holds the wheel-* artifacts.
             run_id=$(gh run list \
-              --workflow=build-wheels.yml \
+              --workflow=publish-pypi.yml \
               --status=success \
-              --event=release \
               --limit=1 \
               --json databaseId \
               -q '.[0].databaseId // ""')
           fi
           echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
           if [ -z "${run_id}" ]; then
-            echo "No prior successful Build Platform Wheels run found; deploying site without wheel indexes."
+            echo "No prior successful Publish to PyPI run found; deploying site without wheel indexes."
           else
-            echo "Pulling wheel artifacts from build-wheels run ${run_id}."
+            echo "Pulling wheel artifacts from run ${run_id}."
           fi
 
       - name: Download wheel artifacts

@@ -118,8 +118,11 @@ jobs:
   # Extra-backend wheels (CUDA + pure CPU). Off by default so RC dry-runs and
   # tag-push QA don't sit behind 90-min Windows CUDA builds; publish lanes
   # opt in via inputs.build_extras=true to populate the PEP 503 index.
+  # Advisory: a flaky from-source CUDA cell must not block the default-wheel
+  # PyPI publish (publish-pypi.yml's publish-pypi job needs build-wheels green).
   build-extra-wheels:
     if: inputs.build_extras
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
