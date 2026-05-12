@@ -576,16 +576,18 @@ Releases are **build-once, publish-later**. Pushing a `v*` tag builds every ship
 
 ```mermaid
 flowchart TB
-    A["git push tag v0.6.66bN"]
-    A --> B["release-candidate.yml<br/>builds every artifact once, in parallel:<br/>· default wheels + sdist (~25 min)<br/>· CUDA / CPU / Intel-Mac wheels (hours, soft-fail)<br/>· Nuitka onefile executables (hours)<br/>then attaches the executables to a GH pre-release<br/>and runs the QA matrix against this run's artifacts"]
-    B -.->|on success| C["pages.yml<br/>marketing site + PEP 503 per-backend wheel index"]
-    B ==>|"default wheels + sdist uploaded —<br/>no wait on executables / CUDA / QA"| D["publish-pypi.yml -f tag=v0.6.66bN<br/>(manual; downloads, never rebuilds)"]
-    D --> E["verify the RC run's default wheels are complete<br/>→ download wheel-default-* + sdist<br/>→ publish to PyPI (skip-existing)"]
-    E --> F{"executables on the GH release?"}
-    F ==>|yes| G["fanout-packaging → dispatch<br/>publish-docker.yml + publish-packages.yml<br/>→ ghcr.io/.../lilbee:N + :latest<br/>→ Homebrew / AUR / Nix formulas bumped to N"]
-    F -.->|not yet| H["warn + skip —<br/>re-run publish-pypi.yml once they're attached"]
-    I["emergency-publish.yml -f confirm=skip-qa<br/>(publish past a flaky QA / incomplete artifact set)"] -.-> E
+    TAG["push tag v*"] --> RC["release-candidate.yml<br/>build wheels + sdist + executables — once"]
+    RC --> PRE["GH pre-release · executables attached"]
+    RC --> QA["QA matrix"]
+    RC -.-> PAGES["pages.yml · site + wheel index"]
+    RC ==> PUB["publish-pypi.yml · manual, no rebuild"]
+    PUB --> PYPI["download wheels + sdist → publish to PyPI"]
+    PYPI --> FAN["fanout-packaging"]
+    FAN --> PKG["Docker · Homebrew · AUR · Nix"]
+    EMG["emergency-publish.yml · skip-QA escape hatch"] -.-> PYPI
 ```
+
+Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-waits-on-what, and the fan-out's self-skip are in the notes below.
 
 ### Lanes
 
