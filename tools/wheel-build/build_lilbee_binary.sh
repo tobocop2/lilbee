@@ -18,6 +18,8 @@ PRODUCT_VERSION="${PRODUCT_VERSION:?PRODUCT_VERSION is required (int-tuple, e.g.
 uv pip uninstall python-multipart >/dev/null 2>&1 || true
 
 # Bundle en_core_web_sm so concept extraction works in the frozen binary.
+# It is loaded by name (spacy.load), never imported, so the Nuitka run below
+# pulls in the package, its model data, and its distribution metadata.
 # uv-managed Python ships without pip; install the matching wheel directly.
 if ! uv run --no-sync python -c "import en_core_web_sm" >/dev/null 2>&1; then
     SPACY_VER=$(uv run --no-sync python -c "import spacy; print(spacy.__version__)")
@@ -63,7 +65,9 @@ uv run --no-sync python -m nuitka \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
     --include-package=fake_useragent     --include-package-data=fake_useragent \
     --include-package=playwright \
+    --enable-plugin=spacy \
     --include-package=spacy              --include-package-data=spacy \
+    --include-package=en_core_web_sm     --include-package-data=en_core_web_sm \
     --spacy-language-model=en_core_web_sm \
     --include-package=graspologic_native --include-package-data=graspologic_native \
     --include-package=textual            --include-package-data=textual \
@@ -74,6 +78,7 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=litellm \
     --include-distribution-metadata=Crawl4AI \
     --include-distribution-metadata=spacy \
+    --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
