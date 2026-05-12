@@ -1,9 +1,10 @@
-name: Build Platform Wheels
+name: Build extra wheels
 
-# Builds wheels (+ sdist) and uploads them as run artifacts -- never publishes;
-# callers (release-candidate.yml, publish-pypi.yml, emergency-publish.yml,
-# release-artifacts.yml) collect the artifacts. build_extras=true adds the CUDA
-# + Intel-Mac CPU matrix (release-artifacts.yml only, for the PEP 503 index).
+# CUDA + pure-CPU + Intel-Mac wheels for the per-backend PEP 503 index. Slow
+# (Windows CUDA-from-source can exceed 90m); continue-on-error keeps a flaky
+# cell from failing the run. Reusable; called by release-candidate.yml in
+# parallel with the QA matrix so it never delays QA.
+
 on:
   workflow_dispatch:
     inputs:
@@ -13,10 +14,6 @@ on:
         required: false
   workflow_call:
     inputs:
-      build_extras:
-        description: "Build the CUDA + Intel-Mac CPU extras matrix (PEP 503 index)."
-        type: boolean
-        default: false
       ref:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
@@ -30,97 +27,10 @@ permissions:
   contents: read
 
 env:
-  # 0.3.20: Gemma 4 chat-template fix; no upstream prebuilts so we build from source.
   LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
-  # No in-workflow CI gate: the standalone CI workflow already runs on every
-  # main push and release-candidate.yml's QA matrix exercises the actual built
-  # artifacts. Re-running CI here only let flaky Windows-3.12 TUI unit tests
-  # block publish-pypi.yml.
-
-  # Default-backend wheels for `pip install lilbee` (Linux/Win=vulkan, macOS
-  # arm64=metal). macOS stops at 3.13: no cp314 macOS-arm64 build for the
-  # vendored llama-cpp-python yet.
-  build-default-wheels:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11"}
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12"}
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13"}
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.14"}
-          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.11"}
-          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.12"}
-          - {os: macos-latest,  backend: metal,  wheel-plat: macosx_11_0_arm64,                          python-version: "3.13"}
-          # Intel Mac wheels live in build-extra-wheels (cross-compile is flaky).
-          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.11"}
-          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.12"}
-          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64,                                 python-version: "3.13"}
-
-    runs-on: ${{ matrix.os }}
-
-    env:
-      BACKEND: ${{ matrix.backend }}
-      LLAMA_BUILD_DIR: "/tmp/llama-build"
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build pure wheel
-        run: python -m build --wheel
-
-      - name: Install Vulkan loader (Linux)
-        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
-        shell: bash
-        run: bash tools/wheel-build/install_gpu_toolkit.sh
-
-      - name: Install Vulkan SDK (Windows)
-        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          install_runtime: true
-          cache: true
-          stripdown: true
-
-      - name: Build llama-cpp-python from source
-        shell: bash
-        run: bash tools/wheel-build/build_llama_cpp.sh
-
-      - name: Vendor llama-cpp-python and retag wheel
-        shell: bash
-        run: >
-          python -m tools.vendor.llama_cpp dist/*.whl
-          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
-          --wheel-platform ${{ matrix.wheel-plat }}
-
-      - name: Smoke test (native)
-        shell: bash
-        run: bash tools/wheel-build/smoke_wheel_full.sh 'dist/*.whl'
-
-      - name: Upload default-backend wheel
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
-          path: dist/*.whl
-
-  # Extra-backend wheels (CUDA + pure CPU). Off by default; release-artifacts.yml
-  # opts in via build_extras=true to populate the PEP 503 index. continue-on-error
-  # keeps a flaky from-source CUDA cell from failing the artifacts run.
   build-extra-wheels:
-    if: inputs.build_extras
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -223,27 +133,3 @@ jobs:
         with:
           name: wheel-extra-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
-
-  build-sdist:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build sdist
-        run: python -m build --sdist
-
-      - name: Upload sdist
-        uses: actions/upload-artifact@v7
-        with:
-          name: sdist
-          path: dist/*.tar.gz

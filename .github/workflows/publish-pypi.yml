@@ -1,8 +1,12 @@
 name: Publish to PyPI
 
-# Fast lane: build default wheels + sdist, upload via Trusted Publishing, then
-# dispatch release-artifacts.yml for the slow rest (executables, CUDA wheels,
-# Docker/Homebrew/AUR/Nix). Filename + the `pypi` env name are pinned by PyPI's
+# Pure publish step -- no builds. Resolves the release-candidate.yml run that
+# built this tag, downloads its default wheels + sdist, uploads them to PyPI,
+# then dispatches the packaging fan-out (Docker / Homebrew / AUR / Nix), which
+# uses the executables already attached to the GH release by that RC run. Run
+# this after release-candidate.yml has built the tag and QA is green.
+#
+# Filename `publish-pypi.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
 
 on:
@@ -14,8 +18,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  actions: write
+  id-token: write   # OIDC for Trusted Publishing
+  actions: write    # cross-run artifact download (read) + dispatch publish-docker/packages
 
 concurrency:
   group: publish-pypi-${{ inputs.tag }}
@@ -24,6 +28,8 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    outputs:
+      rc_run_id: ${{ steps.resolve.outputs.rc_run_id }}
     steps:
       - name: Refuse if tag already has a non-prerelease published
         env:
@@ -33,9 +39,11 @@ jobs:
             echo "tag ${{ inputs.tag }} already has a non-prerelease GH release; refusing to overwrite" >&2
             exit 1
           fi
+
       - uses: actions/checkout@v6   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
+
       - name: Check tag matches pyproject version
         shell: bash
         env:
@@ -47,30 +55,47 @@ jobs:
             exit 1
           fi
 
-  build-wheels:
-    needs: [guard]
-    uses: ./.github/workflows/build-wheels.yml
-    with:
-      build_extras: false   # CUDA matrix lives in release-artifacts.yml
-      ref: ${{ inputs.tag }}
-    secrets: inherit
+      - name: Resolve the release-candidate run that built this tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "${TAG} -> ${SHA}"
+          # Latest *successful* push-triggered RC run for this exact commit:
+          # success => every wheel cell, the executables, and QA all passed,
+          # so the artifacts are complete. (emergency-publish.yml is the path
+          # to publish past a QA flake.)
+          RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&status=success&per_page=50" \
+            --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
+          if [ -z "${RC_ID}" ]; then
+            echo "no successful 'Release candidate' run for ${SHA}; push the tag (or re-run release-candidate.yml) and let it pass first" >&2
+            exit 1
+          fi
+          echo "release-candidate run = ${RC_ID}"
+          echo "rc_run_id=${RC_ID}" >> "$GITHUB_OUTPUT"
 
   publish-pypi:
-    needs: [guard, build-wheels]
+    needs: [guard]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
+      - uses: actions/checkout@v6   # for the local promote-pypi action
       - uses: ./.github/actions/promote-pypi
+        with:
+          run_id: ${{ needs.guard.outputs.rc_run_id }}
+          github_token: ${{ github.token }}
 
-  # Kick off the slow lane only after the PyPI upload lands.
-  dispatch-release-artifacts:
+  # Docker / Homebrew / AUR / Nix consume the executables on the GH release that
+  # the RC run already attached -- they don't need a build, just the tag.
+  dispatch-fanout:
     needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch release-artifacts.yml
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run release-artifacts.yml --repo ${{ github.repository }} -f tag=${{ inputs.tag }}
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/fanout-packaging
+        with:
+          tag: ${{ inputs.tag }}

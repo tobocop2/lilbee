@@ -46,6 +46,7 @@ jobs:
         run: |
           set -uo pipefail
           REF="${INPUT_REF:-$DEFAULT_REF}"
+          REF="${REF#refs/tags/}"; REF="${REF#refs/heads/}"   # bare ref for the commits API
           SHA=$(gh api "repos/${REPO}/commits/${REF}" --jq .sha 2>/dev/null) || SHA=""
           if [ -z "$SHA" ]; then
             echo "couldn't resolve ${REF} -> SHA; will run lint + test"

@@ -1,8 +1,12 @@
 name: Release candidate
 
-# Tag push (v*): build wheels + binaries, attach the binaries to a GH
-# pre-release, then run the QA matrix. Dispatch: build + QA dry-run, no release.
-# Publishing to PyPI is a separate manual step -- see publish-pypi.yml.
+# Tag push (v*): build every release artifact ONCE -- default wheels + sdist,
+# CUDA/Intel-Mac extra wheels, the standalone executables -- attach the
+# executables to a GH pre-release, run the QA matrix against the default wheels
+# + executables (the extra-wheels matrix runs in parallel and never delays QA).
+# Dispatch: same build + QA, no release attach. Publishing to PyPI is a
+# separate manual step that just downloads this run's artifacts -- see
+# publish-pypi.yml; nothing downstream rebuilds.
 
 on:
   push:
@@ -71,9 +75,16 @@ jobs:
             echo "ref=${REF}"
           } >> "$GITHUB_OUTPUT"
 
-  build-wheels:
+  build-default-wheels:
     needs: [resolve]
-    uses: ./.github/workflows/build-wheels.yml
+    uses: ./.github/workflows/build-default-wheels.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+    secrets: inherit
+
+  build-extra-wheels:
+    needs: [resolve]
+    uses: ./.github/workflows/build-extra-wheels.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
@@ -105,8 +116,10 @@ jobs:
           tag: ${{ needs.resolve.outputs.tag }}
           version: ${{ needs.resolve.outputs.version }}
 
+  # QA consumes this run's default wheels + executables (by run id). It does NOT
+  # need build-extra-wheels, so the CUDA matrix can chug along without holding QA up.
   qa:
-    needs: [resolve, build-wheels, build-binaries]
+    needs: [resolve, build-default-wheels, build-binaries]
     uses: ./.github/workflows/qa-matrix.yml
     with:
       wheel_run_id: ${{ github.run_id }}
@@ -114,5 +127,5 @@ jobs:
       version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
-  # PyPI publish is intentionally NOT here. Run publish-pypi.yml manually
-  # after reviewing the pre-release + QA results.
+  # PyPI publish is intentionally NOT here. Run publish-pypi.yml manually after
+  # reviewing the pre-release + QA -- it just downloads this run's artifacts.
