@@ -171,8 +171,8 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
     """Return ``(argv_prefix, env)`` for invoking ``playwright install chromium``.
 
     Spawns Playwright's bundled Node driver directly so the call works under a
-    pip install, ``uv tool install``, or a PyInstaller frozen binary. Falls back
-    to ``[sys.executable, '-m', 'playwright']`` for unfrozen builds when the
+    pip install, ``uv tool install``, or a frozen (Nuitka onefile) binary. Falls
+    back to ``[sys.executable, '-m', 'playwright']`` for unfrozen builds when the
     driver lookup fails; re-raises for frozen builds.
     """
     try:

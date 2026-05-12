@@ -320,8 +320,10 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Falls back to gruvbox (the module-level default), not the bad value.
-        assert app.theme != "not-a-real-theme"
+        # Falls back to the module-level default, not the bad value.
+        from lilbee.cli.tui.app import _DEFAULT_THEME
+
+        assert app.theme == _DEFAULT_THEME
 
 
 async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> None:
