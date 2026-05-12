@@ -24,6 +24,7 @@ lilbee is a terminal app: a model catalog, a search engine over your own files a
 
 ---
 
+- [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
 - [Previews](#previews)
 - [What you can do with it](#what-you-can-do-with-it)
@@ -37,6 +38,15 @@ lilbee is a terminal app: a model catalog, a search engine over your own files a
 - [Experimental](#experimental)
 
 ---
+
+## Highlights
+
+- **One program, one install.** A model catalog, a search engine over your own files and code, and a chat — and the same executable is a CLI, a Textual TUI, an MCP server, a REST API, and a Python library. No background daemon, no separate inference server, no vector database to stand up.
+- **Answers cite the source line.** Ask a question; get a reply with clickable citations that point back to the exact line they came from.
+- **Bring your own files.** PDFs, Office files, ebooks, code in 150+ languages, scanned pages and photos (OCR) — plus, optionally, crawled docs sites and wikis turned into searchable markdown.
+- **A built-in model catalog.** Pull Llama 3, Qwen, Gemma, Mistral, DeepSeek and the rest of HuggingFace from inside the app — lilbee is the model runtime, no hunting the web for files.
+- **Runs on your computer.** Models, index, and files all stay local; lilbee talks to a cloud model only when you choose one, and flags it when it does.
+- **Per-project libraries.** Run globally, or drop a `.lilbee/` next to `.git/` the way git does — each domain stays its own clean encyclopedia.
 
 ## Why lilbee
 
@@ -52,7 +62,7 @@ An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, f
 
 ## Previews
 
-> Real terminal recordings coming soon. Previews below give the shape of each screen. Written walkthroughs are under [`docs/benchmarks/`](docs/benchmarks/): [Godot level generator](docs/benchmarks/godot-level-generator.md) and [vision OCR model comparison](docs/benchmarks/vision-ocr.md).
+> ASCII sketches of each screen below — the shape, not the pixels. Written walkthroughs are under [`docs/benchmarks/`](docs/benchmarks/): [Godot level generator](docs/benchmarks/godot-level-generator.md) and [vision OCR model comparison](docs/benchmarks/vision-ocr.md).
 
 **Chat.** The default screen. Streaming replies with clickable citations.
 
