@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lilbee: a batteries-included terminal app for local AI</title>
-<meta name="description" content="A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources, in one program that's also a CLI, an MCP server, an HTTP API, and a Python library. One install, sane defaults out of the box.">
+<meta name="description" content="A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources, in one program that's also a command-line tool, a Model Context Protocol server, a web API, and a Python library. One install, sane defaults out of the box.">
 <link rel="stylesheet" href="style.css">
 <script src="main.js" defer></script>
 </head>
@@ -53,13 +53,13 @@
         <div class="shape-box one">
           <div class="shape-h">lilbee</div>
           <ul>
-            <li>one program: a TUI, a CLI, an MCP server, an HTTP API, a Python library</li>
-            <li>no model server or database server to run; lilbee is the model runtime and the search index, in one process</li>
-            <li>a built-in model catalog: pull Llama 3, Qwen, Gemma, Mistral, DeepSeek and more — no hunting the web for files</li>
-            <li>a separate scoped library per project, so each domain stays its own clean encyclopedia</li>
-            <li>portable: runs on a laptop or headless over SSH, move it between machines</li>
+            <li>one process is the model runtime and the search index; no model server or database to run</li>
+            <li>use it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, or a Python library</li>
+            <li>a built-in catalog: pull Llama 3, Qwen, Gemma, Mistral, DeepSeek and more, no hunting the web for files</li>
+            <li>a scoped library per project, so each domain stays its own clean encyclopedia</li>
+            <li>runs on a laptop or headless over a remote shell; move it between machines</li>
           </ul>
-          <div class="shape-note">one install command, sane defaults out of the box. point it at a folder, ask.</div>
+          <div class="shape-note">one install command, sane defaults. point it at a folder, ask.</div>
         </div>
       </div>
     </section>
@@ -87,11 +87,11 @@
       <div class="caps">
         <div class="cap">
           <h3>encyclopedias, plural</h3>
-          <p>A scoped library per project: your PDFs, notes, ebooks, and code, kept apart so results stay clean. Index with live progress in the TUI; every answer cites the source line.</p>
+          <p>A scoped library per project: your PDFs, notes, ebooks, and code, kept apart so results stay clean. Index with live progress in the terminal app; every answer cites the source line.</p>
         </div>
         <div class="cap">
           <h3>pairs with your AI agent</h3>
-          <p>Point opencode or any MCP agent at a library: it reads the actual code and docs before answering, cites file and line, and says "I don't know" instead of guessing.</p>
+          <p>Point opencode or any agent that speaks the Model Context Protocol at a library: it reads the actual code and docs before answering, cites file and line, and says "I don't know" instead of guessing.</p>
         </div>
         <div class="cap">
           <h3>offline copies of websites</h3>
@@ -242,7 +242,7 @@
         <div class="extras-sub">add in brackets to a <code>pip</code> or <code>uv</code> install, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code> &nbsp;.&nbsp; lilbee works without them</div>
         <div class="extras-grid">
           <div class="extra"><span class="tag">[crawler]</span><span>index websites too: crawl a docs site or wiki to markdown, then search it offline</span></div>
-          <div class="extra"><span class="tag">[litellm]</span><span>bridge to many popular hosted model providers for chat, vision, or embeddings; you bring the key, and the TUI flags when a hosted model is active</span></div>
+          <div class="extra"><span class="tag">[litellm]</span><span>bridge to many popular hosted model providers for chat, vision, or embeddings; you bring the key, and the terminal app flags when a hosted model is active</span></div>
           <div class="extra"><span class="tag">[graph]</span><span>concept-graph search: finds matches plain keyword search misses, with no extra model calls</span></div>
         </div>
       </div>
