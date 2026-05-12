@@ -225,6 +225,46 @@ h1.sr {
   line-height: 1.6;
 }
 
+/* one-program comparison --------------------------------------------- */
+.shape {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.shape-box {
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.9rem 1.05rem;
+}
+.shape-box.one { border-left: 2px solid var(--amber); }
+.shape-h {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.55rem;
+}
+.shape-box.many .shape-h { color: var(--ink-3); }
+.shape-box.one .shape-h { color: var(--amber); }
+.shape-box ul { list-style: none; }
+.shape-box li {
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  padding-left: 1.05em;
+  position: relative;
+  margin: 0.1rem 0;
+}
+.shape-box li::before { content: "·"; position: absolute; left: 0; color: var(--ink-3); }
+.shape-box.one li::before { color: var(--amber); }
+.shape-note {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule);
+}
+
 /* install ------------------------------------------------------------ */
 .install {
   margin-top: 0.4rem;
@@ -243,6 +283,7 @@ h1.sr {
   padding: 0.7rem 0.4rem;
   color: var(--ink);
   font-weight: 500;
+  word-break: break-word;
 }
 .install .copy {
   font-family: var(--mono);
@@ -254,8 +295,129 @@ h1.sr {
   color: var(--ink-2);
   padding: 0 1.1rem;
   cursor: pointer;
+  white-space: nowrap;
 }
 .install .copy:hover { color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
+
+/* install method tabs ------------------------------------------------ */
+.installtabs {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+  border-bottom: 1px solid var(--rule-2);
+}
+.installtabs .tab {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-3);
+  padding: 0.5rem 0.85rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color 140ms, border-color 140ms;
+}
+.installtabs .tab:hover { color: var(--ink-2); }
+.installtabs .tab[aria-selected="true"] {
+  color: var(--amber);
+  border-bottom-color: var(--amber);
+}
+.installpane { padding-top: 1rem; }
+.installpane[hidden] { display: none; }
+.oschips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 0.65rem;
+  font-size: 11.5px;
+}
+.oschip {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
+}
+.oschip.dim { color: var(--ink-3); }
+.installmeta {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  margin-top: 1.1rem;
+}
+
+/* per-method "details" disclosure ------------------------------------ */
+.notes-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  padding: 0.6rem 0 0;
+  transition: color 140ms;
+}
+.notes-toggle::before {
+  content: "▸";
+  margin-right: 0.45em;
+  font-size: 10px;
+  display: inline-block;
+  transition: transform 140ms;
+}
+.notes-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.notes-toggle:hover { color: var(--amber); }
+.notes-body[hidden] { display: none; }
+.notes-body { padding-top: 0.1rem; }
+.notes-body .extras:first-child { margin-top: 0.4rem; }
+
+/* optional extras ---------------------------------------------------- */
+.installextras {
+  margin-top: 1.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--rule);
+}
+.installextras .extras-h {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 0.15rem;
+}
+.installextras .extras-sub {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  margin-bottom: 0.7rem;
+}
+.installextras .extras-sub code {
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  color: var(--ink-2);
+}
+.extras-grid { display: grid; gap: 7px; }
+.extra {
+  display: flex;
+  gap: 0.85rem;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--amber);
+  border-radius: 3px;
+  padding: 0.5rem 0.8rem;
+  transition: border-color 160ms;
+}
+.extra:hover { border-color: var(--rule-2); border-left-color: var(--amber-hot); }
+.extra .tag { color: var(--amber); font-weight: 700; flex: none; min-width: 5.4em; }
 
 .extras {
   font-size: 13px;
@@ -353,6 +515,8 @@ footer .meta { text-align: right; font-size: 12px; }
 @media (max-width: 720px) {
   body { padding: 1.4rem 1.1rem 3rem; font-size: 14.5px; }
   .wordmark { font-size: 9.5px; }
-  .caps, .links { grid-template-columns: 1fr; }
+  .caps, .links, .shape { grid-template-columns: 1fr; }
   .tagline { font-size: 17px; }
+  .installtabs .tab { padding: 0.45rem 0.6rem; font-size: 12px; }
+  .extra { flex-direction: column; gap: 0.2rem; }
 }
