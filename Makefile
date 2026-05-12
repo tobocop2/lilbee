@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo build publish docs docs-api docs-site site site-serve site-tar
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/
@@ -67,6 +67,16 @@ docs-site: docs-api  ## Build the full dev portal (coverage + API docs)
 
 docs: docs-site  ## Alias for docs-site
 
+site: docs-api  ## Build the deployable site locally (marketing pages + API docs; no coverage build)
+	@echo "site/ is ready. Preview with: make site-serve"
+
+site-serve: site  ## Build + serve the site at http://localhost:8000
+	cd site && python3 -m http.server 8000
+
+site-tar: site  ## Build the site and pack it into site.tar.gz
+	tar -czf site.tar.gz -C site .
+	@echo "wrote site.tar.gz"
+
 clean:
-	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage dist/ openapi.json
+	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage dist/ openapi.json site/api site/coverage site.tar.gz
 	find . -type d -name __pycache__ -exec rm -rf {} +

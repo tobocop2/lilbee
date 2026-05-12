@@ -575,32 +575,16 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream. The PyPI publish needs only the default wheels + sdist (they finish ~25 min into the run), so it doesn't wait on the executables, the CUDA matrix, or QA — only the downstream packaging fan-out (which consumes the executables on the GH release) waits for those.
 
 ```mermaid
-flowchart TD
-    TAG["git push tag<br/>v0.6.66bN"] --> RC
-
-    subgraph RC["release-candidate.yml — builds every artifact once"]
-        direction TB
-        DW["build-default-wheels.yml<br/>vulkan / metal wheels + sdist<br/>(~25 min)"]
-        EW["build-extra-wheels.yml<br/>CUDA / CPU / Intel-Mac wheels<br/>(hours, soft-fail)"]
-        BIN["release.yml<br/>Nuitka onefile executables<br/>(hours)"]
-        PRE["attach-binaries-prerelease<br/>GH pre-release with the executables"]
-        QA["qa-matrix.yml<br/>installs THIS run's wheels + binaries"]
-        DW --> QA
-        BIN --> QA
-        BIN --> PRE
-    end
-
-    DW -. "default wheels + sdist uploaded" .-> PUB["publish-pypi.yml<br/>-f tag=v0.6.66bN<br/>(manual; no rebuild)"]
-    RC -. "QA flaked / a wheel cell failed" .-> EMG["emergency-publish.yml<br/>-f tag=... -f confirm=skip-qa"]
-
-    PUB --> RESOLVE["resolve the release-candidate run<br/>+ check its default wheels are complete"]
-    EMG --> RESOLVE
-    RESOLVE --> PROMOTE["promote-pypi: download wheel-default-* + sdist<br/>→ pypa/gh-action-pypi-publish (skip-existing)"]
-    PROMOTE --> FANOUT["fanout-packaging:<br/>executables on the GH release? → dispatch<br/>publish-docker.yml + publish-packages.yml,<br/>else warn + skip (re-run after they land)"]
-    FANOUT --> DOCKER["publish-docker.yml<br/>ghcr.io/&lt;owner&gt;/lilbee:N and :latest"]
-    FANOUT --> PKG["publish-packages.yml<br/>Homebrew / AUR / Nix bumped to N"]
-
-    RC -. "workflow_run on success" .-> PAGES["pages.yml<br/>marketing site + PEP 503 per-backend wheel index"]
+flowchart TB
+    A["git push tag v0.6.66bN"]
+    A --> B["release-candidate.yml<br/>builds every artifact once, in parallel:<br/>· default wheels + sdist (~25 min)<br/>· CUDA / CPU / Intel-Mac wheels (hours, soft-fail)<br/>· Nuitka onefile executables (hours)<br/>then attaches the executables to a GH pre-release<br/>and runs the QA matrix against this run's artifacts"]
+    B -.->|on success| C["pages.yml<br/>marketing site + PEP 503 per-backend wheel index"]
+    B ==>|"default wheels + sdist uploaded —<br/>no wait on executables / CUDA / QA"| D["publish-pypi.yml -f tag=v0.6.66bN<br/>(manual; downloads, never rebuilds)"]
+    D --> E["verify the RC run's default wheels are complete<br/>→ download wheel-default-* + sdist<br/>→ publish to PyPI (skip-existing)"]
+    E --> F{"executables on the GH release?"}
+    F ==>|yes| G["fanout-packaging → dispatch<br/>publish-docker.yml + publish-packages.yml<br/>→ ghcr.io/.../lilbee:N + :latest<br/>→ Homebrew / AUR / Nix formulas bumped to N"]
+    F -.->|not yet| H["warn + skip —<br/>re-run publish-pypi.yml once they're attached"]
+    I["emergency-publish.yml -f confirm=skip-qa<br/>(publish past a flaky QA / incomplete artifact set)"] -.-> E
 ```
 
 ### Lanes
