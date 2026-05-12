@@ -1,30 +1,27 @@
-"""Pill badge: colored inline label using half-block characters.
+"""Pill badge: a colored inline label with a single space of padding each side.
 
-Ported from toad (https://github.com/batrachianai/toad).
+The padding is part of the ``{background}`` fill, not a separate styled cap:
+half-block caps over a ``transparent`` background take their color from whatever
+is behind the pill, which on a near-black terminal reads as a black sliver. A
+flat fill renders the same on any terminal and theme.
 """
 
 from textual.content import Content
 
-PILL_LEFT = "▌"  # left half block
-PILL_RIGHT = "▐"  # right half block
-DOT_SEP = " \u00b7 "  # middle dot separator for inline dividers
+DOT_SEP = " · "  # middle-dot separator for inline dividers
 
 
 def pill(text: Content | str, background: str, foreground: str) -> Content:
-    """Format text as a pill badge with rounded half-block ends.
+    """Format *text* as a colored pill badge: the label on a ``{background}`` fill.
+
     Args:
         text: Pill contents.
-        background: Background color (Textual color string, e.g. "$primary").
-        foreground: Foreground color (Textual color string, e.g. "$text").
+        background: Background color (Textual color string, e.g. ``"$primary"``).
+        foreground: Foreground color (Textual color string, e.g. ``"$text"``).
 
     Returns:
-        Styled Content with half-block ends.
+        Styled ``Content`` with one space of padding on each side.
     """
     content = Content(text) if isinstance(text, str) else text
-    main_style = f"{foreground} on {background}"
-    end_style = f"{background} on transparent r"
-    return Content.assemble(
-        (PILL_LEFT, end_style),
-        content.stylize(main_style),
-        (PILL_RIGHT, end_style),
-    )
+    style = f"{foreground} on {background}"
+    return Content.assemble((" ", style), content.stylize(style), (" ", style))

@@ -50,6 +50,34 @@ def _write_source(tmp_path: Path, content: bytes = b"GGUF\x00\x00") -> Path:
     return src
 
 
+_FAKE_REV = "0123456789abcdef0123456789abcdef01234567"  # 40-hex commit-hash-shaped revision
+
+
+def _seed_hf_cache(
+    models_dir: Path,
+    *,
+    repo: str = _REPO,
+    filename: str = _FILENAME,
+    content: bytes = b"GGUF\x00\x00",
+) -> Path:
+    """Lay down a faithful HuggingFace cache entry (blobs/ + snapshots/<rev>/ symlink + refs/main).
+
+    Returns the blob path. Mirrors what ``huggingface_hub`` writes so its cache
+    helpers (``try_to_load_from_cache`` / ``scan_cache_dir``) resolve it.
+    """
+    digest = hashlib.sha256(content).hexdigest()
+    cache = models_dir / f"models--{repo_to_dir(repo)}"
+    (cache / "blobs").mkdir(parents=True, exist_ok=True)
+    blob = cache / "blobs" / digest
+    blob.write_bytes(content)
+    snap = cache / "snapshots" / _FAKE_REV
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / filename).symlink_to(blob)
+    (cache / "refs").mkdir(parents=True, exist_ok=True)
+    (cache / "refs" / "main").write_text(_FAKE_REV)
+    return blob
+
+
 class TestParseHfRef:
     def test_canonical_shape(self) -> None:
         repo, filename = parse_hf_ref(_REF)
@@ -239,6 +267,66 @@ class TestModelRegistryResolve:
         data["blob"] = None
         manifest_file.write_text(json.dumps(data))
         with pytest.raises(KeyError, match="install incomplete"):
+            registry.resolve(_REF)
+
+    def test_resolve_recovers_from_cache_without_manifest(self, tmp_path: Path) -> None:
+        """A GGUF in the HF cache resolves even with no lilbee manifest (e.g. after an upgrade)."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        assert registry.resolve(_REF) == blob.resolve()
+        assert registry.is_installed(_REF)
+
+    def test_resolve_bare_repo_ref_recovers_from_cache(self, tmp_path: Path) -> None:
+        """A bare ``<org>/<repo>`` ref (older builds persisted these) resolves via the HF cache."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        assert registry.resolve(_REPO) == blob.resolve()
+        assert registry.is_installed(_REPO)
+
+    def test_resolve_bare_repo_ref_uses_manifest_when_present(self, tmp_path: Path) -> None:
+        """A bare repo ref prefers a current-format manifest under that repo."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        blob_path = registry.install(_REPO, _FILENAME, src, _make_manifest())
+        assert registry.resolve(_REPO) == blob_path
+
+    def test_resolve_bare_repo_ref_skips_unparseable_manifest(self, tmp_path: Path) -> None:
+        """A bare repo ref skips an unreadable per-repo manifest and falls back to the cache."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        bad = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("not valid json at all")
+        assert registry.resolve(_REPO) == blob.resolve()
+
+    def test_resolve_bare_repo_ref_not_installed(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(_REPO)
+
+    def test_resolve_recovers_when_manifest_unparseable(self, tmp_path: Path) -> None:
+        """An unreadable / older-format manifest is ignored; the cache is the source of truth."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        bad = tmp_path / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text('{"repo": "old-format", "extra": "fields the current schema lacks"}')
+        assert registry.resolve(_REF) == blob.resolve()
+
+    def test_recovery_ignores_snapshot_symlink_escaping_root(self, tmp_path: Path) -> None:
+        """A snapshot entry symlinking outside the registry root is not followed."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        outside = tmp_path / "outside.gguf"  # not under models_dir
+        outside.write_bytes(b"escaped the cache")
+        cache = models_dir / f"models--{repo_to_dir(_REPO)}"
+        snap = cache / "snapshots" / _FAKE_REV
+        snap.mkdir(parents=True)
+        (snap / _FILENAME).symlink_to(outside)
+        (cache / "refs").mkdir(parents=True)
+        (cache / "refs" / "main").write_text(_FAKE_REV)
+        with pytest.raises(KeyError, match="not installed"):
             registry.resolve(_REF)
 
 

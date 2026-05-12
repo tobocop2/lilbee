@@ -142,9 +142,12 @@ class LlamaCppProvider(LLMProvider):
         a malformed reply) the surfaced text is the worker's exception
         repr so the user sees enough to file a bug report.
         """
+        detail = str(exc)
+        if detail.endswith("."):  # the wrapper supplies its own sentence-final period
+            detail = detail[:-1]
         if isinstance(exc, WorkerCrashError):
-            return f"{role_label} worker exited unexpectedly. {exc}. Please try again."
-        return f"{role_label} worker reported an error: {exc}. Please try again."
+            return f"{role_label} worker exited unexpectedly. {detail}. Please try again."
+        return f"{role_label} worker reported an error: {detail}. Please try again."
 
     def _pool_runtime(self) -> PoolRuntime:
         """Return the Services-owned :class:`PoolRuntime`, starting it lazily."""

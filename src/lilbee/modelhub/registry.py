@@ -101,21 +101,113 @@ class ModelRegistry:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
 
+    def _repo_cache_dir(self, hf_repo: str) -> Path:
+        """The HuggingFace cache directory for *hf_repo* under this registry root."""
+        return self._root / f"models--{repo_to_dir(hf_repo)}"
+
     def resolve(self, ref: str) -> Path:
-        """Return the blob path for *ref*; ``KeyError`` if not installed."""
+        """Return the blob path for *ref*; ``KeyError`` if not installed.
+
+        The canonical *ref* shape is ``<org>/<repo>/<file>.gguf`` resolved via
+        the lilbee manifest. The two other shapes handled here are **deliberate
+        backwards-compatibility concessions** for builds already in the wild,
+        not the intended contract:
+
+        * a bare ``<org>/<repo>`` (older builds persisted these into
+          ``config.toml`` for the chat / embedding model) resolves to the one
+          quant of that repo that's installed; and
+        * if the lilbee manifest is missing / unparseable (an older build's
+          format) / blob-less, ``resolve`` falls back to whatever GGUF
+          ``huggingface_hub`` says is in the cache for that ref.
+
+        The HF cache layout is stable, so upgrading lilbee never strands an
+        already-downloaded model. This is the exception, not the rule, and it
+        stays here because the alternative is telling users to wipe their
+        lilbee data directory after an upgrade. It's a small amount of code to
+        carry for that.
+        """
+        if not ref.endswith(".gguf") and ref.count("/") == 1:
+            return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
         manifest = self._read_manifest(hf_repo, gguf_filename)
+        if manifest is not None and manifest.blob is not None:
+            blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
+            if blob_file.exists():
+                return blob_file
+        recovered = self._find_cached_gguf(hf_repo, gguf_filename)
+        if recovered is not None:
+            return recovered
         if manifest is None:
             raise KeyError(f"Model {ref} not installed")
-        cache_path = self._root / f"models--{repo_to_dir(manifest.hf_repo)}"
+        # Manifest present but neither it nor the cache yields a blob; keep the
+        # specific diagnostic so a corrupted cache stays debuggable.
+        cache_path = self._repo_cache_dir(manifest.hf_repo)
         if not cache_path.exists():
             raise KeyError(f"Cache folder missing for {ref}: {cache_path.name}")
         if manifest.blob is None:
             raise KeyError(f"Manifest for {ref} has no blob hash; install incomplete")
-        blob_file = cache_path / "blobs" / manifest.blob
-        if not blob_file.exists():
-            raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
-        return blob_file
+        raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
+
+    def _resolve_repo_only(self, hf_repo: str) -> Path:
+        """Resolve a bare ``<org>/<repo>`` ref to the GGUF of that repo on disk.
+
+        Older builds persisted bare repo refs for the chat / embedding model.
+        Prefers a current-format manifest under the repo; otherwise asks
+        ``huggingface_hub`` what GGUFs the cache holds for the repo and returns
+        the first one (alphabetical for determinism if more than one quant is
+        installed).
+        """
+        manifest_dir = self._manifests_dir / repo_to_dir(hf_repo)
+        if manifest_dir.is_dir():
+            for mf in sorted(manifest_dir.glob("*.gguf.json")):
+                manifest = self._load_manifest_file(mf)
+                if manifest is None or manifest.blob is None:
+                    continue
+                blob = self._repo_cache_dir(hf_repo) / "blobs" / manifest.blob
+                if blob.exists():
+                    return blob
+        for filename in sorted(self._cached_gguf_names(hf_repo)):
+            recovered = self._find_cached_gguf(hf_repo, filename)
+            if recovered is not None:
+                return recovered
+        raise KeyError(f"Model {hf_repo} not installed")
+
+    def _cached_gguf_names(self, hf_repo: str) -> set[str]:
+        """``.gguf`` filenames the HuggingFace cache holds for *hf_repo*."""
+        if not self._root.is_dir():
+            return set()
+        from huggingface_hub import scan_cache_dir
+
+        info = scan_cache_dir(self._root)
+        return {
+            f.file_name
+            for repo in info.repos
+            if repo.repo_id == hf_repo
+            for rev in repo.revisions
+            for f in rev.files
+            if f.file_name.endswith(".gguf")
+        }
+
+    def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
+        """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
+
+        Uses ``huggingface_hub.try_to_load_from_cache`` so we honor whatever
+        cache layout HF uses, then resolves the returned snapshot symlink to the
+        blob, bounded to the cache directory.
+        """
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id=hf_repo, filename=gguf_filename, cache_dir=str(self._root)
+        )
+        if not isinstance(hit, str):  # None (not cached) or the _CACHED_NO_EXIST sentinel
+            return None
+        resolved = Path(hit).resolve()
+        try:
+            validate_path_within(resolved, self._root)
+        except ValueError:
+            return None
+        return resolved
 
     def is_installed(self, ref: str) -> bool:
         """Return True if a model is installed and its blob is present."""
@@ -136,7 +228,7 @@ class ModelRegistry:
         import shutil
 
         digest = _sha256_file(source_path)
-        cache_path = self._root / f"models--{repo_to_dir(hf_repo)}"
+        cache_path = self._repo_cache_dir(hf_repo)
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
         if not blob_path.exists():
@@ -190,7 +282,7 @@ class ModelRegistry:
         only the specific blob file is removed when no remaining
         manifest still references its digest.
         """
-        cache_path = self._root / f"models--{repo_to_dir(hf_repo)}"
+        cache_path = self._repo_cache_dir(hf_repo)
         try:
             validate_path_within(cache_path, self._root)
         except ValueError:
@@ -231,9 +323,7 @@ class ModelRegistry:
         """True iff *manifest* points at an existing blob file."""
         if manifest.blob is None:
             return False
-        blob_file = (
-            self._root / f"models--{repo_to_dir(manifest.hf_repo)}" / "blobs" / manifest.blob
-        )
+        blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
         return blob_file.exists()
 
     def get_manifest(self, ref: str) -> ModelManifest | None:
@@ -285,8 +375,11 @@ class ModelRegistry:
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
-    Best-effort: a failed manifest write logs and swallows so the
-    pulled bytes still count as a successful download.
+    The bytes are already in the HF cache (the caller just downloaded them
+    there), and ``ModelRegistry.resolve`` falls back to the cache when the
+    manifest is absent, so a manifest-write hiccup leaves the model usable and
+    is logged, not raised. If the GGUF can't even be found in the cache the
+    download itself is broken; that re-raises so the caller reports a failure.
     """
     from datetime import UTC, datetime
 
@@ -302,4 +395,9 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
         registry.install(entry.hf_repo, file_path.name, file_path, manifest)
         log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
     except Exception:
-        log.warning("Failed to register manifest for %s", entry.hf_repo, exc_info=True)
+        ref = format_native_gguf_ref(entry.hf_repo, file_path.name)
+        if not registry.is_installed(ref):
+            raise
+        log.warning(
+            "Manifest write failed for %s; recovered via the model cache", ref, exc_info=True
+        )

@@ -107,8 +107,8 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     if entry is None:
         raise ValueError(
             f"Model '{ref}' is not in the featured catalog. "
-            "Pick a featured model for this role, or install one via "
-            "POST /api/models/pull with a known catalog ref."
+            "Pick a featured model for this role, or install one with "
+            "'lilbee model pull <ref>' (or POST /api/models/pull) using a known catalog ref."
         )
     _enforce_role_match(ref, entry, field_name)
     # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on

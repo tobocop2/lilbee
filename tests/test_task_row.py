@@ -141,6 +141,26 @@ async def test_update_applies_active_class_and_bar_percent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_blanks_stale_detail_on_done_keeps_it_on_failed() -> None:
+    """A DONE row drops its last-tick detail (it'd read "441/610 MB" beside 100%);
+    FAILED keeps it, since there the detail is the failure reason."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one("#host", VerticalScroll)
+        row = TaskRow("t1")
+        await host.mount(row)
+        for _ in range(3):
+            await pilot.pause()
+        row.update(_task(status=TaskStatus.DONE, progress=100.0, detail="441/610 MB"), 0)
+        meta_widget = row.query_one("#row-meta")
+        done_meta = str(meta_widget._Static__content)  # type: ignore[attr-defined]
+        assert "441/610 MB" not in done_meta
+        assert "%" not in done_meta
+        row.update(_task(status=TaskStatus.FAILED, progress=12.0, detail="connection reset"), 0)
+        assert "connection reset" in str(meta_widget._Static__content)  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_update_pulse_toggles_on_active_across_ticks() -> None:
     app = _Host()
     async with app.run_test() as pilot:

@@ -572,8 +572,9 @@ class TestThemes:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            before = app.theme
             app.action_cycle_theme()
-            assert app.theme != "gruvbox"  # cycled to next
+            assert app.theme != before  # cycled to the next theme
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_theme(self, mock_catalog: mock.MagicMock) -> None:

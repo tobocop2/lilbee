@@ -27,12 +27,24 @@
 
 ## Getting started
 
+**Install an embedding model first.** Indexing turns every document chunk into a
+vector, so before `lilbee add` will work you need an embedding model on disk.
+Either launch the TUI (`lilbee`) and pick one on the welcome screen, or from the
+CLI:
+
+```bash
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
+```
+
+A *chat* model is only needed for `/chat` and `lilbee ask`, not for indexing or
+`lilbee search`. Browse everything available with `lilbee model browse`.
+
 lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder, just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
 
 ```bash
 cd ~/projects/my-engine
 lilbee init                  # creates .lilbee/ here
-lilbee add docs/manual.pdf   # indexes into .lilbee/
+lilbee add docs/manual.pdf   # indexes into .lilbee/  (needs the embedding model above)
 lilbee search "oil change"   # searches .lilbee/
 ```
 
@@ -52,6 +64,10 @@ lilbee --global status
 
 ## Adding documents
 
+`add` extracts text from each file and embeds it, so an embedding model must be
+installed first (see [Getting started](#getting-started)). Without one, every
+file is reported as `failed` with `Model '…' not found in registry`.
+
 Add files, directories, or a mix:
 
 ```bash
@@ -67,6 +83,12 @@ lilbee add manual.pdf --force
 ```
 
 ## OCR
+
+OCR is about *getting text out of* scanned PDFs and images; it's a separate
+step from indexing. However the text is extracted (native parsers for files with
+embedded text, Tesseract, or a vision model), it still has to be embedded to be
+searchable, so you always need the embedding model from
+[Getting started](#getting-started); Tesseract does not replace it.
 
 For PDFs without embedded text, lilbee supports two OCR backends. When a vision model is configured, it takes precedence.
 
@@ -112,7 +134,7 @@ TUI; the selection is saved to `config.toml` and persists across sessions.
 
 ## Querying
 
-Search returns relevant chunks from your indexed documents. No LLM needed; `search` works without any model loaded:
+Search returns relevant chunks from your indexed documents. No *chat* model is needed for `search`, only the embedding model (the same one indexing used; see [Getting started](#getting-started)):
 
 ```bash
 lilbee search "oil change interval"
