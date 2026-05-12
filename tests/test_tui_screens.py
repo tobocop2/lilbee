@@ -7918,6 +7918,25 @@ def _write_published(wiki_root, slug: str, body: str) -> None:
     (summaries / f"{slug}.md").write_text(f"---\n---\n\n{body}\n", encoding="utf-8")
 
 
+def test_wiki_drafts_go_back_guarded_against_empty_stack() -> None:
+    """action_go_back must not ScreenStackError when the drafts screen is the only screen.
+
+    Regression: escape on the drafts screen called ``app.pop_screen()``
+    unconditionally; if it was the base screen that raised ``ScreenStackError``.
+    """
+    from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+
+    screen = WikiDraftsScreen()
+    fake_app = MagicMock()
+    fake_app.screen_stack = [screen]  # base screen; a pop here would raise
+    with patch.object(WikiDraftsScreen, "app", new_callable=PropertyMock, return_value=fake_app):
+        screen.action_go_back()
+        fake_app.pop_screen.assert_not_called()
+        fake_app.screen_stack = [object(), screen]  # something underneath now
+        screen.action_go_back()
+        fake_app.pop_screen.assert_called_once()
+
+
 class TestWikiDraftsScreen:
     """Wiki drafts review screen: list, diff, accept, reject."""
 

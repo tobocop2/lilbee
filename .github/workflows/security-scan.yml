@@ -97,6 +97,10 @@ jobs:
           #   LiteLLM Proxy MCP stdio test endpoints. Requires a valid proxy
           #   API key and a running proxy; lilbee uses the SDK only. Same
           #   1.83.7 click pin issue blocks the bump.
+          # - GHSA-wxxx-gvqv-xp7p: Sandbox escape in the LiteLLM Proxy's
+          #   `POST /guardrails/test_custom_code` endpoint. Needs a proxy-admin
+          #   credential and a running proxy; lilbee uses the SDK only. Patched
+          #   in 1.83.10/1.83.11; same click pin issue blocks the bump.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
@@ -104,6 +108,7 @@ jobs:
             GHSA-xqmj-j6mv-4862
             GHSA-r75f-5x8p-qvmc
             GHSA-v4p8-mg3p-g94g
+            GHSA-wxxx-gvqv-xp7p
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)

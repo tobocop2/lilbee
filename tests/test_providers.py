@@ -99,6 +99,33 @@ class TestProviderError:
         assert err.provider == "test"
 
 
+class TestWorkerErrorMessage:
+    """`_worker_error_message` must not double-period when the inner message ends with one."""
+
+    def test_no_double_period_when_exc_ends_with_period(self) -> None:
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.worker.transport_pipe import WorkerError
+
+        exc = WorkerError(
+            "ProviderError",
+            "Model 'X' not found in registry. Install it via the catalog or 'lilbee model pull'.",
+            "",
+        )
+        msg = LlamaCppProvider._worker_error_message("Chat", exc)
+        assert ".." not in msg
+        assert msg.endswith(". Please try again.")
+        assert "'lilbee model pull'. Please try again." in msg
+
+    def test_appends_period_when_exc_has_none(self) -> None:
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.worker.transport_pipe import WorkerError
+
+        msg = LlamaCppProvider._worker_error_message(
+            "Embed", WorkerError("RuntimeError", "boom", "")
+        )
+        assert msg == "Embed worker reported an error: RuntimeError: boom. Please try again."
+
+
 # ---------------------------------------------------------------------------
 # LlamaCppProvider
 # ---------------------------------------------------------------------------
