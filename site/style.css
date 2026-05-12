@@ -136,6 +136,16 @@ h1.sr {
   font-size: 14.5px;
   max-width: 52ch;
 }
+.trust {
+  margin-top: 0.95rem;
+  padding-left: 0.95rem;
+  border-left: 2px solid var(--green);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 54ch;
+}
+.trust strong { color: var(--green); font-weight: 500; }
 
 /* section labels ----------------------------------------------------- */
 .label {
