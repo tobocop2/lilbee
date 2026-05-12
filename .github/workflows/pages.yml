@@ -1,17 +1,20 @@
 name: Pages
 
 # Marketing site at https://tobocop2.github.io/lilbee/ plus the per-backend
-# PEP 503 wheel indexes under /<backend>/. Decoupled from package
-# distribution: the site rebuilds on every push to main and after a successful
-# Release candidate run (which builds the full wheel-* set -- default + CUDA
-# extras), so wheel index subdirs stay current without making site updates
-# wait for a release cycle.
+# PEP 503 wheel indexes under /<backend>/. Decoupled from package distribution:
+# it redeploys when site/ (or this workflow) changes on main, and after a
+# successful Release candidate run (which builds the full wheel-* set -- default
+# + CUDA extras), so wheel index subdirs stay current without making site
+# updates wait for a release cycle.
 #
 # build-site and build-wheel-indexes run in parallel; deploy merges both.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
   workflow_run:
     workflows: ["Release candidate"]
     types: [completed]
