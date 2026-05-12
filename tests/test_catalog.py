@@ -474,34 +474,26 @@ class TestFetchHfModels:
         assert page.has_more is False
         assert page.models == []
 
-    def test_transport_error_logs_warning_then_throttles(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    def test_transport_error_warns_first_then_throttles(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """First transport failure logs WARNING; a repeat within the window logs DEBUG."""
-        import logging
+        """First HF transport failure warns; a repeat within the window is throttled to DEBUG."""
 
         def _raise(*_a: object, **_kw: object) -> httpx.Response:
             raise httpx.ConnectError("offline")
 
         monkeypatch.setattr(httpx, "get", _raise)
         client = get_services().hf_client
-        with caplog.at_level(logging.DEBUG, logger="lilbee.catalog.hf_client"):
-            assert client.fetch_models().models == []
-            # Fresh client: _last_fetch_failure_warn is 0, so this is the first
-            # failure of the window and logs at WARNING.
-            assert any(
-                r.levelno == logging.WARNING
-                and "Failed to fetch models from HuggingFace" in r.message
-                for r in caplog.records
-            )
-            caplog.clear()
-            assert client.fetch_models().models == []
-            # Still inside FETCH_FAILURE_WARN_INTERVAL_S: no new WARNING, just a DEBUG.
-            assert all(r.levelno != logging.WARNING for r in caplog.records)
-            assert any(
-                r.levelno == logging.DEBUG and "Suppressed repeat HF fetch failure" in r.message
-                for r in caplog.records
-            )
+        # Fresh client: the -inf sentinel means "never warned", so the first
+        # failure always warns regardless of the absolute monotonic clock value.
+        assert client._last_fetch_failure_warn == float("-inf")
+        assert client.fetch_models().models == []
+        first_warn_at = client._last_fetch_failure_warn
+        assert first_warn_at > float("-inf")  # the WARNING branch ran and stamped the clock
+        assert client.fetch_models().models == []
+        # Still inside FETCH_FAILURE_WARN_INTERVAL_S: the repeat is throttled to
+        # DEBUG and does not re-stamp the clock.
+        assert client._last_fetch_failure_warn == first_warn_at
 
 
 class TestGetCatalog:

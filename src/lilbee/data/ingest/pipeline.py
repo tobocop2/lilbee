@@ -183,6 +183,36 @@ def detect_pending() -> int:
     return len(files_to_process) + removed
 
 
+def _load_pruned_skip_markers(disk_files: dict[str, Path], *, clear_first: bool) -> dict[str, str]:
+    """Read the skip-marker file (optionally clearing it first) and drop entries
+    for files no longer on disk, so the marker set tracks the current corpus."""
+    if clear_first:
+        # Clearing the markers makes the diff re-include the skipped files.
+        clear_skip_markers(cfg.data_root)
+    markers = load_skip_markers(cfg.data_root)
+    if not markers:
+        return markers
+    return {name: fhash for name, fhash in markers.items() if name in disk_files}
+
+
+def _persist_skip_markers(
+    markers: dict[str, str],
+    pending_hashes: dict[str, str],
+    *,
+    succeeded: list[str],
+    failed: list[str],
+) -> None:
+    """Mark files that produced no chunks so the next sync skips them, clear the
+    markers for files that ingested cleanly, then write the file back."""
+    for name in succeeded:
+        markers.pop(name, None)
+    for name in failed:
+        fhash = pending_hashes.get(name)
+        if fhash:
+            markers[name] = fhash
+    write_skip_markers(cfg.data_root, markers)
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -192,7 +222,7 @@ async def sync(
     retry_skipped: bool = False,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
-    Returns summary dict with keys: added, updated, removed, unchanged, failed.
+    Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, processing stops between files without data loss.
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
@@ -202,15 +232,12 @@ async def sync(
 
     if force_rebuild:
         _store.drop_all()
-    if force_rebuild or retry_skipped:
-        # Clearing the markers makes the diff re-include the skipped files.
-        clear_skip_markers(cfg.data_root)
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
-    skip_markers = load_skip_markers(cfg.data_root)
+    skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     removed: list[str] = []
     failed: list[str] = []
@@ -222,15 +249,10 @@ async def sync(
             _store.delete_by_source(name)
             _store.delete_source(name)
             removed.append(name)
-    # Prune skip markers for files that vanished from disk.
-    if skip_markers:
-        on_disk = set(disk_files)
-        skip_markers = {k: v for k, v in skip_markers.items() if k in on_disk}
 
     files_to_process, added, updated, unchanged = _plan_file_changes(
         disk_files, existing_sources, cancel, skip_markers=skip_markers
     )
-
     # Track skip markers for files processed this run, keyed by name → hash.
     pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
 
@@ -248,16 +270,9 @@ async def sync(
             cancel=cancel,
         )
 
-    # Files that ended up in failed/skipped get a marker so the next sync
-    # doesn't retry them at the same hash. Ingested files get their marker
-    # cleared (in case they used to fail).
-    for name in added + updated:
-        skip_markers.pop(name, None)
-    for name in failed + skipped:
-        fhash = pending_hashes.get(name)
-        if fhash:
-            skip_markers[name] = fhash
-    write_skip_markers(cfg.data_root, skip_markers)
+    _persist_skip_markers(
+        skip_markers, pending_hashes, succeeded=added + updated, failed=failed + skipped
+    )
 
     if files_to_process or removed:
         _store.ensure_fts_index()

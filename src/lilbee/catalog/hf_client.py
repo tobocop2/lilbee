@@ -97,7 +97,9 @@ class HfClient:
     def __init__(self) -> None:
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
-        self._last_fetch_failure_warn: float = 0.0
+        # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
+        # smaller than the window, which would push the first failure to DEBUG.
+        self._last_fetch_failure_warn: float = float("-inf")
 
     def fetch_models(
         self,
