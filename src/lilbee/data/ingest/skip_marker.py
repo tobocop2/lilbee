@@ -1,13 +1,12 @@
-"""Sidecar persistence for "this file failed last time, don't retry on every sync".
+"""Sidecar record of files that produced no chunks, so a sync can skip them.
 
-Without this, the diff in ``_plan_file_changes`` re-discovers every file that
-produced zero chunks (Tesseract timeout, decode failure, no usable text) and
-retries it every sync. On corpora with a few stubborn scanned PDFs that costs
-30-60 seconds per file per sync forever.
-
-The marker is a tiny JSON file in ``cfg.data_root`` mapping filename to the
-file hash that last failed. When a file's current hash matches its marker, the
-pipeline skips re-processing. ``/sync --force-rebuild`` clears the markers.
+A file that yields zero chunks (Tesseract timeout, decode failure, no usable
+text) gets a marker here keyed by the file hash that failed.
+``_plan_file_changes`` treats a file whose current hash matches its marker as
+unchanged, so the per-file extract cost (30-60s for a stubborn scanned PDF) is
+paid once, not on every sync. The marker is a small JSON file in
+``cfg.data_root``; editing the file changes its hash and re-arms it, and
+``retry_skipped`` / ``force_rebuild`` drop the file from the marker set.
 """
 
 from __future__ import annotations

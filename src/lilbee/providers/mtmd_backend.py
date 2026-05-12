@@ -38,6 +38,14 @@ _IMAGE_URL_JINJA = "{{ content.image_url.url }}"
 
 _TOKENIZER_CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
 
+_VISION_FALLBACK_N_CTX = 4096
+"""n_ctx for a vision load when the GGUF has no ``context_length`` in metadata.
+
+Most vision GGUFs report their training context (typical values: 4096, 8192,
+32768); this covers the rare missing/unreadable-metadata case so the loader
+still gets a sensible explicit n_ctx.
+"""
+
 
 def read_chat_template(model_path: Path) -> str | None:
     """Return the Jinja chat template embedded in a GGUF model, or None."""
@@ -151,15 +159,6 @@ def load_vision_llama(
         metadata.get("general.architecture", "?"),
     )
     return llama
-
-
-_VISION_FALLBACK_N_CTX = 4096
-"""Used only when the vision GGUF has no ``context_length`` in its metadata.
-
-Most vision GGUFs report their training context (typical values: 4096, 8192,
-32768). This fallback covers the rare case where metadata is missing or
-unreadable so the loader still gets a sensible explicit n_ctx.
-"""
 
 
 def _resolve_vision_n_ctx(model_path: Path) -> int:

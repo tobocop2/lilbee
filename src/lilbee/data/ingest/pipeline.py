@@ -195,16 +195,15 @@ async def sync(
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, processing stops between files without data loss.
-    When *retry_skipped* (or *force_rebuild*) is set, the skip markers for
-    previously-failed files are cleared so this sync tries them again.
+    When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
+    markers are cleared so this sync attempts every file.
     """
     _store = get_services().store
 
     if force_rebuild:
         _store.drop_all()
     if force_rebuild or retry_skipped:
-        # Drop the "this file failed last time" markers so the previously
-        # skipped files get another attempt this run.
+        # Clearing the markers makes the diff re-include the skipped files.
         clear_skip_markers(cfg.data_root)
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
