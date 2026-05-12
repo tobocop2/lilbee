@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee: terminal-first local search engine</title>
-<meta name="description" content="A terminal-first local search engine for your files, code, the web, and scanned documents. One install, no sidecar services, fully offline by default. Ships a TUI, MCP server, REST API, and Python library.">
+<title>lilbee: a batteries-included terminal app for local AI</title>
+<meta name="description" content="A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources, in one program that's also a CLI, an MCP server, an HTTP API, and a Python library. One install, sane defaults out of the box.">
 <link rel="stylesheet" href="style.css">
+<script src="main.js" defer></script>
 </head>
 <body>
 <h1 class="sr">lilbee</h1>
@@ -30,8 +31,35 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <p class="tagline">A <strong>terminal-first local search engine</strong> for your files, code, the web, and scanned documents.</p>
-      <p class="sub">One install, no sidecar services, fully offline by default. Ships a TUI, MCP server, REST API, and Python library.</p>
+      <p class="tagline">A <strong>batteries-included terminal app</strong> for local AI.</p>
+      <p class="sub">One program with a model catalog, a search engine over your own files and code, and a chat. One install command, sane defaults out of the box. Pick a model, point it at a folder, ask.</p>
+    </section>
+
+    <section>
+      <div class="label">one program</div>
+      <div class="shape">
+        <div class="shape-box many">
+          <div class="shape-h">how local AI usually runs</div>
+          <ul>
+            <li>a model server, always running</li>
+            <li>model files fetched by hand</li>
+            <li>a vector database to stand up</li>
+            <li>a separate app for the interface</li>
+            <li>often a container around it all</li>
+          </ul>
+          <div class="shape-note">a deployment to stand up and keep alive.</div>
+        </div>
+        <div class="shape-box one">
+          <div class="shape-h">lilbee</div>
+          <ul>
+            <li>one program: a TUI, a CLI, an MCP server, an HTTP API, a Python library</li>
+            <li>no model server or database server to run; lilbee is the model runtime and the search index, in one process</li>
+            <li>a separate scoped library per project, so each domain stays its own clean encyclopedia</li>
+            <li>portable: runs on a laptop or headless over SSH, move it between machines</li>
+          </ul>
+          <div class="shape-note">one install command, sane defaults out of the box. point it at a folder, ask.</div>
+        </div>
+      </div>
     </section>
 
     <section>
@@ -56,38 +84,168 @@
       <div class="label">what it does</div>
       <div class="caps">
         <div class="cap">
-          <h3>personal encyclopedia</h3>
-          <p>Index PDFs, notes, ebooks, code. Every answer clicks back to the source line. Private Encarta you build from your own files.</p>
+          <h3>encyclopedias, plural</h3>
+          <p>A scoped library per project: your PDFs, notes, ebooks, and code, kept apart so results stay clean. Index with live progress in the TUI; every answer cites the source line.</p>
         </div>
         <div class="cap">
-          <h3>grounding for AI agents</h3>
-          <p>Plug into any MCP agent. It reads the code it's about to call, cites file and line, and says "I don't know" instead of guessing.</p>
+          <h3>pairs with your AI agent</h3>
+          <p>Point opencode or any MCP agent at a library: it reads the actual code and docs before answering, cites file and line, and says "I don't know" instead of guessing.</p>
         </div>
         <div class="cap">
           <h3>offline copies of websites</h3>
-          <p>One command to crawl a docs site or wiki, convert to markdown, and index. Search and chat with it offline, even if it goes down.</p>
+          <p>Crawl a docs site or wiki, convert it to markdown, and index it. Search and chat with it offline, even if it goes down.</p>
         </div>
         <div class="cap">
           <h3>scans &amp; OCR</h3>
-          <p>Paper archives and photos go through Tesseract or a local vision GGUF, landing as searchable markdown with layout preserved.</p>
+          <p>Paper archives and photos go through Tesseract or a local vision model, landing as searchable markdown with the layout kept.</p>
         </div>
       </div>
     </section>
 
     <section>
       <div class="label">install</div>
-      <div class="install">
-        <span class="prompt">$</span>
-        <span class="cmd" id="install-cmd">pip install --pre lilbee</span>
-        <button type="button" class="copy" id="copy-btn" aria-label="Copy install command">[ COPY ]</button>
+
+      <div class="installtabs" role="tablist" aria-label="Install methods">
+        <button type="button" class="tab" role="tab" id="tab-pip" aria-controls="pane-pip" aria-selected="true" tabindex="0">pip</button>
+        <button type="button" class="tab" role="tab" id="tab-uv" aria-controls="pane-uv" aria-selected="false" tabindex="-1">uv</button>
+        <button type="button" class="tab" role="tab" id="tab-brew" aria-controls="pane-brew" aria-selected="false" tabindex="-1">homebrew</button>
+        <button type="button" class="tab" role="tab" id="tab-aur" aria-controls="pane-aur" aria-selected="false" tabindex="-1">AUR</button>
+        <button type="button" class="tab" role="tab" id="tab-docker" aria-controls="pane-docker" aria-selected="false" tabindex="-1">docker</button>
+        <button type="button" class="tab" role="tab" id="tab-nix" aria-controls="pane-nix" aria-selected="false" tabindex="-1">nix</button>
+        <button type="button" class="tab" role="tab" id="tab-binary" aria-controls="pane-binary" aria-selected="false" tabindex="-1">binary</button>
+        <button type="button" class="tab" role="tab" id="tab-cuda" aria-controls="pane-cuda" aria-selected="false" tabindex="-1">CUDA</button>
+        <button type="button" class="tab" role="tab" id="tab-source" aria-controls="pane-source" aria-selected="false" tabindex="-1">source</button>
       </div>
-      <p class="extras">extras: <span class="tag">[crawler]</span> websites &nbsp; <span class="tag">[litellm]</span> frontier models &nbsp; <span class="tag">[graph]</span> concept-graph search</p>
-      <p class="extras"><span class="k">uv:</span> <code>uv tool install --prerelease=allow lilbee</code></p>
-      <p class="extras"><span class="k">homebrew:</span> <code>brew tap tobocop2/lilbee &amp;&amp; brew install lilbee</code></p>
-      <p class="extras"><span class="k">arch (AUR):</span> <code>paru -S lilbee</code></p>
-      <p class="extras"><span class="k">docker:</span> <code>docker run --rm ghcr.io/tobocop2/lilbee:latest</code></p>
-      <p class="extras"><span class="k">cuda (opt-in, NVIDIA-native):</span> <code>--extra-index-url https://tobocop2.github.io/lilbee/cu125/</code></p>
-      <p class="extras"><span class="k">beta:</span> every release is a pre-release. <a href="https://pypi.org/project/lilbee/#history">latest on pypi →</a></p>
+
+      <div class="installpane" role="tabpanel" id="pane-pip" aria-labelledby="tab-pip">
+        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">pip install --pre lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
+        <div class="notes-body" id="notes-pip" hidden>
+          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://tobocop2.github.io/lilbee/cpu/</code> &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-uv" aria-labelledby="tab-uv" hidden>
+        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">uv tool install --prerelease=allow lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-uv">details</button>
+        <div class="notes-body" id="notes-uv" hidden>
+          <p class="extras">uv fetches a Python for you if needed &nbsp;.&nbsp; extras: <code>uv tool install --prerelease=allow 'lilbee[crawler]'</code></p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-brew" aria-labelledby="tab-brew" hidden>
+        <div class="oschips"><span class="oschip">macOS arm64</span><span class="oschip">Linux x86_64</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">brew tap tobocop2/lilbee &amp;&amp; brew install lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-brew">details</button>
+        <div class="notes-body" id="notes-brew" hidden>
+          <p class="extras">prebuilt bundle: its own Python interpreter and llama.cpp backend, nothing to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras need a <code>pip</code> or <code>uv</code> install</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-aur" aria-labelledby="tab-aur" hidden>
+        <div class="oschips"><span class="oschip">Arch Linux</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">paru -S lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-aur">details</button>
+        <div class="notes-body" id="notes-aur" hidden>
+          <p class="extras">package <code>lilbee</code> on the AUR &nbsp;.&nbsp; works with <code>yay</code> / <code>pacaur</code> / any helper &nbsp;.&nbsp; wraps the Linux x86_64 release binary</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-docker" aria-labelledby="tab-docker" hidden>
+        <div class="oschips"><span class="oschip">any host with Docker</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-docker">details</button>
+        <div class="notes-body" id="notes-docker" hidden>
+          <p class="extras">image on the GitHub Container Registry &nbsp;.&nbsp; data lives at <code>/home/lilbee/data</code>, REST API on port 8000</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-nix" aria-labelledby="tab-nix" hidden>
+        <div class="oschips"><span class="oschip">NixOS</span><span class="oschip">nix-darwin</span><span class="oschip">any host with nix</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">nix run github:tobocop2/lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-nix">details</button>
+        <div class="notes-body" id="notes-nix" hidden>
+          <p class="extras">flake at <code>github:tobocop2/lilbee</code> &nbsp;.&nbsp; on Linux it bundles glibc and the Vulkan loader via an FHS env so it runs on bare NixOS</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-binary" aria-labelledby="tab-binary" hidden>
+        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">macOS arm64</span><span class="oschip">Windows x86_64</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64 -o lilbee &amp;&amp; chmod +x lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
+        <div class="notes-body" id="notes-binary" hidden>
+          <p class="extras">single binary, bundles its own Python runtime, no <code>pip</code> needed &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/releases">macOS arm64 and Windows builds on the releases page &rarr;</a></p>
+          <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds have no code-signing cert. On macOS, if Gatekeeper blocks it run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (or System Settings &rarr; Privacy &amp; Security &rarr; Open Anyway). Homebrew clears this for you.</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-cuda" aria-labelledby="tab-cuda" hidden>
+        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">Windows x86_64</span><span class="oschip dim">NVIDIA GPU</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-cuda">details</button>
+        <div class="notes-body" id="notes-cuda" hidden>
+          <p class="extras">only for the last bit of CUDA-native speed &nbsp;.&nbsp; the default wheel already uses your NVIDIA GPU through Vulkan &nbsp;.&nbsp; <code>cu121</code> / <code>cu124</code> indexes also available &nbsp;.&nbsp; works with <code>uv tool install</code> too</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-source" aria-labelledby="tab-source" hidden>
+        <div class="oschips"><span class="oschip">macOS</span><span class="oschip">Linux</span><span class="oschip">Windows</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">git clone https://github.com/tobocop2/lilbee &amp;&amp; cd lilbee &amp;&amp; uv sync &amp;&amp; uv run lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-source">details</button>
+        <div class="notes-body" id="notes-source" hidden>
+          <p class="extras">for hacking on it or contributing &nbsp;.&nbsp; needs <code>git</code> and <code>uv</code></p>
+        </div>
+      </div>
+
+      <div class="installextras">
+        <div class="extras-h">optional extras</div>
+        <div class="extras-sub">add in brackets to a <code>pip</code> or <code>uv</code> install, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code> &nbsp;.&nbsp; lilbee works without them</div>
+        <div class="extras-grid">
+          <div class="extra"><span class="tag">[crawler]</span><span>index websites too: crawl a docs site or wiki to markdown, then search it offline</span></div>
+          <div class="extra"><span class="tag">[litellm]</span><span>bridge to many popular hosted model providers for chat, vision, or embeddings; you bring the key, and the TUI flags when a hosted model is active</span></div>
+          <div class="extra"><span class="tag">[graph]</span><span>concept-graph search: finds matches plain keyword search misses, with no extra model calls</span></div>
+        </div>
+      </div>
+
+      <p class="installmeta">every release is a pre-release. <a href="https://pypi.org/project/lilbee/#history">latest on PyPI &rarr;</a> &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/blob/main/README.md#install">full install guide &rarr;</a></p>
     </section>
 
     <section>
@@ -157,31 +315,5 @@
                              ZZ
                             Z</pre></aside>
 </div>
-<script>
-(function () {
-  var btn = document.getElementById('copy-btn');
-  if (!btn) return;
-  var cmd = document.getElementById('install-cmd');
-  btn.addEventListener('click', function () {
-    var text = cmd ? cmd.textContent : 'pip install --pre lilbee';
-    var done = function () {
-      var original = btn.textContent;
-      btn.textContent = '[ COPIED ]';
-      setTimeout(function () { btn.textContent = original; }, 1200);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, done);
-    } else {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); } catch (e) {}
-      document.body.removeChild(ta);
-      done();
-    }
-  });
-})();
-</script>
 </body>
 </html>
