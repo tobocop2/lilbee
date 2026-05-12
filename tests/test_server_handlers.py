@@ -453,7 +453,9 @@ class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
-        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def fake_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             if on_progress:
                 from lilbee.runtime.progress import FileDoneEvent, SyncDoneEvent
 
@@ -475,7 +477,9 @@ class TestSyncStream:
     async def test_yields_progress_events(self):
         sync_result = SyncResult(added=["b.txt"])
 
-        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def fake_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             if on_progress:
                 from lilbee.runtime.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
@@ -500,7 +504,9 @@ class TestSyncStream:
         """Sync with no progress events exercises the TimeoutError continue branch."""
         sync_result = SyncResult()
 
-        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def slow_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
@@ -517,7 +523,9 @@ class TestSyncStream:
         barrier = threading.Event()
         captured_cancel: list[threading.Event] = []
 
-        async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def blocking_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             captured_cancel.append(cancel)
             if on_progress:
                 from lilbee.runtime.progress import FileStartEvent
@@ -585,7 +593,9 @@ class TestSyncStreamDoneDelivery:
         """A fast-completing sync still delivers both done frames in order."""
         sync_result = SyncResult(added=["fast.txt"])
 
-        async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def instant_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             if on_progress:
                 from lilbee.runtime.progress import SyncDoneEvent
 
@@ -609,7 +619,9 @@ class TestSyncStreamDoneDelivery:
         """A sync with zero file changes still emits the done frame."""
         sync_result = SyncResult()  # empty: no added/updated/removed
 
-        async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def noop_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             if on_progress:
                 from lilbee.runtime.progress import SyncDoneEvent
 
@@ -645,7 +657,9 @@ class TestSyncStreamDoneDelivery:
     async def test_stream_reports_error_when_sync_raises(self):
         """If the sync coroutine raises, sync_stream emits an error SSE frame."""
 
-        async def failing_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def failing_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             raise RuntimeError("boom")
 
         with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
@@ -663,7 +677,9 @@ class TestSyncStreamDoneDelivery:
         sync_result = SyncResult(added=[])
         observed: dict[str, bool] = {}
 
-        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def fake_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
@@ -677,7 +693,9 @@ class TestSyncStreamDoneDelivery:
         sync_result = SyncResult(added=[])
         observed: dict[str, bool] = {}
 
-        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+        async def fake_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
             observed["force_rebuild"] = force_rebuild
             return sync_result
 
@@ -685,6 +703,22 @@ class TestSyncStreamDoneDelivery:
             _ = [e async for e in handlers.sync_stream()]
 
         assert observed["force_rebuild"] is False
+
+    async def test_retry_skipped_flag_reaches_sync(self):
+        """sync_stream(retry_skipped=True) plumbs the flag through to ingest.sync."""
+        sync_result = SyncResult(added=[])
+        observed: dict[str, bool] = {}
+
+        async def fake_sync(
+            force_rebuild=False, retry_skipped=False, quiet=False, *, on_progress=None, cancel=None
+        ):
+            observed["retry_skipped"] = retry_skipped
+            return sync_result
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream(retry_skipped=True)]
+
+        assert observed["retry_skipped"] is True
 
 
 class TestDrainFallback:
