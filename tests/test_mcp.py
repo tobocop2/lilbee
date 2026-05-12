@@ -259,6 +259,20 @@ class TestSync:
         result = await sync()
         assert "test.txt" in result["added"]
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_sync_passes_recovery_flags(self, mock_sync):
+        await sync(force_rebuild=True, retry_skipped=True)
+        _, kwargs = mock_sync.call_args
+        assert kwargs["force_rebuild"] is True
+        assert kwargs["retry_skipped"] is True
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_sync_recovery_flags_default_false(self, mock_sync):
+        await sync()
+        _, kwargs = mock_sync.call_args
+        assert kwargs["force_rebuild"] is False
+        assert kwargs["retry_skipped"] is False
+
 
 class TestRemove:
     def test_removes_known_file(self, mock_svc):

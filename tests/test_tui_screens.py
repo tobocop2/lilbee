@@ -82,6 +82,7 @@ def mock_svc():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.count_sources.return_value = 0
     store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None
     store.delete_source.return_value = None
@@ -2145,6 +2146,39 @@ async def test_status_screen_store_error(mock_svc):
         assert table.row_count == 1
 
 
+async def _wait_for_row_count(pilot, table, expected: int, *, tries: int = 200) -> None:
+    """Poll *table*.row_count until it equals *expected* or *tries* run out."""
+    for _ in range(tries):
+        if table.row_count == expected:
+            return
+        await pilot.pause()
+    assert table.row_count == expected
+
+
+async def test_status_screen_streams_documents_in_batches(mock_svc):
+    """A whole wiki's worth of sources streams into the table without freezing.
+
+    Before this, a per-source ``add_row`` loop on the UI thread softlocked
+    the status tab once thousands of files were ingested. The renderer now
+    appends a bounded batch per refresh, so the screen stays responsive and
+    every row eventually shows up to be scrolled through.
+    """
+    from textual.widgets import DataTable
+
+    from lilbee.cli.tui.screens.status import _DOC_RENDER_BATCH
+
+    total = _DOC_RENDER_BATCH * 3 + 11
+    mock_svc.store.get_sources.return_value = [
+        {"filename": f"doc_{i}.md", "chunk_count": i, "content_type": "text/markdown"}
+        for i in range(total)
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#docs-table", DataTable)
+        # Every row arrives within a bounded number of refreshes.
+        await _wait_for_row_count(pilot, table, total)
+
+
 async def test_status_screen_storage_section(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
@@ -3479,6 +3513,25 @@ async def test_command_provider_open_wiki_action():
         with patch.object(app, "switch_view") as mock_switch:
             provider._action_open_wiki()
             mock_switch.assert_called_once_with("Wiki")
+
+
+async def test_command_provider_retry_skipped_action(tmp_path):
+    """Palette 'Retry skipped documents' clears the marker file and starts a sync."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+
+    cfg.data_root = tmp_path
+    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef"})
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        with patch.object(app, "action_run_sync") as mock_sync:
+            provider._action_retry_skipped()
+            mock_sync.assert_called_once()
+        assert load_skip_markers(tmp_path) == {}
 
 
 async def test_command_provider_delete_doc(mock_svc):
@@ -11855,7 +11908,7 @@ async def test_status_mount_remaining_sections_bails_when_not_mounted(monkeypatc
 
     screen = StatusScreen.__new__(StatusScreen)
     screen._sections_mounted = False
-    screen._pending_sources = None
+    screen._pending_docs = None
     screen._pending_arch = None
     # Force the guard branch by stubbing is_mounted to False.
     monkeypatch.setattr(StatusScreen, "is_mounted", property(lambda self: False))
@@ -12123,32 +12176,31 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     """on_worker_state_changed routes results into _load_* once sections mounted."""
     from textual.worker import WorkerState
 
-    from lilbee.cli.tui.screens.status import ModelArchInfo, StatusScreen
+    from lilbee.cli.tui.screens.status import ModelArchInfo, StatusScreen, _DocsResult
 
     screen = StatusScreen.__new__(StatusScreen)
     screen._sections_mounted = True
-    screen._pending_sources = None
+    screen._pending_docs = None
     screen._pending_arch = None
 
-    loaded_docs: list[list] = []
+    loaded_docs: list[_DocsResult] = []
     loaded_storage: list[int] = []
     loaded_arch: list[ModelArchInfo] = []
     screen._load_documents = loaded_docs.append
     screen._load_storage = loaded_storage.append
     screen._load_arch = loaded_arch.append
 
+    docs_result = _DocsResult(sources=[{"a": 1}, {"b": 2}], load_failed=False)
     sources_event = type(
         "Ev",
         (),
         {
             "state": WorkerState.SUCCESS,
-            "worker": type(
-                "W", (), {"name": "status_fetch_sources", "result": [{"a": 1}, {"b": 2}]}
-            )(),
+            "worker": type("W", (), {"name": "status_fetch_sources", "result": docs_result})(),
         },
     )()
     screen.on_worker_state_changed(sources_event)
-    assert loaded_docs == [[{"a": 1}, {"b": 2}]]
+    assert loaded_docs == [docs_result]
     assert loaded_storage == [2]
 
     arch_payload = ModelArchInfo()

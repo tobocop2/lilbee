@@ -241,6 +241,7 @@ def _default_store_mock():
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.count_sources.return_value = 0
     store.add_chunks.side_effect = len
     return store
 

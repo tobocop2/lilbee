@@ -89,10 +89,17 @@ class HfClient:
 
     CACHE_TTL: float = 300.0
     CACHE_MAX_ENTRIES: int = 50
+    # Rate-limit the "Failed to fetch models" warning so an offline user
+    # doesn't see one line per UI tick. First failure surfaces immediately;
+    # repeats within the window stay at DEBUG.
+    FETCH_FAILURE_WARN_INTERVAL_S: float = 300.0
 
     def __init__(self) -> None:
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
+        # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
+        # smaller than the window, which would push the first failure to DEBUG.
+        self._last_fetch_failure_warn: float = float("-inf")
 
     def fetch_models(
         self,
@@ -144,7 +151,7 @@ class HfClient:
                 return _EMPTY_HF_PAGE
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            log.warning("Failed to fetch models from HuggingFace: %s", exc)
+            self._log_fetch_failure(exc)
             return _EMPTY_HF_PAGE
 
         has_more = "next" in resp.links
@@ -180,3 +187,18 @@ class HfClient:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
                 del self._cache[oldest_key]
         return page
+
+    def _log_fetch_failure(self, exc: Exception) -> None:
+        """Log an HF fetch failure, rate-limited so offline use doesn't spam.
+
+        First failure of each ``FETCH_FAILURE_WARN_INTERVAL_S`` window logs
+        at WARNING; repeats within the window log at DEBUG. The interval
+        starts from the last WARNING so a flapping network produces one
+        line every five minutes, not one per UI tick.
+        """
+        now = time.monotonic()
+        if now - self._last_fetch_failure_warn >= self.FETCH_FAILURE_WARN_INTERVAL_S:
+            log.warning("Failed to fetch models from HuggingFace: %s", exc)
+            self._last_fetch_failure_warn = now
+        else:
+            log.debug("Suppressed repeat HF fetch failure: %s", exc)

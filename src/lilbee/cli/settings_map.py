@@ -23,7 +23,12 @@ class RenderStyle(StrEnum):
 
 @dataclass(frozen=True)
 class SettingDef:
-    """Metadata for an interactive setting."""
+    """Metadata for an interactive setting.
+
+    ``hidden`` keeps the setting out of the TUI settings screen while leaving
+    it reachable via ``lilbee set`` and the ``LILBEE_*`` env var: use it for
+    transport/server knobs that aren't relevant to a typical TUI session.
+    """
 
     type: type
     nullable: bool
@@ -32,6 +37,7 @@ class SettingDef:
     group: str = "General"
     help_text: str = ""
     choices: tuple[str, ...] | None = None
+    hidden: bool = False
 
 
 def get_default(key: str) -> object:
@@ -680,13 +686,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=True,
         group="System",
-        help_text="Path to the active Obsidian-style vault (blank = none)",
+        help_text="Markdown vault root; results carry a vault-relative path (blank = none)",
     ),
     "sse_heartbeat_interval": SettingDef(
         float,
         nullable=False,
         group="System",
-        help_text="Seconds between SSE keep-alive frames (server -> Obsidian plugin)",
+        help_text="Seconds between SSE keep-alive frames sent to idle HTTP stream clients",
+        hidden=True,
     ),
     "llm_provider": SettingDef(
         str,

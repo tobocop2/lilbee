@@ -352,6 +352,29 @@ class TestSettingsFeatureGating:
             groups = settings_mod.group_settings()
         assert "Crawling" in groups
 
+    def test_hidden_setting_not_rendered_but_still_in_map(self) -> None:
+        """`sse_heartbeat_interval` is a transport knob: hidden from the TUI
+        settings screen, still reachable via `lilbee set` / the env var."""
+        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.cli.tui.screens.settings_widgets import group_settings
+
+        assert SETTINGS_MAP["sse_heartbeat_interval"].hidden is True
+        rendered_keys = {k for items in group_settings().values() for k, _ in items}
+        assert "sse_heartbeat_interval" not in rendered_keys
+        # Still settable through the CLI / env path.
+        assert "sse_heartbeat_interval" in SETTINGS_MAP
+
+    def test_no_setting_help_text_mentions_obsidian(self) -> None:
+        """Obsidian is one host of the HTTP API; it must not leak into setting labels."""
+        from lilbee.cli.settings_map import SETTINGS_MAP
+
+        offenders = {
+            key: defn.help_text
+            for key, defn in SETTINGS_MAP.items()
+            if "obsidian" in defn.help_text.lower()
+        }
+        assert offenders == {}, f"settings help text references Obsidian: {offenders}"
+
 
 class TestSettingsTabActivatedEdges:
     """`_on_tab_activated` early-returns when pane / pane.id is None."""
@@ -434,11 +457,12 @@ class TestTaskBarSpawningRoles:
 
 
 class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
-    """``_fetch_sources_worker`` returns None on read failure and ``[]``
-    when the store opened cleanly with no documents -- the docs table can
-    then choose between the error placeholder and the routine empty hint."""
+    """``_fetch_sources_worker`` flags ``load_failed`` on a read error and
+    leaves it False when the store opened cleanly with no documents -- the
+    docs table can then choose between the error placeholder and the routine
+    empty hint."""
 
-    def test_returns_none_on_failure(self) -> None:
+    def test_load_failed_true_on_read_error(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 
         screen = StatusScreen.__new__(StatusScreen)
@@ -449,9 +473,10 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
             return_value=services,
         ):
             result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
-        assert result is None
+        assert result.load_failed is True
+        assert result.sources == []
 
-    def test_returns_empty_list_on_clean_empty_store(self) -> None:
+    def test_load_failed_false_on_clean_empty_store(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 
         screen = StatusScreen.__new__(StatusScreen)
@@ -462,15 +487,23 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
             return_value=services,
         ):
             result = screen._fetch_sources_worker.__wrapped__(screen)  # type: ignore[attr-defined]
-        assert result == []
+        assert result.load_failed is False
+        assert result.sources == []
 
 
 class TestAppCanonicalizeFallbackNotice:
     """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
     when canonicalize returns a different effective ref."""
 
-    async def test_fallback_writes_cfg_and_logs_silently(self, caplog) -> None:
-        """Fallback writes cfg.<field> = effective, logs a WARNING, and does not toast the user."""
+    async def test_fallback_writes_cfg_and_persists_so_warning_does_not_repeat(
+        self, caplog
+    ) -> None:
+        """Fallback writes cfg, persists via settings, logs WARNING, does not toast.
+
+        Persisting (the ``settings.set_value`` call) is what makes this a
+        one-time notice. Without it the warning fires every restart for as
+        long as the stale ref sits in config.toml.
+        """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import (
@@ -504,9 +537,11 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch.object(
                     app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
                 ),
+                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
                 app._canonicalize_persisted_models()
+                mock_set_value.assert_any_call(cfg.data_root, "chat_model", "fallback/model")
             assert cfg.chat_model == "fallback/model"
             assert not notifications, "fallback must not toast the user"
             assert any("fallback/model" in record.getMessage() for record in caplog.records), (
@@ -1227,6 +1262,33 @@ class TestSyncSkippedMessageBranches:
 
         cfg.vision_model = ""
         assert "Configure a vision_model" in sync_skipped_message("a.pdf")
+
+
+class TestChattyDependencyFilters:
+    """`lilbee/__init__.py` installs substring filters on noisy upstream loggers."""
+
+    @staticmethod
+    def _record(name: str, msg: str) -> logging.LogRecord:
+        return logging.LogRecord(name, logging.WARNING, __file__, 0, msg, (), None)
+
+    def test_hf_unauthenticated_notice_is_dropped(self) -> None:
+        hf_logger = logging.getLogger("huggingface_hub.utils._http")
+        noisy = self._record(
+            hf_logger.name, "Sending unauthenticated requests to the HF Hub; rate limits apply."
+        )
+        assert any(f.filter(noisy) is False for f in hf_logger.filters)
+
+    def test_unrelated_hf_message_passes_through(self) -> None:
+        hf_logger = logging.getLogger("huggingface_hub.utils._http")
+        keep = self._record(hf_logger.name, "Downloaded model.gguf in 12s")
+        assert all(f.filter(keep) is True for f in hf_logger.filters)
+
+    def test_litellm_cost_map_warning_is_dropped(self) -> None:
+        litellm_logger = logging.getLogger("LiteLLM")
+        noisy = self._record(
+            litellm_logger.name, "Failed to fetch remote model cost map. Using local copy."
+        )
+        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
 
 
 class TestWikiEmptyStateSpacyBranches:

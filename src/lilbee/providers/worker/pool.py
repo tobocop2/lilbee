@@ -47,6 +47,11 @@ _DEFAULT_MAX_IDLE_S = 0.0  # 0 = no idle reaping by default
 _HEALTH_TIMEOUT_S = 5.0
 _RESTART_BUDGET = 3
 _RESTART_WINDOW_S = 60.0
+# After tripping the crash budget the role enters a cooldown instead of a
+# permanent disable. When the cooldown expires the next call gets one
+# "half-open" attempt; success clears the crash history, failure re-arms the
+# cooldown. Matches the classic circuit-breaker pattern.
+_DEGRADED_COOLDOWN_S = 60.0
 _RUNTIME_THREAD_NAME = "lilbee-worker-pool-loop"
 
 
@@ -62,24 +67,36 @@ class PoolShutdownError(WorkerError):
 
 
 class RoleDegradedError(WorkerError):
-    """Raised when a role has burned through its restart budget."""
+    """Raised when a role is in cooldown after a burst of crashes.
 
-    def __init__(self, role: WorkerRole, attempts: int, window_s: float) -> None:
+    Carries the cooldown deadline so the caller can hint the user when the
+    pool will accept another attempt. Older builds said "Restart lilbee to
+    recover"; today the pool auto-retries after ``_DEGRADED_COOLDOWN_S``.
+    """
+
+    def __init__(self, role: WorkerRole, attempts: int, window_s: float, retry_in_s: float) -> None:
         super().__init__(
             "RoleDegradedError",
             (
                 f"The {role} worker crashed {attempts} times in the last "
-                f"{window_s:.0f} seconds and is now disabled. Restart "
-                "lilbee to recover."
+                f"{window_s:.0f}s and is cooling down. Retry in "
+                f"{retry_in_s:.0f}s."
             ),
             "",
         )
         self.role = role
+        self.retry_in_s = retry_in_s
 
 
 @dataclass
 class _Role:
-    """Per-role registration: how to spawn it plus its live channel (if any)."""
+    """Per-role registration: how to spawn it plus its live channel (if any).
+
+    ``degraded_until`` is the monotonic timestamp at which the role exits
+    cooldown; 0.0 means "not degraded". Compared to ``time.monotonic()``
+    inside ``_ensure_channel`` to decide whether the next call gets the
+    half-open attempt.
+    """
 
     name: WorkerRole
     worker_main: WorkerEntrypoint
@@ -88,7 +105,7 @@ class _Role:
     spawn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = 0.0
     crash_history: deque[float] = field(default_factory=deque)
-    degraded: bool = False
+    degraded_until: float = 0.0
 
 
 class RoleAccessor:
@@ -292,20 +309,24 @@ class WorkerPool:
         )
 
     async def _ensure_channel(self, role: WorkerRole) -> WorkerChannel:
-        """Return the role's live channel, spawning it on first use or after crash."""
+        """Return the role's live channel, spawning on first use, cooldown, or crash.
+
+        Half-open behavior: if a role is cooling down past its
+        ``degraded_until`` deadline, one respawn attempt is allowed. A
+        successful spawn clears the cooldown; a fresh crash extends it. See
+        ``_DEGRADED_COOLDOWN_S``.
+        """
         self._raise_if_shutdown()
         registration = self._roles.get(role)
         if registration is None:
             raise KeyError(f"Role {role!r} is not registered on this pool.")
-        if registration.degraded:
-            raise RoleDegradedError(role, _RESTART_BUDGET, _RESTART_WINDOW_S)
+        self._refuse_or_clear_cooldown(role, registration)
         if registration.channel is not None and registration.channel.is_alive:
             return registration.channel
         async with registration.spawn_lock:
             if registration.channel is not None and registration.channel.is_alive:
                 return registration.channel
-            if registration.degraded:
-                raise RoleDegradedError(role, _RESTART_BUDGET, _RESTART_WINDOW_S)
+            self._refuse_or_clear_cooldown(role, registration)
             self._raise_if_shutdown()
             self._fire_listeners(self._on_role_spawning, role)
             channel, _handle = await asyncio.get_running_loop().run_in_executor(
@@ -345,8 +366,32 @@ class WorkerPool:
             return None
         return registration.channel
 
+    def _refuse_or_clear_cooldown(self, role: WorkerRole, registration: _Role) -> None:
+        """Raise ``RoleDegradedError`` if still cooling down; clear if past deadline.
+
+        Centralizes the half-open check so both early bail-outs in
+        ``_ensure_channel`` apply identical logic.
+        """
+        if registration.degraded_until <= 0.0:
+            return
+        now = time.monotonic()
+        if now >= registration.degraded_until:
+            # Cooldown expired: half-open. Reset crash history so the next
+            # spawn attempt is judged on its own merit; if it crashes the
+            # role re-enters cooldown via ``_on_crash``.
+            registration.degraded_until = 0.0
+            registration.crash_history.clear()
+            log.info("Worker pool role=%s cooldown elapsed; allowing one retry", role)
+            return
+        raise RoleDegradedError(
+            role,
+            len(registration.crash_history),
+            _RESTART_WINDOW_S,
+            registration.degraded_until - now,
+        )
+
     async def _on_crash(self, role: WorkerRole) -> None:
-        """Drop a crashed channel; mark degraded if the restart budget is exhausted."""
+        """Drop a crashed channel; arm a cooldown if the restart budget is exhausted."""
         registration = self._roles.get(role)
         if registration is None:
             return
@@ -359,10 +404,11 @@ class WorkerPool:
                 registration.crash_history.popleft()
             registration.crash_history.append(now)
             if len(registration.crash_history) > _RESTART_BUDGET:
-                registration.degraded = True
+                registration.degraded_until = now + _DEGRADED_COOLDOWN_S
                 log.error(
-                    "Worker pool marking role=%s degraded after %d crashes in %.0fs",
+                    "Worker pool role=%s cooling down for %.0fs after %d crashes in %.0fs",
                     role,
+                    _DEGRADED_COOLDOWN_S,
                     len(registration.crash_history),
                     _RESTART_WINDOW_S,
                 )
@@ -371,22 +417,24 @@ class WorkerPool:
                 await channel.close(timeout=_DEFAULT_SHUTDOWN_TIMEOUT_S)
 
     def reset_role_failures(self, role: WorkerRole) -> None:
-        """Clear *role*'s degraded mark and crash history.
+        """Clear *role*'s crash history and any active cooldown.
 
-        Used by an explicit "retry" UI affordance so the user can recover
-        without restarting lilbee. Returns silently if the role is
-        unregistered.
+        Public hook for an explicit "force a retry now" affordance. The
+        circuit breaker already auto-recovers after ``_DEGRADED_COOLDOWN_S``;
+        this is the manual override for users who don't want to wait.
         """
         registration = self._roles.get(role)
         if registration is None:
             return
         registration.crash_history.clear()
-        registration.degraded = False
+        registration.degraded_until = 0.0
 
     def is_degraded(self, role: WorkerRole) -> bool:
-        """Return True iff *role* is currently disabled by the restart-budget rule."""
+        """Return True iff *role* is currently inside a crash cooldown."""
         registration = self._roles.get(role)
-        return registration is not None and registration.degraded
+        if registration is None:
+            return False
+        return registration.degraded_until > 0.0 and time.monotonic() < registration.degraded_until
 
     async def reap_idle(self) -> tuple[WorkerRole, ...]:
         """Close any role idle longer than ``max_idle_s`` with zero in-flight.

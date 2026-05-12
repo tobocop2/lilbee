@@ -10,7 +10,6 @@ from typing import Any
 
 from gguf import GGUFReader
 
-from lilbee.core.config.model import cfg
 from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
 from lilbee.providers.llama_cpp.log_dispatch import (
@@ -38,6 +37,14 @@ _GGUF_IMAGE_TOKENS: tuple[str, ...] = (
 _IMAGE_URL_JINJA = "{{ content.image_url.url }}"
 
 _TOKENIZER_CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
+
+_VISION_FALLBACK_N_CTX = 4096
+"""n_ctx for a vision load when the GGUF has no ``context_length`` in metadata.
+
+Most vision GGUFs report their training context (typical values: 4096, 8192,
+32768); this covers the rare missing/unreadable-metadata case so the loader
+still gets a sensible explicit n_ctx.
+"""
 
 
 def read_chat_template(model_path: Path) -> str | None:
@@ -155,15 +162,19 @@ def load_vision_llama(
 
 
 def _resolve_vision_n_ctx(model_path: Path) -> int:
-    """Pick n_ctx for a vision load, clamped to the model's training context."""
+    """Pick n_ctx for a vision load using the model's training context.
+
+    Reads ``<arch>.context_length`` from the GGUF metadata and uses it
+    directly. The chat-tuned ``cfg.num_ctx`` is not propagated: a vision pass
+    packs image-token embeddings plus the prompt (often hundreds to a few
+    thousand tokens per page), and clamping to a small chat ctx truncates OCR
+    output. An explicit value (rather than 0) keeps the OOM-retry path
+    working since ``_halve_ctx_for_retry`` cannot bisect from 0.
+    """
     try:
         meta = read_gguf_metadata(model_path)
     except Exception:
         log.debug("read_gguf_metadata failed for vision %s", model_path, exc_info=True)
         meta = None
     train_ctx = int((meta or {}).get("context_length", "0"))
-    if cfg.num_ctx is None:
-        return 0  # 0 -> llama.cpp uses the model's training context
-    if train_ctx <= 0:
-        return cfg.num_ctx
-    return min(cfg.num_ctx, train_ctx)
+    return train_ctx if train_ctx > 0 else _VISION_FALLBACK_N_CTX
