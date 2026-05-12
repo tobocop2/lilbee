@@ -162,6 +162,14 @@ h1.sr {
 .label::before { content: ""; width: 12px; height: 1px; background: var(--rule-2); }
 .label::after  { content: ""; flex: 1; height: 1px; background: var(--rule); }
 
+.lede {
+  font-size: 14.5px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  max-width: 56ch;
+  margin-bottom: 1rem;
+}
+
 /* preview demo ------------------------------------------------------- */
 .demo {
   background: var(--bg-card);
@@ -234,6 +242,20 @@ h1.sr {
   color: var(--ink-2);
   line-height: 1.6;
 }
+
+/* a note on answers -------------------------------------------------- */
+.note {
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.65;
+  max-width: 58ch;
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--amber);
+  border-radius: 3px;
+  padding: 0.85rem 1.05rem;
+}
+.note strong { color: var(--amber); font-weight: 500; }
 
 /* one-program comparison --------------------------------------------- */
 .shape {

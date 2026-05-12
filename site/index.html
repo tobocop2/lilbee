@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee: a batteries-included terminal app for local AI</title>
-<meta name="description" content="A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources, in one program that's also a command-line tool, a Model Context Protocol server, a web API, and a Python library. One install, sane defaults out of the box.">
+<title>lilbee: a batteries-included local search engine you can talk to</title>
+<meta name="description" content="A batteries-included local search engine for your data and code that you can talk to: ask questions in plain English and get answers that link back to the file and line. Point it at nothing and it's a fast chatbot. One program that's a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, and a Python library. Runs on your computer; sane defaults out of the box.">
 <link rel="stylesheet" href="style.css">
 <script src="main.js" defer></script>
 </head>
@@ -31,20 +31,22 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <p class="tagline">A <strong>batteries-included terminal app</strong> for local AI.</p>
-      <p class="sub">One program with a model catalog, a search engine over your own files and code, and a chat. One install command, sane defaults out of the box. Pick a model, point it at a folder, ask.</p>
-      <p class="trust"><strong>It runs on your computer.</strong> Your files stay on disk; lilbee talks to a cloud model only when you choose one.</p>
+      <p class="tagline">A <strong>batteries-included local search engine</strong> for your data and code that you can talk to.</p>
+      <p class="sub">Point it at your files, notes, and code and ask questions in plain English. Every answer links back to the file and line. Point it at nothing and it's just a chatbot. One program, one install: a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, and a Python library.</p>
+      <p class="trust"><strong>It runs on your computer.</strong> Your files stay on disk; lilbee uses a cloud model only when you pick one.</p>
     </section>
 
     <section>
       <div class="label">one program</div>
+      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
       <div class="shape">
         <div class="shape-box many">
-          <div class="shape-h">how local AI usually runs</div>
+          <div class="shape-h">the usual local-AI setup</div>
           <ul>
             <li>a model server, always running</li>
             <li>model files fetched by hand</li>
             <li>a vector database to stand up</li>
+            <li>code wiring them together</li>
             <li>a separate app for the interface</li>
             <li>often a container around it all</li>
           </ul>
@@ -53,7 +55,7 @@
         <div class="shape-box one">
           <div class="shape-h">lilbee</div>
           <ul>
-            <li>one process is the model runtime and the search index; no model server or database to run</li>
+            <li>no model server, no vector database; lilbee does that work itself</li>
             <li>use it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, or a Python library</li>
             <li>a built-in catalog: pull Llama 3, Qwen, Gemma, Mistral, DeepSeek and more, no hunting the web for files</li>
             <li>a scoped library per project, so each domain stays its own clean encyclopedia</li>
@@ -86,22 +88,27 @@
       <div class="label">what it does</div>
       <div class="caps">
         <div class="cap">
-          <h3>encyclopedias, plural</h3>
-          <p>A scoped library per project: your PDFs, notes, ebooks, and code, kept apart so results stay clean. Index with live progress in the terminal app; every answer cites the source line.</p>
+          <h3>feed it your files</h3>
+          <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
         </div>
         <div class="cap">
-          <h3>pairs with your AI agent</h3>
-          <p>Point opencode or any agent that speaks the Model Context Protocol at a library: it reads the actual code and docs before answering, cites file and line, and says "I don't know" instead of guessing.</p>
+          <h3>pair it with your agent</h3>
+          <p>Pair it with your favorite agent over MCP. It reads the real code and docs before it answers, cites the file and line, and says "I don't know" instead of guessing.</p>
         </div>
         <div class="cap">
-          <h3>offline copies of websites</h3>
-          <p>Crawl a docs site or wiki, convert it to markdown, and index it. Search and chat with it offline, even if it goes down.</p>
+          <h3>websites, offline</h3>
+          <p>Crawl a docs site or a wiki, turn it into markdown, and keep it. Search and chat with it offline, even after it goes down.</p>
         </div>
         <div class="cap">
           <h3>scans &amp; OCR</h3>
-          <p>Paper archives and photos go through Tesseract or a local vision model, landing as searchable markdown with the layout kept.</p>
+          <p>Old scans and photos go through OCR or a local vision model and come out as searchable markdown, layout intact.</p>
         </div>
       </div>
+    </section>
+
+    <section>
+      <div class="label">a note on answers</div>
+      <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
     </section>
 
     <section>
