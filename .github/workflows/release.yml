@@ -5,21 +5,64 @@ name: Release Executables
 # publish-pypi.yml, emergency-publish.yml) collect the artifacts and decide.
 on:
   workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Build the executables even if the test job fails (re-run past a known-flaky test)."
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
         description: "Git ref to build (defaults to the calling workflow's ref)."
         type: string
         default: ""
+      skip_tests:
+        description: "Build the executables even if the test job fails (re-run past a known-flaky test)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  actions: read   # gate job: look up the CI workflow's conclusion for this commit
 
 env:
   LLAMA_CPP_VERSION: "0.3.20"
 
 jobs:
+  # Skip the lint + test re-run if the CI workflow already went green on this
+  # exact commit (every main push runs it). Fail-soft: any uncertainty -> run them.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ci_passed: ${{ steps.check.outputs.ci_passed }}
+    steps:
+      - name: Did CI already pass on this commit?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          INPUT_REF: ${{ inputs.ref }}
+          DEFAULT_REF: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          REF="${INPUT_REF:-$DEFAULT_REF}"
+          SHA=$(gh api "repos/${REPO}/commits/${REF}" --jq .sha 2>/dev/null) || SHA=""
+          if [ -z "$SHA" ]; then
+            echo "couldn't resolve ${REF} -> SHA; will run lint + test"
+            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PASSED=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length' 2>/dev/null) || PASSED=0
+          echo "${REF} -> ${SHA}; successful CI runs = ${PASSED}"
+          if [ "${PASSED:-0}" -gt 0 ]; then
+            echo "ci_passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci_passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: [gate]
+    if: needs.gate.outputs.ci_passed != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -35,6 +78,8 @@ jobs:
       - run: make typecheck
 
   test:
+    needs: [gate]
+    if: needs.gate.outputs.ci_passed != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -50,7 +95,16 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   build:
-    needs: [lint, test]
+    needs: [gate, lint, test]
+    # Build if CI already passed on this commit (lint/test skipped), or lint+test
+    # pass here, or skip_tests was set after eyeballing a flaky failure. lint
+    # always gates -- a real lint failure isn't bypassable. always() so the if:
+    # runs even when lint/test were skipped or test failed.
+    if: |
+      always()
+      && needs.gate.result == 'success'
+      && needs.lint.result != 'failure' && needs.lint.result != 'cancelled'
+      && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests)
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
     strategy:

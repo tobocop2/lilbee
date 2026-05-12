@@ -11,6 +11,10 @@ on:
       tag:
         description: "Existing tag to build release artifacts for (e.g. v0.6.66b469)."
         required: true
+      skip_tests:
+        description: "Build the executables even if release.yml's test job fails (re-run past a known-flaky test)."
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # re-attach binaries to the GH release
@@ -55,6 +59,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       ref: ${{ inputs.tag }}
+      skip_tests: ${{ inputs.skip_tests }}
     secrets: inherit
 
   attach-binaries:

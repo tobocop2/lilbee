@@ -13,6 +13,10 @@ on:
         description: "Branch or SHA to build a release candidate from (defaults to current ref)."
         required: false
         default: ""
+      skip_tests:
+        description: "Build the executables even if release.yml's test job fails (re-run past a known-flaky test)."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -79,6 +83,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
+      skip_tests: ${{ inputs.skip_tests || false }}
     secrets: inherit
 
   # Attach binaries to a GH pre-release as soon as they're built, before QA
