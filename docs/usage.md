@@ -27,17 +27,28 @@
 
 ## Getting started
 
-**Install an embedding model first.** Indexing turns every document chunk into a
-vector, so before `lilbee add` will work you need an embedding model on disk.
-Either launch the TUI (`lilbee`) and pick one on the welcome screen, or from the
-CLI:
+The easiest way in is the TUI. Run:
 
 ```bash
-lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
+lilbee
 ```
 
-A *chat* model is only needed for `/chat` and `lilbee ask`, not for indexing or
-`lilbee search`. Browse everything available with `lilbee model browse`.
+The welcome screen walks you through picking an **embedding model** (used to index
+your documents) and, optionally, a **chat model** (used for `/chat` and `lilbee
+ask`). From there you can add documents, search, and chat without leaving the TUI.
+See [Interactive chat](#interactive-chat) for a tour of the screens.
+
+Prefer to drive it headless? Everything the TUI does is also a plain CLI command
+(`lilbee add`, `lilbee search`, `lilbee ask`, and so on), and lilbee runs as an
+[MCP server](#agent-integration) so editors and agents can search your documents
+directly. From the CLI you install an embedding model yourself before indexing
+anything (a chat model is only needed for `/chat` and `lilbee ask`, not for
+indexing or `lilbee search`):
+
+```bash
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbee add`
+lilbee model browse                                     # pick a chat model interactively
+```
 
 lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder, just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
 

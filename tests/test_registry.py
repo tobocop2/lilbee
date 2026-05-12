@@ -276,6 +276,23 @@ class TestModelRegistryResolve:
         assert registry.resolve(_REF) == blob.resolve()
         assert registry.is_installed(_REF)
 
+    def test_resolve_recovery_writes_a_fresh_manifest(self, tmp_path: Path) -> None:
+        """Recovering a featured model from the cache also re-registers it, so it
+        shows up in ``list_installed`` (and ``lilbee model list`` / the TUI catalog)."""
+        registry = ModelRegistry(tmp_path)
+        _seed_hf_cache(tmp_path)
+        assert not registry.list_installed()  # no manifest yet
+        registry.resolve(_REF)
+        assert any(m.ref == _REF for m in registry.list_installed())
+
+    def test_resolve_recovery_survives_manifest_write_failure(self, tmp_path: Path) -> None:
+        """If re-registering after a cache recovery fails, ``resolve`` still returns the path."""
+        registry = ModelRegistry(tmp_path)
+        blob = _seed_hf_cache(tmp_path)
+        with mock.patch.object(ModelRegistry, "_write_manifest", side_effect=OSError("disk full")):
+            assert registry.resolve(_REF) == blob.resolve()
+        assert not registry.list_installed()  # the write failed, so still no manifest
+
     def test_resolve_bare_repo_ref_recovers_from_cache(self, tmp_path: Path) -> None:
         """A bare ``<org>/<repo>`` ref (older builds persisted these) resolves via the HF cache."""
         registry = ModelRegistry(tmp_path)

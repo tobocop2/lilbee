@@ -136,6 +136,7 @@ class ModelRegistry:
                 return blob_file
         recovered = self._find_cached_gguf(hf_repo, gguf_filename)
         if recovered is not None:
+            self._reregister_from_cache(hf_repo, gguf_filename, recovered)
             return recovered
         if manifest is None:
             raise KeyError(f"Model {ref} not installed")
@@ -169,6 +170,7 @@ class ModelRegistry:
         for filename in sorted(self._cached_gguf_names(hf_repo)):
             recovered = self._find_cached_gguf(hf_repo, filename)
             if recovered is not None:
+                self._reregister_from_cache(hf_repo, filename, recovered)
                 return recovered
         raise KeyError(f"Model {hf_repo} not installed")
 
@@ -208,6 +210,41 @@ class ModelRegistry:
         except ValueError:
             return None
         return resolved
+
+    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
+        """After recovering a model from the HF cache, write a fresh manifest for it.
+
+        ``resolve`` works without the manifest, but ``list_installed`` (and
+        therefore ``lilbee model list``, the TUI catalog, and the "already
+        installed" check the pull command uses) only walks ``manifests/``, so
+        without this a recovered model would be resolvable but invisible. The
+        ``task`` comes from the featured catalog; for a ref that isn't a catalog
+        entry it's unknown, so the rewrite is skipped. The write is best-effort:
+        a read-only models dir or a write race must not break the resolve that
+        already succeeded.
+        """
+        from datetime import UTC, datetime
+
+        ref = format_native_gguf_ref(hf_repo, gguf_filename)
+        try:
+            from lilbee.catalog import find_catalog_entry  # function-local: catalog imports cfg
+
+            entry = find_catalog_entry(ref)
+            if entry is None:
+                return
+            self._write_manifest(
+                ModelManifest(
+                    hf_repo=hf_repo,
+                    gguf_filename=gguf_filename,
+                    size_bytes=blob_path.stat().st_size,
+                    task=entry.task,
+                    downloaded_at=datetime.now(UTC).isoformat(),
+                    blob=blob_path.name,  # the blob's filename is its sha in the HF cache
+                )
+            )
+            log.info("Recovered manifest for %s from the model cache", ref)
+        except Exception:  # cache-warming write; the resolve already returned a path
+            log.debug("Could not re-register %s from the model cache", ref, exc_info=True)
 
     def is_installed(self, ref: str) -> bool:
         """Return True if a model is installed and its blob is present."""
