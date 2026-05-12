@@ -3,9 +3,9 @@ name: Pages
 # Marketing site at https://tobocop2.github.io/lilbee/ plus the per-backend
 # PEP 503 wheel indexes under /<backend>/. Decoupled from package
 # distribution: the site rebuilds on every push to main and after a
-# successful PyPI publish (which is what builds the wheel-* artifacts), so
-# wheel index subdirs stay current without making site updates wait for a
-# 3h release cycle.
+# successful Release artifacts run (which builds the full wheel-* set --
+# default + CUDA extras), so wheel index subdirs stay current without making
+# site updates wait for a 3h release cycle.
 #
 # build-site and build-wheel-indexes run in parallel; deploy merges both.
 
@@ -13,7 +13,7 @@ on:
   push:
     branches: [main]
   workflow_run:
-    workflows: ["Publish to PyPI"]
+    workflows: ["Release artifacts"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -85,10 +85,10 @@ jobs:
             run_id="${{ github.event.workflow_run.id }}"
           else
             # Plain main pushes / manual runs: pull from the last successful
-            # Publish to PyPI run -- build-wheels runs as a reusable call
-            # inside it, so that run holds the wheel-* artifacts.
+            # Release artifacts run -- build-wheels runs as a reusable call
+            # inside it (with extras), so that run holds the full wheel-* set.
             run_id=$(gh run list \
-              --workflow=publish-pypi.yml \
+              --workflow=release-artifacts.yml \
               --status=success \
               --limit=1 \
               --json databaseId \
@@ -96,7 +96,7 @@ jobs:
           fi
           echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
           if [ -z "${run_id}" ]; then
-            echo "No prior successful Publish to PyPI run found; deploying site without wheel indexes."
+            echo "No prior successful Release artifacts run found; deploying site without wheel indexes."
           else
             echo "Pulling wheel artifacts from run ${run_id}."
           fi

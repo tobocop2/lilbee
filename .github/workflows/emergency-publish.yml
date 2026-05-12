@@ -1,6 +1,9 @@
 name: Emergency publish
 
-# QA-bypass escape hatch. Two-step confirm (tag + "skip-qa" token).
+# Fast PyPI lane that bypasses the QA matrix. Two-step confirm (tag + "skip-qa"
+# token). Like publish-pypi.yml: builds only the default-backend wheels + sdist
+# and uploads them, then dispatches release-artifacts.yml for the executables /
+# CUDA wheels / packaging once the upload lands.
 
 on:
   workflow_dispatch:
@@ -13,9 +16,9 @@ on:
         required: true
 
 permissions:
-  contents: write
-  id-token: write
-  actions: write
+  contents: read
+  id-token: write   # OIDC for Trusted Publishing
+  actions: write    # dispatch release-artifacts.yml
 
 concurrency:
   group: emergency-publish-${{ inputs.tag }}
@@ -24,8 +27,6 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.parse.outputs.version }}
     steps:
       - name: Validate confirm token
         env:
@@ -51,7 +52,6 @@ jobs:
           ref: ${{ inputs.tag }}
 
       - name: Parse version from pyproject.toml
-        id: parse
         shell: bash
         env:
           EXPECTED_TAG: ${{ inputs.tag }}
@@ -61,36 +61,14 @@ jobs:
             echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
             exit 1
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   build-wheels:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      build_extras: true
+      build_extras: false
       ref: ${{ inputs.tag }}
     secrets: inherit
-
-  build-binaries:
-    needs: [guard]
-    uses: ./.github/workflows/release.yml
-    with:
-      ref: ${{ inputs.tag }}
-    secrets: inherit
-
-  # Binaries -> GH release; only needs build-binaries, so it and the packaging
-  # fan-out run in parallel with publish-pypi (which waits on the wheel matrix).
-  attach-binaries:
-    needs: [guard, build-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: ./.github/actions/attach-prerelease
-        with:
-          tag: ${{ inputs.tag }}
-          version: ${{ needs.guard.outputs.version }}
 
   publish-pypi:
     needs: [guard, build-wheels]
@@ -102,13 +80,11 @@ jobs:
           ref: ${{ inputs.tag }}
       - uses: ./.github/actions/promote-pypi
 
-  fanout-packaging:
-    needs: [attach-binaries]
+  dispatch-release-artifacts:
+    needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: ./.github/actions/fanout-packaging
-        with:
-          tag: ${{ inputs.tag }}
+      - name: Dispatch release-artifacts.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-artifacts.yml --repo ${{ github.repository }} -f tag=${{ inputs.tag }}

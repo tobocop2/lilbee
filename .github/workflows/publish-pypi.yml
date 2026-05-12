@@ -1,7 +1,15 @@
 name: Publish to PyPI
 
-# Manual trigger: build the named tag, attach binaries to its pre-release, publish to PyPI.
-# Run this after release-candidate.yml has built the tag, attached a pre-release, and run QA.
+# Fast PyPI lane. Builds only the default-backend wheels + sdist for the named
+# tag and publishes them via Trusted Publishing -- no Nuitka executables, no
+# CUDA-extras matrix. Everything that needs the release executable (binaries on
+# the GH release, Docker, Homebrew/AUR/Nix) and the CUDA wheels for the PEP 503
+# index live in release-artifacts.yml, which this workflow dispatches once the
+# PyPI upload lands. Run this after release-candidate.yml has built the tag,
+# attached a pre-release, and run QA.
+#
+# The filename `publish-pypi.yml` and the `pypi` environment name are load-
+# bearing -- PyPI's trusted-publisher config is keyed to them. Don't rename.
 
 on:
   workflow_dispatch:
@@ -11,9 +19,9 @@ on:
         required: true
 
 permissions:
-  contents: write
-  id-token: write
-  actions: write
+  contents: read
+  id-token: write   # OIDC for Trusted Publishing
+  actions: write    # dispatch release-artifacts.yml
 
 concurrency:
   group: publish-pypi-${{ inputs.tag }}
@@ -22,8 +30,6 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.parse.outputs.version }}
     steps:
       - name: Refuse if tag already has a non-prerelease published
         env:
@@ -40,7 +46,6 @@ jobs:
           ref: ${{ inputs.tag }}
 
       - name: Parse version from pyproject.toml
-        id: parse
         shell: bash
         env:
           EXPECTED_TAG: ${{ inputs.tag }}
@@ -50,39 +55,17 @@ jobs:
             echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
             exit 1
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+  # Default-backend wheels + sdist only. build_extras stays false so this never
+  # sits behind the 90-min CUDA-from-source matrix.
   build-wheels:
     needs: [guard]
     uses: ./.github/workflows/build-wheels.yml
     with:
-      build_extras: true
+      build_extras: false
       ref: ${{ inputs.tag }}
     secrets: inherit
 
-  build-binaries:
-    needs: [guard]
-    uses: ./.github/workflows/release.yml
-    with:
-      ref: ${{ inputs.tag }}
-    secrets: inherit
-
-  # Attach the freshly built binaries to the tag's GH release. Only depends on
-  # build-binaries, so this and the packaging fan-out below run in parallel with
-  # publish-pypi -- they don't wait on the (slow) CUDA-extras wheel matrix.
-  attach-binaries:
-    needs: [guard, build-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: ./.github/actions/attach-prerelease
-        with:
-          tag: ${{ inputs.tag }}
-          version: ${{ needs.guard.outputs.version }}
-
-  # Default-backend wheels + sdist -> PyPI via Trusted Publishing.
   publish-pypi:
     needs: [guard, build-wheels]
     runs-on: ubuntu-latest
@@ -93,15 +76,15 @@ jobs:
           ref: ${{ inputs.tag }}
       - uses: ./.github/actions/promote-pypi
 
-  # Docker / Homebrew / AUR / Nix -- all consume the GH-release binaries, not
-  # PyPI, so this only waits on attach-binaries.
-  fanout-packaging:
-    needs: [attach-binaries]
+  # Kick off the slow lane (release executables -> GH release, CUDA wheels for
+  # the PEP 503 index, Docker, Homebrew/AUR/Nix) only after the PyPI upload
+  # succeeds. Decoupled so a flaky CUDA cell or a 30-min Nuitka build can't hold
+  # up the PyPI publish.
+  dispatch-release-artifacts:
+    needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: ./.github/actions/fanout-packaging
-        with:
-          tag: ${{ inputs.tag }}
+      - name: Dispatch release-artifacts.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-artifacts.yml --repo ${{ github.repository }} -f tag=${{ inputs.tag }}

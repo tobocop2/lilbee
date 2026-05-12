@@ -2,7 +2,9 @@ name: Build Platform Wheels
 
 # Builds wheels (+ sdist) and uploads them as run artifacts. It never
 # publishes -- callers (release-candidate.yml, publish-pypi.yml,
-# emergency-publish.yml) collect the artifacts and decide what to do.
+# emergency-publish.yml, release-artifacts.yml) collect the artifacts and
+# decide what to do. build_extras=true (release-artifacts.yml only) adds the
+# CUDA + Intel-Mac CPU matrix for the PEP 503 index.
 on:
   workflow_dispatch:
     inputs:
@@ -115,11 +117,9 @@ jobs:
           name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
-  # Extra-backend wheels (CUDA + pure CPU). Off by default so RC dry-runs and
-  # tag-push QA don't sit behind 90-min Windows CUDA builds; publish lanes
-  # opt in via inputs.build_extras=true to populate the PEP 503 index.
-  # Advisory: a flaky from-source CUDA cell must not block the default-wheel
-  # PyPI publish (publish-pypi.yml's publish-pypi job needs build-wheels green).
+  # Extra-backend wheels (CUDA + pure CPU). Off by default; release-artifacts.yml
+  # opts in via build_extras=true to populate the PEP 503 index. continue-on-error
+  # keeps a flaky from-source CUDA cell from failing the artifacts run.
   build-extra-wheels:
     if: inputs.build_extras
     continue-on-error: true
