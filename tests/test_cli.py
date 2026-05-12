@@ -319,19 +319,44 @@ class TestAsk:
 
 
 class TestDataDirFlag:
-    def test_status_with_data_dir(self, tmp_path):
+    def test_status_with_data_dir_after_subcommand(self, tmp_path):
         custom = tmp_path / "custom"
         custom.mkdir()
         (custom / "documents").mkdir()
         result = runner.invoke(app, ["status", "--data-dir", str(custom)])
         assert result.exit_code == 0
 
-    def test_sync_with_data_dir(self, tmp_path):
+    def test_sync_with_data_dir_after_subcommand(self, tmp_path):
         custom = tmp_path / "custom"
         custom.mkdir()
         (custom / "documents").mkdir()
         result = runner.invoke(app, ["sync", "--data-dir", str(custom)])
         assert result.exit_code == 0
+
+    def test_data_dir_before_subcommand_redirects_paths(self, tmp_path):
+        """`lilbee --data-dir X status` must point cfg at X.
+
+        Typer binds options placed before the subcommand to the group
+        callback, which used to only apply them for the no-subcommand TUI
+        path; the subcommand then saw ``data_dir=None`` and silently kept
+        the global paths.
+        """
+        custom = tmp_path / "custom"
+        (custom / "documents").mkdir(parents=True)
+        result = runner.invoke(app, ["--data-dir", str(custom), "status"])
+        assert result.exit_code == 0
+        assert cfg.data_root == custom
+        assert cfg.documents_dir == custom / "documents"
+        assert cfg.data_dir == custom / "data"
+
+    def test_model_before_subcommand_applies(self, tmp_path):
+        """`lilbee -m ref status` applies the chat-model override at the callback."""
+        custom = tmp_path / "custom"
+        (custom / "documents").mkdir(parents=True)
+        ref = "org/Some-GGUF/some-Q4_K_M.gguf"
+        result = runner.invoke(app, ["-m", ref, "--data-dir", str(custom), "status"])
+        assert result.exit_code == 0
+        assert cfg.chat_model == ref
 
 
 class TestAutoSync:

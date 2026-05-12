@@ -169,10 +169,17 @@ def _default(
     install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
+    # Apply the callback-level overrides (e.g. ``lilbee --data-dir X status``)
+    # for every invocation, not just the no-subcommand TUI path. Typer binds
+    # options placed before the subcommand to the callback, so without this
+    # ``--data-dir`` / ``--model`` / ``--global`` were silently dropped when a
+    # subcommand followed them. Subcommands still call ``apply_overrides`` with
+    # their own (post-subcommand) flags; re-applying ``None`` is a no-op, so a
+    # flag works whether it precedes or follows the subcommand name.
+    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:
-        apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
