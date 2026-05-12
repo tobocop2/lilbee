@@ -32,8 +32,8 @@ _SELF_CHECK_EMBED_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 def _download_self_check_model(repo: str, filename: str) -> Path:
     """Fetch a GGUF from the HuggingFace CDN via urllib (stdlib only).
 
-    Avoids huggingface_hub / httpx entirely. Inside the PyInstaller --onefile
-    bundle, huggingface_hub's retry path has re-entered a closed httpx client
+    Avoids huggingface_hub / httpx entirely. Inside the Nuitka --onefile
+    binary, huggingface_hub's retry path has re-entered a closed httpx client
     after transient DNS failures on macOS runners. urllib is synchronous,
     lives in the stdlib, and has no long-lived client to close.
     """

@@ -222,8 +222,9 @@ class WikiDraftsScreen(Screen[None]):
         self.action_go_back()
 
     def action_go_back(self) -> None:
-        """Pop back to the wiki screen (or the previous screen in tests)."""
-        self.app.pop_screen()
+        """Pop back to the wiki screen, unless this is the only screen on the stack."""
+        if len(self.app.screen_stack) > 1:
+            self.app.pop_screen()
 
     def _table_or_none(self) -> DataTable[str] | None:
         """Return the drafts table unless an Input is focused."""

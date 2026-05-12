@@ -245,7 +245,12 @@ Verify the install works on your hardware:
 lilbee self-check
 ```
 
-This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success.
+This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success. It only verifies your hardware; it does not configure a working model. Launch the TUI (`lilbee`) and pick a chat + embedding model on the welcome screen, or from the CLI install an embedding model (required before `lilbee add`) and a chat model:
+
+```bash
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # embedding model; needed to index/search
+lilbee model browse                                     # pick a chat model interactively
+```
 
 ### Homebrew (macOS arm64, Linux x86_64)
 

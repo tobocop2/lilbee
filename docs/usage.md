@@ -27,12 +27,35 @@
 
 ## Getting started
 
+The easiest way in is the TUI. Run:
+
+```bash
+lilbee
+```
+
+The welcome screen walks you through picking an **embedding model** (used to index
+your documents) and, optionally, a **chat model** (used for `/chat` and `lilbee
+ask`). From there you can add documents, search, and chat without leaving the TUI.
+See [Interactive chat](#interactive-chat) for a tour of the screens.
+
+Prefer to drive it headless? Everything the TUI does is also a plain CLI command
+(`lilbee add`, `lilbee search`, `lilbee ask`, and so on), and lilbee runs as an
+[MCP server](#agent-integration) so editors and agents can search your documents
+directly. From the CLI you install an embedding model yourself before indexing
+anything (a chat model is only needed for `/chat` and `lilbee ask`, not for
+indexing or `lilbee search`):
+
+```bash
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbee add`
+lilbee model browse                                     # pick a chat model interactively
+```
+
 lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder, just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
 
 ```bash
 cd ~/projects/my-engine
 lilbee init                  # creates .lilbee/ here
-lilbee add docs/manual.pdf   # indexes into .lilbee/
+lilbee add docs/manual.pdf   # indexes into .lilbee/  (needs the embedding model above)
 lilbee search "oil change"   # searches .lilbee/
 ```
 
@@ -52,6 +75,10 @@ lilbee --global status
 
 ## Adding documents
 
+`add` extracts text from each file and embeds it, so an embedding model must be
+installed first (see [Getting started](#getting-started)). Without one, every
+file is reported as `failed` with `Model '…' not found in registry`.
+
 Add files, directories, or a mix:
 
 ```bash
@@ -67,6 +94,11 @@ lilbee add manual.pdf --force
 ```
 
 ## OCR
+
+OCR is how lilbee gets text out of scanned PDFs and images. It's one step in
+indexing, not a substitute for it: however the text comes out (a native parser,
+Tesseract, or a vision model), it still gets embedded, so you still need an
+embedding model installed (see [Getting started](#getting-started)).
 
 For PDFs without embedded text, lilbee supports two OCR backends. When a vision model is configured, it takes precedence.
 
@@ -112,7 +144,7 @@ TUI; the selection is saved to `config.toml` and persists across sessions.
 
 ## Querying
 
-Search returns relevant chunks from your indexed documents. No LLM needed; `search` works without any model loaded:
+Search returns relevant chunks from your indexed documents. No *chat* model is needed for `search`, only the embedding model (the same one indexing used; see [Getting started](#getting-started)):
 
 ```bash
 lilbee search "oil change interval"

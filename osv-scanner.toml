@@ -28,6 +28,10 @@ reason = "SQL injection in the LiteLLM Proxy server's API-key verification path.
 id = "GHSA-v4p8-mg3p-g94g"
 reason = "Authenticated command execution via the LiteLLM Proxy MCP stdio test endpoints (POST /mcp-rest/test/connection and /mcp-rest/test/tools/list). Requires a valid proxy API key and only triggers when the proxy is running. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never starts the proxy, so neither endpoint is exposed. Patched in 1.83.7; bump is blocked by the same click==8.1.8 vs typer click>=8.2.1 conflict noted on GHSA-xqmj-j6mv-4862."
 
+[[IgnoredVulns]]
+id = "GHSA-wxxx-gvqv-xp7p"
+reason = "Sandbox escape in the LiteLLM Proxy server's `POST /guardrails/test_custom_code` endpoint (bytecode-level escape from a hand-rolled Python sandbox). Reaching it requires a proxy-admin credential and a running proxy. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never starts the proxy, so the endpoint is not exposed. Patched in 1.83.10/1.83.11; bump is blocked by the same click==8.1.8 vs typer click>=8.2.1 conflict noted on GHSA-xqmj-j6mv-4862."
+
 # pygments is never a runtime or dev dependency; it is only resolved
 # transitively under tools/qa/requirements.txt (the QA-matrix runner venv,
 # pulled in via pytest). That harness is not published to PyPI or shipped to

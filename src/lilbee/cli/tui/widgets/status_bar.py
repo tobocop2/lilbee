@@ -151,9 +151,9 @@ class ViewTabs(Widget):
         if cfg.chat_model and self.active_view != msg.DEFAULT_VIEW:
             label = display_label_for_ref(cfg.chat_model) or cfg.chat_model
             parts.append("  ")
-            parts.append(pill(f" {label} ", "$accent", "$text"))
+            parts.append(pill(label, "$accent", "$text"))
         if self.mode_text:
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
-            parts.append(pill(f" {self.mode_text} ", color, "$text"))
+            parts.append(pill(self.mode_text, color, "$text"))
         self.query_one("#view-tabs-trailing", Static).update(Content.assemble(*parts))

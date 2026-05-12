@@ -44,9 +44,10 @@ def _prestart_mp_resource_tracker() -> None:
 
     Later ``Process.start()`` calls reuse the cached tracker fd and
     never hit the fork_exec with a bad fd. No-op on Windows, which
-    doesn't use ``_posixsubprocess``, and no-op under PyInstaller frozen
-    bundles, where ``sys.executable`` is the lilbee exe itself and the
-    tracker's spawn would re-enter typer with ``-B -s -E`` as CLI args.
+    doesn't use ``_posixsubprocess``, and no-op under a frozen build
+    (Nuitka onefile), where ``sys.executable`` is the lilbee exe itself
+    and the tracker's spawn would re-enter typer with ``-B -s -E`` as
+    CLI args (``__main__._dispatch_frozen_child`` handles that case).
     """
     import sys as _sys
 

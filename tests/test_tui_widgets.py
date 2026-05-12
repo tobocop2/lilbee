@@ -638,7 +638,7 @@ class TestModelBar:
             assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
     async def test_labels_rendered(self) -> None:
-        """Chat/Embed labels render as pills, not plain text."""
+        """Chat/Embed labels render as pills (label inside the styled-space padding)."""
         from textual.widgets import Static
 
         cfg.chat_model = TEST_LOCAL_REF
@@ -647,8 +647,8 @@ class TestModelBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
-            assert any("Chat" in p and "▌" in p and "▐" in p for p in pills)
-            assert any("Embed" in p and "▌" in p and "▐" in p for p in pills)
+            assert any(" Chat " in p for p in pills)
+            assert any(" Embed " in p for p in pills)
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -3436,8 +3436,7 @@ class TestPill:
         result = pill("chat", "$primary", "$text")
         text = str(result)
         assert "chat" in text
-        assert "\u258c" in text  # left half-block
-        assert "\u2590" in text  # right half-block
+        assert text == " chat "  # a space of padding on each side, no half-block ends
 
     def test_pill_from_content(self) -> None:
         from textual.content import Content
@@ -3449,12 +3448,13 @@ class TestPill:
         assert "embed" in str(result)
 
     def test_pill_empty_string(self) -> None:
+        from textual.content import Content
+
         from lilbee.cli.tui.pill import pill
 
         result = pill("", "$primary", "$text")
-        text = str(result)
-        assert "\u258c" in text
-        assert "\u2590" in text
+        assert isinstance(result, Content)
+        assert str(result) == "  "  # just the padding
 
     def test_pill_returns_content(self) -> None:
         from textual.content import Content
