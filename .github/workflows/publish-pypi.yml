@@ -1,10 +1,12 @@
 name: Publish to PyPI
 
-# Pure publish step -- no builds. Resolves the release-candidate.yml run that
-# built this tag, downloads its default wheels + sdist, uploads them to PyPI,
-# then dispatches the packaging fan-out (Docker / Homebrew / AUR / Nix), which
-# uses the executables already attached to the GH release by that RC run. Run
-# this after release-candidate.yml has built the tag and QA is green.
+# Pure publish step -- no builds. Finds the release-candidate.yml run for this
+# tag, downloads its default wheels + sdist, uploads them to PyPI, then dispatches
+# the packaging fan-out (Docker / Homebrew / AUR / Nix). It needs only the default
+# wheels + sdist (they finish ~25 min into the RC run), so it does NOT wait on the
+# executables / CUDA matrix / QA -- run it as soon as those artifacts are up. The
+# fan-out does need the executables on the GH release; it self-skips if they're
+# not attached yet (re-run this workflow once the RC run has attached them).
 #
 # Filename `publish-pypi.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
@@ -61,21 +63,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          EXPECTED_WHEELS: "10"   # build-default-wheels.yml matrix size; bump if it changes
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           echo "${TAG} -> ${SHA}"
-          # Latest *successful* push-triggered RC run for this exact commit:
-          # success => every wheel cell, the executables, and QA all passed,
-          # so the artifacts are complete. (emergency-publish.yml is the path
-          # to publish past a QA flake.)
-          RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&status=success&per_page=50" \
+          # Most recent push-triggered RC run for this commit -- any status; we
+          # only need its default wheels + sdist, which land well before the
+          # executables / CUDA matrix / QA finish.
+          RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&per_page=50" \
             --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
           if [ -z "${RC_ID}" ]; then
-            echo "no successful 'Release candidate' run for ${SHA}; push the tag (or re-run release-candidate.yml) and let it pass first" >&2
+            echo "no 'Release candidate' run for ${SHA}; push the tag first" >&2
             exit 1
           fi
           echo "release-candidate run = ${RC_ID}"
+          ART=$(gh api "repos/${REPO}/actions/runs/${RC_ID}/artifacts?per_page=100")
+          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name | startswith("wheel-default-"))] | length')
+          N_SDIST=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "sdist")] | length')
+          echo "run ${RC_ID}: wheel-default-* = ${N_WHEELS}/${EXPECTED_WHEELS}, sdist = ${N_SDIST}/1"
+          if [ "${N_WHEELS}" -lt "${EXPECTED_WHEELS}" ] || [ "${N_SDIST}" -lt 1 ]; then
+            echo "run ${RC_ID} hasn't finished building the default wheels + sdist; wait, re-run release-candidate.yml, or use emergency-publish.yml if a cell failed and you're shipping intentionally" >&2
+            exit 1
+          fi
           echo "rc_run_id=${RC_ID}" >> "$GITHUB_OUTPUT"
 
   publish-pypi:
