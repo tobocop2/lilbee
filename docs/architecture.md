@@ -568,3 +568,58 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, remote | auto = use the SDK backend if installed and reachable, otherwise llama-cpp |
 | `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | |
 
+---
+
+## Release pipeline
+
+Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing to PyPI / package managers is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream.
+
+```mermaid
+flowchart TD
+    TAG["git push tag<br/>v0.6.66bN"] --> RC
+
+    subgraph RC["release-candidate.yml — builds every artifact once"]
+        direction TB
+        DW["build-default-wheels.yml<br/>vulkan / metal wheels + sdist"]
+        EW["build-extra-wheels.yml<br/>CUDA / CPU / Intel-Mac wheels"]
+        BIN["release.yml<br/>Nuitka onefile executables"]
+        PRE["attach-binaries-prerelease<br/>GH pre-release with the executables"]
+        QA["qa-matrix.yml<br/>installs THIS run's wheels + binaries"]
+        DW --> QA
+        BIN --> QA
+        BIN --> PRE
+    end
+
+    RC -. "artifacts stay as run artifacts; nothing public yet" .-> GATE{"QA green?"}
+
+    GATE -->|"yes — run manually"| PUB["publish-pypi.yml<br/>-f tag=v0.6.66bN"]
+    GATE -->|"QA flaked — manual override"| EMG["emergency-publish.yml<br/>-f tag=... -f confirm=skip-qa"]
+
+    PUB --> RESOLVE["resolve the release-candidate run<br/>that built this tag"]
+    EMG --> RESOLVE
+    RESOLVE --> PROMOTE["promote-pypi: download wheel-default-* + sdist<br/>→ pypa/gh-action-pypi-publish (Trusted Publishing)"]
+    PROMOTE --> FANOUT["fanout-packaging:<br/>dispatch publish-docker.yml + publish-packages.yml"]
+    FANOUT --> DOCKER["publish-docker.yml<br/>ghcr.io/&lt;owner&gt;/lilbee:N and :latest"]
+    FANOUT --> PKG["publish-packages.yml<br/>Homebrew / AUR / Nix bumped to N"]
+
+    RC -. "workflow_run on success" .-> PAGES["pages.yml<br/>marketing site + PEP 503 per-backend wheel index"]
+```
+
+### Lanes
+
+| Lane | Trigger | Builds | QA | Publishes |
+|---|---|---|---|---|
+| **Release candidate** | `git push v0.6.66bN` | default wheels, sdist, extra (CUDA) wheels, executables — once | yes | no (artifacts only); attaches executables to a GH **pre-release** |
+| **Publish to PyPI** | `gh workflow run publish-pypi.yml -f tag=v0.6.66bN` | nothing — downloads the RC run's artifacts | n/a | PyPI + dispatches Docker / Homebrew / AUR / Nix |
+| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing — downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI |
+
+`release-candidate.yml` can also be dispatched manually against a branch/SHA — same build + QA, no pre-release attach, never publishes. That's a dry run.
+
+### Notes
+
+- **Single build location.** Wheels, sdist, and executables are produced only by the `release-candidate.yml` run for the tag. `publish-pypi.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up the publish.
+- **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure.
+- **Package versions auto-increment.** `publish-docker.yml` and `publish-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formula, the AUR `PKGBUILD`, and the Nix flake all bump to the new version on their own — no manual edits.
+- **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish-pypi.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
+- **`llama-cpp-python` version comes from `uv.lock`.** It's built from source in CI (no upstream prebuilts for our backends). The version isn't hardcoded in the workflows: `tools/wheel-build/build_llama_cpp.sh` reads the resolved version out of `uv.lock`, so `uv lock`-ing a new release is all it takes. Set `LLAMA_CPP_VERSION` (or the `llama_cpp_version` workflow input) to override for a one-off build.
+

@@ -25,9 +25,6 @@ permissions:
   contents: read
   actions: read   # gate job: look up the CI workflow's conclusion for this commit
 
-env:
-  LLAMA_CPP_VERSION: "0.3.20"
-
 jobs:
   # Skip the lint + test re-run if the CI workflow already went green on this
   # exact commit (every main push runs it). Fail-soft: any uncertainty -> run them.

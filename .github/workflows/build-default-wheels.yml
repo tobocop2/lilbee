@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_version:
-        description: "llama-cpp-python version to vendor"
-        default: "0.3.20"
+        description: "Override llama-cpp-python version (blank = read from uv.lock)."
+        default: ""
         required: false
   workflow_call:
     inputs:
@@ -18,16 +18,12 @@ on:
         type: string
         default: ""
       llama_cpp_version:
-        description: "llama-cpp-python version to vendor"
+        description: "Override llama-cpp-python version (blank = read from uv.lock)."
         type: string
-        default: "0.3.20"
+        default: ""
 
 permissions:
   contents: read
-
-env:
-  # 0.3.20: Gemma 4 chat-template fix; no upstream prebuilts so we build from source.
-  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.20' }}
 
 jobs:
   build-default-wheels:
@@ -86,13 +82,15 @@ jobs:
 
       - name: Build llama-cpp-python from source
         shell: bash
+        env:
+          LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}   # blank -> build_llama_cpp.sh reads uv.lock
         run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Vendor llama-cpp-python and retag wheel
         shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl
-          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-${{ env.LLAMA_CPP_VERSION }}-*.whl
+          --local-wheel ${{ env.LLAMA_BUILD_DIR }}/llama_cpp_python-*.whl
           --wheel-platform ${{ matrix.wheel-plat }}
 
       - name: Smoke test (native)
