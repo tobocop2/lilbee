@@ -2,7 +2,8 @@ name: Emergency publish
 
 # Like publish-pypi.yml but skips the QA review -- two-step confirm (tag +
 # "skip-qa" token). Builds default wheels + sdist, uploads, then dispatches
-# release-artifacts.yml.
+# release-artifacts.yml for the slow rest (executables, CUDA wheels,
+# Docker/Homebrew/AUR/Nix) -- none of which blocks the PyPI upload.
 
 on:
   workflow_dispatch:
