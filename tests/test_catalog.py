@@ -474,6 +474,35 @@ class TestFetchHfModels:
         assert page.has_more is False
         assert page.models == []
 
+    def test_transport_error_logs_warning_then_throttles(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """First transport failure logs WARNING; a repeat within the window logs DEBUG."""
+        import logging
+
+        def _raise(*_a: object, **_kw: object) -> httpx.Response:
+            raise httpx.ConnectError("offline")
+
+        monkeypatch.setattr(httpx, "get", _raise)
+        client = get_services().hf_client
+        with caplog.at_level(logging.DEBUG, logger="lilbee.catalog.hf_client"):
+            assert client.fetch_models().models == []
+            # Fresh client: _last_fetch_failure_warn is 0, so this is the first
+            # failure of the window and logs at WARNING.
+            assert any(
+                r.levelno == logging.WARNING
+                and "Failed to fetch models from HuggingFace" in r.message
+                for r in caplog.records
+            )
+            caplog.clear()
+            assert client.fetch_models().models == []
+            # Still inside FETCH_FAILURE_WARN_INTERVAL_S: no new WARNING, just a DEBUG.
+            assert all(r.levelno != logging.WARNING for r in caplog.records)
+            assert any(
+                r.levelno == logging.DEBUG and "Suppressed repeat HF fetch failure" in r.message
+                for r in caplog.records
+            )
+
 
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:

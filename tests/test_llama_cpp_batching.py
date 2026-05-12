@@ -57,6 +57,14 @@ def test_embed_batch_empty_returns_empty() -> None:
     assert llm.calls == []
 
 
+def test_truncate_to_budget_returns_input_unchanged_when_within_cap() -> None:
+    """Text already inside the token cap is returned as-is, no detokenize round-trip."""
+    from lilbee.providers.llama_cpp.batching import _truncate_to_budget
+
+    llm = _RecordingLlama(n_batch=8192, tokens_per_text=3)
+    assert _truncate_to_budget(llm, "fits fine", token_cap=10) == "fits fine"
+
+
 def test_embed_batch_truncates_oversize_text_to_budget() -> None:
     """A single text larger than n_batch is truncated to fit, not sent whole.
 

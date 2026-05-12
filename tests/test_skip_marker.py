@@ -52,6 +52,22 @@ def test_clear_is_idempotent_when_missing(tmp_path: Path) -> None:
     assert load_skip_markers(tmp_path) == {}
 
 
+def test_clear_logs_and_continues_on_unlink_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the marker file can't be removed (e.g. locked on Windows), clear logs and returns."""
+    write_skip_markers(tmp_path, {"f": "h"})
+
+    def _raise(_self: Path, *, missing_ok: bool = False) -> None:
+        raise OSError("simulated unlink failure")
+
+    monkeypatch.setattr(Path, "unlink", _raise)
+    clear_skip_markers(tmp_path)  # must not raise
+    # The file is still there because the unlink was blocked, proving we hit the
+    # except branch rather than silently succeeding.
+    assert (tmp_path / SKIP_MARKER_FILENAME).exists()
+
+
 def test_load_handles_corrupt_json(tmp_path: Path) -> None:
     """A corrupted marker file is treated as empty so a single bad write
     doesn't lock the user into retrying every file forever."""

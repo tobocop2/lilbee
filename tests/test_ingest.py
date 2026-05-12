@@ -875,6 +875,29 @@ class TestCollectResultsSkipped:
         assert captured[0][1].status == "skipped"
         assert "scan.pdf" in skipped
 
+    async def test_error_cancels_still_running_siblings(self):
+        """When one task raises, _collect_results' finally cancels the still-pending ones."""
+        import asyncio
+
+        from lilbee.data.ingest.pipeline import _collect_results
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _boom() -> _IngestResult:
+            raise RuntimeError("ingest blew up")
+
+        async def _never_finishes() -> _IngestResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("sibling task should have been cancelled")
+
+        boom_task = asyncio.ensure_future(_boom())
+        sibling_task = asyncio.ensure_future(_never_finishes())
+        added: list[str] = []
+        failed: list[str] = []
+        skipped: list[str] = []
+        with pytest.raises(RuntimeError, match="ingest blew up"):
+            await _collect_results([boom_task, sibling_task], added, [], failed, skipped)
+        assert sibling_task.cancelled()
+
 
 class TestClassifyNewFormats:
     @pytest.mark.parametrize(

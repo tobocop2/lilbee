@@ -1264,6 +1264,33 @@ class TestSyncSkippedMessageBranches:
         assert "Configure a vision_model" in sync_skipped_message("a.pdf")
 
 
+class TestChattyDependencyFilters:
+    """`lilbee/__init__.py` installs substring filters on noisy upstream loggers."""
+
+    @staticmethod
+    def _record(name: str, msg: str) -> logging.LogRecord:
+        return logging.LogRecord(name, logging.WARNING, __file__, 0, msg, (), None)
+
+    def test_hf_unauthenticated_notice_is_dropped(self) -> None:
+        hf_logger = logging.getLogger("huggingface_hub.utils._http")
+        noisy = self._record(
+            hf_logger.name, "Sending unauthenticated requests to the HF Hub; rate limits apply."
+        )
+        assert any(f.filter(noisy) is False for f in hf_logger.filters)
+
+    def test_unrelated_hf_message_passes_through(self) -> None:
+        hf_logger = logging.getLogger("huggingface_hub.utils._http")
+        keep = self._record(hf_logger.name, "Downloaded model.gguf in 12s")
+        assert all(f.filter(keep) is True for f in hf_logger.filters)
+
+    def test_litellm_cost_map_warning_is_dropped(self) -> None:
+        litellm_logger = logging.getLogger("LiteLLM")
+        noisy = self._record(
+            litellm_logger.name, "Failed to fetch remote model cost map. Using local copy."
+        )
+        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
+
+
 class TestWikiEmptyStateSpacyBranches:
     """Wiki-empty-state messages have a spaCy-unavailable branch."""
 
