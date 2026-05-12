@@ -91,6 +91,50 @@ def _shrink_hf_download_chunk_size() -> None:
 
 _shrink_hf_download_chunk_size()
 
+
+def _install_chatty_dependency_filters() -> None:
+    """Filter noise from huggingface_hub and litellm loggers.
+
+    These libraries log per-request advisories that aren't actionable in a
+    local TUI: HF prints an unauthenticated-requests notice on every public
+    pull, and LiteLLM prints a model-cost-map fetch warning on every chat
+    call when offline. Both are graceful (fall back to local data), but the
+    log spam buries real warnings.
+    """
+    import logging
+
+    hf_suppress = (
+        "unauthenticated requests to the HF Hub",
+        # File-download retry warnings: the library auto-resumes; the
+        # per-attempt warning is noise. The final failure surfaces through
+        # our catalog layer with a clear message.
+        "Error while downloading from",
+        "Trying to resume download",
+    )
+
+    class _SubstringFilter(logging.Filter):
+        def __init__(self, needles: tuple[str, ...]) -> None:
+            super().__init__()
+            self._needles = needles
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not any(n in record.getMessage() for n in self._needles)
+
+    hf_filter = _SubstringFilter(hf_suppress)
+    for name in ("huggingface_hub.utils._http", "huggingface_hub.file_download"):
+        logging.getLogger(name).addFilter(hf_filter)
+
+    # LiteLLM logs its model_prices_and_context_window.json fetch failure at
+    # WARNING every chat call when offline. Pin a substring filter rather
+    # than raising the whole logger's level so real LiteLLM warnings still
+    # surface.
+    litellm_filter = _SubstringFilter(("Failed to fetch remote model cost map",))
+    logging.getLogger("LiteLLM").addFilter(litellm_filter)
+
+
+_install_chatty_dependency_filters()
+
+
 # Must follow HF environment / constants setup above.
 from typing import TYPE_CHECKING  # noqa: E402
 

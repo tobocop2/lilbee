@@ -198,9 +198,11 @@ _FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
 
 
 def group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
-    """Group settings by group field, hiding entries gated by unavailable features."""
+    """Group settings by group field, skipping hidden entries and gated features."""
     groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
     for key, defn in SETTINGS_MAP.items():
+        if defn.hidden:
+            continue
         gate = _FEATURE_GATED_GROUPS.get(defn.group)
         if gate is not None and not gate():
             continue

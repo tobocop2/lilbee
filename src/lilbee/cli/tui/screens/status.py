@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -28,6 +29,24 @@ from lilbee.data.store import SourceRecord
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
+
+# Rows appended to the Documents table per refresh tick. Each ``add_row`` runs
+# on the UI thread, so dumping a whole ingested wiki in one loop froze the
+# screen for seconds; rendering a bounded batch per ``call_after_refresh`` lets
+# the user scroll and interact while the rest streams in.
+_DOC_RENDER_BATCH = 100
+
+
+@dataclass
+class _DocsResult:
+    """Outcome of the background sources read.
+
+    ``load_failed`` distinguishes "store opened but empty" (``sources == []``)
+    from "the read raised" so the UI shows the right placeholder.
+    """
+
+    sources: list[SourceRecord]
+    load_failed: bool
 
 
 def _model_pill(name: str) -> Content:
@@ -151,12 +170,13 @@ class StatusScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._sections_mounted: bool = False
-        self._pending_sources: list[SourceRecord] | None = None
+        self._pending_docs: _DocsResult | None = None
         self._pending_arch: ModelArchInfo | None = None
-        # True only when ``store.get_sources()`` actually raised. An empty
-        # store with no documents yet is the routine "first run" state and
-        # must not surface the error placeholder.
-        self._sources_load_failed: bool = False
+        # Sources still waiting to be appended to the table by the batched
+        # renderer. Bumped each time a new docs result arrives so a stale
+        # render chain (from a previous load) stops itself.
+        self._docs_render_queue: list[SourceRecord] = []
+        self._docs_render_gen: int = 0
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -200,7 +220,9 @@ class StatusScreen(Screen[None]):
         scroll = self.query_one("#status-scroll", VerticalScroll)
         await scroll.mount_all(
             [
-                Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
+                Collapsible(
+                    DataTable(id="docs-table"), title=msg.STATUS_DOCS_TITLE, id="docs-section"
+                ),
                 Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
                 Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             ]
@@ -213,10 +235,9 @@ class StatusScreen(Screen[None]):
         self._show_loading_placeholders()
         # Replay any worker callbacks that arrived before the deferred
         # mount completed.
-        if self._pending_sources is not None:
-            self._load_documents(self._pending_sources)
-            self._load_storage(len(self._pending_sources))
-            self._pending_sources = None
+        if self._pending_docs is not None:
+            self._apply_docs(self._pending_docs)
+            self._pending_docs = None
         if self._pending_arch is not None:
             self._load_arch(self._pending_arch)
             self._pending_arch = None
@@ -245,19 +266,19 @@ class StatusScreen(Screen[None]):
             self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
     @work(thread=True, name="status_fetch_sources", exit_on_error=False)
-    def _fetch_sources_worker(self) -> list[SourceRecord] | None:
-        """Return the source list, or None if the store read genuinely failed.
+    def _fetch_sources_worker(self) -> _DocsResult:
+        """Read the full source list off the UI thread.
 
-        ``[]`` means "store opened but has no documents yet" -- a routine
-        empty-collection state, not an error. ``None`` means the read
-        raised, so the UI can distinguish "no docs yet" from "something is
-        wrong" instead of conflating both into one alarming message.
+        ``load_failed`` is True only when the store read actually raised;
+        an empty store with zero documents is the routine first-run state.
+        Rendering the (potentially large) list happens back on the UI thread
+        in bounded batches via :meth:`_render_doc_batch`.
         """
         try:
-            return get_services().store.get_sources()
+            return _DocsResult(sources=get_services().store.get_sources(), load_failed=False)
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
-            return None
+            return _DocsResult(sources=[], load_failed=True)
 
     @work(thread=True, name="status_fetch_arch", exit_on_error=False)
     def _fetch_arch_worker(self) -> ModelArchInfo:
@@ -272,13 +293,11 @@ class StatusScreen(Screen[None]):
             return
         if event.worker.name == "status_fetch_sources":
             result = event.worker.result
-            sources = result if isinstance(result, list) else []
-            self._sources_load_failed = result is None
+            docs = result if isinstance(result, _DocsResult) else _DocsResult([], True)
             if self._sections_mounted:
-                self._load_documents(sources)
-                self._load_storage(len(sources))
+                self._apply_docs(docs)
             else:
-                self._pending_sources = sources
+                self._pending_docs = docs
         elif event.worker.name == "status_fetch_arch":
             arch = event.worker.result
             if isinstance(arch, ModelArchInfo):
@@ -286,6 +305,11 @@ class StatusScreen(Screen[None]):
                     self._load_arch(arch)
                 else:
                     self._pending_arch = arch
+
+    def _apply_docs(self, docs: _DocsResult) -> None:
+        """Render *docs* into the Documents table (batched) + storage section."""
+        self._load_documents(docs)
+        self._load_storage(len(docs.sources))
 
     def _load_arch(self, info: ModelArchInfo) -> None:
         """Populate the model architecture section from worker result."""
@@ -298,33 +322,47 @@ class StatusScreen(Screen[None]):
         """Populate the configuration section."""
         self.query_one("#config-info", Static).update(_build_config_content())
 
-    def _load_documents(self, sources: list[SourceRecord]) -> None:
-        """Populate the documents table once it is mounted in the DOM.
+    def _load_documents(self, docs: _DocsResult) -> None:
+        """Clear the table, then stream rows in batches over successive refreshes.
 
-        Suppresses NoMatches because the deferred Collapsible parents
-        compose their inner DataTable on a later refresh tick than
-        ``mount_all`` returns. The replay path inside
-        ``_mount_remaining_sections`` may run before that tick on
-        Windows; subsequent worker callbacks repaint when the table
-        is actually queryable.
+        Streaming via ``call_after_refresh`` keeps the screen responsive even
+        with a whole ingested wiki in the store: each batch is small, and the
+        user can scroll/interact between batches. Suppresses NoMatches because
+        the deferred Collapsible composes its inner DataTable a refresh tick
+        after ``mount_all`` returns.
         """
         from textual.css.query import NoMatches
 
         with contextlib.suppress(NoMatches):
             table = self.query_one("#docs-table", DataTable)
             table.clear()
-            self._fill_doc_rows(table, sources)
+            if not docs.sources:
+                placeholder = (
+                    msg.STATUS_DOCS_LOAD_FAILED if docs.load_failed else msg.STATUS_DOCS_EMPTY
+                )
+                table.add_row(placeholder, "")
+                self._docs_render_queue = []
+                return
+        # Bump the generation so any in-flight render chain from a previous
+        # load stops itself, then kick off a fresh one.
+        self._docs_render_gen += 1
+        self._docs_render_queue = list(docs.sources)
+        self._render_doc_batch(self._docs_render_gen)
 
-    def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
-        """Fill the documents table with source data."""
-        if not sources:
-            placeholder = (
-                msg.STATUS_DOCS_LOAD_FAILED if self._sources_load_failed else msg.STATUS_DOCS_EMPTY
-            )
-            table.add_row(placeholder, "")
+    def _render_doc_batch(self, generation: int) -> None:
+        """Append up to ``_DOC_RENDER_BATCH`` rows; reschedule itself if more remain."""
+        if generation != self._docs_render_gen or not self._docs_render_queue:
             return
-        for src in sources:
-            table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            batch = self._docs_render_queue[:_DOC_RENDER_BATCH]
+            del self._docs_render_queue[:_DOC_RENDER_BATCH]
+            for src in batch:
+                table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
+        if self._docs_render_queue:
+            self.call_after_refresh(self._render_doc_batch, generation)
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""

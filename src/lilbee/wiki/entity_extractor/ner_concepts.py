@@ -7,6 +7,7 @@ proposed downstream by the per-source batched call in
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -180,8 +181,14 @@ def _make_record(agg: _Aggregate, kind: EntityKind, min_mentions: int) -> Extrac
     )
 
 
+@functools.cache
 def _load_spacy() -> Any | None:
-    """Load the shared spaCy pipeline, or return None if unavailable."""
+    """Load the shared spaCy pipeline, or return None if unavailable.
+
+    Cached so the "spaCy unavailable" warning fires at most once per process.
+    Without the cache, every chunk-extract call repeats the warning; on a
+    corpus with 1 000 chunks the user got 1 000 identical lines.
+    """
     try:
         from lilbee.retrieval.concepts import load_spacy_pipeline
     except ImportError:

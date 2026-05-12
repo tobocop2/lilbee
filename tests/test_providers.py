@@ -523,28 +523,29 @@ class TestLlamaCppProvider:
         assert "type_v" not in kwargs
 
     def testload_llama_oom_retry_halves_embed_batch_sizes(self, models_dir: Path) -> None:
-        """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx."""
+        """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx.
+
+        Embed loads use the model's training context (8192 here) regardless of
+        ``cfg.num_ctx`` so a chat-tuned setting doesn't clamp the rerank pair
+        size; the OOM retry path bisects from that starting value.
+        """
         from unittest.mock import MagicMock, patch
 
         from lilbee.providers.llama_cpp.provider import load_llama
 
-        cfg.num_ctx = 4096
+        cfg.num_ctx = 4096  # ignored for embed; kept for parity with chat tests
         cfg.flash_attention = "0"
         instance = MagicMock()
         seen: list[dict[str, int]] = []
 
         def fake_llama(**kwargs: object) -> object:
             seen.append({k: int(kwargs[k]) for k in ("n_ctx", "n_batch", "n_ubatch")})
-            if int(kwargs["n_ctx"]) > 1024:
+            # Succeeds at n_ctx <= 2048 (third halving from 8192).
+            if int(kwargs["n_ctx"]) > 2048:
                 raise ValueError("Failed to create llama_context")
             return instance
 
         try:
-            mock_llama_cpp = MagicMock()
-            mock_llama_cpp.metadata = {
-                "general.architecture": "nomic-bert",
-                "nomic-bert.context_length": "8192",
-            }
             with (
                 patch("llama_cpp.Llama", side_effect=fake_llama),
                 patch(
@@ -553,11 +554,12 @@ class TestLlamaCppProvider:
                 ),
             ):
                 load_llama(models_dir / "test-model.gguf", mode="embed")
-            # First attempt at 4096 fails; retry halves all three.
-            assert seen[0]["n_ctx"] == 4096
-            assert seen[0]["n_batch"] == 4096
-            assert seen[0]["n_ubatch"] == 4096
-            assert seen[-1]["n_ctx"] <= 1024
+            # First attempt at the model's training ctx (8192); retry halves
+            # n_ctx + n_batch + n_ubatch together until the load succeeds.
+            assert seen[0]["n_ctx"] == 8192
+            assert seen[0]["n_batch"] == 8192
+            assert seen[0]["n_ubatch"] == 8192
+            assert seen[-1]["n_ctx"] <= 2048
             assert seen[-1]["n_batch"] == seen[-1]["n_ctx"]
             assert seen[-1]["n_ubatch"] == seen[-1]["n_ctx"]
         finally:
@@ -1718,12 +1720,17 @@ class TestReadMmprojProjectorType:
 class TestMtmdLoadVisionLlama:
     """mtmd backend replaces the old projector-type → handler lookup."""
 
-    def test_with_mmproj_and_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
+    def test_vision_uses_training_ctx_from_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """Vision load reads ``context_length`` from the GGUF and uses it as n_ctx."""
         from lilbee.providers.mtmd_backend import load_vision_llama
 
-        cfg.num_ctx = 4096
+        cfg.num_ctx = 512  # chat-tuned; must NOT clamp vision
 
         with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                return_value={"context_length": "8192"},
+            ),
             mock.patch(
                 "lilbee.providers.mtmd_backend.build_vision_chat_handler",
                 return_value=mock.MagicMock(),
@@ -1731,21 +1738,30 @@ class TestMtmdLoadVisionLlama:
         ):
             load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 4096
+        assert call_kwargs["n_ctx"] == 8192
         assert call_kwargs["n_gpu_layers"] == -1
 
-    def test_without_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.mtmd_backend import load_vision_llama
+    def test_vision_falls_back_to_default_when_metadata_missing(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """If the GGUF has no context_length, vision falls back to the explicit default."""
+        from lilbee.providers.mtmd_backend import _VISION_FALLBACK_N_CTX, load_vision_llama
 
         cfg.num_ctx = None
 
-        with mock.patch(
-            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-            return_value=mock.MagicMock(),
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                return_value=None,
+            ),
+            mock.patch(
+                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                return_value=mock.MagicMock(),
+            ),
         ):
             load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 0
+        assert call_kwargs["n_ctx"] == _VISION_FALLBACK_N_CTX
 
     def test_without_mmproj_calls_find(self, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.mtmd_backend import load_vision_llama
@@ -1783,13 +1799,13 @@ class TestMtmdLoadVisionLlama:
             )
         assert mock_llama_cpp.Llama.call_args[1]["abort_callback"] is sentinel
 
-    def test_resolve_vision_n_ctx_clamps_to_training_ctx(
+    def test_resolve_vision_n_ctx_uses_training_context(
         self, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """When cfg.num_ctx > training context, vision load clamps to the training value."""
+        """Vision load uses the model's training context, not cfg.num_ctx."""
         from lilbee.providers.mtmd_backend import load_vision_llama
 
-        cfg.num_ctx = 8192
+        cfg.num_ctx = 8192  # chat-tuned; must not influence vision
         with (
             mock.patch(
                 "lilbee.providers.mtmd_backend.read_gguf_metadata",
@@ -1806,8 +1822,8 @@ class TestMtmdLoadVisionLlama:
     def test_resolve_vision_n_ctx_falls_back_when_metadata_unreadable(
         self, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """``read_gguf_metadata`` raising falls back to cfg.num_ctx (no clamp)."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
+        """A metadata read failure falls back to the explicit vision default."""
+        from lilbee.providers.mtmd_backend import _VISION_FALLBACK_N_CTX, load_vision_llama
 
         cfg.num_ctx = 4096
         with (
@@ -1821,7 +1837,7 @@ class TestMtmdLoadVisionLlama:
             ),
         ):
             load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
+        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == _VISION_FALLBACK_N_CTX
 
 
 class TestImportLlamaCpp:
@@ -2077,8 +2093,10 @@ class TestReadGgufMetadata:
 
 
 class TestLoadLlama:
-    def test_embedding_with_ctx0_reads_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """load_llama for embeddings reads context_length from GGUF metadata."""
+    def test_embedding_uses_training_ctx_from_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Embed load reads context_length from GGUF metadata and uses it as n_ctx."""
         from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
@@ -2090,13 +2108,13 @@ class TestLoadLlama:
             load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
         assert call_kwargs["n_batch"] == 2048
         assert call_kwargs["n_ubatch"] == 2048
-        assert call_kwargs["n_ctx"] == 0
         assert call_kwargs["embedding"] is True
 
-    def test_embedding_no_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """load_llama defaults to 2048 when no metadata."""
+    def test_embedding_no_metadata_defaults_to_2048(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """Embed load defaults to 2048 when the GGUF metadata read fails."""
         from lilbee.providers.llama_cpp.provider import load_llama
 
         cfg.num_ctx = None
@@ -2108,43 +2126,30 @@ class TestLoadLlama:
             load_llama(Path("/test.gguf"), mode="embed")
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_batch"] == 2048
-
-    def test_embedding_with_explicit_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """Explicit num_ctx <= training_ctx is honored verbatim for embeddings."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        mock_llama_cpp.Llama.return_value.metadata = {
-            "general.architecture": "nomic-bert",
-            "nomic-bert.context_length": "8192",
-        }
-
-        load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 4096
-        assert call_kwargs["n_batch"] == 4096
-
-    def test_embedding_clamps_explicit_ctx_to_training_ctx(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """num_ctx > training_ctx clamps to the model's training window for embeddings."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 3072
-        # Embedding model trains at 2048: clamp 3072 -> 2048 to avoid the
-        # 'n_ctx_seq (3072) > n_ctx_train (2048)' warning users see in the chat.
-        mock_llama_cpp.Llama.return_value.metadata = {
-            "general.architecture": "nomic-bert",
-            "nomic-bert.context_length": "2048",
-        }
-
-        load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 2048
         assert call_kwargs["n_batch"] == 2048
+
+    def test_embedding_ignores_cfg_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """Chat-tuned cfg.num_ctx does not propagate to embed/rerank loads.
+
+        Before this guard, ``min(cfg.num_ctx, embed_train_ctx)`` clamped the
+        rerank context to the chat ctx, which produced 'llama_decode
+        returned 1' on every rerank pair when a low-RAM user set a small
+        cfg.num_ctx. The embed/rerank context is the model's training ctx
+        regardless of cfg.num_ctx.
+        """
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 512  # chat-sized; must NOT clamp embed
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "8192"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 8192
+        assert call_kwargs["n_batch"] == 8192
 
     def test_chat_mode(self, mock_llama_cpp: mock.MagicMock) -> None:
         """load_llama for chat does not set n_batch."""
