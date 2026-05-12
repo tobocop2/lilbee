@@ -1,8 +1,9 @@
 """Setup routes: status and bootstrap for optional runtime components.
 
 Currently exposes Playwright Chromium bootstrap (needed for /crawl). The
-bb-wq8g contract mirrors what the TUI does in ``TaskBarController.ensure_chromium``
-so the Obsidian plugin's Task Center can render a matching ``setup`` pill.
+SSE event sequence mirrors what the TUI does in
+``TaskBarController.ensure_chromium`` so a stream consumer can render a
+matching ``setup`` progress indicator.
 
 Endpoints:
     GET  /setup/crawler/status → { installed, component, browsers_path }

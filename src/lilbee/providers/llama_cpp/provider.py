@@ -741,15 +741,17 @@ def load_llama(
     }
 
     if embedding:
-        # Embedding/rerank: clamp n_ctx to the model's training context.
-        # Passing a chat-sized cfg.num_ctx through here triggers
-        # ``n_ctx_seq > n_ctx_train`` warnings and wastes KV memory.
+        # Embedding/rerank uses the model's training context unconditionally.
+        # cfg.num_ctx is a chat-tuned setting; propagating it here used to
+        # clamp the rerank model below what a query+candidate pair needs and
+        # produced "llama_decode returned 1" on every other query when the
+        # user picked a small chat ctx for a low-RAM box. The explicit
+        # ``embed_train_ctx`` value (instead of ``0`` for "use model
+        # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
+        # cannot bisect from 0.
         embed_meta = _safe_read_gguf_metadata(model_path)
         embed_train_ctx = int((embed_meta or {}).get("context_length", "2048"))
-        if cfg.num_ctx is not None:
-            kwargs["n_ctx"] = min(cfg.num_ctx, embed_train_ctx)
-        else:
-            kwargs["n_ctx"] = 0  # 0 -> llama.cpp uses the model's training context
+        kwargs["n_ctx"] = embed_train_ctx
     elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
     else:
@@ -766,9 +768,8 @@ def load_llama(
         # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently
         # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
         # text can use the model's full context window.
-        ctx_len = embed_train_ctx if kwargs["n_ctx"] == 0 else kwargs["n_ctx"]
-        kwargs["n_batch"] = ctx_len
-        kwargs["n_ubatch"] = ctx_len
+        kwargs["n_batch"] = kwargs["n_ctx"]
+        kwargs["n_ubatch"] = kwargs["n_ctx"]
 
     if mode == LoaderMode.RERANK:
         from llama_cpp import LLAMA_POOLING_TYPE_RANK

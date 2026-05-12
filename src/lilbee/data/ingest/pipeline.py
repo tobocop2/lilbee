@@ -23,8 +23,14 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
+from lilbee.data.ingest.skip_marker import (
+    clear_skip_markers,
+    load_skip_markers,
+    write_skip_markers,
+)
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -113,8 +119,16 @@ def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, str],
     cancel: threading.Event | None,
+    skip_markers: dict[str, str] | None = None,
 ) -> tuple[list[FileToProcess], list[str], list[str], int]:
-    """Diff disk against the store. Returns (to_process, added, updated, unchanged_count)."""
+    """Diff disk against the store. Returns (to_process, added, updated, unchanged_count).
+
+    A file whose current hash matches a marker in ``skip_markers`` (set by a
+    prior failed attempt) is treated as unchanged so we don't retry every
+    sync. Edit the file or run ``/sync --force-rebuild`` to clear the marker
+    and try again.
+    """
+    skip_markers = skip_markers or {}
     files_to_process: list[FileToProcess] = []
     added: list[str] = []
     updated: list[str] = []
@@ -128,6 +142,10 @@ def _plan_file_changes(
         old_hash = existing_sources.get(name)
         current_hash = file_hash(path)
         if old_hash == current_hash:
+            unchanged += 1
+            continue
+        if skip_markers.get(name) == current_hash:
+            # Failed last sync at this exact hash; skip the retry.
             unchanged += 1
             continue
         # needs_cleanup=True unconditionally: delete_by_source is idempotent,
@@ -150,14 +168,49 @@ def detect_pending() -> int:
     sources-table read. No embedding, no writes. Returns the total of
     added + updated + removed, which is what the TaskBar hint surfaces.
     Reuses ``_plan_file_changes`` so the diff logic stays single-sourced.
+    Honors skip markers: a file that failed last time at this hash does
+    not show up as pending.
     """
     if not cfg.documents_dir.exists():
         return 0
     disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in get_services().store.get_sources()}
     removed = sum(1 for name in existing_sources if name not in disk_files)
-    files_to_process, _, _, _ = _plan_file_changes(disk_files, existing_sources, cancel=None)
+    skip_markers = load_skip_markers(cfg.data_root)
+    files_to_process, _, _, _ = _plan_file_changes(
+        disk_files, existing_sources, cancel=None, skip_markers=skip_markers
+    )
     return len(files_to_process) + removed
+
+
+def _load_pruned_skip_markers(disk_files: dict[str, Path], *, clear_first: bool) -> dict[str, str]:
+    """Read the skip-marker file (optionally clearing it first) and drop entries
+    for files no longer on disk, so the marker set tracks the current corpus."""
+    if clear_first:
+        # Clearing the markers makes the diff re-include the skipped files.
+        clear_skip_markers(cfg.data_root)
+    markers = load_skip_markers(cfg.data_root)
+    if not markers:
+        return markers
+    return {name: fhash for name, fhash in markers.items() if name in disk_files}
+
+
+def _persist_skip_markers(
+    markers: dict[str, str],
+    pending_hashes: dict[str, str],
+    *,
+    succeeded: list[str],
+    failed: list[str],
+) -> None:
+    """Mark files that produced no chunks so the next sync skips them, clear the
+    markers for files that ingested cleanly, then write the file back."""
+    for name in succeeded:
+        markers.pop(name, None)
+    for name in failed:
+        fhash = pending_hashes.get(name)
+        if fhash:
+            markers[name] = fhash
+    write_skip_markers(cfg.data_root, markers)
 
 
 async def sync(
@@ -166,11 +219,14 @@ async def sync(
     *,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: threading.Event | None = None,
+    retry_skipped: bool = False,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
-    Returns summary dict with keys: added, updated, removed, unchanged, failed.
+    Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, processing stops between files without data loss.
+    When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
+    markers are cleared so this sync attempts every file.
     """
     _store = get_services().store
 
@@ -181,6 +237,7 @@ async def sync(
 
     disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
+    skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     removed: list[str] = []
     failed: list[str] = []
@@ -194,8 +251,10 @@ async def sync(
             removed.append(name)
 
     files_to_process, added, updated, unchanged = _plan_file_changes(
-        disk_files, existing_sources, cancel
+        disk_files, existing_sources, cancel, skip_markers=skip_markers
     )
+    # Track skip markers for files processed this run, keyed by name → hash.
+    pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
 
     # Ingest files (with optional progress bar)
     if files_to_process:
@@ -210,6 +269,10 @@ async def sync(
             on_progress=on_progress,
             cancel=cancel,
         )
+
+    _persist_skip_markers(
+        skip_markers, pending_hashes, succeeded=added + updated, failed=failed + skipped
+    )
 
     if files_to_process or removed:
         _store.ensure_fts_index()
@@ -272,10 +335,15 @@ async def ingest_batch(
             if cancel and cancel.is_set():
                 raise asyncio.CancelledError
 
-            on_progress(
-                EventType.FILE_START,
-                FileStartEvent(file=name, total_files=total_files, current_file=file_index),
-            )
+            try:
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(file=name, total_files=total_files, current_file=file_index),
+                )
+            except TaskCancelledError as exc:
+                # FILE_START itself can raise the cooperative cancel signal;
+                # normalize so _collect_results can drain siblings cleanly.
+                raise asyncio.CancelledError from exc
             try:
                 if needs_cleanup:
                     get_services().store.delete_by_source(name)
@@ -291,8 +359,12 @@ async def ingest_batch(
                     FileDoneEvent(file=name, status="ok", chunks=chunk_count),
                 )
                 return _IngestResult(name, path, chunk_count, error=None, file_hash=fhash)
-            except asyncio.CancelledError:
-                raise
+            except (asyncio.CancelledError, TaskCancelledError) as exc:
+                # TaskCancelledError is the TUI's cooperative cancel signal raised
+                # by reporter.check_cancelled() inside on_progress; treat it as
+                # asyncio cancellation so _collect_results can drain siblings
+                # cleanly instead of orphaning their pending exceptions.
+                raise asyncio.CancelledError from exc
             except Exception as exc:
                 # During shutdown, worker pools raise RuntimeError from
                 # submit(). Prefer to treat these as cancellation rather than
@@ -301,10 +373,15 @@ async def ingest_batch(
                 # fallback when cancel was set after the submit race.
                 if (cancel and cancel.is_set()) or is_executor_shutdown(exc):
                     raise asyncio.CancelledError from exc
-                on_progress(
-                    EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="error", chunks=0),
-                )
+                # Suppress TaskCancelledError on the FILE_DONE notice: the user
+                # already cancelled, and re-raising here would leak past
+                # _process_one and strand sibling tasks awaiting in
+                # _collect_results.
+                with contextlib.suppress(TaskCancelledError):
+                    on_progress(
+                        EventType.FILE_DONE,
+                        FileDoneEvent(file=name, status="error", chunks=0),
+                    )
                 return _IngestResult(name, path, 0, error=exc)
 
     if quiet:
@@ -354,29 +431,45 @@ async def _collect_results(
     progress: Progress | None = None,
     ptask: Any = None,
 ) -> None:
-    """Collect task results, optionally updating a Rich progress bar."""
-    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
-        result = await fut
-        _apply_result(result, added, updated, failed, skipped)
-        if progress is not None and ptask is not None:
-            desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
-            progress.update(ptask, description=desc)
-            progress.advance(ptask)
-        if result.error is not None:
-            progress_status = BatchStatus.FAILED
-        elif result.chunk_count == 0:
-            progress_status = BatchStatus.SKIPPED
-        else:
-            progress_status = BatchStatus.INGESTED
-        on_progress(
-            EventType.BATCH_PROGRESS,
-            BatchProgressEvent(
-                file=result.name,
-                status=progress_status,
-                current=completed_count,
-                total=len(tasks),
-            ),
-        )
+    """Collect task results, optionally updating a Rich progress bar.
+
+    On exception (typically asyncio.CancelledError from a user cancel),
+    cancel every sibling task and await them with ``return_exceptions=True``
+    so their pending CancelledErrors don't surface as
+    "Task exception was never retrieved" warnings.
+    """
+    try:
+        for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
+            result = await fut
+            _apply_result(result, added, updated, failed, skipped)
+            if progress is not None and ptask is not None:
+                desc = (
+                    f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+                )
+                progress.update(ptask, description=desc)
+                progress.advance(ptask)
+            if result.error is not None:
+                progress_status = BatchStatus.FAILED
+            elif result.chunk_count == 0:
+                progress_status = BatchStatus.SKIPPED
+            else:
+                progress_status = BatchStatus.INGESTED
+            with contextlib.suppress(TaskCancelledError):
+                on_progress(
+                    EventType.BATCH_PROGRESS,
+                    BatchProgressEvent(
+                        file=result.name,
+                        status=progress_status,
+                        current=completed_count,
+                        total=len(tasks),
+                    ),
+                )
+    finally:
+        pending = [t for t in tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _discard_from_list(lst: list[str], value: str) -> None:

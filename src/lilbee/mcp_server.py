@@ -100,11 +100,21 @@ def status() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def sync() -> dict[str, Any]:
-    """Sync documents directory with the vector store."""
+async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
+    """Sync documents directory with the vector store.
+
+    Args:
+        force_rebuild: Drop every table and re-ingest from scratch (equivalent
+            to ``lilbee rebuild``). Also clears the failed-file skip markers.
+        retry_skipped: Clear the failed-file skip markers so files that were
+            skipped on a previous sync get another attempt, without dropping
+            the store.
+    """
     from lilbee.data.ingest import sync as run_sync
 
-    return (await run_sync(quiet=True)).model_dump()
+    return (
+        await run_sync(quiet=True, force_rebuild=force_rebuild, retry_skipped=retry_skipped)
+    ).model_dump()
 
 
 @mcp.tool()

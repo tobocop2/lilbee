@@ -986,8 +986,10 @@ async def test_release_drops_registration_and_closes_live_channel(tmp_path) -> N
 async def test_ensure_channel_raises_when_role_degraded_after_outer_check(
     tmp_path, monkeypatch
 ) -> None:
-    """The inner ``degraded`` check inside spawn_lock catches the race where the role
-    was marked degraded between the pre-lock check and the lock acquisition."""
+    """The inner cooldown check inside spawn_lock catches the race where the role
+    was tripped into cooldown between the pre-lock check and lock acquisition."""
+    import time as _time
+
     from lilbee.providers.worker.pool import RoleDegradedError
 
     monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 1)
@@ -999,18 +1001,67 @@ async def test_ensure_channel_raises_when_role_degraded_after_outer_check(
         registration = pool._roles["embed"]
 
         # Acquire the spawn_lock so _ensure_channel must wait. Inside our hold,
-        # mark the role degraded; release the lock; the queued _ensure_channel
-        # acquires it and re-checks degraded inside the lock (line 334).
+        # arm a cooldown; release the lock; the queued _ensure_channel
+        # re-checks the cooldown inside the lock.
         await registration.spawn_lock.acquire()
         try:
             ensure_task = asyncio.create_task(pool._ensure_channel("embed"))
             # Yield so the task gets to the spawn_lock.acquire() await point.
             await asyncio.sleep(0)
-            registration.degraded = True
+            registration.degraded_until = _time.monotonic() + 60.0
         finally:
             registration.spawn_lock.release()
         with pytest.raises(RoleDegradedError, match="embed"):
             await ensure_task
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expiry_allows_one_retry(tmp_path, monkeypatch) -> None:
+    """After the cooldown deadline elapses the next call gets a fresh spawn attempt."""
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 1)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 10.0)
+    monkeypatch.setattr("lilbee.providers.worker.pool._DEGRADED_COOLDOWN_S", 0.05)
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        # Trip the breaker.
+        await pool._on_crash("embed")
+        await pool._on_crash("embed")
+        assert pool.is_degraded("embed") is True
+        # Wait past the cooldown; the next call should succeed (half-open
+        # attempt clears the breaker).
+        import time as _time
+
+        _time.sleep(0.1)
+        assert pool.is_degraded("embed") is False
+        result = await pool.accessor("embed").call("echo", "after-cooldown")
+        assert result == "after-cooldown"
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_role_degraded_error_advertises_retry_window(tmp_path, monkeypatch) -> None:
+    """The error message surfaces how long until auto-retry, not 'restart lilbee'."""
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_BUDGET", 1)
+    monkeypatch.setattr("lilbee.providers.worker.pool._RESTART_WINDOW_S", 10.0)
+    monkeypatch.setattr("lilbee.providers.worker.pool._DEGRADED_COOLDOWN_S", 30.0)
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    try:
+        await pool._on_crash("embed")
+        await pool._on_crash("embed")
+        from lilbee.providers.worker.pool import RoleDegradedError
+
+        with pytest.raises(RoleDegradedError) as excinfo:
+            await pool.accessor("embed").call("echo", "x")
+        assert "Retry in" in str(excinfo.value)
+        # Should NOT instruct the user to restart; the breaker auto-recovers.
+        assert "Restart lilbee" not in str(excinfo.value)
     finally:
         await pool.shutdown()
 

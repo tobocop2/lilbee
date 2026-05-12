@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import Any
 
 from lilbee.providers.base import ProviderError
+
+log = logging.getLogger(__name__)
 
 _RERANK_PAIR_SEPARATOR = "</s></s>"
 
@@ -19,13 +22,45 @@ upstream issue #2051 / PR #2058 (still open as of May 2026).
 """
 
 
+def _truncate_to_budget(llm: Any, text: str, token_cap: int) -> str:
+    """Tokenize *text*, keep the first ``token_cap`` tokens, detokenize back.
+
+    Token-aware truncation is needed because the chunker's 4-chars-per-token
+    heuristic underestimates dense input (medical codes, JSON, source code).
+    Bytes-level slicing would split mid-token and confuse the embedder.
+    """
+    tokens = llm.tokenize(text.encode("utf-8"))
+    if len(tokens) <= token_cap:
+        return text
+    truncated: bytes = llm.detokenize(tokens[:token_cap])
+    return truncated.decode("utf-8", errors="replace")
+
+
 def _split_into_sub_batches(llm: Any, items: list[str]) -> Iterator[list[str]]:
-    """Yield sub-batches respecting both the token budget and ``EMBED_N_SEQ_MAX``."""
+    """Yield sub-batches respecting both the token budget and ``EMBED_N_SEQ_MAX``.
+
+    A single item longer than ``llm.n_batch`` tokens is truncated to that
+    budget with a warning. Without the truncation, llama-cpp's ``llama_decode``
+    returns -1 and the whole call fails, which used to surface as
+    "Embedding worker reported an error: RuntimeError: llama_decode
+    returned -1" on every file in a token-dense corpus.
+    """
     token_cap = max(1, int(llm.n_batch))
     sub_batch: list[str] = []
     sub_tokens = 0
-    for item in items:
-        token_count = max(1, len(llm.tokenize(item.encode("utf-8"))))
+    for raw_item in items:
+        raw_tokens = max(1, len(llm.tokenize(raw_item.encode("utf-8"))))
+        if raw_tokens > token_cap:
+            log.warning(
+                "Truncating oversize input: %d tokens > cap %d (chars/token heuristic too loose)",
+                raw_tokens,
+                token_cap,
+            )
+            item = _truncate_to_budget(llm, raw_item, token_cap)
+            token_count = token_cap
+        else:
+            item = raw_item
+            token_count = raw_tokens
         if sub_batch and (
             sub_tokens + token_count > token_cap or len(sub_batch) >= EMBED_N_SEQ_MAX
         ):
