@@ -52,8 +52,8 @@ class Config(BaseSettings):
     data_dir: Path = Field(default=Path())
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
-    # Obsidian vault root; when set, search results carry a vault-relative
-    # ``vault_path`` for native-UI deep-links.
+    # Markdown vault root; when set, search results carry a vault-relative
+    # ``vault_path`` so a host UI can deep-link into the vault.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
     chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)

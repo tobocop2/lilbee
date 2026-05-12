@@ -352,6 +352,29 @@ class TestSettingsFeatureGating:
             groups = settings_mod.group_settings()
         assert "Crawling" in groups
 
+    def test_hidden_setting_not_rendered_but_still_in_map(self) -> None:
+        """`sse_heartbeat_interval` is a transport knob: hidden from the TUI
+        settings screen, still reachable via `lilbee set` / the env var."""
+        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.cli.tui.screens.settings_widgets import group_settings
+
+        assert SETTINGS_MAP["sse_heartbeat_interval"].hidden is True
+        rendered_keys = {k for items in group_settings().values() for k, _ in items}
+        assert "sse_heartbeat_interval" not in rendered_keys
+        # Still settable through the CLI / env path.
+        assert "sse_heartbeat_interval" in SETTINGS_MAP
+
+    def test_no_setting_help_text_mentions_obsidian(self) -> None:
+        """Obsidian is one host of the HTTP API; it must not leak into setting labels."""
+        from lilbee.cli.settings_map import SETTINGS_MAP
+
+        offenders = {
+            key: defn.help_text
+            for key, defn in SETTINGS_MAP.items()
+            if "obsidian" in defn.help_text.lower()
+        }
+        assert offenders == {}, f"settings help text references Obsidian: {offenders}"
+
 
 class TestSettingsTabActivatedEdges:
     """`_on_tab_activated` early-returns when pane / pane.id is None."""
