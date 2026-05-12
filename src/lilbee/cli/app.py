@@ -169,10 +169,14 @@ def _default(
     install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
+    # Typer binds options placed before the subcommand name to this callback;
+    # apply them here for every invocation. Subcommands re-call apply_overrides
+    # with their own (post-subcommand) flags, and re-applying None is a no-op,
+    # so ``--data-dir`` / ``--model`` / ``--global`` work in either position.
+    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:
-        apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)

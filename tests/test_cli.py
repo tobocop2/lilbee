@@ -155,6 +155,18 @@ class TestSync:
         assert "Failed: 1" in result.output
         assert "bad.txt" in result.output
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_retry_skipped_flag(self, mock_sync):
+        """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
+        result = runner.invoke(app, ["sync", "--retry-skipped"])
+        assert result.exit_code == 0
+        assert mock_sync.call_args.kwargs.get("retry_skipped") is True
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_without_flag_does_not_retry_skipped(self, mock_sync):
+        runner.invoke(app, ["sync"])
+        assert mock_sync.call_args.kwargs.get("retry_skipped") is False
+
 
 class TestRebuild:
     def test_rebuild_empty(self):
@@ -307,19 +319,44 @@ class TestAsk:
 
 
 class TestDataDirFlag:
-    def test_status_with_data_dir(self, tmp_path):
+    def test_status_with_data_dir_after_subcommand(self, tmp_path):
         custom = tmp_path / "custom"
         custom.mkdir()
         (custom / "documents").mkdir()
         result = runner.invoke(app, ["status", "--data-dir", str(custom)])
         assert result.exit_code == 0
 
-    def test_sync_with_data_dir(self, tmp_path):
+    def test_sync_with_data_dir_after_subcommand(self, tmp_path):
         custom = tmp_path / "custom"
         custom.mkdir()
         (custom / "documents").mkdir()
         result = runner.invoke(app, ["sync", "--data-dir", str(custom)])
         assert result.exit_code == 0
+
+    def test_data_dir_before_subcommand_redirects_paths(self, tmp_path):
+        """`lilbee --data-dir X status` must point cfg at X.
+
+        Typer binds options placed before the subcommand to the group
+        callback, which used to only apply them for the no-subcommand TUI
+        path; the subcommand then saw ``data_dir=None`` and silently kept
+        the global paths.
+        """
+        custom = tmp_path / "custom"
+        (custom / "documents").mkdir(parents=True)
+        result = runner.invoke(app, ["--data-dir", str(custom), "status"])
+        assert result.exit_code == 0
+        assert cfg.data_root == custom
+        assert cfg.documents_dir == custom / "documents"
+        assert cfg.data_dir == custom / "data"
+
+    def test_model_before_subcommand_applies(self, tmp_path):
+        """`lilbee -m ref status` applies the chat-model override at the callback."""
+        custom = tmp_path / "custom"
+        (custom / "documents").mkdir(parents=True)
+        ref = "org/Some-GGUF/some-Q4_K_M.gguf"
+        result = runner.invoke(app, ["-m", ref, "--data-dir", str(custom), "status"])
+        assert result.exit_code == 0
+        assert cfg.chat_model == ref
 
 
 class TestAutoSync:

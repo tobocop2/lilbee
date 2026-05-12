@@ -18,8 +18,8 @@ async def crawl_stream(
     Sets a cancel event on client disconnect so the crawl stops between pages.
 
     On first use, Chromium isn't installed yet. The stream inlines
-    setup_start/progress/done events before the crawl begins so the
-    Obsidian plugin's Task Center renders a matching 'setup' pill (bb-wq8g).
+    setup_start/progress/done events before the crawl begins so a stream
+    consumer can render a matching 'setup' progress indicator.
     """
     sse = SseStream()
 

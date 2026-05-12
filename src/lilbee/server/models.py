@@ -67,11 +67,15 @@ class SyncRequest(BaseModel):
     ``force_rebuild`` triggers a full drop-and-reingest equivalent to ``lilbee rebuild``.
     Use it to recover from an embedding-model switch (when the store refuses search
     or ingest because ``cfg.embedding_model`` no longer matches the persisted vectors).
-    The default is incremental sync.
+    ``retry_skipped`` is the lighter recovery: it clears the markers for files that
+    failed a previous sync (Tesseract timeout, decode failure, no usable text) so this
+    sync attempts them again, without dropping the existing store. The default is an
+    incremental sync.
     """
 
     enable_ocr: bool | None = None
     force_rebuild: bool = False
+    retry_skipped: bool = False
 
 
 class AddRequest(BaseModel):
