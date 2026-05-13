@@ -9,3 +9,9 @@ Set Padding 30
 Set TypingSpeed 55ms
 Set Theme "Catppuccin Mocha"
 Set WindowBar Colorful
+
+# Pin lilbee to the homebrew install. The recordings expect a working `lilbee`
+# binary; if a venv version is broken (e.g. numpy/thinc mismatch in a pyenv
+# shim), this skips that and uses the bundled standalone binary at
+# /opt/homebrew/bin/lilbee.
+Env PATH "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"

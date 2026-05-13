@@ -28,12 +28,12 @@ Sleep 400ms
 Enter
 Sleep 2s
 
-Type "lilbee model pull qwen3:0.6b"
+Type "lilbee model pull Qwen/Qwen3-0.6B-GGUF"
 Sleep 400ms
 Enter
 Sleep 25s
 
-Type "lilbee model pull nomic-embed-text-v1.5"
+Type "lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 Sleep 400ms
 Enter
 Sleep 12s

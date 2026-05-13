@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Use the bundled standalone binary directly. Skips any broken venv install
+# (e.g. a pyenv shim with a numpy/thinc mismatch).
+LILBEE="${LILBEE_BIN:-/opt/homebrew/bin/lilbee}"
+
 ROOT="${LILBEE_DEMO_ROOT:-/tmp/lilbee-demo}"
 MODELS_DIR="$ROOT/models"
 CV_MANUAL="${CV_MANUAL:-$HOME/Downloads/cv-manual.pdf}"
@@ -19,26 +23,22 @@ export LILBEE_SKIP_TOML_CONFIG=1
 
 echo "==> models dir: $MODELS_DIR"
 
-# Pull the two demo models once into the shared models dir.
-# Tapes that show a fresh pull will re-trigger the download in their own (empty) data dir,
-# but the cached files in the global HF cache make those quick.
-echo "==> pulling qwen3:0.6b (chat) if missing ..."
-lilbee model pull qwen3:0.6b || true
-echo "==> pulling nomic-embed-text-v1.5 (embed) if missing ..."
-lilbee model pull nomic-embed-text-v1.5 || true
+# Pull the two demo models once. Re-runs are no-ops if already installed.
+echo "==> pulling Qwen/Qwen3-0.6B-GGUF (chat) if missing ..."
+"$LILBEE" model pull "Qwen/Qwen3-0.6B-GGUF" || true
+echo "==> pulling nomic-ai/nomic-embed-text-v1.5-GGUF (embed) if missing ..."
+"$LILBEE" model pull "nomic-ai/nomic-embed-text-v1.5-GGUF" || true
 
 # Pre-index the Crown Vic manual for tapes that need an existing corpus.
+# --data-dir goes AFTER the subcommand (lilbee parses flags per-subcommand).
 for tape in tui-chat tui-catalog tui-settings tui-tour; do
     DATA="$ROOT/$tape"
-    mkdir -p "$DATA"
-    export LILBEE_DATA="$DATA"
-    if ! lilbee --data-dir "$DATA" status >/dev/null 2>&1; then
-        lilbee --data-dir "$DATA" init || true
-    fi
-    if ! lilbee --data-dir "$DATA" status 2>/dev/null | grep -q "crown-victoria-manual"; then
+    mkdir -p "$DATA/documents"
+    unset LILBEE_DATA
+    if ! "$LILBEE" status --data-dir "$DATA" 2>/dev/null | grep -q "crown-victoria-manual"; then
         echo "==> indexing manual into $DATA"
-        cp "$CV_MANUAL" "$DATA/documents/crown-victoria-manual.pdf" 2>/dev/null || true
-        lilbee --data-dir "$DATA" sync || true
+        cp "$CV_MANUAL" "$DATA/documents/crown-victoria-manual.pdf"
+        "$LILBEE" rebuild --data-dir "$DATA"
     fi
 done
 
