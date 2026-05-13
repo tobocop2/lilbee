@@ -24,15 +24,18 @@
 
 Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's just a fast chatbot.
 
-```
-> what does the oil pressure warning mean?
+<p align="center">
+  <img alt="lilbee chat, owner's manual, cited answers"
+       src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png"
+       width="720">
+</p>
 
-  the oil pressure warning indicates low oil pressure.[1]
-  when the light stays on, stop the engine immediately.[2]
+<details><summary>▶ Watch the chat (90s)</summary>
 
-  ─── sources ──────────────────────────────────
-  [1] owners-manual.pdf:42    [2] owners-manual.pdf:43
-```
+<p align="center">
+  <img alt="lilbee chat demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif" width="720">
+</p>
+</details>
 
 It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
@@ -82,50 +85,45 @@ Standing this up used to mean a background daemon, a separate inference server, 
 
 ## Previews
 
-> ASCII sketches of each screen below: the shape, not the pixels. Written walkthroughs are under [`docs/benchmarks/`](docs/benchmarks/): [Godot level generator](docs/benchmarks/godot-level-generator.md) and [vision OCR model comparison](docs/benchmarks/vision-ocr.md).
+> Stills below; the animated walkthroughs are tucked into `<details>` blocks under each one. The full reel and an opencode-over-MCP walkthrough are in [`docs/demos.md`](docs/demos.md).
 
 **Chat.** The default screen. Streaming replies with clickable citations.
 
-```
- ┌─ lilbee ──────────────────────────────────────────────────────┐
- │ [Chat]  Catalog  Status  Settings  Tasks         [INSERT]     │
- │                                                               │
- │ You:    what does the oil pressure warning mean?              │
- │                                                               │
- │ lilbee: The oil pressure warning indicates low oil            │
- │         pressure.[1] When the light stays on, stop the        │
- │         engine immediately.[2]                                │
- │         ─────────────────────                                 │
- │         Sources                                               │
- │         [1 owners-manual.pdf:42]   <- click to open           │
- │         [2 owners-manual.pdf:43]                              │
- │                                                               │
- │ ┌───────────────────────────────────────────────────────────┐ │
- │ │ Ask anything...                                           │ │
- │ │                                                           │ │
- │ │ Chat [Qwen3 0.6B]  Embed [Nomic v1.5]   [Search|Chat]     │ │
- │ └───────────────────────────────────────────────────────────┘ │
- │ SYNC vault   [============------------]  42%                  │
- └───────────────────────────────────────────────────────────────┘
-```
+<p align="center"><img alt="lilbee chat with cited answers" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png" width="800"></p>
 
-**Task Center.** Every background job (sync, crawl, wiki build, model pull) in one place. Global concurrency cap; new tasks queue when full.
+<details><summary>▶ Watch: ask the owner's manual, get cited answers</summary>
 
-```
- ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
- │ ACTIVE (2)                                    │
- │   [============-----]  42%  PULL  Qwen3 8B    │
- │   [======-----------]  18%  SYNC  vault       │
- │ QUEUED (1)                                    │
- │   CRAWL  https://docs.example.com             │
- │ COMPLETED                                     │
- │   [v] SYNC  vault                  2 min ago  │
- │   [x] PULL  mistral                5 min ago  │
- │   [v] ADD   cv-manual.pdf         12 min ago  │
- └───────────────────────────────────────────────┘
-```
+<p align="center"><img alt="lilbee chat demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif" width="800"></p>
+</details>
 
-**Wiki.** Auto-generated concept and entity pages, with drafts awaiting review.
+**Setup wizard.** Pick a chat model and an embedding model from the catalog on first run; both pull in the background while you keep working.
+
+<p align="center"><img alt="lilbee setup wizard" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.png" width="800"></p>
+
+<details><summary>▶ Watch: pick chat and embedding models</summary>
+
+<p align="center"><img alt="lilbee setup wizard demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif" width="800"></p>
+</details>
+
+**Model catalog.** Browse models from Hugging Face Hub, pull one with a click, and switch roles without leaving the terminal. `*` marks the developer's pick for each role.
+
+<p align="center"><img alt="lilbee model catalog" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.png" width="800"></p>
+
+<details><summary>▶ Watch: catalog grid, filters, model info</summary>
+
+<p align="center"><img alt="lilbee model catalog demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif" width="800"></p>
+</details>
+
+**Settings.** ~50 knobs grouped into Models, Ingest, Generation, Retrieval, Display, System. Edit in the TUI, environment variables, or a project-local config file.
+
+<p align="center"><img alt="lilbee settings screen" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.png" width="800"></p>
+
+<details><summary>▶ Watch: open settings</summary>
+
+<p align="center"><img alt="lilbee settings demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif" width="800"></p>
+</details>
+
+**Wiki.** Auto-generated concept and entity pages, with drafts awaiting review. (Experimental; still ascii-sketched while the redesign settles.)
 
 ```
  ┌─ Wiki ────────────────────────────────────────┐
@@ -149,32 +147,6 @@ Standing this up used to mean a background daemon, a separate inference server, 
  │ │ [1 brake-primer.pdf:8]  <- click         │  │
  │ └──────────────────────────────────────────┘  │
  └───────────────────────────────────────────────┘
-```
-
-**Model catalog.** Browse models from Hugging Face Hub, pull one with a click, and switch roles without leaving the terminal. `*` marks the developer's pick for each role.
-
-```
- ┌─ Model Catalog ───────────────────────────────────┐
- │ [ Local | Frontier ]                              │
- │ [All tasks v] [All sizes v]                       │
- │ search...                       [Grid | List]     │
- │                                                   │
- │ Our picks                                         │
- │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
- │ │ Qwen3 0.6B *│ │ Nomic v1.5  │ │ BGE Rerank  │   │
- │ │ [chat]      │ │ [embed]     │ │ [rerank]    │   │
- │ │ 450 MB  ok  │ │ 274 MB  ok  │ │ 1.2 GB      │   │
- │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
- │ └─────────────┘ └─────────────┘ └─────────────┘   │
- │                                                   │
- │ Chat                                              │
- │ ┌─────────────┐ ┌─────────────┐                   │
- │ │ Qwen3 8B    │ │ Phi-4 14B   │                   │
- │ │ 4.9 GB      │ │ 9.1 GB      │                   │
- │ │ [Pull]      │ │ [Pull]      │                   │
- │ └─────────────┘ └─────────────┘                   │
- │                  [Load more]                      │
- └───────────────────────────────────────────────────┘
 ```
 
 ## What you can do with it
@@ -305,7 +277,14 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
+lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for the long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill format) that documents the full MCP surface. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
+
+<p align="center"><img alt="opencode + lilbee MCP over a manual" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/opencode-manual.png" width="800"></p>
+
+<details><summary>▶ Watch: opencode indexes a PDF via lilbee MCP, then answers with a citation</summary>
+
+<p align="center"><img alt="opencode + lilbee MCP" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/opencode-manual.gif" width="800"></p>
+</details>
 
 ## HTTP Server
 
