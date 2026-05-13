@@ -39,7 +39,6 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [Install](#install)
 - [Agent integration](#agent-integration)
 - [HTTP Server](#http-server) · [API reference](https://tobocop2.github.io/lilbee/api/)
-- [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
 - [Experimental](#experimental)
 
@@ -209,9 +208,9 @@ lilbee runs entirely on your machine by default. To point a role at a cloud-host
 
 ## TUI
 
-`lilbee` with no args (or `lilbee chat`) launches a full Textual terminal app. Chat streams replies with clickable citations. Above the prompt: searchable pickers for the active chat and embedding models, and a Search / Chat toggle (F3): Search runs document retrieval on every prompt, Chat answers directly, and Search falls back to a chat answer when nothing relevant is indexed. A Task Center tracks every background job (sync, crawl, wiki build, model pull) and cancels them with `/cancel`. Other screens cover the model catalog (`/models`), settings (`/settings`), the setup wizard (`/setup`), and the auto-built wiki (`/wiki`). Tab completion works everywhere: slash commands, file paths, model names, setting keys, themes.
+`lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the auto-built wiki. Type `/` for the command list; tab completion works everywhere.
 
-See [Previews](#previews) for the shapes and the [slash-command reference](docs/usage.md#slash-commands) for the full list.
+See [Previews](#previews) for the shapes and the [usage guide](docs/usage.md) for commands and settings.
 
 ## Hardware requirements
 
@@ -255,12 +254,11 @@ Python 3.11 to 3.14, or no Python at all (the standalone binary and the Docker i
 Then check it runs and pick a model:
 
 ```bash
-lilbee self-check                                       # ~90 MB download; runs an inference + an embedding; "SELF-CHECK PASSED" on success
-lilbee                                                  # launch the terminal app; pick a chat + embedding model on the welcome screen
-# or from the CLI:
-lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # an embedding model (required before `lilbee add`)
-lilbee model browse                                     # pick a chat model interactively
+lilbee self-check    # ~90 MB download; runs an inference + an embedding; "SELF-CHECK PASSED" on success
+lilbee               # launch the terminal app; pick a chat + embedding model on the welcome screen
 ```
+
+Everything past that (commands, slash commands, settings, the API) lives in the [usage guide](docs/usage.md).
 
 ### Linux runtime requirements
 
@@ -288,21 +286,13 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee serves as a retrieval backend for AI coding agents via two entry points: an MCP server (`lilbee mcp`) and a JSON CLI (`lilbee --json ...`). MCP exposes search, document lifecycle, crawling, model management, and the full wiki surface as tools; `search` takes a `scope` argument so agents can target documents, wiki pages, or both.
-
-See [docs/agent-integration.md](docs/agent-integration.md) for MCP client configuration, the full tool reference, and JSON CLI examples.
+lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
 
 ## HTTP Server
 
-`lilbee serve` starts a REST API that any tool or GUI can hit. It covers search (with SSE streaming), document lifecycle, crawling, model management, configuration, and vault-aware source retrieval for GUI clients. Interactive API docs live at `/schema/redoc` when the server is running.
+`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [API reference](https://tobocop2.github.io/lilbee/api/) for the OpenAPI schema and the [usage guide](docs/usage.md) for options.
 
-See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema and the [usage guide](docs/usage.md) for `serve` options.
-
-An [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/) pairs with lilbee for users who want a GUI alongside the terminal. It runs `lilbee serve` in the background, so there's no separate service to manage, and every citation in chat or wiki opens a Source Preview that scrolls to the exact passage in the original document. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); see the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) for setup.
-
-## Interactive chat
-
-Running `lilbee` or `lilbee chat` enters the TUI. Type `/` to see the full slash-command list inline, or check the [slash-command reference in the usage guide](docs/usage.md#slash-commands). Slash commands and paths tab-complete; background jobs appear in the Task Center and are cancellable with `/cancel`.
+The [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ## Supported formats
 
