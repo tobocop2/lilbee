@@ -77,6 +77,14 @@ render_man_page() {
     man "$page" 2>/dev/null | col -bx > "$out" || true
 }
 
+warm_chat_model() {
+    # First inference call on Qwen3 4B loads the model into memory and seeds the
+    # Metal KV cache. Without this, the first on-camera answer is a 60-90s cold
+    # turn. With it, the first answer is a normal ~10-15s warm turn.
+    local data="$1"
+    "$LILBEE" ask --data-dir "$data" "ping" >/dev/null 2>&1 || true
+}
+
 setup_opencode_dir() {
     # Copy the shared agent artifacts (AGENTS.md, opencode.json, the
     # lilbee-worker subagent, and the lilbee-mcp skill) into a demo dir,
@@ -119,6 +127,12 @@ main() {
 
     for tape in "${SEEDED_TAPES[@]}"; do
         seed_indexed_corpus "$tape"
+    done
+
+    # Warm the chat model against each seeded data dir so the first on-camera
+    # answer is a hot turn (~10-15s) rather than a cold turn (~60-90s).
+    for tape in "${SEEDED_TAPES[@]}"; do
+        warm_chat_model "$ROOT/$tape"
     done
 
     for tape in "${FRESH_TAPES[@]}"; do
