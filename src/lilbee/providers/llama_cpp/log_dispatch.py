@@ -187,8 +187,9 @@ def import_llama_cpp() -> Any:
 
 
 # Backend env vars set from ``cfg.gpu_devices`` before the first llama_cpp
-# import. Vulkan, CUDA, and ROCm each read their own; setting all four
-# lets the same config field work across every wheel flavor lilbee ships.
+# import. Vulkan, CUDA, and ROCm each read their own; a user-set
+# ``cfg.gpu_devices`` is applied to all four because the user is
+# specifying their own indexes and opting in to all wheel flavors.
 _GPU_VISIBLE_ENV_VARS = (
     "GGML_VK_VISIBLE_DEVICES",
     "CUDA_VISIBLE_DEVICES",
@@ -196,19 +197,33 @@ _GPU_VISIBLE_ENV_VARS = (
     "ROCR_VISIBLE_DEVICES",
 )
 
+# Subset of the above that the Vulkan autodetect applies to. CUDA and
+# HIP/ROCm enumerate single-vendor adapter sets (NVIDIA-only,
+# AMD-only); a Vulkan device index doesn't translate, so writing the
+# autodetect result to ``CUDA_VISIBLE_DEVICES`` on a CUDA wheel +
+# dual-GPU host would hide the only NVIDIA card and silently fall
+# back to CPU.
+_VULKAN_AUTODETECT_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES",)
+
 
 def _apply_gpu_device_env() -> None:
-    """Apply ``cfg.gpu_devices`` (or autodetect) to every backend's visibility env var.
+    """Apply ``cfg.gpu_devices`` (or autodetect) to backend visibility env vars.
 
     Must run before ``import llama_cpp``: the Vulkan / CUDA / ROCm
     runtimes snapshot their visible-device lists at library load time
     and ignore subsequent changes. Resolution order:
 
     1. Explicit env var (``GGML_VK_VISIBLE_DEVICES`` etc.) -- always
-       wins, including when the user set it intentionally to empty.
-    2. ``cfg.gpu_devices`` -- the user's lilbee-level pin.
-    3. Autodetection -- pick the highest-ranked Vulkan device
-       (discrete > integrated) when more than one is visible.
+       wins, including when the user intentionally set it empty.
+    2. ``cfg.gpu_devices`` -- the user's lilbee-level pin. Applied to
+       every backend (the user is opting in and naming indexes that
+       match their wheel's enumeration).
+    3. Vulkan autodetection -- pick the highest-ranked Vulkan device
+       (discrete > integrated). Applied **only** to
+       ``GGML_VK_VISIBLE_DEVICES``; the Vulkan index doesn't translate
+       to CUDA / HIP / ROCm enumeration order, so writing it there
+       could mask the only visible NVIDIA / AMD card on a single-
+       vendor wheel.
 
     Steps 2 and 3 only set vars that aren't already in the
     environment, so step 1 is preserved.
@@ -216,11 +231,15 @@ def _apply_gpu_device_env() -> None:
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.gpu_select import autoselect_best_gpu_index
 
-    devices = cfg.gpu_devices or autoselect_best_gpu_index()
-    if not devices:
+    if cfg.gpu_devices:
+        for name in _GPU_VISIBLE_ENV_VARS:
+            os.environ.setdefault(name, cfg.gpu_devices)
         return
-    for name in _GPU_VISIBLE_ENV_VARS:
-        os.environ.setdefault(name, devices)
+    autoselected = autoselect_best_gpu_index()
+    if not autoselected:
+        return
+    for name in _VULKAN_AUTODETECT_ENV_VARS:
+        os.environ.setdefault(name, autoselected)
 
 
 def install_llama_log_handler() -> None:

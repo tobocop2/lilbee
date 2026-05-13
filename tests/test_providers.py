@@ -1912,60 +1912,23 @@ class TestMtmdLoadVisionLlama:
         assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == _VISION_FALLBACK_N_CTX
 
 
-_VULKANINFO_DUAL_GPU = """\
-GPU0:
-        apiVersion         = 1.3.250
-        driverVersion      = 23.0.0
-        vendorID           = 0x1002
-        deviceID           = 0x15bf
-        deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
-        deviceName         = AMD Radeon Graphics
-GPU1:
-        apiVersion         = 1.3.250
-        driverVersion      = 535.183.1
-        vendorID           = 0x10de
-        deviceID           = 0x2509
-        deviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-        deviceName         = NVIDIA GeForce RTX 3050
-"""
-
-_VULKANINFO_SINGLE_GPU = """\
-GPU0:
-        deviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-        deviceName         = NVIDIA GeForce RTX 4090
-"""
-
-_VULKANINFO_CPU_ONLY = """\
-GPU0:
-        deviceType         = PHYSICAL_DEVICE_TYPE_CPU
-        deviceName         = llvmpipe
-"""
-
-
 class TestVulkanGpuSelect:
-    """``autoselect_best_gpu_index`` parses vulkaninfo --summary and picks discrete."""
-
-    def test_parses_dual_gpu_and_picks_discrete(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _parse_vulkaninfo_summary
-
-        devices = _parse_vulkaninfo_summary(_VULKANINFO_DUAL_GPU)
-        assert len(devices) == 2
-        assert devices[0].device_type == "PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU"
-        assert devices[1].device_type == "PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"
+    """``autoselect_best_gpu_index`` probes libvulkan via ctypes and picks discrete."""
 
     def test_pick_best_prefers_discrete_over_integrated(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import VulkanDevice, _pick_best_device
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            VulkanDevice,
+            _pick_best_device,
+        )
 
         devices = [
             VulkanDevice(
-                index=0,
-                device_type="PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
-                device_name="iGPU",
+                index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, device_name="iGPU"
             ),
             VulkanDevice(
-                index=1,
-                device_type="PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
-                device_name="dGPU",
+                index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dGPU"
             ),
         ]
         best = _pick_best_device(devices)
@@ -1974,25 +1937,42 @@ class TestVulkanGpuSelect:
 
     def test_pick_best_returns_none_for_cpu_only(self) -> None:
         from lilbee.providers.llama_cpp.gpu_select import (
-            _parse_vulkaninfo_summary,
+            _VK_PHYSICAL_DEVICE_TYPE_CPU,
+            VulkanDevice,
             _pick_best_device,
         )
 
-        devices = _parse_vulkaninfo_summary(_VULKANINFO_CPU_ONLY)
+        devices = [
+            VulkanDevice(index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="llvmpipe"),
+        ]
         assert _pick_best_device(devices) is None
+
+    def test_pick_best_returns_none_for_empty_list(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import _pick_best_device
+
+        assert _pick_best_device([]) is None
 
     def test_autoselect_returns_discrete_index_for_dual_gpu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            VulkanDevice,
+        )
 
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
         monkeypatch.setattr(
-            gpu_select.subprocess,
-            "run",
-            lambda *_args, **_kwargs: type(
-                "_R", (), {"returncode": 0, "stdout": _VULKANINFO_DUAL_GPU}
-            )(),
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, device_name="iGPU"
+                ),
+                VulkanDevice(
+                    index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dGPU"
+                ),
+            ],
         )
         assert gpu_select.autoselect_best_gpu_index() == "1"
 
@@ -2001,56 +1981,30 @@ class TestVulkanGpuSelect:
     ) -> None:
         """Single-device hosts keep the default ordering; auto-pin would be churn."""
         from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            VulkanDevice,
+        )
 
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
         monkeypatch.setattr(
-            gpu_select.subprocess,
-            "run",
-            lambda *_args, **_kwargs: type(
-                "_R", (), {"returncode": 0, "stdout": _VULKANINFO_SINGLE_GPU}
-            )(),
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+                    device_name="RTX 4090",
+                ),
+            ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
 
-    def test_autoselect_returns_none_when_vulkaninfo_missing(
+    def test_autoselect_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from lilbee.providers.llama_cpp import gpu_select
 
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: None)
-        assert gpu_select.autoselect_best_gpu_index() is None
-
-    def test_autoselect_returns_none_when_vulkaninfo_nonzero_exit(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
-        monkeypatch.setattr(
-            gpu_select.subprocess,
-            "run",
-            lambda *_args, **_kwargs: type("_R", (), {"returncode": 1, "stdout": ""})(),
-        )
-        assert gpu_select.autoselect_best_gpu_index() is None
-
-    def test_autoselect_returns_none_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-
-        def _raises(*_args: object, **_kwargs: object) -> object:
-            raise gpu_select.subprocess.TimeoutExpired(cmd="vulkaninfo", timeout=3.0)
-
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
-        monkeypatch.setattr(gpu_select.subprocess, "run", _raises)
-        assert gpu_select.autoselect_best_gpu_index() is None
-
-    def test_autoselect_returns_none_on_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-
-        def _raises(*_args: object, **_kwargs: object) -> object:
-            raise OSError("permission denied")
-
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
-        monkeypatch.setattr(gpu_select.subprocess, "run", _raises)
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
         assert gpu_select.autoselect_best_gpu_index() is None
 
     def test_autoselect_returns_none_when_only_cpu_devices(
@@ -2058,27 +2012,269 @@ class TestVulkanGpuSelect:
     ) -> None:
         """All-CPU adapter list shouldn't force a pin: software rendering is never right."""
         from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_CPU,
+            VulkanDevice,
+        )
 
-        monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
         monkeypatch.setattr(
-            gpu_select.subprocess,
-            "run",
-            lambda *_args, **_kwargs: type(
-                "_R", (), {"returncode": 0, "stdout": _VULKANINFO_CPU_ONLY}
-            )(),
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="cpu0"),
+                VulkanDevice(index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="cpu1"),
+            ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
 
-    def test_parse_skips_block_without_device_type(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _parse_vulkaninfo_summary
+    def test_autoselect_returns_none_when_all_devices_same_rank(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two discrete GPUs of equal rank: no auto-pin (no decision to make)."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            VulkanDevice,
+        )
 
-        broken = "GPU0:\n        deviceName         = NoTypeHere\n"
-        assert _parse_vulkaninfo_summary(broken) == []
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dgpu0"
+                ),
+                VulkanDevice(
+                    index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dgpu1"
+                ),
+            ],
+        )
+        assert gpu_select.autoselect_best_gpu_index() is None
 
-    def test_pick_best_returns_none_for_empty_list(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _pick_best_device
+    def test_loader_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """macOS uses Metal; the Vulkan probe explicitly skips."""
+        from lilbee.providers.llama_cpp import gpu_select
 
-        assert _pick_best_device([]) is None
+        monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
+        assert gpu_select._load_vulkan_loader() is None
+
+    def test_loader_returns_none_when_library_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+
+        def _raises(_name: str) -> object:
+            raise OSError("cannot find vulkan loader")
+
+        monkeypatch.setattr(gpu_select.ctypes, "CDLL", _raises)
+        monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _name: None)
+        assert gpu_select._load_vulkan_loader() is None
+
+    def test_loader_falls_back_to_find_library(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+        attempts: list[str] = []
+
+        def _cdll(name: str) -> object:
+            attempts.append(name)
+            if name == "/resolved/libvulkan.so":
+                return "loaded"
+            raise OSError("not on direct path")
+
+        monkeypatch.setattr(gpu_select.ctypes, "CDLL", _cdll)
+        monkeypatch.setattr(
+            gpu_select.ctypes.util, "find_library", lambda _name: "/resolved/libvulkan.so"
+        )
+        assert gpu_select._load_vulkan_loader() == "loaded"
+        assert "libvulkan.so.1" in attempts
+
+    def test_enumerate_returns_none_when_loader_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: None)
+        assert gpu_select._enumerate_vulkan_devices() is None
+
+    def test_enumerate_catches_oserror_from_ctypes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
+
+        def _raises(_lib: object) -> object:
+            raise OSError("symbol not found")
+
+        monkeypatch.setattr(gpu_select, "_list_devices_with_instance", _raises)
+        assert gpu_select._enumerate_vulkan_devices() is None
+
+    def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
+        """``_resolve_vk_symbols`` reads four named attributes off the loader."""
+        from lilbee.providers.llama_cpp.gpu_select import _resolve_vk_symbols
+
+        fake_lib = mock.MagicMock()
+        create, destroy, enum_phys, get_props = _resolve_vk_symbols(fake_lib)
+        assert create is fake_lib.vkCreateInstance
+        assert destroy is fake_lib.vkDestroyInstance
+        assert enum_phys is fake_lib.vkEnumeratePhysicalDevices
+        assert get_props is fake_lib.vkGetPhysicalDeviceProperties
+
+    def test_list_devices_with_instance_returns_parsed_devices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Happy path: simulated VK calls populate the device list."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            _list_devices_with_instance,
+        )
+
+        fake_props = [
+            (_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, b"iGPU"),
+            (_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, b"NVIDIA RTX"),
+        ]
+        device_count = len(fake_props)
+
+        def _create_instance(_info_ref: object, _alloc: object, instance_ref: object) -> int:
+            instance_ref._obj.value = 0xDEADBEEF
+            return 0
+
+        def _enum_physical(_instance: object, count_ref: object, handles_arr: object) -> int:
+            if handles_arr is None:
+                count_ref._obj.value = device_count
+            else:
+                for i in range(device_count):
+                    handles_arr[i] = 0xCAFE + i
+            return 0
+
+        def _get_properties(handle: object, props_ref: object) -> None:
+            i = handle - 0xCAFE
+            dtype, name = fake_props[i]
+            props_ref._obj.deviceType = dtype
+            props_ref._obj.deviceName = name
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_resolve_vk_symbols",
+            lambda _lib: (_create_instance, lambda *_: None, _enum_physical, _get_properties),
+        )
+        devices = _list_devices_with_instance(object())
+        assert len(devices) == device_count
+        assert devices[0].device_type == _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+        assert devices[1].device_type == _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+        assert devices[1].device_name == "NVIDIA RTX"
+
+    def test_list_devices_returns_empty_when_create_instance_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_resolve_vk_symbols",
+            lambda _lib: (
+                lambda *_a: 1,  # VK_ERROR
+                lambda *_a: None,
+                lambda *_a: 0,
+                lambda *_a: None,
+            ),
+        )
+        assert _list_devices_with_instance(object()) == []
+
+    def test_list_devices_returns_empty_when_first_enum_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+
+        def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
+            instance_ref._obj.value = 0x1
+            return 0
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_resolve_vk_symbols",
+            lambda _lib: (
+                _create_instance,
+                lambda *_a: None,
+                lambda *_a: 1,  # enum fails
+                lambda *_a: None,
+            ),
+        )
+        assert _list_devices_with_instance(object()) == []
+
+    def test_list_devices_returns_empty_when_count_is_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+
+        def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
+            instance_ref._obj.value = 0x1
+            return 0
+
+        def _enum_physical(_instance: object, count_ref: object, _handles: object) -> int:
+            count_ref._obj.value = 0
+            return 0
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_resolve_vk_symbols",
+            lambda _lib: (
+                _create_instance,
+                lambda *_a: None,
+                _enum_physical,
+                lambda *_a: None,
+            ),
+        )
+        assert _list_devices_with_instance(object()) == []
+
+    def test_list_devices_returns_empty_when_second_enum_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+
+        def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
+            instance_ref._obj.value = 0x1
+            return 0
+
+        def _enum_physical(_instance: object, count_ref: object, handles: object) -> int:
+            if handles is None:
+                count_ref._obj.value = 1
+                return 0
+            return 1  # second call fails
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_resolve_vk_symbols",
+            lambda _lib: (
+                _create_instance,
+                lambda *_a: None,
+                _enum_physical,
+                lambda *_a: None,
+            ),
+        )
+        assert _list_devices_with_instance(object()) == []
+
+    def test_loader_find_library_returns_none_after_oserror(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """find_library succeeds but CDLL on that path still raises -> overall None."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+
+        def _cdll(_name: str) -> object:
+            raise OSError("loader unhappy")
+
+        monkeypatch.setattr(gpu_select.ctypes, "CDLL", _cdll)
+        monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _n: "/lib/libvulkan.so")
+        assert gpu_select._load_vulkan_loader() is None
 
 
 class TestImportLlamaCpp:
@@ -2171,13 +2367,16 @@ class TestImportLlamaCpp:
         for name in _GPU_VISIBLE_ENV_VARS:
             assert name not in os.environ, name
 
-    def test_gpu_devices_autoselect_fills_env_when_cfg_unset(
+    def test_gpu_devices_autoselect_only_sets_vulkan_var(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When ``cfg.gpu_devices`` is None, autoselect's result populates the env vars."""
+        """Autodetect targets Vulkan only: a CUDA wheel must not have its visible-devices
+        list silently rewritten from a Vulkan-loader index.
+        """
         from lilbee.core.config import cfg
         from lilbee.providers.llama_cpp.log_dispatch import (
             _GPU_VISIBLE_ENV_VARS,
+            _VULKAN_AUTODETECT_ENV_VARS,
             import_llama_cpp,
         )
 
@@ -2191,8 +2390,9 @@ class TestImportLlamaCpp:
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
 
         import_llama_cpp()
-        for name in _GPU_VISIBLE_ENV_VARS:
-            assert os.environ.get(name) == "1", name
+        assert os.environ["GGML_VK_VISIBLE_DEVICES"] == "1"
+        for name in set(_GPU_VISIBLE_ENV_VARS) - set(_VULKAN_AUTODETECT_ENV_VARS):
+            assert name not in os.environ, name
 
     def test_user_env_var_wins_over_cfg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A pre-set ``GGML_VK_VISIBLE_DEVICES`` is preserved even when cfg has a value."""
