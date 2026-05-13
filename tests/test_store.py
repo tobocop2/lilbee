@@ -1159,6 +1159,53 @@ class TestEmbeddingModelGate:
         store.add_chunks(_make_records())
         assert store.canonicalize_meta_if_legacy() is False
 
+    def test_canonicalize_meta_if_legacy_skips_when_meta_changes_under_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """Race path: another writer canonicalized between outer and inner check.
+
+        The outer (no-lock) check sees the rewrite is needed; the inner (under
+        write_lock) re-read sees it no longer is. Method short-circuits so the
+        racer's work isn't clobbered.
+        """
+        full_ref = "org/repo-GGUF/model.Q4_K_M.gguf"
+        cfg_local = cfg.model_copy(
+            update={"lancedb_dir": tmp_path / "lance_race", "embedding_model": full_ref}
+        )
+        local_store = Store(cfg_local)
+        local_store.add_chunks(_make_records(dim=cfg_local.embedding_dim))
+        with write_lock():
+            local_store._write_meta_unlocked(
+                embedding_model="org/repo-GGUF", embedding_dim=cfg_local.embedding_dim
+            )
+
+        # First check (outer) says yes; second check (inner, under lock) says no.
+        call_count = {"n": 0}
+        original = local_store._needs_canonical_meta_rewrite
+
+        def flipping_check(meta, current_model, current_dim):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return original(meta, current_model, current_dim)
+            return False
+
+        monkeypatch.setattr(local_store, "_needs_canonical_meta_rewrite", flipping_check)
+        assert local_store.canonicalize_meta_if_legacy() is False
+
+    def test_has_chunks_public_predicate(self, store):
+        """``has_chunks`` is True after add_chunks and False on an empty store."""
+        assert store.has_chunks() is False
+        store.add_chunks(_make_records())
+        assert store.has_chunks() is True
+
+    def test_refs_compatible_remote_refs_strict_equality(self):
+        """Two non-native refs (no ``.gguf``) require strict raw equality."""
+        from lilbee.data.store.lance_helpers import refs_compatible
+
+        assert refs_compatible("ollama/embed:a", "ollama/embed:a", 768, 768) is True
+        # Different non-native refs: not compatible even when dims match.
+        assert refs_compatible("ollama/embed:a", "ollama/embed:b", 768, 768) is False
+
     def test_canonicalize_meta_if_legacy_skips_on_genuine_mismatch(self, tmp_path):
         """Different file in the same repo is NOT a legacy match; gate still refuses."""
         from lilbee.data.store import EmbeddingModelMismatchError

@@ -11889,6 +11889,28 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
         services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
 
 
+async def test_settings_embed_swap_confirm_cancel_leaves_cfg_untouched():
+    """Cancelling the embed-swap confirm modal does NOT call apply_active_model or reload_role."""
+    from unittest.mock import patch
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            # Direct path: caller invokes _apply_picker_choice with confirmed=False.
+            screen._apply_picker_choice("embedding_model", "fake/new.gguf", False)
+        mock_apply.assert_not_called()
+        services_mock.reload_role.assert_not_called()
+
+
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
     """Embed swap from Settings against a populated store routes through the confirm modal."""
     from unittest.mock import patch
