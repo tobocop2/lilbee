@@ -480,6 +480,83 @@ class TestNGpuLayersConfig:
             assert c.n_gpu_layers == 3
 
 
+class TestMainGpuConfig:
+    def test_default_is_none(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.main_gpu is None
+
+    def test_explicit_int_from_env(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "1"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.main_gpu == 1
+
+    def test_auto_string_means_none(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "auto"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.main_gpu is None
+
+    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.main_gpu is None
+
+    def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
+        """Direct assignment with a non-string value falls through to int(v)."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.main_gpu = 2.0  # type: ignore[assignment]
+            assert c.main_gpu == 2
+
+
+class TestGpuDevicesConfig:
+    def test_default_is_none(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.gpu_devices is None
+
+    def test_single_index_from_env(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "0"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.gpu_devices == "0"
+
+    def test_multi_index_from_env(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": " 0, 1 "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.gpu_devices == "0,1"
+
+    def test_all_alias_means_none(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "all"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.gpu_devices is None
+
+    def test_non_numeric_falls_back_to_none(self, tmp_path) -> None:
+        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.gpu_devices is None
+
+    def test_only_separators_falls_back_to_none(self, tmp_path) -> None:
+        """A string that splits into zero parts ('  ,  ,') normalizes to None."""
+        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": " , ,"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.gpu_devices is None
+
+    def test_non_string_input_coerces_to_str(self, tmp_path) -> None:
+        """Direct assignment with a non-string value falls through to str(v)."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            c.gpu_devices = 0  # type: ignore[assignment]
+            assert c.gpu_devices == "0"
+
+
 class TestSemanticChunkingConfig:
     def test_default_is_false(self, tmp_path) -> None:
         """Semantic chunking is opt-in: default False, enabled via env/config."""
