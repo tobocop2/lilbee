@@ -3429,6 +3429,8 @@ class TestSelfCheck:
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",
+            "main_gpu",
+            "gpu_devices",
         }
 
     def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
