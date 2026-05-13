@@ -13,38 +13,37 @@ Enter
 Sleep 3s
 
 Type "/settings"
-Sleep 400ms
+Sleep 500ms
 Enter
-Sleep 2s
+Sleep 3s
 
-# Cycle a few tabs.
+# Cycle a few tabs (each tab swap renders in <1s; Sleep 2s gives the viewer time).
 Type "]"
-Sleep 1500ms
+Sleep 2s
 Type "]"
-Sleep 1500ms
+Sleep 2s
 Type "]"
-Sleep 1500ms
+Sleep 2s
 
 Screenshot demos/_out/tui-settings.png
 
-# Tab into the first editable field, type a new value, confirm.
+# Tab into the first editable field, edit, confirm.
 Tab
-Sleep 600ms
-Ctrl+a
-Sleep 200ms
-Type "8"
 Sleep 800ms
+Ctrl+a
+Sleep 400ms
+Type "8"
+Sleep 1s
 Enter
 Sleep 1500ms
 
-# Reset that one field.
+# Reset that field.
 Ctrl+r
 Sleep 1500ms
 
-# Back to chat.
 Type "q"
 Sleep 800ms
 Type "/quit"
-Sleep 400ms
+Sleep 500ms
 Enter
 Sleep 1s

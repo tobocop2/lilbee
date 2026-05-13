@@ -1,8 +1,8 @@
 Source demos/_shared.tape
 Output demos/_out/tui-tour.gif
 
-# 60-90s montage: a quick sweep through chat, catalog, settings, task center,
-# slash command catalog. Source for the hero clip in the README.
+# ~60-90s montage: chat with citations, slash-command catalog, catalog,
+# settings, theme switch. Source for the hero clip in the README.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-tour"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
@@ -13,52 +13,57 @@ Sleep 500ms
 Enter
 Sleep 3s
 
-# Chat with citations.
+# Chat with citations (first answer; folds model load into the 18s).
 Type "what does the oil pressure warning mean?"
-Sleep 400ms
+Sleep 500ms
 Enter
-Sleep 14s
+Sleep 18s
 
 Screenshot demos/_out/tui-tour.png
 
 # Slash-command catalog (covers the full command surface in one frame).
 F2
-Sleep 3s
+Sleep 4s
 Escape
-Sleep 600ms
+Sleep 800ms
 
 # Catalog.
 Type "/models"
-Sleep 400ms
+Sleep 500ms
 Enter
 Sleep 3s
 Type "V"
-Sleep 1500ms
+Sleep 2s
 
 # Settings.
-Type "["
-Sleep 600ms
-Type "/settings"
+Escape
 Sleep 400ms
+Type "["
+Sleep 800ms
+Type "i"
+Sleep 400ms
+Type "/settings"
+Sleep 500ms
 Enter
 Sleep 3s
 
-# Task center.
-Type "q"
-Sleep 600ms
+# Task Center.
+Escape
+Sleep 400ms
+Type "["
+Sleep 800ms
 Type "t"
 Sleep 3s
 Type "q"
-Sleep 600ms
+Sleep 800ms
 
-# Theme switch on screen for flair.
+# Theme switch.
 Ctrl+t
-Sleep 1500ms
+Sleep 2s
 Ctrl+t
-Sleep 1500ms
+Sleep 2s
 
-# Quit.
 Type "/quit"
-Sleep 400ms
+Sleep 500ms
 Enter
 Sleep 1s

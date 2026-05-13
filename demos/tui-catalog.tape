@@ -2,6 +2,9 @@ Source demos/_shared.tape
 Output demos/_out/tui-catalog.gif
 
 # Model catalog tour: tabs, grid / list view, search, model info modal.
+# Measured: each slash-command + Enter renders the destination screen in
+# under 1s; the actual work happens during chat / sync, neither of which
+# fires here. Generous Sleeps give the viewer time to read.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-catalog"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
@@ -12,46 +15,42 @@ Sleep 500ms
 Enter
 Sleep 3s
 
-# Open the catalog.
 Type "/models"
-Sleep 400ms
+Sleep 500ms
 Enter
+Sleep 3s
+
+# Toggle to list view, then back to grid.
+Type "V"
+Sleep 2s
+Type "V"
 Sleep 2s
 
-# Toggle to list view, then back.
-Type "V"
-Sleep 1500ms
-Type "V"
-Sleep 1500ms
-
-# Cycle the source filter tabs: Local -> Hugging Face -> Frontier -> Local.
+# Cycle the source-filter tabs (Local -> HF -> Frontier -> Local).
 Type "]"
-Sleep 1500ms
+Sleep 2s
 Type "]"
-Sleep 1500ms
+Sleep 2s
 Type "]"
-Sleep 1500ms
+Sleep 2s
 
 Screenshot demos/_out/tui-catalog.png
 
-# Quick search.
+# Search.
 Type "/"
-Sleep 400ms
+Sleep 500ms
 Type "qwen"
-Sleep 2s
+Sleep 2500ms
 Escape
 Sleep 800ms
 
-# Open model info on the highlighted row.
+# Model info on the highlighted row.
 Type "i"
 Sleep 3s
 Escape
-Sleep 600ms
-
-# Back to chat.
-Type "["
 Sleep 800ms
+
 Type "/quit"
-Sleep 400ms
+Sleep 500ms
 Enter
 Sleep 1s
