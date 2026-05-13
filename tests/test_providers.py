@@ -2056,7 +2056,7 @@ class TestVulkanGpuSelect:
     def test_autoselect_returns_none_when_only_cpu_devices(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """All-CPU adapter list shouldn't force a pin: software rendering is never the right pick."""
+        """All-CPU adapter list shouldn't force a pin: software rendering is never right."""
         from lilbee.providers.llama_cpp import gpu_select
 
         monkeypatch.setattr(gpu_select.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
