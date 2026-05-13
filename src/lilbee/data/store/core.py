@@ -29,6 +29,7 @@ from .lance_helpers import (
     _table_names,
     ensure_table,
     escape_sql_string,
+    refs_compatible,
 )
 from .ranking import mmr_rerank
 from .schema import _citations_schema, _meta_schema, _sources_schema
@@ -217,9 +218,11 @@ class Store:
         """Raise when the persisted embedding identity drifts from cfg.
 
         Pure check, no side effects. Migration of legacy stores (chunks present,
-        no ``_meta``) is the caller's responsibility via ``initialize_meta_if_legacy``
-        so this method is safe to call from inside an existing ``write_lock()``
-        (no recursive lock attempt). cfg fields are snapshotted at entry so the
+        no ``_meta``) is the caller's responsibility via ``initialize_meta_if_legacy``;
+        rewriting a legacy bare-repo ``_meta`` row to the canonical full ref is
+        the caller's responsibility via ``canonicalize_meta_if_legacy``. This
+        method stays safe to call from inside an existing ``write_lock()`` (no
+        recursive lock attempt). cfg fields are snapshotted at entry so the
         comparison is coherent even if another thread mutates them mid-call.
         """
         current_model = self._config.embedding_model
@@ -227,7 +230,9 @@ class Store:
         meta = self.get_meta()
         if meta is None:
             return
-        if meta["embedding_model"] == current_model and meta["embedding_dim"] == current_dim:
+        if refs_compatible(
+            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+        ):
             return
         raise EmbeddingModelMismatchError(
             _embedding_mismatch_message(
@@ -237,6 +242,47 @@ class Store:
                 current_dim=current_dim,
             )
         )
+
+    def canonicalize_meta_if_legacy(self) -> bool:
+        """Rewrite a legacy bare-repo ``_meta`` row to the canonical full ref.
+
+        Pre-canonical lilbee versions persisted only the ``<org>/<repo>`` portion
+        in ``_meta.embedding_model``. The current code persists the full
+        ``<org>/<repo>/<filename>.gguf``. When ``cfg.embedding_model`` and the
+        persisted ref resolve to the same model (via ``refs_compatible``) but
+        differ as raw strings, this overwrites the meta row with the current
+        canonical form so the legacy name never surfaces in error messages,
+        UI surfaces, or downstream inspections. Returns ``True`` when a write
+        happened, ``False`` when meta was missing, already canonical, or
+        incompatible (the gate handles incompatibility separately).
+        """
+        meta = self.get_meta()
+        if meta is None:
+            return False
+        current_model = self._config.embedding_model
+        current_dim = self._config.embedding_dim
+        if meta["embedding_model"] == current_model:
+            return False
+        if not refs_compatible(
+            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+        ):
+            return False
+        with write_lock():
+            # Re-read meta under the lock so two callers do not race the rewrite.
+            meta = self.get_meta()
+            if meta is None or meta["embedding_model"] == current_model:
+                return False
+            if not refs_compatible(
+                meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+            ):
+                return False
+            log.info(
+                "Migrating legacy embedding ref in store meta: %r -> %r",
+                meta["embedding_model"],
+                current_model,
+            )
+            self._write_meta_unlocked(embedding_model=current_model, embedding_dim=current_dim)
+            return True
 
     def get_db(self) -> lancedb.DBConnection:
         if self._db is None:
@@ -355,6 +401,7 @@ class Store:
         if table is None:
             return []
         self.initialize_meta_if_legacy()
+        self.canonicalize_meta_if_legacy()
         self._ensure_embedding_compat()
 
         if query_text and not self._fts_ready:
