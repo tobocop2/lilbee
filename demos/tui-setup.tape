@@ -1,42 +1,40 @@
 Source demos/_shared.tape
 Output demos/_out/tui-setup.gif
 
-# First-run experience: no models installed, splash + setup wizard appear.
-# Note: with /tmp/lilbee-demo/models pre-populated by demos/_prep.sh, the
-# wizard's `download` will report "already installed" instantly. To show a
-# real download, unset LILBEE_MODELS_DIR and let lilbee pull into the
-# data-dir's models/ subdir (Qwen3 0.6B pulls in a few seconds).
+# Show the Setup Wizard. The wizard auto-opens on first launch only when no
+# model is configured; with pre-staged models the TUI lands on Chat. Use
+# `/setup` to open the wizard explicitly, so the tape is reproducible.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-setup"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
+Env LILBEE_NO_SPLASH "1"
 
 Type "lilbee"
 Sleep 500ms
 Enter
-Sleep 4s
+Sleep 3s
 
-# The Setup Wizard opens automatically when no chat/embedding model is set.
-# Enter on the pre-selected Qwen3 0.6B chat card.
+Type "/setup"
+Sleep 500ms
+Enter
+Sleep 3s
+
+Screenshot demos/_out/tui-setup.png
+
+# Pick a chat card (Enter on the pre-selected Qwen3 0.6B).
 Enter
 Sleep 2s
 
-# Move to the embedding grid and select Nomic v1.5.
+# Tab to the embedding grid and pick Nomic.
 Tab
 Sleep 1s
 Enter
 Sleep 2s
 
-# Open the Task Center to show progress (downloads finish fast with cache).
+# Dismiss the wizard.
 Escape
-Sleep 600ms
-Type "t"
-Sleep 4s
+Sleep 1s
 
-Screenshot demos/_out/tui-setup.png
-
-# Back out.
-Type "q"
-Sleep 600ms
 Type "/quit"
 Sleep 500ms
 Enter

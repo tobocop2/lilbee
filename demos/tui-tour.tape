@@ -21,11 +21,16 @@ Sleep 18s
 
 Screenshot demos/_out/tui-tour.png
 
-# Slash-command catalog (covers the full command surface in one frame).
-F2
-Sleep 4s
+# Help panel (covers a lot of the command surface in one frame).
+# (F-keys aren't a top-level VHS command; `?` toggles help in lilbee.)
 Escape
-Sleep 800ms
+Sleep 400ms
+Type "?"
+Sleep 4s
+Type "?"
+Sleep 600ms
+Type "i"
+Sleep 400ms
 
 # Catalog.
 Type "/models"

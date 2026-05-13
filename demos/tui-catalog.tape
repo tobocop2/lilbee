@@ -21,22 +21,18 @@ Enter
 Sleep 3s
 
 # Toggle to list view, then back to grid.
+# Note: `[` and `]` are GLOBAL screen-nav keys (Chat/Catalog/Status/Settings/
+# Tasks); they don't filter inside Catalog. Filter tabs in Catalog use the
+# left sidebar / mouse / dedicated keys we'd need to discover, so this tape
+# stays on the default view.
 Type "V"
 Sleep 2s
 Type "V"
-Sleep 2s
-
-# Cycle the source-filter tabs (Local -> HF -> Frontier -> Local).
-Type "]"
-Sleep 2s
-Type "]"
-Sleep 2s
-Type "]"
 Sleep 2s
 
 Screenshot demos/_out/tui-catalog.png
 
-# Search.
+# Search the grid.
 Type "/"
 Sleep 500ms
 Type "qwen"
