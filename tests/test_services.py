@@ -92,14 +92,17 @@ class TestReloadRole:
                 detached.append(role)
                 return embed_channel if role == WorkerRole.EMBED else chat_channel
 
+        import asyncio
+
         class _FakeRuntime:
             def __init__(self) -> None:
                 self.submitted: list[object] = []
 
             def submit(self, coro):
                 self.submitted.append(coro)
-                # close coroutine so the test doesn't leak a pending awaitable
-                coro.close()
+                # Run the close coroutine inline so the test exercises the
+                # ``await channel.close(...)`` path inside ``reload_role``.
+                asyncio.new_event_loop().run_until_complete(coro)
                 return MagicMock()
 
         from tests.conftest import make_mock_services
@@ -109,6 +112,9 @@ class TestReloadRole:
         services.reload_role(WorkerRole.EMBED)
         assert detached == [WorkerRole.EMBED]
         assert len(runtime.submitted) == 1
+        # The wrapped coroutine must actually invoke channel.close.
+        assert embed_channel.closed is True
+        assert chat_channel.closed is False
 
     def test_no_op_when_role_has_no_live_channel(self):
         """``reload_role`` is silent when the role has nothing to close."""
