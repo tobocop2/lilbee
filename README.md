@@ -251,6 +251,8 @@ Python 3.11 to 3.14, or no Python at all (the standalone binary and the Docker i
 | **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Only for the last 5-15% of NVIDIA performance; the default wheel already uses your GPU via Vulkan. `cu121` / `cu124` indexes too; match your toolkit (`nvidia-smi`, top-right). Driver 555+ supports cu125. |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
 
+> **Binary vs. pip/uv:** the standalone binary (and the Homebrew / AUR / Nix builds, which wrap it) is fully self-contained: its own Python, the llama.cpp backend, every dependency. That makes it a large file, and it's compiled to a fixed CPU baseline (needs a 2013-or-newer x86_64 chip). The `pip` / `uv` wheel installs into your existing Python instead and detects your CPU at runtime, so it's a touch faster on newer hardware and still runs on older. Pick the binary if you just want something that runs; pick pip/uv if you want lilbee to live in your environment like any other package.
+
 Then check it runs and pick a model:
 
 ```bash

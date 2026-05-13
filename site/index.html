@@ -139,6 +139,7 @@
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
         <div class="notes-body" id="notes-binary" hidden>
           <p class="extras">single binary, bundles its own Python runtime, no <code>pip</code> needed &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/releases">macOS arm64 and Windows builds on the releases page &rarr;</a></p>
+          <p class="extras"><span class="k">vs. pip/uv:</span> the binary bundles everything (so it's a large file) and is compiled to a fixed CPU baseline; the <code>pip</code> / <code>uv</code> wheel installs into your existing Python and detects your CPU at runtime, a touch faster on newer hardware.</p>
           <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. If macOS blocks it, run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (Homebrew does this for you).</p>
         </div>
       </div>
