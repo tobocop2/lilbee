@@ -26,9 +26,9 @@ readonly CHAT_MODEL="Qwen/Qwen3-4B-GGUF"
 readonly EMBED_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF"
 
 # Tapes that record against a pre-indexed copy of the Crown Vic manual.
-readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-crawl tui-palette)
-# Tapes that start from a clean slate.
-readonly FRESH_TAPES=(tui-setup tui-add cli)
+readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
+# Tapes that start from a clean slate (the recording does its own ingest).
+readonly FRESH_TAPES=(tui-setup tui-add tui-crawl cli)
 # opencode demo dirs.
 readonly OPENCODE_TAPES=(opencode-code opencode-manual)
 # Man pages indexed for the CLI tape.
