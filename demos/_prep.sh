@@ -4,9 +4,9 @@
 
 set -euo pipefail
 
-# Use the bundled standalone binary directly. Skips any broken venv install
-# (e.g. a pyenv shim with a numpy/thinc mismatch).
-LILBEE="${LILBEE_BIN:-/opt/homebrew/bin/lilbee}"
+# Use whichever `lilbee` is on PATH. Override with LILBEE_BIN if you want a
+# specific install (e.g. the bundled standalone at /opt/homebrew/bin/lilbee).
+LILBEE="${LILBEE_BIN:-lilbee}"
 
 ROOT="${LILBEE_DEMO_ROOT:-/tmp/lilbee-demo}"
 MODELS_DIR="$ROOT/models"

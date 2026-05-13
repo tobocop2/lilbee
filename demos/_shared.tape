@@ -10,8 +10,7 @@ Set TypingSpeed 55ms
 Set Theme "Catppuccin Mocha"
 Set WindowBar Colorful
 
-# Pin lilbee to the homebrew install. The recordings expect a working `lilbee`
-# binary; if a venv version is broken (e.g. numpy/thinc mismatch in a pyenv
-# shim), this skips that and uses the bundled standalone binary at
-# /opt/homebrew/bin/lilbee.
-Env PATH "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# Whichever `lilbee` is first on the shell's PATH is what the recordings show.
+# Both the uv-tool / pip install and the Homebrew bundle work; pick the faster
+# one in your env. (The bundled standalone binary boots in ~20s; a pip / uv
+# install boots in ~2s.)
