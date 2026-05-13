@@ -331,6 +331,16 @@ h1.sr {
 }
 .install .copy:hover { color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
 
+/* install: which route ----------------------------------------------- */
+.installintro {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.65;
+  max-width: 66ch;
+  margin-bottom: 1rem;
+}
+.installintro strong { color: var(--amber); font-weight: 500; }
+
 /* install method tabs ------------------------------------------------ */
 .installtabs {
   display: flex;
