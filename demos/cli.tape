@@ -13,16 +13,6 @@ Sleep 300ms
 Enter
 Sleep 600ms
 
-Type "lilbee --help | head -30"
-Sleep 400ms
-Enter
-Sleep 3s
-
-Type "clear"
-Sleep 200ms
-Enter
-Sleep 400ms
-
 Type "lilbee init"
 Sleep 400ms
 Enter
@@ -31,12 +21,12 @@ Sleep 2s
 Type "lilbee model pull Qwen/Qwen3-0.6B-GGUF"
 Sleep 400ms
 Enter
-Sleep 25s
+Sleep 6s
 
 Type "lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 Sleep 400ms
 Enter
-Sleep 12s
+Sleep 4s
 
 Type "lilbee model list"
 Sleep 400ms
