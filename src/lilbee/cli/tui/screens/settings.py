@@ -509,12 +509,29 @@ class SettingsScreen(Screen[None]):
         ``ref is None`` means the user cancelled (Esc); leave the field
         alone. ``ref == ""`` for a nullable field means the user picked
         the explicit "disabled" row; clear the field. Any other value is
-        a real model ref.
+        a real model ref. Embedding-model swaps against a populated store
+        route through a confirm modal first so the user is not surprised
+        by the rebuild requirement.
         """
         if ref is None:
             return
         defn = SETTINGS_MAP.get(key)
         if not ref and (defn is None or not defn.nullable):
+            return
+        if key == "embedding_model" and ref and get_services().store.has_chunks():
+            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+            self.app.push_screen(
+                ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE),
+                lambda confirmed: self._apply_picker_choice(key, ref, confirmed),
+            )
+            return
+        self._apply_picker_choice(key, ref, True)
+
+    def _apply_picker_choice(self, key: str, ref: str, confirmed: bool | None) -> None:
+        """Commit the picker choice or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
+        if not confirmed:
+            self.app.notify(msg.EMBED_SWAP_CANCELLED)
             return
         from lilbee.cli.tui.app import apply_active_model
 

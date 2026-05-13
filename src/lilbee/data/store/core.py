@@ -184,6 +184,10 @@ class Store:
         chunks = self.open_table(CHUNKS_TABLE)
         return chunks is not None and chunks.count_rows() > 0
 
+    def has_chunks(self) -> bool:
+        """Public predicate: True iff the store currently holds at least one chunk."""
+        return self._has_chunks()
+
     def initialize_meta_if_legacy(self) -> bool:
         """Pin a legacy store's identity to the current cfg if not already set.
 

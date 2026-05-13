@@ -995,6 +995,7 @@ class TestModelPickerButton:
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             new_ref = "ollama/new-embed:latest"
             store_mock = mock.MagicMock()
+            store_mock.has_chunks.return_value = False
             with (
                 mock.patch("lilbee.core.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
@@ -1023,6 +1024,125 @@ class TestModelPickerButton:
                 await pilot.pause()
             write_tracker.assert_not_called()
 
+    async def test_embed_picker_dismiss_against_populated_store_pushes_confirm(self) -> None:
+        """Picking a new embedder against a populated store shows the warning modal.
+
+        Without the modal, the next search raises EmbeddingModelMismatchError and
+        the user sees the failure only after the fact. The modal makes the
+        rebuild contract explicit before cfg is mutated.
+        """
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        store_mock = mock.MagicMock()
+        store_mock.has_chunks.return_value = True
+        services_mock = mock.MagicMock(store=store_mock)
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed("ollama/new-embed:latest")
+                await pilot.pause()
+                assert isinstance(app.screen, ConfirmDialog)
+            # cfg must NOT have been mutated yet -- waiting on the confirm.
+            assert cfg.embedding_model == TEST_EMBED_REF
+
+    async def test_embed_picker_dismiss_confirm_yes_applies(self) -> None:
+        """Pressing Yes on the confirm modal applies the swap and reloads embed."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+        from lilbee.providers.worker.transport import WorkerRole
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        store_mock = mock.MagicMock()
+        store_mock.has_chunks.return_value = True
+        services_mock = mock.MagicMock(store=store_mock)
+        new_ref = "ollama/new-embed:latest"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed(new_ref)
+                await pilot.pause()
+                assert isinstance(app.screen, ConfirmDialog)
+                await pilot.press("y")
+                await pilot.pause()
+            assert cfg.embedding_model == new_ref
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+
+    async def test_embed_picker_dismiss_confirm_no_keeps_old_ref(self) -> None:
+        """Pressing No on the confirm modal leaves cfg untouched and notifies cancel."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        store_mock = mock.MagicMock()
+        store_mock.has_chunks.return_value = True
+        services_mock = mock.MagicMock(store=store_mock)
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed("ollama/new-embed:latest")
+                await pilot.pause()
+                assert isinstance(app.screen, ConfirmDialog)
+                await pilot.press("n")
+                await pilot.pause()
+            assert cfg.embedding_model == TEST_EMBED_REF
+            services_mock.reload_role.assert_not_called()
+
+    async def test_embed_picker_dismiss_empty_store_skips_confirm(self) -> None:
+        """A store with no chunks (fresh install) swaps without the confirm modal."""
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+        from lilbee.providers.worker.transport import WorkerRole
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        store_mock = mock.MagicMock()
+        store_mock.has_chunks.return_value = False
+        services_mock = mock.MagicMock(store=store_mock)
+        new_ref = "ollama/new-embed:latest"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed(new_ref)
+                await pilot.pause()
+            assert cfg.embedding_model == new_ref
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+
     async def test_embed_picker_dismiss_reloads_only_embed_role(self) -> None:
         """Embed swap respawns just the embed worker. Chat stream stays untouched.
 
@@ -1042,6 +1162,7 @@ class TestModelPickerButton:
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             new_ref = "ollama/new-embed:latest"
             services_mock = mock.MagicMock()
+            services_mock.store.has_chunks.return_value = False
             with (
                 mock.patch("lilbee.core.settings.set_value"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,

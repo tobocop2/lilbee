@@ -286,11 +286,40 @@ class ModelPickerButton(Static, can_focus=True):
             if ref == cfg.chat_model:
                 return
             apply_active_model(self.app, "chat_model", ref)
-        else:
-            if ref == cfg.embedding_model:
-                return
-            get_services().store.initialize_meta_if_legacy()
-            apply_active_model(self.app, "embedding_model", ref)
+            self._commit_after_change()
+            return
+        if ref == cfg.embedding_model:
+            return
+        # Embed-model swap invalidates a populated vector store. Confirm first.
+        store = get_services().store
+        if store.has_chunks():
+            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.EMBED_SWAP_CONFIRM_TITLE,
+                    msg.EMBED_SWAP_CONFIRM_MESSAGE,
+                ),
+                lambda confirmed: self._on_embed_swap_confirmed(ref, confirmed),
+            )
+            return
+        self._apply_embed_change(ref)
+
+    def _on_embed_swap_confirmed(self, ref: str, confirmed: bool | None) -> None:
+        """Apply the embed swap or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
+        if not confirmed:
+            self.app.notify(msg.EMBED_SWAP_CANCELLED)
+            return
+        self._apply_embed_change(ref)
+
+    def _apply_embed_change(self, ref: str) -> None:
+        """Persist the new embed ref, refresh the bar, and respawn the embed worker."""
+        get_services().store.initialize_meta_if_legacy()
+        apply_active_model(self.app, "embedding_model", ref)
+        self._commit_after_change()
+
+    def _commit_after_change(self) -> None:
+        """Repaint this button and fan ``_after_model_change`` for the scope."""
         self._refresh()
         bar = self.screen.query(ModelBar)
         for b in bar:
