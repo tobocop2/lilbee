@@ -47,13 +47,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 
 ## Quick start
 
-```bash
-pip install --pre lilbee        # or: uv tool install --prerelease=allow lilbee
-lilbee self-check               # verifies the build runs on your hardware
-lilbee                          # launch the terminal app, then pick a chat + embedding model
-```
-
-Homebrew, AUR, Docker, Nix, prebuilt binaries (no Python), and CUDA wheels: see [Install](#install). Optional extras (`[crawler]`, `[litellm]`, `[graph]`): see [Optional extras](#optional-extras).
+All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR, Docker, Nix, a standalone binary (no Python), CUDA wheels, or from source. Optional extras (`[crawler]`, `[litellm]`, `[graph]`) are there too.
 
 ## Highlights
 
@@ -244,161 +238,52 @@ Each active inference role (chat, embed, rerank, vision) runs in its own subproc
 
 ## Install
 
-### Prerequisites
+Python 3.11 to 3.14, or no Python at all (the standalone binary and the Docker image bundle their own). No external services; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
-- Python 3.11, 3.12, 3.13, or 3.14
-- **Optional** (for scanned PDF / image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a GGUF vision model (see [vision OCR](docs/usage.md#vision-models))
+| How | Command | Notes |
+| --- | --- | --- |
+| **pip** | `pip install --pre lilbee` | Recommended for most people. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan (Linux/Windows) or Metal (macOS), no opt-in. Intel Mac: add `--extra-index-url https://tobocop2.github.io/lilbee/cpu/`. |
+| **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; uv fetches a Python for you if you don't have one. |
+| **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Prebuilt bundle (its own Python + llama.cpp backend); clears the macOS quarantine flag so Gatekeeper won't block the first launch. |
+| **AUR** | `paru -S lilbee` | Arch Linux. Works with `yay` / `pacaur` / any helper. Wraps the Linux x86_64 binary, nothing to compile. |
+| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | Image on the GitHub Container Registry, tagged with the version and `latest`. Data lives at `/home/lilbee/data`; mount a volume there. |
+| **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
+| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file with its own Python runtime, no `pip` needed. Linux x86_64 / macOS arm64 / Windows x86_64. `chmod +x` it and run. The Linux binary needs glibc 2.28+; the macOS / Windows builds are unsigned (on macOS, run `xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
+| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Only for the last 5-15% of NVIDIA performance; the default wheel already uses your GPU via Vulkan. `cu121` / `cu124` indexes too; match your toolkit (`nvidia-smi`, top-right). Driver 555+ supports cu125. |
+| **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
 
-No external services needed. lilbee downloads and runs models locally via llama-cpp-python.
-
-### Default install (recommended for almost everyone)
-
-The default wheel ships with **runtime CPU dispatch** (works on every x86_64 CPU from Sandy Bridge / 2011 forward) and **GPU acceleration via Vulkan on Linux/Windows** (covers NVIDIA / AMD / Intel Arc) or **Metal on macOS arm64**. If you have _any_ modern GPU, this gets you GPU-accelerated inference with zero opt-in.
-
-**pip:**
-
-```bash
-pip install --pre lilbee
-```
-
-**uv:**
+Then check it runs and pick a model:
 
 ```bash
-uv tool install --prerelease=allow lilbee
-```
-
-Verify the install works on your hardware:
-
-```bash
-lilbee self-check
-```
-
-This downloads a tiny model (~90 MB), runs an inference, and an embedding. Exits 0 with `SELF-CHECK PASSED` on success. It only verifies your hardware; it does not configure a working model. Launch the TUI (`lilbee`) and pick a chat + embedding model on the welcome screen, or from the CLI install an embedding model (required before `lilbee add`) and a chat model:
-
-```bash
-lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # embedding model; needed to index/search
+lilbee self-check                                       # ~90 MB download; runs an inference + an embedding; "SELF-CHECK PASSED" on success
+lilbee                                                  # launch the terminal app; pick a chat + embedding model on the welcome screen
+# or from the CLI:
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # an embedding model (required before `lilbee add`)
 lilbee model browse                                     # pick a chat model interactively
 ```
 
-### Other ways to install
-
-If you'd rather not install Python, the prebuilt binary ships through several package managers. They all wrap the same release artifact (its own Python interpreter and llama-cpp backend), so pick whichever fits your setup.
-
-| Method | Command | Notes |
-| --- | --- | --- |
-| **Homebrew** (macOS arm64, Linux x86_64) | `brew tap tobocop2/lilbee && brew install lilbee` | Clears the macOS quarantine attribute on install, so Gatekeeper won't block the first launch. (The macOS binary is unsigned; the formula handles it.) |
-| **AUR** (Arch Linux) | `paru -S lilbee` | Package `lilbee`, works with `yay` / `pacaur` / any helper. Wraps the Linux x86_64 binary, no compilation. |
-| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | Image on the GitHub Container Registry, tagged with the version and `latest`. Data lives at `/home/lilbee/data`; mount a volume there. |
-| **Nix** (NixOS, nix-darwin, any host with nix) | `nix run github:tobocop2/lilbee` | On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
-
-Or grab the [standalone binary](#pre-built-executables-no-python-required) directly (no package manager, no Python).
-
-<a id="linux-runtime-requirements"></a>
-
 ### Linux runtime requirements
 
-The Linux x86_64 wheel links against the Vulkan loader at runtime so it can fall back from GPU to CPU on a single binary. Most desktop distros (Ubuntu 22.04+, Pop!_OS, Mint) ship `libvulkan1` by default. Bare Arch / Fedora / Alpine images do not, and `lilbee self-check` will fail with `cannot open shared object file: libvulkan.so.1`. Install the loader once.
-
-```bash
-# Arch / Manjaro
-sudo pacman -S vulkan-icd-loader
-
-# Fedora / RHEL
-sudo dnf install vulkan-loader
-
-# Debian / Ubuntu (only if missing)
-sudo apt-get install libvulkan1
-```
-
-### NVIDIA users wanting CUDA-native (5-15% faster than Vulkan)
-
-The default wheel already uses your NVIDIA GPU through Vulkan. **You only need a CUDA wheel if you want the absolute last bit of performance** out of CUDA-native kernels.
-
-CUDA wheels live on a per-CUDA-version index (because each is linked against a specific CUDA runtime). Pick the index that matches your installed CUDA toolkit:
-
-```bash
-# CUDA 12.4 (pip)
-pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu124/
-
-# CUDA 12.4 (uv tool)
-uv tool install --prerelease=allow lilbee \
-  --extra-index-url https://tobocop2.github.io/lilbee/cu124/
-
-# CUDA 12.5 (pip)
-pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/
-
-# CUDA 12.5 (uv tool)
-uv tool install --prerelease=allow lilbee \
-  --extra-index-url https://tobocop2.github.io/lilbee/cu125/
-```
-
-Don't know your CUDA version? `nvidia-smi` (look at the top-right corner). NVIDIA driver 555+ supports CUDA 12.5; older drivers may need cu124.
-
-### Intel Mac
-
-Intel Mac wheels ship from a separate index because they're cross-compiled and the lane is best-effort:
-
-```bash
-pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cpu/
-```
-
-If a wheel isn't available for your Python version, pip falls back to the sdist and builds locally (you'll need a working Xcode toolchain).
-
-### Pre-built executables (no Python required)
-
-A single binary with its own Python runtime, always the latest pre-release. `chmod +x` it and run (e.g. `./lilbee-linux-x86_64 self-check`).
-
-| Platform           | Download                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| **Linux x86_64**   | [lilbee-linux-x86_64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64)             |
-| **macOS arm64**    | [lilbee-macos-arm64](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64)               |
-| **Windows x86_64** | [lilbee-windows-x86_64.exe](https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64.exe) |
-
-The Linux binary needs **glibc 2.28+** (Fedora 28+, RHEL/Rocky/Alma 8+, Debian 10+, Ubuntu 18.10+, Amazon Linux 2023, current Arch); on older systems use `uv tool install lilbee` or [Docker](#docker).
+The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most desktop distros (Ubuntu 22.04+, Pop!_OS, Mint) ship `libvulkan1`; bare Arch / Fedora / Alpine images don't, and `lilbee self-check` fails with `cannot open shared object file: libvulkan.so.1`. Install it once: `sudo pacman -S vulkan-icd-loader` (Arch / Manjaro), `sudo dnf install vulkan-loader` (Fedora, RHEL), or `sudo apt-get install libvulkan1` (Debian, Ubuntu).
 
 ### Optional extras
 
-**lilbee works out of the box.** Three optional extras add more: `[crawler]` indexes websites, `[litellm]` bridges to popular hosted model providers, `[graph]` adds concept-graph search. Append the name in brackets to a `pip` or `uv tool install`:
+lilbee works without these. Add the name in brackets to a `pip` or `uv tool install`, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA).
 
-| Extra            | What it does, and how to add it                                                                                                                                                                                                                                                            |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`[crawler]`**  | **Index websites alongside your files.** Recursive crawling with Playwright, live progress, cancel, hash-based change detection, SSRF protection, rate limits. `pip install --pre 'lilbee[crawler]'`                                                                                       |
-| **`[litellm]`**  | **Bridge to popular hosted model providers** for chat, vision, or embeddings while other roles stay local. You provide the API key; the TUI shows a persistent warning whenever a hosted model is active, and chunks sent to that provider leave your machine. `pip install --pre 'lilbee[litellm]'` |
-| **`[graph]`**    | **Concept-graph search.** Extracts the ideas in your documents and uses how they relate to surface results plain keyword matching misses. No extra model calls. `pip install --pre 'lilbee[graph]'`                                                                                        |
+| Extra | What it adds |
+| --- | --- |
+| `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline. Recursive crawl with Playwright, live progress, cancel, change detection, SSRF guards, rate limits. |
+| `[litellm]` | Bridge to popular hosted model providers for chat, vision, or embeddings while other roles stay local. You provide the key; the TUI flags whenever a hosted model is active, and chunks sent to it leave your machine. |
+| `[graph]` | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
-Install multiple at once:
+See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
 
-```bash
-pip install --pre 'lilbee[graph,crawler,litellm]'
-# or
-uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
-```
-
-Combine with `--extra-index-url` for CUDA:
+### Upgrading
 
 ```bash
-uv tool install --prerelease=allow 'lilbee[graph,crawler]' \
-  --extra-index-url https://tobocop2.github.io/lilbee/cu125/
-```
-
-See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration and details.
-
-### Upgrading to the latest pre-release
-
-```bash
-# pip
 pip install --upgrade --pre lilbee
-
-# uv (force reinstall)
+# or
 uv tool install --reinstall --prerelease=allow lilbee
-```
-
-### Development (run from source)
-
-```bash
-git clone https://github.com/tobocop2/lilbee && cd lilbee
-uv sync
-uv run lilbee
 ```
 
 ## Agent integration
