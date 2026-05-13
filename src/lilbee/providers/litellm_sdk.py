@@ -39,6 +39,49 @@ log = logging.getLogger(__name__)
 _PROVIDER_NAME = "litellm"
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
+# Substrings dropped from the "LiteLLM" logger before they reach the user's
+# terminal. Two classes of noise: (1) the model-cost-map fetch failure that
+# LiteLLM logs at WARNING on every offline chat call, and (2) AWS-flavored
+# advisories from sagemaker / bedrock / boto3 / botocore. lilbee's litellm
+# extra deliberately excludes boto3, so the AWS warnings aren't actionable.
+# Compared case-insensitively to catch the mixed-case variants LiteLLM emits.
+_LITELLM_SUPPRESS_SUBSTRINGS = (
+    "failed to fetch remote model cost map",
+    "boto3",
+    "botocore",
+    "sagemaker",
+    "bedrock",
+)
+
+
+class _LitellmSubstringFilter(logging.Filter):
+    """Drop ``LiteLLM`` log records whose message contains a suppressed substring."""
+
+    def __init__(self, needles: tuple[str, ...]) -> None:
+        super().__init__()
+        self._needles = tuple(n.lower() for n in needles)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage().lower()
+        return not any(n in msg for n in self._needles)
+
+
+def install_litellm_log_filter() -> None:
+    """Attach the ``LiteLLM`` substring filter to the package logger.
+
+    Called automatically when this module is imported (see the module-top
+    invocation below) so the filter is in place before any litellm call
+    can emit a warning. Exposed as a function so tests can re-apply after
+    clearing the logger.
+    """
+    logging.getLogger("LiteLLM").addFilter(_LitellmSubstringFilter(_LITELLM_SUPPRESS_SUBSTRINGS))
+
+
+# Install the filter at module import. lilbee never touches litellm before
+# importing this module, so installing here always beats litellm's first
+# warning to the punch.
+install_litellm_log_filter()
+
 
 class _LitellmResponseView:
     """Typed read-only view over a litellm completion-response object.

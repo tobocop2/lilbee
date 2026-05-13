@@ -198,17 +198,25 @@ _GPU_VISIBLE_ENV_VARS = (
 
 
 def _apply_gpu_device_env() -> None:
-    """Apply ``cfg.gpu_devices`` to every backend's visibility env var.
+    """Apply ``cfg.gpu_devices`` (or autodetect) to every backend's visibility env var.
 
     Must run before ``import llama_cpp``: the Vulkan / CUDA / ROCm
     runtimes snapshot their visible-device lists at library load time
-    and ignore subsequent changes. ``cfg.gpu_devices`` is a no-op when
-    ``None``; an explicit user-set env var always wins so power users
-    can still override per-shell.
+    and ignore subsequent changes. Resolution order:
+
+    1. Explicit env var (``GGML_VK_VISIBLE_DEVICES`` etc.) -- always
+       wins, including when the user set it intentionally to empty.
+    2. ``cfg.gpu_devices`` -- the user's lilbee-level pin.
+    3. Autodetection -- pick the highest-ranked Vulkan device
+       (discrete > integrated) when more than one is visible.
+
+    Steps 2 and 3 only set vars that aren't already in the
+    environment, so step 1 is preserved.
     """
     from lilbee.core.config import cfg
+    from lilbee.providers.llama_cpp.gpu_select import autoselect_best_gpu_index
 
-    devices = cfg.gpu_devices
+    devices = cfg.gpu_devices or autoselect_best_gpu_index()
     if not devices:
         return
     for name in _GPU_VISIBLE_ENV_VARS:

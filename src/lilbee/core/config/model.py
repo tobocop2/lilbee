@@ -297,8 +297,12 @@ class Config(BaseSettings):
     #
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
-    # only take effect after a restart). ``None`` (default) leaves
-    # device visibility untouched.
+    # only take effect after a restart). ``None`` (default) hands off
+    # to the autodetect in ``providers/llama_cpp/gpu_select.py``,
+    # which parses ``vulkaninfo --summary`` and pins the discrete
+    # adapter when one is present. The autodetect is silent on failure
+    # (no vulkaninfo, single device, parse error), leaving the
+    # Vulkan-loader's default ordering in place.
     gpu_devices: str | None = ConfigField(default=None, writable=True)
 
     # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
