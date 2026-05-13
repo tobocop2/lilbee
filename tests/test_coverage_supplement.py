@@ -1265,13 +1265,19 @@ class TestSyncSkippedMessageBranches:
 
 
 class TestChattyDependencyFilters:
-    """`lilbee/__init__.py` installs substring filters on noisy upstream loggers."""
+    """Each lib's substring filter lives next to that lib's adapter module
+    and installs on import (catalog/hf_client.py for HF,
+    providers/litellm_sdk.py for LiteLLM). Importing the adapter module is
+    what attaches the filter to the upstream logger.
+    """
 
     @staticmethod
     def _record(name: str, msg: str) -> logging.LogRecord:
         return logging.LogRecord(name, logging.WARNING, __file__, 0, msg, (), None)
 
     def test_hf_unauthenticated_notice_is_dropped(self) -> None:
+        import lilbee.catalog.hf_client  # noqa: F401  -- import for filter install
+
         hf_logger = logging.getLogger("huggingface_hub.utils._http")
         noisy = self._record(
             hf_logger.name, "Sending unauthenticated requests to the HF Hub; rate limits apply."
@@ -1279,16 +1285,45 @@ class TestChattyDependencyFilters:
         assert any(f.filter(noisy) is False for f in hf_logger.filters)
 
     def test_unrelated_hf_message_passes_through(self) -> None:
+        import lilbee.catalog.hf_client  # noqa: F401  -- import for filter install
+
         hf_logger = logging.getLogger("huggingface_hub.utils._http")
         keep = self._record(hf_logger.name, "Downloaded model.gguf in 12s")
         assert all(f.filter(keep) is True for f in hf_logger.filters)
 
     def test_litellm_cost_map_warning_is_dropped(self) -> None:
+        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+
         litellm_logger = logging.getLogger("LiteLLM")
         noisy = self._record(
             litellm_logger.name, "Failed to fetch remote model cost map. Using local copy."
         )
         assert any(f.filter(noisy) is False for f in litellm_logger.filters)
+
+    @pytest.mark.parametrize(
+        "aws_message",
+        [
+            "Missing boto3 to call bedrock. Run 'pip install boto3'.",
+            "Could not load response stream shape: botocore not available",
+            "sagemaker-runtime endpoint unreachable",
+            "bedrock invoke failed",
+        ],
+    )
+    def test_litellm_aws_messages_are_dropped(self, aws_message: str) -> None:
+        """AWS-related LiteLLM advisories are filtered: lilbee never supports AWS."""
+        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+
+        litellm_logger = logging.getLogger("LiteLLM")
+        noisy = self._record(litellm_logger.name, aws_message)
+        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
+
+    def test_litellm_unrelated_message_passes_through(self) -> None:
+        """Filter is targeted: a generic LiteLLM warning still surfaces."""
+        import lilbee.providers.litellm_sdk  # noqa: F401  -- import for filter install
+
+        litellm_logger = logging.getLogger("LiteLLM")
+        keep = self._record(litellm_logger.name, "Rate limit hit, retrying in 5s")
+        assert all(f.filter(keep) is True for f in litellm_logger.filters)
 
 
 class TestWikiEmptyStateSpacyBranches:
