@@ -89,12 +89,30 @@ jobs:
     needs: [guard]
     runs-on: ubuntu-latest
     environment: pypi
+    # See publish-pypi.yml: pypa/gh-action-pypi-publish is a Docker action and
+    # misbehaves when called from a local composite action, so it runs here directly.
     steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/promote-pypi
+      - name: Download wheel artifacts from the release-candidate run
+        uses: actions/download-artifact@v4
         with:
-          run_id: ${{ needs.guard.outputs.rc_run_id }}
-          github_token: ${{ github.token }}
+          pattern: wheel-default-*
+          path: dist/
+          merge-multiple: true
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      - name: Download sdist from the release-candidate run
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      - name: List wheels + sdist
+        run: ls -lh dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   dispatch-fanout:
     needs: [publish-pypi]
