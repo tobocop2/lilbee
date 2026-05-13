@@ -5,16 +5,16 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
 
 :root {
-  --bg: #0b0a08;
-  --bg-elev: #14110b;
-  --bg-card: #161208;
+  --bg: #100d0a;
+  --bg-elev: #1a160f;
+  --bg-card: #1c1810;
   --ink: #f1e6cd;        /* primary readable cream */
   --ink-2: #c8b896;      /* secondary text */
   --ink-3: #8a7b5a;      /* tertiary / metadata */
   --rule: #2e2616;
   --rule-2: #443824;
-  --amber: #ffc24a;
-  --amber-hot: #ffe49a;
+  --amber: #e0b86a;      /* antique gold, not neon */
+  --amber-hot: #f0d29a;
   --green: #7be08c;
   --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
 
@@ -46,8 +46,8 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(900px 600px at 70% -10%, rgba(255, 194, 74, 0.09), transparent 60%),
-    radial-gradient(700px 500px at 0% 100%, rgba(255, 194, 74, 0.05), transparent 65%);
+    radial-gradient(900px 600px at 70% -10%, rgba(224, 184, 106, 0.045), transparent 60%),
+    radial-gradient(700px 500px at 0% 100%, rgba(224, 184, 106, 0.025), transparent 65%);
   pointer-events: none;
   z-index: 0;
 }
@@ -114,7 +114,7 @@ h1.sr {
   color: var(--amber);
   font-size: 14px;
   line-height: 1;
-  text-shadow: 0 0 18px rgba(255, 194, 74, 0.28);
+  text-shadow: 0 0 13px rgba(224, 184, 106, 0.13);
   margin-bottom: 1.5rem;
   display: block;
 }
@@ -385,24 +385,26 @@ h1.sr {
   display: inline-flex;
   align-items: center;
   background: transparent;
-  border: none;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
   cursor: pointer;
   font-family: var(--mono);
   font-size: 12px;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
-  padding: 0.6rem 0 0;
-  transition: color 140ms;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  padding: 0.25rem 0.6rem;
+  margin-top: 0.65rem;
+  transition: color 140ms, border-color 140ms, background 140ms;
 }
 .notes-toggle::before {
   content: "▸";
-  margin-right: 0.45em;
+  margin-right: 0.5em;
   font-size: 10px;
   display: inline-block;
   transition: transform 140ms;
 }
 .notes-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
-.notes-toggle:hover { color: var(--amber); }
+.notes-toggle:hover { color: var(--amber-hot); border-color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
 .notes-body[hidden] { display: none; }
 .notes-body { padding-top: 0.1rem; }
 .notes-body .extras:first-child { margin-top: 0.4rem; }
@@ -546,7 +548,7 @@ footer .meta { text-align: right; font-size: 12px; }
   font-size: 7.5px;
   line-height: 1.1;
   color: var(--amber);
-  text-shadow: 0 0 10px rgba(255, 194, 74, 0.18);
+  text-shadow: 0 0 9px rgba(224, 184, 106, 0.09);
 }
 
 /* responsive --------------------------------------------------------- */

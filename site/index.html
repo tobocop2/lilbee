@@ -139,7 +139,7 @@
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
         <div class="notes-body" id="notes-binary" hidden>
           <p class="extras">single binary, bundles its own Python runtime, no <code>pip</code> needed &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/releases">macOS arm64 and Windows builds on the releases page &rarr;</a></p>
-          <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds have no code-signing cert. On macOS, if Gatekeeper blocks it run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (or System Settings &rarr; Privacy &amp; Security &rarr; Open Anyway). Homebrew clears this for you.</p>
+          <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. If macOS blocks it, run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (Homebrew does this for you).</p>
         </div>
       </div>
 
@@ -174,7 +174,7 @@
         <div class="extras-sub">add in brackets to a <code>pip</code> or <code>uv</code> install, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code> &nbsp;.&nbsp; lilbee works without them</div>
         <div class="extras-grid">
           <div class="extra"><span class="tag">[crawler]</span><span>index websites too: crawl a docs site or wiki to markdown, then search it offline</span></div>
-          <div class="extra"><span class="tag">[litellm]</span><span>bridge to many popular hosted model providers for chat, vision, or embeddings; you bring the key, and the terminal app flags when a hosted model is active</span></div>
+          <div class="extra"><span class="tag">[litellm]</span><span>bridge to popular hosted model providers for chat, vision, or embeddings; you bring the key, the terminal app flags when one's active</span></div>
           <div class="extra"><span class="tag">[graph]</span><span>concept-graph search: finds matches plain keyword search misses, with no extra model calls</span></div>
         </div>
       </div>
