@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Emit the CMAKE_ARGS string for an llama-cpp-python source build.
 #
-# Single source of truth for per-OS / per-backend compile flags. Both
-# build-wheels.yml and release.yml shell out here so there's no chance of
-# the wheel and the frozen exe ending up with mismatched compile options.
+# Single source of truth for per-OS / per-backend compile flags. The wheel
+# workflows (build-*-wheels.yml) and release.yml shell out here so the wheel
+# and the frozen exe never end up with mismatched compile options.
 #
 # Usage:
 #   eval "$(BACKEND=vulkan RUNNER_OS=Linux tools/wheel-build/cmake_args.sh)"

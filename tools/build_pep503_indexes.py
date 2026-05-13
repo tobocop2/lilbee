@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Emit PEP 503 simple-repository indexes for lilbee per-backend wheels.
 
-Reads wheel artifacts produced by .github/workflows/build-wheels.yml,
-groups by backend tag, copies wheels into <site>/<backend>/lilbee/, and
-writes the per-directory index.html files pip's --extra-index-url
-expects.
+Reads wheel artifacts produced by the build-default-wheels.yml /
+build-extra-wheels.yml reusable workflows, groups by backend tag, copies
+wheels into <site>/<backend>/lilbee/, and writes the per-directory index.html
+files pip's --extra-index-url expects.
 
 Input layout (artifact-dir mode, default):
 

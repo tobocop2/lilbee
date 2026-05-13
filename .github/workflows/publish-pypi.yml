@@ -1,7 +1,15 @@
 name: Publish to PyPI
 
-# Manual trigger: build the named tag, attach binaries to its pre-release, publish to PyPI.
-# Run this after release-candidate.yml has built the tag, attached a pre-release, and run QA.
+# Pure publish step -- no builds. Finds the release-candidate.yml run for this
+# tag, downloads its default wheels + sdist, uploads them to PyPI, then dispatches
+# the packaging fan-out (Docker / Homebrew / AUR / Nix). It needs only the default
+# wheels + sdist (they finish ~25 min into the RC run), so it does NOT wait on the
+# executables / CUDA matrix / QA -- run it as soon as those artifacts are up. The
+# fan-out does need the executables on the GH release; it self-skips if they're
+# not attached yet (re-run this workflow once the RC run has attached them).
+#
+# Filename `publish-pypi.yml` + the `pypi` environment name are pinned by PyPI's
+# trusted-publisher config -- don't rename.
 
 on:
   workflow_dispatch:
@@ -11,9 +19,9 @@ on:
         required: true
 
 permissions:
-  contents: write
-  id-token: write
-  actions: write
+  contents: read
+  id-token: write   # OIDC for Trusted Publishing
+  actions: write    # cross-run artifact download (read) + dispatch publish-docker/packages
 
 concurrency:
   group: publish-pypi-${{ inputs.tag }}
@@ -23,7 +31,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.parse.outputs.version }}
+      rc_run_id: ${{ steps.resolve.outputs.rc_run_id }}
     steps:
       - name: Refuse if tag already has a non-prerelease published
         env:
@@ -34,13 +42,11 @@ jobs:
             exit 1
           fi
 
-      # Implicit existence check: fails loudly if the tag does not exist.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
 
-      - name: Parse version from pyproject.toml
-        id: parse
+      - name: Check tag matches pyproject version
         shell: bash
         env:
           EXPECTED_TAG: ${{ inputs.tag }}
@@ -50,58 +56,56 @@ jobs:
             echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
             exit 1
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-  build-wheels:
-    needs: [guard]
-    uses: ./.github/workflows/build-wheels.yml
-    with:
-      build_extras: true
-      ref: ${{ inputs.tag }}
-    secrets: inherit
+      - name: Resolve the release-candidate run that built this tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          EXPECTED_WHEELS: "10"   # build-default-wheels.yml matrix size; bump if it changes
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "${TAG} -> ${SHA}"
+          # Most recent push-triggered RC run for this commit -- any status; we
+          # only need its default wheels + sdist, which land well before the
+          # executables / CUDA matrix / QA finish.
+          RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&per_page=50" \
+            --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
+          if [ -z "${RC_ID}" ]; then
+            echo "no 'Release candidate' run for ${SHA}; push the tag first" >&2
+            exit 1
+          fi
+          echo "release-candidate run = ${RC_ID}"
+          ART=$(gh api "repos/${REPO}/actions/runs/${RC_ID}/artifacts?per_page=100")
+          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name | startswith("wheel-default-"))] | length')
+          N_SDIST=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "sdist")] | length')
+          echo "run ${RC_ID}: wheel-default-* = ${N_WHEELS}/${EXPECTED_WHEELS}, sdist = ${N_SDIST}/1"
+          if [ "${N_WHEELS}" -lt "${EXPECTED_WHEELS}" ] || [ "${N_SDIST}" -lt 1 ]; then
+            echo "run ${RC_ID} hasn't finished building the default wheels + sdist; wait, re-run release-candidate.yml, or use emergency-publish.yml if a cell failed and you're shipping intentionally" >&2
+            exit 1
+          fi
+          echo "rc_run_id=${RC_ID}" >> "$GITHUB_OUTPUT"
 
-  build-binaries:
-    needs: [guard]
-    uses: ./.github/workflows/release.yml
-    with:
-      ref: ${{ inputs.tag }}
-    secrets: inherit
-
-  # Attach the freshly built binaries to the tag's GH release. Only depends on
-  # build-binaries, so this and the packaging fan-out below run in parallel with
-  # publish-pypi -- they don't wait on the (slow) CUDA-extras wheel matrix.
-  attach-binaries:
-    needs: [guard, build-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: ./.github/actions/attach-prerelease
-        with:
-          tag: ${{ inputs.tag }}
-          version: ${{ needs.guard.outputs.version }}
-
-  # Default-backend wheels + sdist -> PyPI via Trusted Publishing.
   publish-pypi:
-    needs: [guard, build-wheels]
+    needs: [guard]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
+      - uses: actions/checkout@v6   # for the local promote-pypi action
       - uses: ./.github/actions/promote-pypi
+        with:
+          run_id: ${{ needs.guard.outputs.rc_run_id }}
+          github_token: ${{ github.token }}
 
-  # Docker / Homebrew / AUR / Nix -- all consume the GH-release binaries, not
-  # PyPI, so this only waits on attach-binaries.
-  fanout-packaging:
-    needs: [attach-binaries]
+  # Docker / Homebrew / AUR / Nix consume the executables on the GH release that
+  # the RC run already attached -- they don't need a build, just the tag.
+  dispatch-fanout:
+    needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag }}
       - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}
