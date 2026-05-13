@@ -1,12 +1,13 @@
-# [lilbee](https://tobocop2.github.io/lilbee/)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/lilbee-logo-dark.svg">
+    <img alt="lilbee" src="docs/lilbee-logo-light.svg" width="340">
+  </picture>
+</p>
 
-A batteries-included local search engine for your data and code that you can talk to.
+<p align="center"><strong>A batteries-included local search engine for your data and code that you can talk to.</strong></p>
 
-[Project site](https://tobocop2.github.io/lilbee/) · [PyPI](https://pypi.org/project/lilbee/) · [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/)
-
-Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's just a fast chatbot.
-
-It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
+<p align="center"><a href="https://tobocop2.github.io/lilbee/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://tobocop2.github.io/obsidian-lilbee/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://tobocop2.github.io/lilbee/api/">API docs</a></p>
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
@@ -20,6 +21,20 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-blue.svg" alt="License: Elastic License 2.0"></a>
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
+
+Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's just a fast chatbot.
+
+```
+> what does the oil pressure warning mean?
+
+  the oil pressure warning indicates low oil pressure.[1]
+  when the light stays on, stop the engine immediately.[2]
+
+  ─── sources ──────────────────────────────────
+  [1] owners-manual.pdf:42    [2] owners-manual.pdf:43
+```
+
+It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
 > ## ⚠️ Beta software
 >
@@ -61,9 +76,9 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 
 The first evening with a local model is fun. What makes it more than a novelty is grounding: the model needs context from your notes, your files, your code, or it runs out of places to go. lilbee pairs the chat with a real search engine over a set of documents you choose, so a local model can reason over your world and answer with citations you can click back to the source.
 
-Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee bundles all of it into one install, in one process, in the terminal, including a built-in model catalog. The same executable is also a CLI, a REST API, an MCP server for AI agents, and a Python library. It runs globally by default, or per-project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library produces better answers than one catch-all pile of everything.
+Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
+> An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
 ## Previews
 
@@ -178,15 +193,14 @@ Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor'
 
 ### How it's built
 
-lilbee stands on established open-source projects, with everything embedded in one process:
+lilbee stands on established open-source projects, all embedded in one process:
 
 - [Kreuzberg] parses documents
 - [LanceDB] is the embedded search layer
+- [tree-sitter] chunks code
 - [llama-cpp][llama-cpp-python] runs models locally
 - [crawl4ai] and [Playwright] crawl the web
 - [Textual] draws the terminal
-
-Most systems in this shape run a vector database and a model server separately, often reaching for a cloud-hosted search service, which moves your data onto someone else's machines. lilbee does the whole thing locally: pull it to your laptop, pull your models, curate your documents. A complete local search-and-chat stack with nothing to deploy.
 
 ### Documents, code, and scanned images
 
@@ -200,7 +214,7 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 ### Pick and tune your models
 
-Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation are deeply tunable, 50+ settings in all: smaller chunks for finer matches, stricter search to filter loose results, a second-pass re-scorer for precision over the top results, more weight on topic relationships when your corpus is densely interconnected, and so on. Edit them from the TUI, environment variables, or a project-local config file. Sane defaults out of the box.
+Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, a second-pass re-scorer, how much weight topic relationships carry), edited from the TUI, environment variables, or a project-local config file. Sane defaults out of the box.
 
 ### Cloud models, when you want them
 
@@ -233,27 +247,27 @@ Standalone mode runs entirely on your machine. No cloud required.
 | **GPU / Accelerator** | none required (CPU-only inference works)                 | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
 | **Disk**              | 2 GB (models + data)                                     | 10+ GB if you load multiple models                                                                                                                          |
 
-Each active inference role (chat, embed, rerank, vision) runs in its own subprocess to keep the TUI responsive; the memory you need follows the size of the models you keep warm. Cloud models are optional, via the `[litellm]` extra (see [Install](#install)).
+Each active inference role (chat, embed, rerank, vision) runs in its own subprocess to keep the TUI responsive, so the memory you need follows the size of the models you keep warm.
 
 ## Install
 
 **Two routes, and the difference matters:**
 
-- **Into your own Python** (`pip` or `uv`, needs Python 3.11 to 3.14): a smaller install, it picks the fastest CPU code path for your machine at runtime, and you manage it with the tools you already use. Recommended if you already have Python.
-- **A self-contained bundle** (the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it): nothing else to install and nothing to conflict with, but a large file, compiled to a fixed CPU baseline (a 2013-or-newer x86_64 chip), so a touch slower on newer hardware than the `pip`/`uv` wheel. Recommended if you don't want to deal with Python at all.
+- **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Smaller install, picks the fastest CPU code path for your machine at runtime, managed with the tools you already use. Recommended if you have Python.
+- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install, but a large file on a fixed CPU baseline (a 2013-or-newer x86_64 chip), a touch slower on newer hardware than the `pip` / `uv` wheel. Recommended if you'd rather not deal with Python.
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
 | How | Command | Notes |
 | --- | --- | --- |
-| **pip** | `pip install --pre lilbee` | Recommended for most people. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan (Linux/Windows) or Metal (macOS), no opt-in. Intel Mac: add `--extra-index-url https://tobocop2.github.io/lilbee/cpu/`. |
-| **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; uv fetches a Python for you if you don't have one. |
-| **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Prebuilt bundle (its own Python + llama.cpp backend); clears the macOS quarantine flag so Gatekeeper won't block the first launch. |
-| **AUR** | `paru -S lilbee` | Arch Linux. Works with `yay` / `pacaur` / any helper. Wraps the Linux x86_64 binary, nothing to compile. |
-| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | Image on the GitHub Container Registry, tagged with the version and `latest`. Data lives at `/home/lilbee/data`; mount a volume there. |
+| **pip** | `pip install --pre lilbee` | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://tobocop2.github.io/lilbee/cpu/`. |
+| **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; fetches a Python for you if you need one. |
+| **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you. |
+| **AUR** | `paru -S lilbee` | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper. |
+| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data` — mount a volume there. |
 | **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
-| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file with its own Python runtime, no `pip` needed. Linux x86_64 / macOS arm64 / Windows x86_64. `chmod +x` it and run. The Linux binary needs glibc 2.28+; the macOS / Windows builds are unsigned (on macOS, run `xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
-| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Only for the last 5-15% of NVIDIA performance; the default wheel already uses your GPU via Vulkan. `cu121` / `cu124` indexes too; match your toolkit (`nvidia-smi`, top-right). Driver 555+ supports cu125. |
+| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
+| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Only for the last bit of NVIDIA speed; the default wheel already uses your GPU via Vulkan. `cu121` / `cu124` / `cu125` — match `nvidia-smi`. |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
 
 Then check it runs and pick a model:
@@ -271,7 +285,7 @@ The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most deskto
 
 ### Optional extras
 
-lilbee works without these. Add the name in brackets to a `pip` or `uv tool install`, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA).
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker builds already include all three. lilbee works without them either way.
 
 | Extra | What it adds |
 | --- | --- |
@@ -338,7 +352,7 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 
-[Kreuzberg]: https://github.com/Goldziher/kreuzberg
+[Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
 [llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
 [crawl4ai]: https://github.com/unclecode/crawl4ai
