@@ -95,7 +95,11 @@ class Services:
         channel = self.worker_pool.detach_channel(role_name)
         if channel is None:
             return
-        self.pool_runtime.submit(channel.close(timeout=_RELOAD_CLOSE_TIMEOUT_S))
+
+        async def _close() -> None:
+            await channel.close(timeout=_RELOAD_CLOSE_TIMEOUT_S)
+
+        self.pool_runtime.submit(_close())
 
     def add_pool_listener(
         self,
