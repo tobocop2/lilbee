@@ -39,6 +39,8 @@
     <section>
       <div class="label">install</div>
 
+      <p class="installintro">Two routes. <strong>pip / uv</strong> install into your Python: smaller, picks the fastest CPU path for your machine at runtime, managed like any package. <strong>The binary, Homebrew, AUR, Nix, and Docker</strong> are a self-contained bundle: nothing else to install, but a large file and a fixed CPU build (a touch slower on newer hardware than the pip / uv wheel).</p>
+
       <div class="installtabs" role="tablist" aria-label="Install methods">
         <button type="button" class="tab" role="tab" id="tab-pip" aria-controls="pane-pip" aria-selected="true" tabindex="0">pip</button>
         <button type="button" class="tab" role="tab" id="tab-uv" aria-controls="pane-uv" aria-selected="false" tabindex="-1">uv</button>
@@ -139,7 +141,6 @@
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
         <div class="notes-body" id="notes-binary" hidden>
           <p class="extras">single binary, bundles its own Python runtime, no <code>pip</code> needed &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/releases">macOS arm64 and Windows builds on the releases page &rarr;</a></p>
-          <p class="extras"><span class="k">vs. pip/uv:</span> the binary bundles everything (so it's a large file) and is compiled to a fixed CPU baseline; the <code>pip</code> / <code>uv</code> wheel installs into your existing Python and detects your CPU at runtime, a touch faster on newer hardware.</p>
           <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. If macOS blocks it, run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (Homebrew does this for you).</p>
         </div>
       </div>

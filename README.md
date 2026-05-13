@@ -237,7 +237,12 @@ Each active inference role (chat, embed, rerank, vision) runs in its own subproc
 
 ## Install
 
-Python 3.11 to 3.14, or no Python at all (the standalone binary and the Docker image bundle their own). No external services; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
+**Two routes, and the difference matters:**
+
+- **Into your own Python** (`pip` or `uv`, needs Python 3.11 to 3.14): a smaller install, it picks the fastest CPU code path for your machine at runtime, and you manage it with the tools you already use. Recommended if you already have Python.
+- **A self-contained bundle** (the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it): nothing else to install and nothing to conflict with, but a large file, compiled to a fixed CPU baseline (a 2013-or-newer x86_64 chip), so a touch slower on newer hardware than the `pip`/`uv` wheel. Recommended if you don't want to deal with Python at all.
+
+No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
 | How | Command | Notes |
 | --- | --- | --- |
@@ -250,8 +255,6 @@ Python 3.11 to 3.14, or no Python at all (the standalone binary and the Docker i
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file with its own Python runtime, no `pip` needed. Linux x86_64 / macOS arm64 / Windows x86_64. `chmod +x` it and run. The Linux binary needs glibc 2.28+; the macOS / Windows builds are unsigned (on macOS, run `xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
 | **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Only for the last 5-15% of NVIDIA performance; the default wheel already uses your GPU via Vulkan. `cu121` / `cu124` indexes too; match your toolkit (`nvidia-smi`, top-right). Driver 555+ supports cu125. |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
-
-> **Binary vs. pip/uv:** the standalone binary (and the Homebrew / AUR / Nix builds, which wrap it) is fully self-contained: its own Python, the llama.cpp backend, every dependency. That makes it a large file, and it's compiled to a fixed CPU baseline (needs a 2013-or-newer x86_64 chip). The `pip` / `uv` wheel installs into your existing Python instead and detects your CPU at runtime, so it's a touch faster on newer hardware and still runs on older. Pick the binary if you just want something that runs; pick pip/uv if you want lilbee to live in your environment like any other package.
 
 Then check it runs and pick a model:
 
