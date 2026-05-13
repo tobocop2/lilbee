@@ -65,6 +65,29 @@ a:hover {
 
 pre { font: inherit; white-space: pre; }
 
+/* page-load: one quiet staggered settle, top to bottom ---------------- */
+@keyframes lb-rise {
+  from { opacity: 0; transform: translateY(9px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes lb-fade {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .topstrip,
+  .main > section { animation: lb-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .topstrip                       { animation-delay: 0ms; }
+  .main > section:nth-of-type(1)  { animation-delay: 90ms; }
+  .main > section:nth-of-type(2)  { animation-delay: 150ms; }
+  .main > section:nth-of-type(3)  { animation-delay: 210ms; }
+  .main > section:nth-of-type(4)  { animation-delay: 270ms; }
+  .main > section:nth-of-type(5)  { animation-delay: 330ms; }
+  .main > section:nth-of-type(6)  { animation-delay: 390ms; }
+  .main > section:nth-of-type(7)  { animation-delay: 450ms; }
+  .main > section:nth-of-type(8)  { animation-delay: 510ms; }
+  .bee-art { animation: lb-fade 1100ms ease 260ms both; }
+}
+
 h1.sr {
   position: absolute; width: 1px; height: 1px;
   overflow: hidden; clip: rect(0, 0, 0, 0);
@@ -147,6 +170,32 @@ h1.sr {
 }
 .trust strong { color: var(--green); font-weight: 500; }
 
+.surfaces {
+  margin-top: 1.15rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.surfaces-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-right: 0.3rem;
+}
+.surface {
+  font-size: 12.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 2px 9px;
+  transition: color 140ms, border-color 140ms;
+}
+.surface:hover { color: var(--amber-hot); border-color: var(--amber-hot); }
+
 /* section labels ----------------------------------------------------- */
 .label {
   display: flex;
@@ -179,6 +228,7 @@ h1.sr {
   font-size: 13.5px;
   line-height: 1.6;
   overflow: hidden;
+  box-shadow: 0 20px 55px -24px rgba(0, 0, 0, 0.75), 0 0 26px -6px rgba(224, 184, 106, 0.05);
 }
 .demo .titlebar {
   display: flex;
@@ -332,14 +382,33 @@ h1.sr {
 .install .copy:hover { color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
 
 /* install: which route ----------------------------------------------- */
-.installintro {
+.routes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 1.3rem;
+}
+.route {
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--rule-2);
+  border-radius: 3px;
+  padding: 0.85rem 1.05rem;
+}
+.route.recommended { border-left-color: var(--amber); }
+.route-h {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  margin-bottom: 0.4rem;
+}
+.route.recommended .route-h { color: var(--amber); }
+.route p {
   font-size: 13.5px;
   color: var(--ink-2);
-  line-height: 1.65;
-  max-width: 66ch;
-  margin-bottom: 1rem;
+  line-height: 1.6;
 }
-.installintro strong { color: var(--amber); font-weight: 500; }
 
 /* install method tabs ------------------------------------------------ */
 .installtabs {
@@ -515,14 +584,32 @@ h1.sr {
 .links a:hover .desc { color: var(--ink); }
 
 /* built-on credit ---------------------------------------------------- */
-.built {
+.built-intro {
   font-size: 13px;
   color: var(--ink-3);
-  line-height: 1.65;
+  line-height: 1.6;
   max-width: 60ch;
+  margin-bottom: 0.55rem;
 }
-.built a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
-.built a:hover { color: var(--amber-hot); border-bottom-color: var(--amber-hot); }
+.deps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 2.5rem;
+  font-size: 13px;
+}
+.deps li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 4px 0;
+  color: var(--ink-3);
+}
+.deps li::before { content: "·"; color: var(--rule-2); flex: none; }
+.dep-name { color: var(--ink-3); flex: none; }
+.dep-name a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
+.dep-name a:hover { color: var(--amber-hot); border-bottom-color: var(--amber-hot); }
+.dep-role { color: var(--ink-3); }
 
 /* footer ------------------------------------------------------------- */
 footer {
@@ -569,7 +656,7 @@ footer .meta { text-align: right; font-size: 12px; }
 @media (max-width: 720px) {
   body { padding: 1.4rem 1.1rem 3rem; font-size: 14.5px; }
   .wordmark { font-size: 9.5px; }
-  .caps, .links, .shape { grid-template-columns: 1fr; }
+  .caps, .links, .shape, .routes, .deps { grid-template-columns: 1fr; }
   .tagline { font-size: 17px; }
   .installtabs .tab { padding: 0.45rem 0.6rem; font-size: 12px; }
   .extra { flex-direction: column; gap: 0.2rem; }
