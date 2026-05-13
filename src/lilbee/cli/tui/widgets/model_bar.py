@@ -29,6 +29,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
+from lilbee.providers.worker.transport import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
@@ -285,15 +286,44 @@ class ModelPickerButton(Static, can_focus=True):
             if ref == cfg.chat_model:
                 return
             apply_active_model(self.app, "chat_model", ref)
-        else:
-            if ref == cfg.embedding_model:
-                return
-            get_services().store.initialize_meta_if_legacy()
-            apply_active_model(self.app, "embedding_model", ref)
+            self._commit_after_change()
+            return
+        if ref == cfg.embedding_model:
+            return
+        # Embed-model swap invalidates a populated vector store. Confirm first.
+        store = get_services().store
+        if store.has_chunks():
+            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.EMBED_SWAP_CONFIRM_TITLE,
+                    msg.EMBED_SWAP_CONFIRM_MESSAGE,
+                ),
+                lambda confirmed: self._on_embed_swap_confirmed(ref, confirmed),
+            )
+            return
+        self._apply_embed_change(ref)
+
+    def _on_embed_swap_confirmed(self, ref: str, confirmed: bool | None) -> None:
+        """Apply the embed swap or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
+        if not confirmed:
+            self.app.notify(msg.EMBED_SWAP_CANCELLED)
+            return
+        self._apply_embed_change(ref)
+
+    def _apply_embed_change(self, ref: str) -> None:
+        """Persist the new embed ref, refresh the bar, and respawn the embed worker."""
+        get_services().store.initialize_meta_if_legacy()
+        apply_active_model(self.app, "embedding_model", ref)
+        self._commit_after_change()
+
+    def _commit_after_change(self) -> None:
+        """Repaint this button and fan ``_after_model_change`` for the scope."""
         self._refresh()
         bar = self.screen.query(ModelBar)
         for b in bar:
-            b._after_model_change()
+            b._after_model_change(self._scope)
 
 
 class ChatModePill(Static, can_focus=True):
@@ -499,8 +529,21 @@ class ModelBar(Widget, can_focus=False):
         with contextlib.suppress(Exception):
             self.query_one(ChatModeToggle).refresh_state()
 
-    def _after_model_change(self) -> None:
-        """Shared post-change logic: cancel active stream and reset services safely."""
+    def _after_model_change(self, scope: Literal["chat", "embed"]) -> None:
+        """Apply the side-effect of the role's model swap.
+
+        Chat-scope swaps route through :meth:`ChatScreen.apply_model_change`
+        so the in-flight stream cancels under the same UX that ``/model``
+        provides. Embed-scope swaps respawn only the embed worker via
+        :meth:`Services.reload_role`; the chat worker and any active
+        stream are untouched. Off-chat-screen chat swaps fall through to
+        a full ``reset_services`` because the chat-cancel path needs the
+        ChatScreen state machine.
+        """
+        if scope == "embed":
+            get_services().reload_role(WorkerRole.EMBED)
+            return
+
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen

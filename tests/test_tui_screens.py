@@ -11861,6 +11861,81 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         assert str(button.label).strip() != ""
 
 
+async def test_settings_model_picker_dismissed_reloads_worker_for_role():
+    """Picking from Settings respawns just the role that changed.
+
+    Without this, the new model is written to cfg but the live worker
+    keeps the old model loaded until restart. With it, the rerank /
+    vision / embed worker reflects the new selection on the next call,
+    and an in-flight chat stream is unaffected.
+    """
+    from unittest.mock import patch
+
+    from lilbee.providers.worker.transport import WorkerRole
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.app.apply_active_model"),
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
+        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+
+
+async def test_settings_embed_swap_confirm_cancel_leaves_cfg_untouched():
+    """Cancelling the embed-swap confirm modal does NOT call apply_active_model or reload_role."""
+    from unittest.mock import patch
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            # Direct path: caller invokes _apply_picker_choice with confirmed=False.
+            screen._apply_picker_choice("embedding_model", "fake/new.gguf", False)
+        mock_apply.assert_not_called()
+        services_mock.reload_role.assert_not_called()
+
+
+async def test_settings_embed_picker_against_populated_store_pushes_confirm():
+    """Embed swap from Settings against a populated store routes through the confirm modal."""
+    from unittest.mock import patch
+
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            screen._on_model_picker_dismissed("embedding_model", "fake/new-embed.gguf")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmDialog)
+            # cfg path must NOT have been touched yet -- waiting on confirm.
+            mock_apply.assert_not_called()
+
+
 def test_settings_model_picker_dismissed_no_op_on_blank_ref():
     """A blank/None ref short-circuits before reaching apply_active_model."""
     from unittest.mock import patch

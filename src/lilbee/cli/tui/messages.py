@@ -177,6 +177,16 @@ CHAT_RENDERING = "Rendering: {label}"
 SETTINGS_READ_ONLY = "read-only"
 SETTINGS_INVALID_VALUE = "Invalid value: {error}"
 SETTINGS_RESET_TO_DEFAULT_TOOLTIP = "Reset to default"
+
+EMBED_SWAP_CONFIRM_TITLE = "Switch embedding model?"
+EMBED_SWAP_CONFIRM_MESSAGE = (
+    "The vector store was built under a different embedder. "
+    "Switching invalidates it: search and ingest are disabled until you rebuild. "
+    "Run `lilbee rebuild` afterward (or press S to sync) to re-embed every document. "
+    "Continue?"
+)
+EMBED_SWAP_CANCELLED = "Embedding model swap cancelled"
+
 SETTINGS_RESET_ALL_LABEL = "Reset all defaults"
 SETTINGS_RESET_ALL_CONFIRM_TITLE = "Reset all settings?"
 SETTINGS_RESET_ALL_CONFIRM_MESSAGE = (

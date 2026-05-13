@@ -6,6 +6,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.runtime.lock import write_lock
 
 from .types import CHUNK_TYPE_RAW
@@ -103,6 +104,34 @@ def _sources_search_filter(search: str | None) -> str | None:
         return None
     escaped = escape_sql_string(search.lower())
     return f"LOWER(filename) LIKE '%{escaped}%'"
+
+
+def refs_compatible(
+    persisted_ref: str,
+    current_ref: str,
+    persisted_dim: int,
+    current_dim: int,
+) -> bool:
+    """Return True when *persisted_ref* and *current_ref* describe the same embedder.
+
+    Compatible iff dims match and either the raw refs are equal or the persisted
+    ref is the legacy bare-repo form (``<org>/<repo>`` without a ``.gguf``
+    filename) whose repo matches the current canonical full ref. The legacy
+    asymmetry exists because pre-canonical lilbee versions persisted only the
+    repo; the current code persists the full ``<org>/<repo>/<filename>.gguf``.
+    Two different ``.gguf`` files in the same repo are not lumped together
+    (different quantizations can produce subtly different vectors), so both-
+    full-ref strict identity is preserved.
+    """
+    if persisted_dim != current_dim:
+        return False
+    if persisted_ref == current_ref:
+        return True
+    if persisted_ref.endswith(".gguf"):
+        return False
+    if not current_ref.endswith(".gguf"):
+        return False
+    return hf_repo_from_ref(current_ref) == persisted_ref
 
 
 def _embedding_mismatch_message(
