@@ -30,8 +30,11 @@ Sleep 2s
 Escape
 Sleep 800ms
 
-# F2: the slash-command catalog. Shows every /command lilbee exposes.
-F2
+# Slash-command catalog. Same modal F2 opens, but reachable via the /help
+# slash command (VHS doesn't support F-keys).
+Type "/help"
+Sleep 400ms
+Enter
 Sleep 2500ms
 
 Screenshot demos/_out/tui-palette.png

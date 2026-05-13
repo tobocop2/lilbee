@@ -68,8 +68,11 @@ Sleep 2500ms
 Escape
 Sleep 500ms
 
-# 6. F2 slash-command catalog.
-F2
+# 6. Slash-command catalog (same modal F2 opens; VHS can't send F-keys, so
+# we reach it via the /help slash command).
+Type "/help"
+Sleep 400ms
+Enter
 Sleep 2500ms
 Escape
 Sleep 500ms
