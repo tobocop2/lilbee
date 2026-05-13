@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -327,6 +328,51 @@ async def test_crashed_channel_is_dropped_and_next_call_respawns(tmp_path) -> No
         assert spawner.spawned[1].call_log[-1] == ("warm-again", None)
     finally:
         await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_channel_returns_prior_channel_and_drops_only_that_role(
+    tmp_path,
+) -> None:
+    """``detach_channel`` returns the live channel and leaves siblings spawned.
+
+    Regression for the model-swap path: respawning the embed worker after a
+    setting change must not touch the chat worker that may be mid-stream.
+    """
+    spawner = FakeSpawner()
+    pool = WorkerPool(spawner=spawner)
+    embed = pool.register("embed", _entrypoint, _config_factory("embed", tmp_path))
+    chat = pool.register("chat", _entrypoint, _config_factory("chat", tmp_path))
+    try:
+        await embed.call("warm", None)
+        await chat.call("warm", None)
+        chat_channel_before = pool._channel_if_alive("chat")
+
+        detached = pool.detach_channel("embed")
+        assert detached is spawner.spawned[0]
+        assert pool._channel_if_alive("embed") is None
+        # Chat must keep its channel unchanged.
+        assert pool._channel_if_alive("chat") is chat_channel_before
+
+        # Next embed call lazy-respawns a fresh channel.
+        await embed.call("warm-again", None)
+        assert len(spawner.spawned) == 3  # embed-1, chat-1, embed-2
+        assert spawner.spawned[2].call_log[-1] == ("warm-again", None)
+    finally:
+        await pool.shutdown()
+
+
+def test_detach_channel_returns_none_for_unregistered_role() -> None:
+    """``detach_channel`` is a no-op when the role isn't on the pool."""
+    pool = WorkerPool(spawner=FakeSpawner())
+    assert pool.detach_channel("vision") is None
+
+
+def test_detach_channel_returns_none_when_role_has_no_live_channel() -> None:
+    """``detach_channel`` is a no-op when the role is registered but never spawned."""
+    pool = WorkerPool(spawner=FakeSpawner())
+    pool.register("embed", _entrypoint, _config_factory("embed", Path("/tmp")))
+    assert pool.detach_channel("embed") is None
 
 
 @pytest.mark.asyncio

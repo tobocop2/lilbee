@@ -17,6 +17,14 @@ from typing import TYPE_CHECKING
 
 from lilbee.providers.worker.pool import shutdown_pool_runtime
 
+_RELOAD_CLOSE_TIMEOUT_S = 5.0
+"""Wall-clock budget for closing a detached worker channel during reload_role.
+
+Matches ``_DEFAULT_SHUTDOWN_TIMEOUT_S`` in ``providers.worker.pool``: a worker
+that does not ack SHUTDOWN within this window is terminated so the new model
+load is not blocked.
+"""
+
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
@@ -74,6 +82,20 @@ class Services:
         """Flip the abort flag on every registered worker pool role. Idempotent."""
         for role_name in self.worker_pool.registered_roles:
             self.worker_pool.accessor(role_name).cancel()
+
+    def reload_role(self, role_name: WorkerRole) -> None:
+        """Drop *role_name*'s current worker so the next call lazy-respawns with cfg.
+
+        Detaches the channel synchronously (subsequent calls see no live worker),
+        then closes the old channel in the background on the pool runtime so the
+        caller's event loop is not stalled. Other roles' workers and any
+        in-flight stream they own are untouched. Use when only one role-bound
+        model setting has changed (e.g. embedding_model).
+        """
+        channel = self.worker_pool.detach_channel(role_name)
+        if channel is None:
+            return
+        self.pool_runtime.submit(channel.close(timeout=_RELOAD_CLOSE_TIMEOUT_S))
 
     def add_pool_listener(
         self,

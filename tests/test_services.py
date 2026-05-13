@@ -69,6 +69,69 @@ class TestCancelInference:
         assert called == ["embed", "chat"]
 
 
+class TestReloadRole:
+    def test_detaches_only_the_requested_role(self):
+        """``reload_role`` detaches the named role's channel and leaves siblings alone."""
+        detached: list[str] = []
+
+        class _FakeChannel:
+            def __init__(self, role: str) -> None:
+                self.role = role
+                self.closed = False
+
+            async def close(self, *, timeout: float) -> None:
+                self.closed = True
+
+        chat_channel = _FakeChannel("chat")
+        embed_channel = _FakeChannel("embed")
+
+        class _FakePool:
+            def detach_channel(self, role: str):
+                detached.append(role)
+                return embed_channel if role == "embed" else chat_channel
+
+        class _FakeRuntime:
+            def __init__(self) -> None:
+                self.submitted: list[object] = []
+
+            def submit(self, coro):
+                self.submitted.append(coro)
+                # close coroutine so the test doesn't leak a pending awaitable
+                coro.close()
+                return MagicMock()
+
+        from tests.conftest import make_mock_services
+
+        runtime = _FakeRuntime()
+        services = make_mock_services(worker_pool=_FakePool(), pool_runtime=runtime)
+        services.reload_role("embed")
+        assert detached == ["embed"]
+        assert len(runtime.submitted) == 1
+
+    def test_no_op_when_role_has_no_live_channel(self):
+        """``reload_role`` is silent when the role has nothing to close."""
+
+        class _FakePool:
+            def detach_channel(self, role):
+                return None
+
+        class _FakeRuntime:
+            def __init__(self) -> None:
+                self.submitted: list[object] = []
+
+            def submit(self, coro):
+                self.submitted.append(coro)
+                coro.close()
+                return MagicMock()
+
+        from tests.conftest import make_mock_services
+
+        runtime = _FakeRuntime()
+        services = make_mock_services(worker_pool=_FakePool(), pool_runtime=runtime)
+        services.reload_role("embed")
+        assert runtime.submitted == []
+
+
 class TestEagerStartBranch:
     """``get_services`` triggers ``pool_runtime.start`` + ``start_eager`` when
     ``cfg.worker_pool_eager_start`` is True."""
