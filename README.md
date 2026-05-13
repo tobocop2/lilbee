@@ -29,6 +29,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 
 ---
 
+- [Quick start](#quick-start)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
 - [Previews](#previews)
@@ -43,6 +44,16 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [Experimental](#experimental)
 
 ---
+
+## Quick start
+
+```bash
+pip install --pre lilbee        # or: uv tool install --prerelease=allow lilbee
+lilbee self-check               # verifies the build runs on your hardware
+lilbee                          # launch the terminal app, then pick a chat + embedding model
+```
+
+Homebrew, AUR, Docker, Nix, prebuilt binaries (no Python), and CUDA wheels: see [Install](#install). Optional extras (`[crawler]`, `[litellm]`, `[graph]`): see [Optional extras](#optional-extras).
 
 ## Highlights
 
