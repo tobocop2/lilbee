@@ -22,9 +22,10 @@ lilbee.
 
    Quick lookups (`lilbee_search`, `lilbee_status`, `lilbee_list_documents`,
    `lilbee_model_list`, `lilbee_model_show`) you run inline.
-5. **First contact with a project:** call `lilbee_status`. If `total_chunks` is 0 (empty
-   corpus), or the user asks you to index something, delegate to `lilbee-worker` and wait
-   for it to report done before you start answering. The worker handles `lilbee_init` too.
+5. **When asked to index something**, delegate the `lilbee_add` to the `lilbee-worker`
+   subagent and wait for it to report done before you start answering. The worker handles
+   `lilbee_init` too. `lilbee_add` is a SHA-dedupe — if the path is already indexed, it's
+   instant; so you can call it unconditionally instead of probing first.
 
 The full tool surface and the quick vs. long split are in the bundled `lilbee-mcp` skill
 (`.opencode/skills/lilbee-mcp/` or `.claude/skills/lilbee-mcp/`).

@@ -23,9 +23,12 @@ export LILBEE_SKIP_TOML_CONFIG=1
 
 echo "==> models dir: $MODELS_DIR"
 
-# Pull the two demo models once. Re-runs are no-ops if already installed.
-echo "==> pulling Qwen/Qwen3-0.6B-GGUF (chat) if missing ..."
-"$LILBEE" model pull "Qwen/Qwen3-0.6B-GGUF" || true
+# Pull the demo models once. Re-runs are no-ops if already installed.
+# Qwen3 4B is the TUI chat model (8 GB RAM minimum, gives much better answers
+# than 0.6B). Qwen3 0.6B is kept for the catalog "download a small model" demo
+# step — but NOT pre-staged there so the recording shows a real fresh pull.
+echo "==> pulling Qwen/Qwen3-4B-GGUF (chat) if missing ..."
+"$LILBEE" model pull "Qwen/Qwen3-4B-GGUF" || true
 echo "==> pulling nomic-ai/nomic-embed-text-v1.5-GGUF (embed) if missing ..."
 "$LILBEE" model pull "nomic-ai/nomic-embed-text-v1.5-GGUF" || true
 
