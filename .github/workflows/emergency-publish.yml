@@ -1,6 +1,6 @@
 name: Emergency publish
 
-# Like publish-pypi.yml, but accepts a release-candidate run whose QA flaked --
+# Like publish.yml, but accepts a release-candidate run whose QA flaked --
 # two-step confirm (tag + "skip-qa" token). Still resolves an RC run that built
 # the tag's artifacts (this is publish-past-a-bad-QA, not build-from-scratch),
 # downloads its default wheels + sdist, uploads to PyPI, then fans out packaging.
@@ -89,7 +89,7 @@ jobs:
     needs: [guard]
     runs-on: ubuntu-latest
     environment: pypi
-    # See publish-pypi.yml: pypa/gh-action-pypi-publish is a Docker action and
+    # See publish.yml: pypa/gh-action-pypi-publish is a Docker action and
     # misbehaves when called from a local composite action, so it runs here directly.
     steps:
       - name: Download wheel artifacts from the release-candidate run

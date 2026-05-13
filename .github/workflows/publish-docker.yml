@@ -1,7 +1,7 @@
 name: Publish Docker Image
 
-# Dispatched by promote-pypi / the publish-pypi & emergency-publish workflows
-# (and by hand) once the tag's binaries are attached to its GH release.
+# Dispatched by the publish & emergency-publish workflows (and by hand) once
+# the tag's binaries are attached to its GH release.
 on:
   workflow_dispatch:
     inputs:
