@@ -218,7 +218,6 @@ Other rules:
 - **No inline CSS** — screens and modals use `.tcss` files via `CSS_PATH`, not `DEFAULT_CSS` strings. Widgets that don't support `CSS_PATH` may use `DEFAULT_CSS` or load from a file.
 - **CSS class/ID sync** — every CSS class or ID in a `.tcss` file must have a matching widget in the `.py` file and vice versa
 - **TUI tests use `pilot.press()`** — not `action_*()` method calls. `Button.press()` is acceptable since it's a public widget API, not an action bypass.
-- **All TUI design must reference ~/projects/toad** as the canonical implementation for patterns
 - **All user-facing text in `messages.py`** — inline strings in screens and widgets are forbidden
 
 ### Tests Before Deletion
