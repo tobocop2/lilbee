@@ -1706,6 +1706,27 @@ class TestSetEmbeddingModel:
         assert result.reindex_required is False
 
     @patch("lilbee.server.handlers.models.get_services")
+    async def test_returns_no_reindex_required_for_legacy_bare_repo(self, mock_svc):
+        """A bare-repo meta row that matches the new full ref does NOT need a rebuild.
+
+        Pre-canonical lilbee persisted only ``<org>/<repo>`` in ``_meta``. The
+        new full ref ``<org>/<repo>/<file>.gguf`` matches by canonical identity
+        when dims agree, so the swap is a no-op for the gate.
+        """
+        mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        bare_repo = _EMBED_REF.rsplit("/", 1)[0]
+        mock_svc.return_value.store.get_meta.return_value = {
+            "embedding_model": bare_repo,
+            "embedding_dim": 768,
+            "schema_version": 1,
+            "updated_at": "2026-04-25T00:00:00+00:00",
+        }
+        result = await handlers.set_embedding_model(_EMBED_REF)
+        assert result.reindex_required is False
+        # Migration helper must be called so the meta row is rewritten silently.
+        mock_svc.return_value.store.canonicalize_meta_if_legacy.assert_called_once()
+
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc):
         """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
 
