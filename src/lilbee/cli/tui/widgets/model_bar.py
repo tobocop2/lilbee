@@ -29,6 +29,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
+from lilbee.providers.worker.transport import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
@@ -293,7 +294,7 @@ class ModelPickerButton(Static, can_focus=True):
         self._refresh()
         bar = self.screen.query(ModelBar)
         for b in bar:
-            b._after_model_change()
+            b._after_model_change(self._scope)
 
 
 class ChatModePill(Static, can_focus=True):
@@ -499,8 +500,21 @@ class ModelBar(Widget, can_focus=False):
         with contextlib.suppress(Exception):
             self.query_one(ChatModeToggle).refresh_state()
 
-    def _after_model_change(self) -> None:
-        """Shared post-change logic: cancel active stream and reset services safely."""
+    def _after_model_change(self, scope: Literal["chat", "embed"]) -> None:
+        """Apply the side-effect of the role's model swap.
+
+        Chat-scope swaps route through :meth:`ChatScreen.apply_model_change`
+        so the in-flight stream cancels under the same UX that ``/model``
+        provides. Embed-scope swaps respawn only the embed worker via
+        :meth:`Services.reload_role`; the chat worker and any active
+        stream are untouched. Off-chat-screen chat swaps fall through to
+        a full ``reset_services`` because the chat-cancel path needs the
+        ChatScreen state machine.
+        """
+        if scope == "embed":
+            get_services().reload_role(WorkerRole.EMBED)
+            return
+
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen

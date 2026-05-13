@@ -1023,6 +1023,66 @@ class TestModelPickerButton:
                 await pilot.pause()
             write_tracker.assert_not_called()
 
+    async def test_embed_picker_dismiss_reloads_only_embed_role(self) -> None:
+        """Embed swap respawns just the embed worker. Chat stream stays untouched.
+
+        Regression for the mid-stream embed-swap hang: the old code called
+        ``reset_services`` on every model change, which races the chat
+        worker if a stream is in flight. The fix scopes the reset to the
+        role that actually changed.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+        from lilbee.providers.worker.transport import WorkerRole
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            new_ref = "ollama/new-embed:latest"
+            services_mock = mock.MagicMock()
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed(new_ref)
+                await pilot.pause()
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            mock_reset.assert_not_called()
+
+    async def test_chat_picker_dismiss_does_not_reload_role(self) -> None:
+        """Chat scope still routes through ``apply_model_change`` (cancel + reset).
+
+        Chat-model swap is the legitimate cancel-and-restart UX. The new
+        per-role reload path is only for siblings whose change should not
+        disturb the in-flight chat stream.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            services_mock = mock.MagicMock()
+            with (
+                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+                mock.patch(
+                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    return_value=services_mock,
+                ),
+            ):
+                btn._on_picker_dismissed("ollama/new-chat:latest")
+                await pilot.pause()
+            services_mock.reload_role.assert_not_called()
+
     async def test_picker_button_click_pushes_modal(self) -> None:
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
