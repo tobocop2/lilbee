@@ -37,81 +37,6 @@
     </section>
 
     <section>
-      <div class="label">one program</div>
-      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
-      <div class="shape">
-        <div class="shape-box many">
-          <div class="shape-h">the usual local-AI setup</div>
-          <ul>
-            <li>a model server, always running</li>
-            <li>model files fetched by hand</li>
-            <li>a vector database to stand up</li>
-            <li>code wiring them together</li>
-            <li>a separate app for the interface</li>
-            <li>often a container around it all</li>
-          </ul>
-          <div class="shape-note">a deployment to stand up and keep alive.</div>
-        </div>
-        <div class="shape-box one">
-          <div class="shape-h">lilbee</div>
-          <ul>
-            <li>the model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee, not as separate services to stand up</li>
-            <li>use it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, or a Python library</li>
-            <li>a built-in model catalog: browse and pull straight from Hugging Face Hub, no hunting for model files yourself</li>
-            <li>a scoped library per project, so each domain stays its own clean encyclopedia</li>
-            <li>runs on a laptop or headless over a remote shell; move it between machines</li>
-          </ul>
-          <div class="shape-note">one install command, sane defaults. point it at a folder, ask.</div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="label">preview</div>
-      <div class="demo" role="figure" aria-label="terminal preview">
-        <div class="titlebar">
-          <span class="title">lilbee chat . owner's manuals</span>
-          <span>[qwen3:0.6b]</span>
-        </div>
-        <div class="body">
-          <div class="line"><span class="prompt">&gt;</span><span class="answer">what does the oil pressure warning mean?</span></div>
-          <div class="line"><span class="answer">the oil pressure warning indicates low oil pressure.<sup>[1]</sup></span></div>
-          <div class="line"><span class="answer">when the light stays on, stop the engine immediately.<sup>[2]</sup></span></div>
-          <div class="rule">─── sources ─────────────────────────────────</div>
-          <div class="cite">[1] owners-manual.pdf:42 &nbsp;&nbsp; [2] owners-manual.pdf:43</div>
-          <div class="line" style="margin-top:0.6rem"><span class="prompt">&gt;</span><span class="cursor"></span></div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="label">what it does</div>
-      <div class="caps">
-        <div class="cap">
-          <h3>feed it your files</h3>
-          <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
-        </div>
-        <div class="cap">
-          <h3>pair it with your agent</h3>
-          <p>Pair it with your favorite agent over MCP. It reads the real code and docs before it answers, cites the file and line, and says "I don't know" instead of guessing.</p>
-        </div>
-        <div class="cap">
-          <h3>websites, offline</h3>
-          <p>Crawl a docs site or a wiki, turn it into markdown, and keep it. Search and chat with it offline, even after it goes down.</p>
-        </div>
-        <div class="cap">
-          <h3>scans &amp; OCR</h3>
-          <p>Old scans and photos go through OCR or a local vision model and come out as searchable markdown, layout intact.</p>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="label">a note on answers</div>
-      <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
-    </section>
-
-    <section>
       <div class="label">install</div>
 
       <div class="installtabs" role="tablist" aria-label="Install methods">
@@ -255,7 +180,82 @@
       </div>
 
       <p class="installmeta">every release is a pre-release. <a href="https://pypi.org/project/lilbee/#history">latest on PyPI &rarr;</a> &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/blob/main/README.md#install">full install guide &rarr;</a></p>
-      <p class="installmeta">it's early &mdash; a <a href="https://github.com/tobocop2/lilbee">&#9733; on GitHub</a> helps people find it; bug reports and issues are very welcome.</p>
+      <p class="installmeta">it's early. a <a href="https://github.com/tobocop2/lilbee">&#9733; on GitHub</a> helps people find it; bug reports and issues are very welcome.</p>
+    </section>
+
+    <section>
+      <div class="label">one program</div>
+      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
+      <div class="shape">
+        <div class="shape-box many">
+          <div class="shape-h">the usual local-AI setup</div>
+          <ul>
+            <li>a model server, always running</li>
+            <li>model files fetched by hand</li>
+            <li>a vector database to stand up</li>
+            <li>code wiring them together</li>
+            <li>a separate app for the interface</li>
+            <li>often a container around it all</li>
+          </ul>
+          <div class="shape-note">a deployment to stand up and keep alive.</div>
+        </div>
+        <div class="shape-box one">
+          <div class="shape-h">lilbee</div>
+          <ul>
+            <li>the model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee, not as separate services to stand up</li>
+            <li>use it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, or a Python library</li>
+            <li>a built-in model catalog: browse and pull straight from Hugging Face Hub, no hunting for model files yourself</li>
+            <li>a scoped library per project, so each domain stays its own clean encyclopedia</li>
+            <li>runs on a laptop or headless over a remote shell; move it between machines</li>
+          </ul>
+          <div class="shape-note">one install command, sane defaults. point it at a folder, ask.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">preview</div>
+      <div class="demo" role="figure" aria-label="terminal preview">
+        <div class="titlebar">
+          <span class="title">lilbee chat . owner's manuals</span>
+          <span>[qwen3:0.6b]</span>
+        </div>
+        <div class="body">
+          <div class="line"><span class="prompt">&gt;</span><span class="answer">what does the oil pressure warning mean?</span></div>
+          <div class="line"><span class="answer">the oil pressure warning indicates low oil pressure.<sup>[1]</sup></span></div>
+          <div class="line"><span class="answer">when the light stays on, stop the engine immediately.<sup>[2]</sup></span></div>
+          <div class="rule">─── sources ─────────────────────────────────</div>
+          <div class="cite">[1] owners-manual.pdf:42 &nbsp;&nbsp; [2] owners-manual.pdf:43</div>
+          <div class="line" style="margin-top:0.6rem"><span class="prompt">&gt;</span><span class="cursor"></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">what it does</div>
+      <div class="caps">
+        <div class="cap">
+          <h3>feed it your files</h3>
+          <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
+        </div>
+        <div class="cap">
+          <h3>pair it with your agent</h3>
+          <p>Pair it with your favorite agent over MCP. It reads the real code and docs before it answers, cites the file and line, and says "I don't know" instead of guessing.</p>
+        </div>
+        <div class="cap">
+          <h3>websites, offline</h3>
+          <p>Crawl a docs site or a wiki, turn it into markdown, and keep it. Search and chat with it offline, even after it goes down.</p>
+        </div>
+        <div class="cap">
+          <h3>scans &amp; OCR</h3>
+          <p>Old scans and photos go through OCR or a local vision model and come out as searchable markdown, layout intact.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">a note on answers</div>
+      <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
     </section>
 
     <section>
