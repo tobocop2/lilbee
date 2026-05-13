@@ -1,99 +1,143 @@
 #!/usr/bin/env bash
 # Pre-stage models, data dirs, man pages, and opencode demo dirs for the VHS reel.
-# Idempotent: re-running won't re-download or re-index.
+# Idempotent: re-running won't re-download or re-index already-staged content.
+#
+# Env overrides:
+#   LILBEE_BIN         which lilbee binary to use (default: first on PATH)
+#   LILBEE_DEMO_ROOT   where staged data lives (default: /tmp/lilbee-demo)
+#   CV_MANUAL          path to the Crown Vic owner's manual PDF
+#                      (default: demos/sample-corpus/cv-manual.pdf in this repo)
 
 set -euo pipefail
 
-# Use whichever `lilbee` is on PATH. Override with LILBEE_BIN if you want a
-# specific install (e.g. the bundled standalone at /opt/homebrew/bin/lilbee).
-LILBEE="${LILBEE_BIN:-lilbee}"
+DEMOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly DEMOS_DIR
+REPO_DIR="$(cd "$DEMOS_DIR/.." && pwd)"
+readonly REPO_DIR
 
-ROOT="${LILBEE_DEMO_ROOT:-/tmp/lilbee-demo}"
-MODELS_DIR="$ROOT/models"
-CV_MANUAL="${CV_MANUAL:-$HOME/Downloads/cv-manual.pdf}"
+readonly LILBEE="${LILBEE_BIN:-lilbee}"
+readonly ROOT="${LILBEE_DEMO_ROOT:-/tmp/lilbee-demo}"
+readonly MODELS_DIR="$ROOT/models"
+readonly CV_MANUAL="${CV_MANUAL:-$DEMOS_DIR/sample-corpus/cv-manual.pdf}"
 
-if [ ! -f "$CV_MANUAL" ]; then
-    echo "error: $CV_MANUAL not found. Set CV_MANUAL=/path/to/manual.pdf." >&2
-    exit 1
-fi
+# Chat model. Pre-staged so chat / catalog / settings / tour tapes start ready.
+readonly CHAT_MODEL="Qwen/Qwen3-4B-GGUF"
+# Embedding model. Pre-staged for every tape that adds documents.
+readonly EMBED_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF"
 
-mkdir -p "$MODELS_DIR"
-export LILBEE_MODELS_DIR="$MODELS_DIR"
-export LILBEE_SKIP_TOML_CONFIG=1
+# Tapes that record against a pre-indexed copy of the Crown Vic manual.
+readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-crawl tui-palette)
+# Tapes that start from a clean slate.
+readonly FRESH_TAPES=(tui-setup tui-add cli)
+# opencode demo dirs.
+readonly OPENCODE_TAPES=(opencode-code opencode-manual)
+# Man pages indexed for the CLI tape.
+readonly MAN_PAGES=(find awk grep xargs sed)
 
-echo "==> models dir: $MODELS_DIR"
+log() { printf '==> %s\n' "$*"; }
 
-# Pull the demo models once. Re-runs are no-ops if already installed.
-# Qwen3 4B is the TUI chat model (8 GB RAM minimum, gives much better answers
-# than 0.6B). Qwen3 0.6B is kept for the catalog "download a small model" demo
-# step — but NOT pre-staged there so the recording shows a real fresh pull.
-echo "==> pulling Qwen/Qwen3-4B-GGUF (chat) if missing ..."
-"$LILBEE" model pull "Qwen/Qwen3-4B-GGUF" || true
-echo "==> pulling nomic-ai/nomic-embed-text-v1.5-GGUF (embed) if missing ..."
-"$LILBEE" model pull "nomic-ai/nomic-embed-text-v1.5-GGUF" || true
-
-# Pre-index the Crown Vic manual for tapes that need an existing corpus.
-# --data-dir goes AFTER the subcommand (lilbee parses flags per-subcommand).
-for tape in tui-chat tui-catalog tui-settings tui-tour; do
-    DATA="$ROOT/$tape"
-    mkdir -p "$DATA/documents"
-    unset LILBEE_DATA
-    if ! "$LILBEE" status --data-dir "$DATA" 2>/dev/null | grep -q "crown-victoria-manual"; then
-        echo "==> indexing manual into $DATA"
-        cp "$CV_MANUAL" "$DATA/documents/crown-victoria-manual.pdf"
-        "$LILBEE" rebuild --data-dir "$DATA"
+require_manual() {
+    if [[ ! -f "$CV_MANUAL" ]]; then
+        printf 'error: %s not found. Set CV_MANUAL=/path/to/manual.pdf.\n' "$CV_MANUAL" >&2
+        exit 1
     fi
-done
+}
 
-# Tapes that record from a clean slate (the setup wizard, the add demo, the CLI tour):
-# nuke and recreate their data dirs.
-for tape in tui-setup tui-add cli; do
-    rm -rf "${ROOT:?}/$tape"
-    mkdir -p "$ROOT/$tape"
-done
+pull_model() {
+    local name="$1"
+    log "pulling $name (no-op if installed)"
+    "$LILBEE" model pull "$name" || true
+}
 
-# Man pages for the CLI tape.
-MANDIR="$ROOT/cli/man-pages"
-mkdir -p "$MANDIR"
-for p in find awk grep xargs sed; do
-    if [ ! -f "$MANDIR/$p.txt" ]; then
-        man "$p" 2>/dev/null | col -bx > "$MANDIR/$p.txt" || true
+seed_indexed_corpus() {
+    # Stage <ROOT>/<tape>/documents/crown-victoria-manual.pdf and rebuild the
+    # store, but only if the corpus isn't already there.
+    local tape="$1"
+    local data="$ROOT/$tape"
+    mkdir -p "$data/documents"
+    if "$LILBEE" status --data-dir "$data" 2>/dev/null | grep -q crown-victoria-manual; then
+        return 0
     fi
-done
+    log "indexing manual into $data"
+    cp "$CV_MANUAL" "$data/documents/crown-victoria-manual.pdf"
+    "$LILBEE" rebuild --data-dir "$data"
+}
 
-# opencode demo dirs. Each gets the shared agent artifacts.
-DEMOS_DIR="$(cd "$(dirname "$0")" && pwd)"
-for tape in opencode-code opencode-manual; do
-    DIR="$ROOT/$tape"
-    mkdir -p "$DIR/.opencode/agents" "$DIR/.opencode/skills/lilbee-mcp"
-    cp "$DEMOS_DIR/AGENTS.md" "$DIR/AGENTS.md"
-    cp "$DEMOS_DIR/opencode.json" "$DIR/opencode.json"
-    cp "$DEMOS_DIR/.opencode/agents/lilbee-worker.md" "$DIR/.opencode/agents/lilbee-worker.md"
-    cp "$DEMOS_DIR/../docs/agent-skills/lilbee-mcp/SKILL.md" "$DIR/.opencode/skills/lilbee-mcp/SKILL.md"
-done
+reset_clean_slate() {
+    local tape="$1"
+    local data="$ROOT/$tape"
+    rm -rf "$data"
+    mkdir -p "$data"
+}
 
-# opencode-manual: the PDF.
-cp "$CV_MANUAL" "$ROOT/opencode-manual/cv-manual.pdf"
+render_man_page() {
+    local page="$1" out_dir="$2"
+    local out="$out_dir/$page.txt"
+    [[ -f "$out" ]] && return 0
+    man "$page" 2>/dev/null | col -bx > "$out" || true
+}
 
-# opencode-code: a shallow clone of lilbee main with src/ at the root.
-if [ ! -d "$ROOT/opencode-code/src/lilbee" ]; then
-    TMP="$ROOT/opencode-code/_clone"
-    rm -rf "$TMP"
-    git clone --depth 1 https://github.com/tobocop2/lilbee.git "$TMP" >/dev/null 2>&1
-    mv "$TMP/src" "$ROOT/opencode-code/src"
-    cp "$TMP/pyproject.toml" "$ROOT/opencode-code/pyproject.toml" 2>/dev/null || true
-    rm -rf "$TMP"
-fi
+setup_opencode_dir() {
+    # Copy the shared agent artifacts (AGENTS.md, opencode.json, the
+    # lilbee-worker subagent, and the lilbee-mcp skill) into a demo dir,
+    # then `lilbee init` so the MCP server walks up from cwd to a real
+    # project-local corpus.
+    local tape="$1"
+    local dir="$ROOT/$tape"
+    mkdir -p "$dir/.opencode/agents" "$dir/.opencode/skills/lilbee-mcp"
+    cp "$DEMOS_DIR/AGENTS.md"                                     "$dir/AGENTS.md"
+    cp "$DEMOS_DIR/opencode.json"                                 "$dir/opencode.json"
+    cp "$DEMOS_DIR/.opencode/agents/lilbee-worker.md"             "$dir/.opencode/agents/lilbee-worker.md"
+    cp "$REPO_DIR/docs/agent-skills/lilbee-mcp/SKILL.md"          "$dir/.opencode/skills/lilbee-mcp/SKILL.md"
+    rm -rf "$dir/.lilbee"
+    ( cd "$dir" && "$LILBEE" init >/dev/null )
+}
 
-# Project-local .lilbee/ in each opencode dir so the MCP server (launched
-# from the project dir) walks up from cwd and uses the project's own corpus
-# instead of falling through to the global one. We do NOT pre-index here:
-# the opencode demos want the agent's lilbee_add (delegated to the
-# lilbee-worker subagent) to be a real first-time add, visible on screen.
-for tape in opencode-code opencode-manual; do
-    DIR="$ROOT/$tape"
-    rm -rf "$DIR/.lilbee"
-    ( cd "$DIR" && "$LILBEE" init >/dev/null )
-done
+clone_lilbee_source() {
+    # Shallow-clone lilbee main into <ROOT>/opencode-code so the agent can
+    # index `src/lilbee/` and answer questions about how lilbee itself works.
+    local dest="$ROOT/opencode-code"
+    [[ -d "$dest/src/lilbee" ]] && return 0
+    local tmp="$dest/_clone"
+    rm -rf "$tmp"
+    git clone --depth 1 https://github.com/tobocop2/lilbee.git "$tmp" >/dev/null 2>&1
+    mv "$tmp/src" "$dest/src"
+    cp "$tmp/pyproject.toml" "$dest/pyproject.toml" 2>/dev/null || true
+    rm -rf "$tmp"
+}
 
-echo "==> prep done. $ROOT is ready."
+main() {
+    require_manual
+
+    mkdir -p "$MODELS_DIR"
+    export LILBEE_MODELS_DIR="$MODELS_DIR"
+    export LILBEE_SKIP_TOML_CONFIG=1
+
+    log "models dir: $MODELS_DIR"
+    pull_model "$CHAT_MODEL"
+    pull_model "$EMBED_MODEL"
+
+    for tape in "${SEEDED_TAPES[@]}"; do
+        seed_indexed_corpus "$tape"
+    done
+
+    for tape in "${FRESH_TAPES[@]}"; do
+        reset_clean_slate "$tape"
+    done
+
+    local man_dir="$ROOT/cli/man-pages"
+    mkdir -p "$man_dir"
+    for page in "${MAN_PAGES[@]}"; do
+        render_man_page "$page" "$man_dir"
+    done
+
+    for tape in "${OPENCODE_TAPES[@]}"; do
+        setup_opencode_dir "$tape"
+    done
+    cp "$CV_MANUAL" "$ROOT/opencode-manual/cv-manual.pdf"
+    clone_lilbee_source
+
+    log "prep done. $ROOT is ready."
+}
+
+main "$@"

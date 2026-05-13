@@ -21,6 +21,7 @@ htmlcov/
 !tools/qa/**/*.txt
 !tools/qa/**/*.pdf
 !tools/qa/**/*.html
+!demos/sample-corpus/**
 CLAUDE.md
 .worktrees/
 docs/plans/
