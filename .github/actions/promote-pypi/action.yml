@@ -1,5 +1,13 @@
 name: Publish wheels + sdist to PyPI
-description: "Download the default-backend wheels + sdist built earlier in this run and publish them to PyPI via Trusted Publishing; caller needs environment:pypi + id-token:write."
+description: "Download the default-backend wheels + sdist from a prior run and publish them to PyPI via Trusted Publishing; caller needs environment:pypi + id-token:write + actions:read."
+
+inputs:
+  run_id:
+    description: "Run that holds the wheel-default-* + sdist artifacts (the release-candidate.yml run for the tag)."
+    required: true
+  github_token:
+    description: "Token with actions:read for the cross-run artifact download."
+    required: true
 
 runs:
   using: composite
@@ -10,12 +18,16 @@ runs:
         pattern: wheel-default-*
         path: dist/
         merge-multiple: true
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.github_token }}
 
     - name: Download sdist
       uses: actions/download-artifact@v4
       with:
         name: sdist
         path: dist/
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.github_token }}
 
     - name: Stage wheels + sdist
       shell: bash
@@ -25,3 +37,5 @@ runs:
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        skip-existing: true   # safe to re-run (e.g. to redo the fan-out once executables land)

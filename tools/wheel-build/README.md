@@ -1,7 +1,8 @@
 # Wheel build scripts
 
-Top-level scripts called by `.github/workflows/build-wheels.yml`. Each script
-runs locally (`bash tools/wheel-build/<script>.sh`) and in CI with the same
+Top-level scripts called by the `build-default-wheels.yml` / `build-extra-wheels.yml`
+reusable workflows (and `release.yml` for the executables). Each script runs
+locally (`bash tools/wheel-build/<script>.sh`) and in CI with the same
 behavior, so a developer can reproduce a CI build off-runner.
 
 ## What lives here

@@ -1,18 +1,40 @@
 name: Fan out downstream packaging
-description: "Trigger publish-docker.yml and publish-packages.yml for a tag whose binaries are already attached to its GH release; caller needs actions:write."
+description: "Trigger publish-docker.yml and publish-packages.yml for a tag whose executables are attached to its GH release; self-skips if they aren't there yet. Caller needs actions:write."
 
 inputs:
   tag:
-    description: "Tag whose binaries are on the GH release (e.g. v0.6.66b469)."
+    description: "Tag whose executables are on the GH release (e.g. v0.6.66b469)."
     required: true
 
 runs:
   using: composite
   steps:
     # publish-docker.yml curls the GH-release Linux binary; publish-packages.yml
-    # pins the GH-release binaries by hash. Both consume the release, not PyPI,
-    # so this only needs the binaries attached -- it does not wait on the wheels.
+    # pins all three by hash. Both consume the release, not PyPI, so this only
+    # needs the executables attached -- it does not wait on the wheels.
+    - name: Check the release has the platform executables
+      id: assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -uo pipefail
+        NAMES=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
+        MISSING=""
+        for a in lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe; do
+          case " ${NAMES} " in *" ${a} "*) ;; *) MISSING="${MISSING} ${a}" ;; esac
+        done
+        if [ -n "${MISSING}" ]; then
+          echo "::warning::release ${TAG} is missing executables:${MISSING} -- skipping the Docker/Homebrew/AUR/Nix fan-out; re-run publish-pypi.yml once release-candidate.yml has attached them"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Trigger Publish Docker Image
+      if: steps.assets.outputs.ready == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -22,6 +44,7 @@ runs:
           -f tag=${{ inputs.tag }}
 
     - name: Trigger Publish Packages
+      if: steps.assets.outputs.ready == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
