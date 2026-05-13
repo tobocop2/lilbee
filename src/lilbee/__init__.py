@@ -114,12 +114,16 @@ def _install_chatty_dependency_filters() -> None:
     )
 
     class _SubstringFilter(logging.Filter):
-        def __init__(self, needles: tuple[str, ...]) -> None:
+        def __init__(self, needles: tuple[str, ...], *, case_insensitive: bool = False) -> None:
             super().__init__()
-            self._needles = needles
+            self._needles = tuple(n.lower() for n in needles) if case_insensitive else needles
+            self._case_insensitive = case_insensitive
 
         def filter(self, record: logging.LogRecord) -> bool:
-            return not any(n in record.getMessage() for n in self._needles)
+            msg = record.getMessage()
+            if self._case_insensitive:
+                msg = msg.lower()
+            return not any(n in msg for n in self._needles)
 
     hf_filter = _SubstringFilter(hf_suppress)
     for name in ("huggingface_hub.utils._http", "huggingface_hub.file_download"):
@@ -129,7 +133,22 @@ def _install_chatty_dependency_filters() -> None:
     # WARNING every chat call when offline. Pin a substring filter rather
     # than raising the whole logger's level so real LiteLLM warnings still
     # surface.
-    litellm_filter = _SubstringFilter(("Failed to fetch remote model cost map",))
+    #
+    # LiteLLM also lazy-routes some calls through AWS provider modules that
+    # warn when boto3 / botocore aren't installed. lilbee never targets
+    # Bedrock, SageMaker, or S3 (the litellm extra deliberately excludes
+    # boto3), so those warnings are pure noise for our users.
+    litellm_suppress = (
+        "Failed to fetch remote model cost map",
+        # AWS-related noise: lilbee's litellm extra does not pull boto3, so
+        # any "missing boto3 / botocore", sagemaker-runtime, or bedrock
+        # advisories surface as user-facing errors with no user action.
+        "boto3",
+        "botocore",
+        "sagemaker",
+        "bedrock",
+    )
+    litellm_filter = _SubstringFilter(litellm_suppress, case_insensitive=True)
     logging.getLogger("LiteLLM").addFilter(litellm_filter)
 
 

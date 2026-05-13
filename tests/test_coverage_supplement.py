@@ -1290,6 +1290,27 @@ class TestChattyDependencyFilters:
         )
         assert any(f.filter(noisy) is False for f in litellm_logger.filters)
 
+    @pytest.mark.parametrize(
+        "aws_message",
+        [
+            "Missing boto3 to call bedrock. Run 'pip install boto3'.",
+            "Could not load response stream shape: botocore not available",
+            "sagemaker-runtime endpoint unreachable",
+            "bedrock invoke failed",
+        ],
+    )
+    def test_litellm_aws_messages_are_dropped(self, aws_message: str) -> None:
+        """AWS-related LiteLLM advisories are filtered: lilbee never supports AWS."""
+        litellm_logger = logging.getLogger("LiteLLM")
+        noisy = self._record(litellm_logger.name, aws_message)
+        assert any(f.filter(noisy) is False for f in litellm_logger.filters)
+
+    def test_litellm_unrelated_message_passes_through(self) -> None:
+        """Filter is targeted: a generic LiteLLM warning still surfaces."""
+        litellm_logger = logging.getLogger("LiteLLM")
+        keep = self._record(litellm_logger.name, "Rate limit hit, retrying in 5s")
+        assert all(f.filter(keep) is True for f in litellm_logger.filters)
+
 
 class TestWikiEmptyStateSpacyBranches:
     """Wiki-empty-state messages have a spaCy-unavailable branch."""

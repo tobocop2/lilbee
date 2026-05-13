@@ -281,6 +281,32 @@ class Config(BaseSettings):
     # discrete GPU has less VRAM than the model needs.
     n_gpu_layers: int | None = ConfigField(default=None, writable=True)
 
+    # GPU device picker for dual-GPU machines (typical laptop case:
+    # discrete NVIDIA + integrated Intel/AMD). The Vulkan backend
+    # enumerates every adapter the system exposes and may pick the
+    # integrated one first, producing stalls or OOMs that look like
+    # llama.cpp bugs. Setting ``gpu_devices`` constrains visibility
+    # before llama_cpp loads, pinning inference to the chosen device(s).
+    #
+    # Accepts a comma-separated list of device indexes ("0", "1",
+    # "0,1") and applies it to every backend simultaneously:
+    # ``GGML_VK_VISIBLE_DEVICES`` for Vulkan, ``CUDA_VISIBLE_DEVICES``
+    # for CUDA, ``HIP_VISIBLE_DEVICES`` / ``ROCR_VISIBLE_DEVICES`` for
+    # ROCm. Setting one variable that the active backend ignores is
+    # harmless, so we set all four rather than detecting the build.
+    #
+    # Must be set before the first llama.cpp call; in practice that
+    # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
+    # only take effect after a restart). ``None`` (default) leaves
+    # device visibility untouched.
+    gpu_devices: str | None = ConfigField(default=None, writable=True)
+
+    # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
+    # when multiple devices remain visible after ``gpu_devices``; with
+    # a single visible device, llama.cpp ignores this. ``None``
+    # (default) lets llama.cpp pick (index 0).
+    main_gpu: int | None = ConfigField(default=None, writable=True)
+
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
@@ -565,6 +591,43 @@ class Config(BaseSettings):
                 log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
                 return None
         return int(v)
+
+    @field_validator("main_gpu", mode="before")
+    @classmethod
+    def _parse_main_gpu(cls, v: Any) -> int | None:
+        """Empty/auto strings -> None, integers parsed verbatim."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            label = v.strip().lower()
+            if label in ("", "auto", "none"):
+                return None
+            try:
+                return int(label)
+            except ValueError:
+                log.warning("Invalid LILBEE_MAIN_GPU=%r, using auto", v)
+                return None
+        return int(v)
+
+    @field_validator("gpu_devices", mode="before")
+    @classmethod
+    def _parse_gpu_devices(cls, v: Any) -> str | None:
+        """Normalize device list: strip whitespace, drop empties, keep order."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            label = v.strip().lower()
+            if label in ("", "auto", "all", "none"):
+                return None
+            parts = [p.strip() for p in v.split(",") if p.strip()]
+            if not parts:
+                return None
+            for part in parts:
+                if not part.lstrip("-").isdigit():
+                    log.warning("Invalid LILBEE_GPU_DEVICES=%r, ignoring", v)
+                    return None
+            return ",".join(parts)
+        return str(v)
 
     @field_validator("semantic_chunking", mode="before")
     @classmethod

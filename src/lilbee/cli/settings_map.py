@@ -183,6 +183,26 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "positive int = partial offload for tight VRAM."
         ),
     ),
+    "gpu_devices": SettingDef(
+        str,
+        nullable=True,
+        group="Generation",
+        help_text=(
+            "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
+            "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
+            "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
+        ),
+    ),
+    "main_gpu": SettingDef(
+        int,
+        nullable=True,
+        group="Generation",
+        help_text=(
+            "Primary GPU index for llama.cpp when multiple devices are visible. "
+            "Empty = let llama.cpp pick (index 0). Set this together with "
+            "gpu_devices to pin inference to a specific card."
+        ),
+    ),
     "seed": SettingDef(
         int,
         nullable=True,

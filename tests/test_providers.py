@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -532,6 +533,28 @@ class TestLlamaCppProvider:
                     assert mock_llama_cls.call_args[1]["n_gpu_layers"] == expected
         finally:
             cfg.n_gpu_layers = "auto"
+            cfg.flash_attention = "auto"
+
+    def testload_llama_threads_main_gpu_when_set(self, models_dir: Path) -> None:
+        """``cfg.main_gpu`` reaches the Llama() constructor; default leaves it absent."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = 4096
+        cfg.flash_attention = "0"
+        try:
+            cfg.main_gpu = None
+            with patch("llama_cpp.Llama") as mock_llama_cls:
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                assert "main_gpu" not in mock_llama_cls.call_args[1]
+
+            cfg.main_gpu = 1
+            with patch("llama_cpp.Llama") as mock_llama_cls:
+                load_llama(models_dir / "test-model.gguf", mode="chat")
+                assert mock_llama_cls.call_args[1]["main_gpu"] == 1
+        finally:
+            cfg.main_gpu = None
             cfg.flash_attention = "auto"
 
     def testapply_kv_cache_type_skips_when_internal_module_missing(self) -> None:
@@ -1768,6 +1791,28 @@ class TestMtmdLoadVisionLlama:
         assert call_kwargs["n_ctx"] == 8192
         assert call_kwargs["n_gpu_layers"] == -1
 
+    def test_vision_threads_main_gpu_when_set(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """``cfg.main_gpu`` reaches the vision Llama() constructor when set."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = None
+        cfg.main_gpu = 1
+        try:
+            with (
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                    return_value={"context_length": "8192"},
+                ),
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                    return_value=mock.MagicMock(),
+                ),
+            ):
+                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+            assert mock_llama_cpp.Llama.call_args[1]["main_gpu"] == 1
+        finally:
+            cfg.main_gpu = None
+
     def test_vision_falls_back_to_default_when_metadata_missing(
         self, mock_llama_cpp: mock.MagicMock
     ) -> None:
@@ -1916,6 +1961,52 @@ class TestImportLlamaCpp:
         monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
         with pytest.raises(OSError, match="libsomethingelse"):
             import_llama_cpp()
+
+    def test_gpu_devices_sets_visibility_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``cfg.gpu_devices`` propagates to every backend's visible-devices env var."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _GPU_VISIBLE_ENV_VARS,
+            import_llama_cpp,
+        )
+
+        for name in _GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(cfg, "gpu_devices", "0")
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        for name in _GPU_VISIBLE_ENV_VARS:
+            assert os.environ.get(name) == "0", name
+
+    def test_gpu_devices_none_leaves_env_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With ``gpu_devices=None`` the visibility env vars are not set."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _GPU_VISIBLE_ENV_VARS,
+            import_llama_cpp,
+        )
+
+        for name in _GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(cfg, "gpu_devices", None)
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        for name in _GPU_VISIBLE_ENV_VARS:
+            assert name not in os.environ, name
+
+    def test_user_env_var_wins_over_cfg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pre-set ``GGML_VK_VISIBLE_DEVICES`` is preserved even when cfg has a value."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+
+        monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
+        monkeypatch.setattr(cfg, "gpu_devices", "0")
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert os.environ["GGML_VK_VISIBLE_DEVICES"] == "1"
 
 
 class TestReadChatTemplate:

@@ -90,6 +90,8 @@ def status() -> dict[str, Any]:
             "flash_attention": cfg.flash_attention,
             "kv_cache_type": cfg.kv_cache_type.value,
             "n_gpu_layers": cfg.n_gpu_layers,
+            "main_gpu": cfg.main_gpu,
+            "gpu_devices": cfg.gpu_devices,
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}

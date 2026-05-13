@@ -175,6 +175,7 @@ def import_llama_cpp() -> Any:
     after the first successful import (Python caches it in ``sys.modules``),
     so callers can sprinkle it at every llama_cpp entry point cheaply.
     """
+    _apply_gpu_device_env()
     try:
         import llama_cpp
 
@@ -183,6 +184,35 @@ def import_llama_cpp() -> Any:
         if "libvulkan" in str(exc):
             raise ProviderError(_MISSING_VULKAN_HINT, provider="llama-cpp") from exc
         raise
+
+
+# Backend env vars set from ``cfg.gpu_devices`` before the first llama_cpp
+# import. Vulkan, CUDA, and ROCm each read their own; setting all four
+# lets the same config field work across every wheel flavor lilbee ships.
+_GPU_VISIBLE_ENV_VARS = (
+    "GGML_VK_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+)
+
+
+def _apply_gpu_device_env() -> None:
+    """Apply ``cfg.gpu_devices`` to every backend's visibility env var.
+
+    Must run before ``import llama_cpp``: the Vulkan / CUDA / ROCm
+    runtimes snapshot their visible-device lists at library load time
+    and ignore subsequent changes. ``cfg.gpu_devices`` is a no-op when
+    ``None``; an explicit user-set env var always wins so power users
+    can still override per-shell.
+    """
+    from lilbee.core.config import cfg
+
+    devices = cfg.gpu_devices
+    if not devices:
+        return
+    for name in _GPU_VISIBLE_ENV_VARS:
+        os.environ.setdefault(name, devices)
 
 
 def install_llama_log_handler() -> None:
