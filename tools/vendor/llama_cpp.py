@@ -25,6 +25,7 @@ import argparse
 import base64
 import hashlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,25 @@ from enum import StrEnum
 from pathlib import Path
 
 PREBUILT_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
-DEFAULT_VERSION = "0.3.18"
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_LOCK_LLAMA_RE = re.compile(
+    r'^\[\[package\]\]\nname = "llama-cpp-python"\nversion = "([^"]+)"', re.MULTILINE
+)
+
+
+def _llama_cpp_version_from_lock() -> str | None:
+    """Resolved llama-cpp-python version from uv.lock, or None if unreadable."""
+    try:
+        text = (_REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _LOCK_LLAMA_RE.search(text)
+    return match.group(1) if match else None
+
+
+# uv.lock is the source of truth; the literal is only a fallback for out-of-tree runs.
+DEFAULT_VERSION = _llama_cpp_version_from_lock() or "0.3.20"
 
 BYTES_PER_MB = 1024 * 1024
 
