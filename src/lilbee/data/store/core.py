@@ -29,6 +29,7 @@ from .lance_helpers import (
     _table_names,
     ensure_table,
     escape_sql_string,
+    refs_compatible,
 )
 from .ranking import mmr_rerank
 from .schema import _citations_schema, _meta_schema, _sources_schema
@@ -183,6 +184,10 @@ class Store:
         chunks = self.open_table(CHUNKS_TABLE)
         return chunks is not None and chunks.count_rows() > 0
 
+    def has_chunks(self) -> bool:
+        """Public predicate: True iff the store currently holds at least one chunk."""
+        return self._has_chunks()
+
     def initialize_meta_if_legacy(self) -> bool:
         """Pin a legacy store's identity to the current cfg if not already set.
 
@@ -217,9 +222,11 @@ class Store:
         """Raise when the persisted embedding identity drifts from cfg.
 
         Pure check, no side effects. Migration of legacy stores (chunks present,
-        no ``_meta``) is the caller's responsibility via ``initialize_meta_if_legacy``
-        so this method is safe to call from inside an existing ``write_lock()``
-        (no recursive lock attempt). cfg fields are snapshotted at entry so the
+        no ``_meta``) is the caller's responsibility via ``initialize_meta_if_legacy``;
+        rewriting a legacy bare-repo ``_meta`` row to the canonical full ref is
+        the caller's responsibility via ``canonicalize_meta_if_legacy``. This
+        method stays safe to call from inside an existing ``write_lock()`` (no
+        recursive lock attempt). cfg fields are snapshotted at entry so the
         comparison is coherent even if another thread mutates them mid-call.
         """
         current_model = self._config.embedding_model
@@ -227,7 +234,9 @@ class Store:
         meta = self.get_meta()
         if meta is None:
             return
-        if meta["embedding_model"] == current_model and meta["embedding_dim"] == current_dim:
+        if refs_compatible(
+            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+        ):
             return
         raise EmbeddingModelMismatchError(
             _embedding_mismatch_message(
@@ -237,6 +246,44 @@ class Store:
                 current_dim=current_dim,
             )
         )
+
+    def _needs_canonical_meta_rewrite(
+        self, meta: StoreMeta | None, current_model: str, current_dim: int
+    ) -> bool:
+        """True iff *meta* is the legacy form and refs-compatible with current cfg."""
+        if meta is None or meta["embedding_model"] == current_model:
+            return False
+        return refs_compatible(
+            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+        )
+
+    def canonicalize_meta_if_legacy(self) -> bool:
+        """Rewrite a legacy bare-repo ``_meta`` row to the canonical full ref.
+
+        Pre-canonical lilbee persisted only ``<org>/<repo>`` in
+        ``_meta.embedding_model``. The current code persists the full
+        ``<org>/<repo>/<filename>.gguf``. When the two refer to the same
+        model under :func:`refs_compatible` but differ as raw strings, the
+        meta row is rewritten so the legacy name never surfaces. Returns
+        ``True`` on write; ``False`` when missing, already canonical, or
+        incompatible (the gate handles incompatibility).
+        """
+        current_model = self._config.embedding_model
+        current_dim = self._config.embedding_dim
+        if not self._needs_canonical_meta_rewrite(self.get_meta(), current_model, current_dim):
+            return False
+        with write_lock():
+            meta = self.get_meta()  # re-read under the lock for racing callers
+            if not self._needs_canonical_meta_rewrite(meta, current_model, current_dim):
+                return False
+            assert meta is not None  # filtered above  # noqa: S101
+            log.info(
+                "Migrating legacy embedding ref in store meta: %r -> %r",
+                meta["embedding_model"],
+                current_model,
+            )
+            self._write_meta_unlocked(embedding_model=current_model, embedding_dim=current_dim)
+            return True
 
     def get_db(self) -> lancedb.DBConnection:
         if self._db is None:
@@ -355,6 +402,7 @@ class Store:
         if table is None:
             return []
         self.initialize_meta_if_legacy()
+        self.canonicalize_meta_if_legacy()
         self._ensure_embedding_compat()
 
         if query_text and not self._fts_ready:
