@@ -23,6 +23,49 @@ Add to your MCP client's configuration:
 }
 ```
 
+For opencode, an `opencode.json` in the project root works too. This one denies the
+built-in search tools so the agent has to use lilbee, and allows the `task` tool so it can
+delegate long ops to a subagent:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "codesearch": "deny",
+    "websearch": "deny",
+    "webfetch": "deny",
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "task": "allow",
+    "lilbee_*": "allow"
+  },
+  "mcp": {
+    "lilbee": { "type": "local", "command": ["lilbee", "mcp"] }
+  }
+}
+```
+
+### Drop-in agent files
+
+For a project where you want the agent to use lilbee reliably, copy three things in:
+
+1. An `AGENTS.md` (or `CLAUDE.md`) that names lilbee as the retrieval backend, lists the
+   citation rule, and says long ops go to a worker subagent. The lilbee repo ships a copy at
+   [`demos/AGENTS.md`](../demos/AGENTS.md).
+2. A `lilbee-worker` subagent that handles `lilbee_add` / `lilbee_sync` / `lilbee_crawl` /
+   `lilbee_model_pull`. Copy from
+   [`demos/.opencode/agents/lilbee-worker.md`](../demos/.opencode/agents/lilbee-worker.md).
+3. The `lilbee-mcp` skill at
+   [`docs/agent-skills/lilbee-mcp/`](agent-skills/lilbee-mcp/), copied into
+   `.opencode/skills/lilbee-mcp/` or `.claude/skills/lilbee-mcp/`. It's a single
+   `SKILL.md` documenting every lilbee MCP tool with a quick / long split, so the agent
+   knows which calls block and which don't.
+
 ### Tools
 
 | Tool | Description | Requires LLM backend |
