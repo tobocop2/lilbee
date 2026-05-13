@@ -502,6 +502,16 @@ h1.sr {
 .links a:hover .num { color: var(--amber-hot); }
 .links a:hover .desc { color: var(--ink); }
 
+/* built-on credit ---------------------------------------------------- */
+.built {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.65;
+  max-width: 60ch;
+}
+.built a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
+.built a:hover { color: var(--amber-hot); border-bottom-color: var(--amber-hot); }
+
 /* footer ------------------------------------------------------------- */
 footer {
   margin-top: 3rem;
