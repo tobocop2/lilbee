@@ -1,52 +1,52 @@
 Source demos/_shared.tape
 Output demos/_out/tui-add.gif
 
-# Empty library, add a document from inside the TUI, watch sync, check status.
-# Measured timings:
-#   /add ~/.../cv-manual.pdf -> sync done   ~22s  -> Sleep 28s after Enter
-#   /status -> screen rendered             ~0.5s -> Sleep 3s
-#   chat (warm)                            ~10s  -> Sleep 12s
+# Empty library; add a document, watch ingest in the Task Center, then ask
+# a question. /add takes ~39s cold for cv-manual.pdf (parse + chunk + embed
+# + LanceDB write, measured).
+#
+# Per user feedback: the screenshot does NOT land on Status (we go to Tasks
+# instead, the better-looking screen).
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-add"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
 Type "lilbee"
-Sleep 500ms
+Sleep 300ms
 Enter
-Sleep 3s
+Sleep 2500ms
 
-# Add the manual. Tab-completion in the lilbee TUI keeps focus on the
-# autocomplete dropdown and Enter selects rather than submits; type the full
-# path and Enter submits cleanly.
-Type "/add ~/Downloads/cv-manual.pdf"
+# Dismiss the wizard. Pre-staged models are already installed.
+Escape
+Sleep 1s
+
+# Submit the path. Autocomplete dropdown will be visible but Enter still
+# fires the slash command (the dropdown only intercepts when an arg-hint is
+# focused, not when we've typed a full path).
+Type "/add ~/projects/lilbee-demos/demos/sample-corpus/cv-manual.pdf"
 Sleep 600ms
 Enter
-Sleep 28s
+Sleep 1s
 
-# Status screen shows the new source and chunk count.
-Type "/status"
-Sleep 500ms
-Enter
-Sleep 4s
+# Jump to the Task Center to watch the ingest run.
+Escape
+Sleep 300ms
+Type "t"
+Sleep 38s
 
 Screenshot demos/_out/tui-add.png
 
-# Back to chat (Escape to NORMAL mode, `[` for prev tab, `i` to re-enter INSERT).
-Escape
-Sleep 400ms
+# Back to chat to confirm the corpus is live (warm-up sandwich is overkill
+# for one question right after a 38s wait; the model is already loaded).
 Type "["
-Sleep 600ms
-Type "i"
+Sleep 1s
+Type "what's my oil capacity?"
 Sleep 400ms
-
-# Ask a question to confirm the corpus is live.
-Type "what is my oil capacity?"
-Sleep 500ms
 Enter
-Sleep 12s
+Sleep 13s
 
 Type "/quit"
-Sleep 500ms
+Sleep 400ms
 Enter
-Sleep 1s
+Sleep 500ms

@@ -1,53 +1,53 @@
 Source demos/_shared.tape
 Output demos/_out/tui-chat.gif
 
-# Chat with the Crown Victoria owner's manual. Models + index are pre-staged
-# by demos/_prep.sh; LILBEE_DATA points at the prepared corpus.
+# Chat with the Crown Victoria owner's manual. Models and index are
+# pre-staged by demos/_prep.sh; LILBEE_DATA points at the prepared corpus.
 #
-# Measured TUI timings:
-#   lilbee TUI cold launch -> ready             1.02s -> Sleep 3s
-#   First chat (cold model load + answer)         ~14s -> Sleep 18s
-#   Warm follow-up (answer + cite + idle settle)  ~10s -> Sleep 12s
-#
-# Each `Type "..."` is followed by `Sleep 500ms` then `Enter`; Textual's
-# Input widget can miss the Submit if the keys arrive in the same frame as
-# the last character of input.
+# Qwen3 4B on M1 Pro takes ~60s for a cold first turn (Python sampler over
+# Qwen's 152k-token vocab, py-spy confirmed) and ~10-15s warm. We do a
+# silent warm-up turn inside `Hide` so the first on-camera answer is warm.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-chat"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
 Type "lilbee"
-Sleep 500ms
+Sleep 300ms
 Enter
-Sleep 3s
+Sleep 2500ms
 
-# Signature question (matches the README copy). Cold model load is folded
-# into this first answer.
-Type "what does the oil pressure warning mean?"
-Sleep 500ms
+# Off-camera warm-up: load model + KV cache, then clear the conversation.
+Hide
+Type "ping"
+Sleep 400ms
 Enter
-Sleep 18s
+Sleep 45s
+Type "/clear"
+Sleep 400ms
+Enter
+Sleep 1s
+Show
+
+# Three single-fact retrieval lookups against the manual.
+Type "what's my oil capacity?"
+Sleep 400ms
+Enter
+Sleep 13s
+
+Type "what tire pressure does it recommend?"
+Sleep 400ms
+Enter
+Sleep 11s
+
+Type "what fuel does it take?"
+Sleep 400ms
+Enter
+Sleep 10s
 
 Screenshot demos/_out/tui-chat.png
 
-# Single-fact follow-ups Qwen3 0.6B nails cleanly from the corpus.
-Type "what is my oil capacity?"
-Sleep 500ms
-Enter
-Sleep 12s
-
-Type "what tire pressure does it recommend?"
-Sleep 500ms
-Enter
-Sleep 12s
-
-Type "what fuel does it take?"
-Sleep 500ms
-Enter
-Sleep 12s
-
 Type "/quit"
-Sleep 500ms
+Sleep 400ms
 Enter
-Sleep 1s
+Sleep 500ms

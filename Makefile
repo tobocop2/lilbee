@@ -49,10 +49,12 @@ demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
 	vhs demos/tui-add.tape
 	vhs demos/tui-catalog.tape
 	vhs demos/tui-settings.tape
+	vhs demos/tui-palette.tape
+	vhs demos/tui-crawl.tape
 	vhs demos/tui-tour.tape
 	vhs demos/cli.tape
-	vhs demos/opencode-code.tape
-	vhs demos/opencode-manual.tape
+	vhs demos/mcp-code.tape
+	vhs demos/mcp-manual.tape
 	@command -v gifsicle >/dev/null 2>&1 && \
 		for f in demos/_out/*.gif; do gifsicle -O3 --lossy=80 -b "$$f"; done || \
 		echo "(install gifsicle to shrink GIFs further)"

@@ -1,41 +1,48 @@
 Source demos/_shared.tape
 Output demos/_out/tui-setup.gif
 
-# Show the Setup Wizard. The wizard auto-opens on first launch only when no
-# model is configured; with pre-staged models the TUI lands on Chat. Use
-# `/setup` to open the wizard explicitly, so the tape is reproducible.
+# Fresh-slate first run. Wizard appears with no installed models; we pick a
+# tiny chat model (SmolLM2 135M, ~30s cold pull) and the default embed model
+# (Nomic v1.5, ~25s cold pull) and watch the Task Center fill before landing
+# on Chat. No Hide/Show -- both pulls are small enough to show live.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-setup"
-Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/setup-models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
 Type "lilbee"
-Sleep 500ms
+Sleep 300ms
 Enter
-Sleep 3s
+Sleep 2500ms
 
-Type "/setup"
-Sleep 500ms
+# Discover tab focused; navigate right to SmolLM2 135M and pick it.
+Right
+Sleep 300ms
+Right
+Sleep 300ms
 Enter
-Sleep 3s
+Sleep 800ms
+
+# Tab into the Embedding row, pick Nomic v1.5 (first card).
+Tab
+Sleep 300ms
+Enter
+Sleep 800ms
+
+# Watch the two downloads in Task Center (~30s window covers both).
+Type "t"
+Sleep 30s
 
 Screenshot demos/_out/tui-setup.png
 
-# Pick a chat card (Enter on the pre-selected Qwen3 0.6B).
-Enter
-Sleep 2s
+# Back to the wizard so the user sees the two cards now installed.
+Type "q"
+Sleep 1500ms
 
-# Tab to the embedding grid and pick Nomic.
-Tab
-Sleep 1s
-Enter
-Sleep 2s
-
-# Dismiss the wizard.
+# Dismiss into Chat.
 Escape
-Sleep 1s
+Sleep 2000ms
 
 Type "/quit"
-Sleep 500ms
 Enter
-Sleep 1s
+Sleep 500ms
