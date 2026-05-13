@@ -10,6 +10,7 @@ from typing import Any
 
 from gguf import GGUFReader
 
+from lilbee.core.config import cfg
 from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
 from lilbee.providers.llama_cpp.log_dispatch import (
@@ -142,6 +143,8 @@ def load_vision_llama(
         "n_threads": n_threads,
         "n_threads_batch": n_threads,
     }
+    if cfg.main_gpu is not None:
+        kwargs["main_gpu"] = cfg.main_gpu
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
     else:

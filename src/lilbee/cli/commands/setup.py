@@ -94,6 +94,8 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
         "flash_attention": cfg.flash_attention,
         "kv_cache_type": cfg.kv_cache_type.value,
         "n_gpu_layers": cfg.n_gpu_layers,
+        "main_gpu": cfg.main_gpu,
+        "gpu_devices": cfg.gpu_devices,
     }
 
 
@@ -193,7 +195,9 @@ def self_check_cmd(
             f"num_ctx_max={provider_kwargs['num_ctx_max']} "
             f"flash_attention={provider_kwargs['flash_attention']} "
             f"kv_cache_type={provider_kwargs['kv_cache_type']} "
-            f"n_gpu_layers={provider_kwargs['n_gpu_layers']}"
+            f"n_gpu_layers={provider_kwargs['n_gpu_layers']} "
+            f"main_gpu={provider_kwargs['main_gpu']} "
+            f"gpu_devices={provider_kwargs['gpu_devices']}"
         )
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
