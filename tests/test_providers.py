@@ -1917,19 +1917,14 @@ class TestVulkanGpuSelect:
 
     def test_pick_best_prefers_discrete_over_integrated(self) -> None:
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
-            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            VkDeviceType,
             VulkanDevice,
             _pick_best_device,
         )
 
         devices = [
-            VulkanDevice(
-                index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, device_name="iGPU"
-            ),
-            VulkanDevice(
-                index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dGPU"
-            ),
+            VulkanDevice(index=0, device_type=VkDeviceType.INTEGRATED_GPU, device_name="iGPU"),
+            VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dGPU"),
         ]
         best = _pick_best_device(devices)
         assert best is not None
@@ -1937,13 +1932,13 @@ class TestVulkanGpuSelect:
 
     def test_pick_best_returns_none_for_cpu_only(self) -> None:
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_CPU,
+            VkDeviceType,
             VulkanDevice,
             _pick_best_device,
         )
 
         devices = [
-            VulkanDevice(index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="llvmpipe"),
+            VulkanDevice(index=0, device_type=VkDeviceType.CPU, device_name="llvmpipe"),
         ]
         assert _pick_best_device(devices) is None
 
@@ -1952,13 +1947,18 @@ class TestVulkanGpuSelect:
 
         assert _pick_best_device([]) is None
 
+    def test_rank_for_unknown_device_type_returns_zero(self) -> None:
+        """Drivers may report a deviceType outside the Vulkan 1.0 enum; we treat as CPU-rank."""
+        from lilbee.providers.llama_cpp.gpu_select import _rank_for
+
+        assert _rank_for(999) == 0
+
     def test_autoselect_returns_discrete_index_for_dual_gpu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from lilbee.providers.llama_cpp import gpu_select
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
-            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            VkDeviceType,
             VulkanDevice,
         )
 
@@ -1966,12 +1966,8 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(
-                    index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, device_name="iGPU"
-                ),
-                VulkanDevice(
-                    index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dGPU"
-                ),
+                VulkanDevice(index=0, device_type=VkDeviceType.INTEGRATED_GPU, device_name="iGPU"),
+                VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dGPU"),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() == "1"
@@ -1982,7 +1978,7 @@ class TestVulkanGpuSelect:
         """Single-device hosts keep the default ordering; auto-pin would be churn."""
         from lilbee.providers.llama_cpp import gpu_select
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            VkDeviceType,
             VulkanDevice,
         )
 
@@ -1992,7 +1988,7 @@ class TestVulkanGpuSelect:
             lambda: [
                 VulkanDevice(
                     index=0,
-                    device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+                    device_type=VkDeviceType.DISCRETE_GPU,
                     device_name="RTX 4090",
                 ),
             ],
@@ -2013,7 +2009,7 @@ class TestVulkanGpuSelect:
         """All-CPU adapter list shouldn't force a pin: software rendering is never right."""
         from lilbee.providers.llama_cpp import gpu_select
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_CPU,
+            VkDeviceType,
             VulkanDevice,
         )
 
@@ -2021,8 +2017,8 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="cpu0"),
-                VulkanDevice(index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_CPU, device_name="cpu1"),
+                VulkanDevice(index=0, device_type=VkDeviceType.CPU, device_name="cpu0"),
+                VulkanDevice(index=1, device_type=VkDeviceType.CPU, device_name="cpu1"),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2033,7 +2029,7 @@ class TestVulkanGpuSelect:
         """Two discrete GPUs of equal rank: no auto-pin (no decision to make)."""
         from lilbee.providers.llama_cpp import gpu_select
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+            VkDeviceType,
             VulkanDevice,
         )
 
@@ -2041,12 +2037,8 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(
-                    index=0, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dgpu0"
-                ),
-                VulkanDevice(
-                    index=1, device_type=_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, device_name="dgpu1"
-                ),
+                VulkanDevice(index=0, device_type=VkDeviceType.DISCRETE_GPU, device_name="dgpu0"),
+                VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dgpu1"),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2127,14 +2119,13 @@ class TestVulkanGpuSelect:
         """Happy path: simulated VK calls populate the device list."""
         from lilbee.providers.llama_cpp import gpu_select
         from lilbee.providers.llama_cpp.gpu_select import (
-            _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
-            _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+            VkDeviceType,
             _list_devices_with_instance,
         )
 
         fake_props = [
-            (_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, b"iGPU"),
-            (_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, b"NVIDIA RTX"),
+            (VkDeviceType.INTEGRATED_GPU, b"iGPU"),
+            (VkDeviceType.DISCRETE_GPU, b"NVIDIA RTX"),
         ]
         device_count = len(fake_props)
 
@@ -2163,8 +2154,8 @@ class TestVulkanGpuSelect:
         )
         devices = _list_devices_with_instance(object())
         assert len(devices) == device_count
-        assert devices[0].device_type == _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
-        assert devices[1].device_type == _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+        assert devices[0].device_type == VkDeviceType.INTEGRATED_GPU
+        assert devices[1].device_type == VkDeviceType.DISCRETE_GPU
         assert devices[1].device_name == "NVIDIA RTX"
 
     def test_list_devices_returns_empty_when_create_instance_fails(

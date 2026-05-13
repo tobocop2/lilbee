@@ -33,6 +33,7 @@ import logging
 import sys
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
 from dataclasses import dataclass
+from enum import IntEnum
 
 log = logging.getLogger(__name__)
 
@@ -43,22 +44,40 @@ _VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
 _VK_SUCCESS = 0
 _VK_API_VERSION_1_0 = (1 << 22) | (0 << 12) | 0
 
-# VkPhysicalDeviceType enum values from vulkan_core.h. Mapped to a
-# preference rank so callers can pick the best adapter; higher is
-# better. Software rendering (CPU) is never the right pick.
-_VK_PHYSICAL_DEVICE_TYPE_OTHER = 0
-_VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU = 1
-_VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU = 2
-_VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU = 3
-_VK_PHYSICAL_DEVICE_TYPE_CPU = 4
 
-_DEVICE_TYPE_RANK: dict[int, int] = {
-    _VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: 4,
-    _VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: 3,
-    _VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: 2,
-    _VK_PHYSICAL_DEVICE_TYPE_OTHER: 1,
-    _VK_PHYSICAL_DEVICE_TYPE_CPU: 0,
+class VkDeviceType(IntEnum):
+    """``VkPhysicalDeviceType`` enum from vulkan_core.h.
+
+    Values match the C ABI verbatim; the loader writes one of these
+    into the ``deviceType`` field of ``VkPhysicalDeviceProperties``.
+    """
+
+    OTHER = 0
+    INTEGRATED_GPU = 1
+    DISCRETE_GPU = 2
+    VIRTUAL_GPU = 3
+    CPU = 4
+
+
+# Preference order for picking the best adapter; higher is better.
+# Software rendering (CPU) is never the right pick, so it ranks 0
+# and ``_pick_best_device`` rejects it.
+_DEVICE_TYPE_RANK: dict[VkDeviceType, int] = {
+    VkDeviceType.DISCRETE_GPU: 4,
+    VkDeviceType.INTEGRATED_GPU: 3,
+    VkDeviceType.VIRTUAL_GPU: 2,
+    VkDeviceType.OTHER: 1,
+    VkDeviceType.CPU: 0,
 }
+
+
+def _rank_for(device_type: int) -> int:
+    """Lookup the rank for a ``deviceType`` value, ``0`` if the driver returns an unknown one."""
+    try:
+        return _DEVICE_TYPE_RANK[VkDeviceType(device_type)]
+    except ValueError:
+        return 0
+
 
 # vk.h sizes for the inline char arrays inside VkPhysicalDeviceProperties.
 _VK_MAX_PHYSICAL_DEVICE_NAME_SIZE = 256
@@ -149,7 +168,7 @@ def autoselect_best_gpu_index() -> str | None:
     # if every visible device has the same rank, the loader's default
     # ordering is already correct and forcing the index would hide a
     # user's manual override on rebuild.
-    ranks = {_DEVICE_TYPE_RANK.get(d.device_type, 0) for d in devices}
+    ranks = {_rank_for(d.device_type) for d in devices}
     if len(ranks) <= 1:
         return None
     return str(best.index)
@@ -306,11 +325,8 @@ def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
     """
     if not devices:
         return None
-    ranked = sorted(
-        devices,
-        key=lambda d: (-_DEVICE_TYPE_RANK.get(d.device_type, 0), d.index),
-    )
+    ranked = sorted(devices, key=lambda d: (-_rank_for(d.device_type), d.index))
     best = ranked[0]
-    if _DEVICE_TYPE_RANK.get(best.device_type, 0) <= 0:
+    if _rank_for(best.device_type) <= 0:
         return None
     return best
