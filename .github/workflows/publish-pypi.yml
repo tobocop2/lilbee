@@ -92,12 +92,31 @@ jobs:
     needs: [guard]
     runs-on: ubuntu-latest
     environment: pypi
+    # pypa/gh-action-pypi-publish is a Docker action; called from a local composite
+    # it misreads GITHUB_ACTION_REPOSITORY and pulls the wrong image -- so the
+    # download + upload steps live here directly, not in a wrapper action.
     steps:
-      - uses: actions/checkout@v6   # for the local promote-pypi action
-      - uses: ./.github/actions/promote-pypi
+      - name: Download wheel artifacts from the release-candidate run
+        uses: actions/download-artifact@v4
         with:
-          run_id: ${{ needs.guard.outputs.rc_run_id }}
-          github_token: ${{ github.token }}
+          pattern: wheel-default-*
+          path: dist/
+          merge-multiple: true
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      - name: Download sdist from the release-candidate run
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      - name: List wheels + sdist
+        run: ls -lh dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true   # safe to re-run (e.g. to redo the fan-out once executables land)
 
   # Docker / Homebrew / AUR / Nix consume the executables on the GH release that
   # the RC run already attached -- they don't need a build, just the tag.
