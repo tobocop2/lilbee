@@ -6,7 +6,7 @@
 # via --local-wheel.
 #
 # Reads:
-#   LLAMA_CPP_VERSION   exact version, e.g. 0.3.19
+#   LLAMA_CPP_VERSION   exact version (optional; defaults to the pin in uv.lock)
 #   BACKEND             cpu|vulkan|metal|cu121..cu124|rocm|sycl
 #   RUNNER_OS           Linux|macOS|Windows
 #   LLAMA_BUILD_DIR     output dir (default /tmp/llama-build)
@@ -14,11 +14,18 @@
 
 set -euxo pipefail
 
-version="${LLAMA_CPP_VERSION:?LLAMA_CPP_VERSION is required}"
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target_arch="${TARGET_ARCH:-}"
+
+# uv.lock is the single source of truth for the version; LLAMA_CPP_VERSION overrides it.
+version="${LLAMA_CPP_VERSION:-}"
+if [ -z "${version}" ]; then
+  lock_file="${script_dir}/../../uv.lock"
+  version=$(grep -A1 '^name = "llama-cpp-python"$' "${lock_file}" | grep '^version = ' | head -1 | cut -d'"' -f2)
+  [ -n "${version}" ] || { echo "llama-cpp-python not found in ${lock_file} and LLAMA_CPP_VERSION unset" >&2; exit 1; }
+fi
 
 mkdir -p "${build_dir}"
 
@@ -36,7 +43,7 @@ echo "Building llama-cpp-python==${version} (${backend}) with CMAKE_ARGS=${CMAKE
 
 # Locate pip. uv-managed Python doesn't put pip on PATH, so prefer the
 # project venv's pip when present; fall back to PATH for setup-python
-# (build-wheels.yml) and Homebrew/system installs (release.yml on macOS).
+# (build-*-wheels.yml) and Homebrew/system installs (release.yml on macOS).
 if [ -n "${PIP_CMD:-}" ]; then
   pip_cmd=$PIP_CMD
 elif [ -x ".venv/bin/pip" ]; then
