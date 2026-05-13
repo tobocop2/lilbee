@@ -8,7 +8,7 @@ name: Publish to PyPI
 # fan-out does need the executables on the GH release; it self-skips if they're
 # not attached yet (re-run this workflow once the RC run has attached them).
 #
-# Filename `publish-pypi.yml` + the `pypi` environment name are pinned by PyPI's
+# Filename `publish.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
 
 on:
@@ -24,7 +24,7 @@ permissions:
   actions: write    # cross-run artifact download (read) + dispatch publish-docker/packages
 
 concurrency:
-  group: publish-pypi-${{ inputs.tag }}
+  group: publish-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
