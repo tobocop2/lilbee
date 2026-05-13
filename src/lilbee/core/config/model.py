@@ -285,7 +285,7 @@ class Config(BaseSettings):
     markdown_rendering: bool = True
 
     # TUI theme name; persists the last Ctrl+T pick across sessions.
-    theme: str = ConfigField(default="gruvbox", writable=True)
+    theme: str = ConfigField(default="rose-pine", writable=True)
 
     # Per-model generation defaults set via apply_model_defaults().
     _model_defaults: Any = None
