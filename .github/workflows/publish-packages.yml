@@ -1,8 +1,8 @@
 name: Publish Packages
 
 # Updates the Homebrew formula, AUR PKGBUILD, and Nix flake to pin a tag's
-# GH-release binaries. Dispatched by promote-pypi / publish-pypi.yml /
-# emergency-publish.yml (and by hand) once the binaries are attached.
+# GH-release binaries. Dispatched by publish.yml / emergency-publish.yml
+# (and by hand) once the binaries are attached.
 on:
   workflow_dispatch:
     inputs:

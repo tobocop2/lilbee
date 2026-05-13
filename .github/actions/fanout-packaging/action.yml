@@ -27,7 +27,7 @@ runs:
           case " ${NAMES} " in *" ${a} "*) ;; *) MISSING="${MISSING} ${a}" ;; esac
         done
         if [ -n "${MISSING}" ]; then
-          echo "::warning::release ${TAG} is missing executables:${MISSING} -- skipping the Docker/Homebrew/AUR/Nix fan-out; re-run publish-pypi.yml once release-candidate.yml has attached them"
+          echo "::warning::release ${TAG} is missing executables:${MISSING} -- skipping the Docker/Homebrew/AUR/Nix fan-out; re-run publish.yml once release-candidate.yml has attached them"
           echo "ready=false" >> "$GITHUB_OUTPUT"
         else
           echo "ready=true" >> "$GITHUB_OUTPUT"

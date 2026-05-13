@@ -6,7 +6,7 @@ name: Release candidate
 # + executables (the extra-wheels matrix runs in parallel and never delays QA).
 # Dispatch: same build + QA, no release attach. Publishing to PyPI is a
 # separate manual step that just downloads this run's artifacts -- see
-# publish-pypi.yml; nothing downstream rebuilds.
+# publish.yml; nothing downstream rebuilds.
 
 on:
   push:
@@ -100,7 +100,7 @@ jobs:
   # Attach binaries to a GH pre-release as soon as they're built, before QA
   # runs. A GH release is reversible (delete + retag) so this is safe to do
   # eagerly; the irreversible step (PyPI) waits for a human to run
-  # publish-pypi.yml after reviewing QA.
+  # publish.yml after reviewing QA.
   attach-binaries-prerelease:
     needs: [resolve, build-binaries]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -127,5 +127,5 @@ jobs:
       version: ${{ needs.resolve.outputs.version }}
     secrets: inherit
 
-  # PyPI publish is intentionally NOT here. Run publish-pypi.yml manually after
+  # PyPI publish is intentionally NOT here. Run publish.yml manually after
   # reviewing the pre-release + QA -- it just downloads this run's artifacts.
