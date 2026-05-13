@@ -25,6 +25,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from lilbee.app.services import get_services
 from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.settings_widgets import (
@@ -52,6 +53,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
+from lilbee.providers.worker.transport import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -59,6 +61,17 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.model_bar import ModelOption
 
 log = logging.getLogger(__name__)
+
+
+_MODEL_KEY_TO_WORKER_ROLE: dict[str, WorkerRole] = {
+    "chat_model": WorkerRole.CHAT,
+    "embedding_model": WorkerRole.EMBED,
+    "reranker_model": WorkerRole.RERANK,
+    "vision_model": WorkerRole.VISION,
+}
+"""Picker key -> worker pool role. Lets the Settings picker respawn the right
+worker after a swap so the new ref actually takes effect on the next call.
+"""
 
 
 @dataclass(frozen=True)
@@ -496,16 +509,36 @@ class SettingsScreen(Screen[None]):
         ``ref is None`` means the user cancelled (Esc); leave the field
         alone. ``ref == ""`` for a nullable field means the user picked
         the explicit "disabled" row; clear the field. Any other value is
-        a real model ref.
+        a real model ref. Embedding-model swaps against a populated store
+        route through a confirm modal first so the user is not surprised
+        by the rebuild requirement.
         """
         if ref is None:
             return
         defn = SETTINGS_MAP.get(key)
         if not ref and (defn is None or not defn.nullable):
             return
+        if key == "embedding_model" and ref and get_services().store.has_chunks():
+            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+            self.app.push_screen(
+                ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE),
+                lambda confirmed: self._apply_picker_choice(key, ref, confirmed),
+            )
+            return
+        self._apply_picker_choice(key, ref, True)
+
+    def _apply_picker_choice(self, key: str, ref: str, confirmed: bool | None) -> None:
+        """Commit the picker choice or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
+        if not confirmed:
+            self.app.notify(msg.EMBED_SWAP_CANCELLED)
+            return
         from lilbee.cli.tui.app import apply_active_model
 
         apply_active_model(self.app, key, ref)
+        role = _MODEL_KEY_TO_WORKER_ROLE.get(key)
+        if role is not None:
+            get_services().reload_role(role)
         try:
             button = self.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}{key}", Button)
             button.label = model_picker_label(key)
