@@ -367,12 +367,12 @@ class WorkerPool:
         return registration.channel
 
     def detach_channel(self, role: WorkerRole) -> WorkerChannel | None:
-        """Atomically clear *role*'s channel and return the prior live channel or None.
+        """Atomically clear *role*'s channel; return the prior live channel or None.
 
-        The caller owns the returned channel and is responsible for closing it
-        (typically by submitting ``channel.close(...)`` onto the pool runtime).
-        Other roles' channels are untouched. The next ``_ensure_channel`` call
-        for this role lazy-respawns with the current ``config_factory()`` snapshot.
+        Caller owns the returned channel and closes it (typically by submitting
+        ``channel.close(...)`` on the pool runtime). Other roles are untouched.
+        The next ``_ensure_channel`` call for this role lazy-respawns with the
+        current ``config_factory()`` snapshot.
         """
         registration = self._roles.get(role)
         if registration is None:

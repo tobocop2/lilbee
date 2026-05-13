@@ -247,39 +247,36 @@ class Store:
             )
         )
 
+    def _needs_canonical_meta_rewrite(
+        self, meta: StoreMeta | None, current_model: str, current_dim: int
+    ) -> bool:
+        """True iff *meta* is the legacy form and refs-compatible with current cfg."""
+        if meta is None or meta["embedding_model"] == current_model:
+            return False
+        return refs_compatible(
+            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+        )
+
     def canonicalize_meta_if_legacy(self) -> bool:
         """Rewrite a legacy bare-repo ``_meta`` row to the canonical full ref.
 
-        Pre-canonical lilbee versions persisted only the ``<org>/<repo>`` portion
-        in ``_meta.embedding_model``. The current code persists the full
-        ``<org>/<repo>/<filename>.gguf``. When ``cfg.embedding_model`` and the
-        persisted ref resolve to the same model (via ``refs_compatible``) but
-        differ as raw strings, this overwrites the meta row with the current
-        canonical form so the legacy name never surfaces in error messages,
-        UI surfaces, or downstream inspections. Returns ``True`` when a write
-        happened, ``False`` when meta was missing, already canonical, or
-        incompatible (the gate handles incompatibility separately).
+        Pre-canonical lilbee persisted only ``<org>/<repo>`` in
+        ``_meta.embedding_model``. The current code persists the full
+        ``<org>/<repo>/<filename>.gguf``. When the two refer to the same
+        model under :func:`refs_compatible` but differ as raw strings, the
+        meta row is rewritten so the legacy name never surfaces. Returns
+        ``True`` on write; ``False`` when missing, already canonical, or
+        incompatible (the gate handles incompatibility).
         """
-        meta = self.get_meta()
-        if meta is None:
-            return False
         current_model = self._config.embedding_model
         current_dim = self._config.embedding_dim
-        if meta["embedding_model"] == current_model:
-            return False
-        if not refs_compatible(
-            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
-        ):
+        if not self._needs_canonical_meta_rewrite(self.get_meta(), current_model, current_dim):
             return False
         with write_lock():
-            # Re-read meta under the lock so two callers do not race the rewrite.
-            meta = self.get_meta()
-            if meta is None or meta["embedding_model"] == current_model:
+            meta = self.get_meta()  # re-read under the lock for racing callers
+            if not self._needs_canonical_meta_rewrite(meta, current_model, current_dim):
                 return False
-            if not refs_compatible(
-                meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
-            ):
-                return False
+            assert meta is not None  # filtered above  # noqa: S101
             log.info(
                 "Migrating legacy embedding ref in store meta: %r -> %r",
                 meta["embedding_model"],
