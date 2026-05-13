@@ -82,4 +82,15 @@ if [ ! -d "$ROOT/opencode-code/src/lilbee" ]; then
     rm -rf "$TMP"
 fi
 
+# Project-local .lilbee/ in each opencode dir so the MCP server (launched
+# from the project dir) walks up from cwd and uses the project's own corpus
+# instead of falling through to the global one. We do NOT pre-index here:
+# the opencode demos want the agent's lilbee_add (delegated to the
+# lilbee-worker subagent) to be a real first-time add, visible on screen.
+for tape in opencode-code opencode-manual; do
+    DIR="$ROOT/$tape"
+    rm -rf "$DIR/.lilbee"
+    ( cd "$DIR" && "$LILBEE" init >/dev/null )
+done
+
 echo "==> prep done. $ROOT is ready."

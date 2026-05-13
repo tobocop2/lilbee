@@ -1,61 +1,56 @@
 Source demos/_shared.tape
 Output demos/_out/opencode-code.gif
 
-# opencode driving lilbee over MCP, on a fresh copy of lilbee's own src/.
-# Caption: opencode runs on a cloud model (MiniMax) here; the lilbee corpus
-# lives locally on this machine.
+# opencode driving lilbee over MCP, on a focused slice of lilbee's own
+# source: src/lilbee/core/ (project-local .lilbee/ discovery),
+# src/lilbee/data/ingest/ (the ingest pipeline), and src/lilbee/mcp_server.py.
+# Indexing the full src/ tree would take minutes; this slice runs in ~6s of
+# real embedding plus the cloud-model turn.
 #
-# Demo dir is prepared by demos/_prep.sh: shallow clone of lilbee with src/
-# at the root, AGENTS.md, opencode.json, the lilbee-worker subagent, and the
-# lilbee-mcp skill already dropped in.
+# Demo dir prepared by demos/_prep.sh: shallow clone of lilbee with src/ at
+# the project root, AGENTS.md, opencode.json, lilbee-worker subagent, and
+# lilbee-mcp skill in place, and `lilbee init` already run.
 #
-# Timings here are estimates (cloud-model + MCP tool latency wasn't directly
-# measured); expect to iterate. The Sleeps assume MiniMax with normal load.
-#   indexing src/lilbee via lilbee_add (cold embed, ~hundreds of files)  ~120-180s
-#   per Q&A round (search + cloud answer)                                  ~30-60s
+# `opencode run` is non-interactive: `⚙ lilbee_<tool>` calls and the
+# `Lilbee-Worker Agent` delegation appear inline in the captured terminal.
+#
+# Model: opencode/deepseek-v4-flash-free (free, fastest of the free models
+# I tested). Cloud latency varies (dry-runs landed in 50-90s for the first
+# turn; budget 240s here so a slow queue doesn't clip the GIF).
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
-Env LILBEE_SKIP_TOML_CONFIG "1"
 
 Type "cd /tmp/lilbee-demo/opencode-code"
 Sleep 400ms
 Enter
 Sleep 800ms
 
-Type "opencode"
-Sleep 500ms
+# Show the agent contract briefly.
+Type "head -20 AGENTS.md"
+Sleep 400ms
 Enter
-Sleep 6s
+Sleep 4s
 
-# 1) Ask opencode to index lilbee's core source. It delegates to lilbee-worker,
-# which runs lilbee_init + lilbee_add(["src/lilbee"]); tests/ are not in the corpus.
-Type "Index this project's core source under src/lilbee so you can answer questions about how lilbee works. Don't index tests."
+Type "clear"
+Sleep 300ms
+Enter
+Sleep 400ms
+
+# First turn: real index + answer. The Lilbee-Worker Agent does the add;
+# ⚙ lilbee_search runs after the worker reports done.
+Type "opencode run --model opencode/deepseek-v4-flash-free 'Use lilbee_add to index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py. Then use lilbee_search to find how lilbee discovers a project-local .lilbee/ directory. Cite the file and line.'"
 Sleep 500ms
 Enter
-Sleep 150s
+Sleep 240s
 
 Screenshot demos/_out/opencode-code.png
 
-# 2) How does the ingest pipeline work?
-Type "Walk me through what lilbee does when I run `add` on a folder. What's the ingest pipeline? Cite the code."
+# Warm follow-ups (no re-indexing).
+Type "opencode run --model opencode/deepseek-v4-flash-free 'Walk me through what lilbee does when I run add on a folder. Cite the code.'"
 Sleep 500ms
 Enter
 Sleep 60s
 
-# 3) Project-local .lilbee/ discovery.
-Type "How does lilbee discover a project-local .lilbee/ directory? Cite the file and line."
+Type "opencode run --model opencode/deepseek-v4-flash-free 'How is lilbee itself exposed as an MCP server? Cite the file.'"
 Sleep 500ms
 Enter
-Sleep 45s
-
-# 4) The MCP server itself.
-Type "How is lilbee itself exposed as an MCP server, and what tools does it provide? Point me at the file."
-Sleep 500ms
-Enter
-Sleep 45s
-
-Ctrl+C
-Sleep 1s
-Type "exit"
-Sleep 400ms
-Enter
-Sleep 1s
+Sleep 60s

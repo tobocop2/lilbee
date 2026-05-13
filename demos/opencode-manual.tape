@@ -2,58 +2,55 @@ Source demos/_shared.tape
 Output demos/_out/opencode-manual.gif
 
 # opencode driving lilbee over MCP, on the Crown Victoria owner's manual.
-# Caption: opencode on a cloud model (MiniMax) talking to a local lilbee
-# corpus over MCP.
+# Uses `opencode run` (non-interactive) so the demo is deterministic and the
+# `lilbee_search` / `lilbee_add` tool calls are explicitly visible inline as
+# `⚙ lilbee_<tool>` lines.
 #
-# Demo dir prepared by demos/_prep.sh: empty dir with AGENTS.md,
-# opencode.json, the lilbee-worker subagent, the lilbee-mcp skill, and
-# cv-manual.pdf already in place.
+# Demo dir prepared by demos/_prep.sh: AGENTS.md, opencode.json (with
+# LILBEE_DATA pointed at the project's .lilbee/), the lilbee-worker subagent,
+# the lilbee-mcp skill, cv-manual.pdf in the dir, and `lilbee init` already
+# run.
 #
-# Timings are estimates; expect to iterate.
-#   indexing cv-manual.pdf via lilbee_add  ~25-35s
-#   per Q&A round                          ~25-45s
+# Model: opencode/deepseek-v4-flash-free (free, fast, 20-30s per turn against
+# this corpus). Captioned: cloud model + local lilbee corpus over MCP.
+#
+# Cloud-model latency varies; budget generously so a slow turn doesn't clip
+# the GIF. Dry-runs landed: first turn 55-105s, warm follow-up 22-25s.
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
-Env LILBEE_SKIP_TOML_CONFIG "1"
 
 Type "cd /tmp/lilbee-demo/opencode-manual"
 Sleep 400ms
 Enter
 Sleep 800ms
 
-Type "opencode"
+# Show the agent contract briefly.
+Type "head -20 AGENTS.md"
+Sleep 400ms
+Enter
+Sleep 4s
+
+Type "clear"
+Sleep 300ms
+Enter
+Sleep 400ms
+
+# First turn: real index + answer. The agent delegates indexing to
+# lilbee-worker (visible as `• Index ... ✓ Index ... Lilbee-Worker Agent`),
+# then ⚙ lilbee_search fires once the worker reports done.
+Type "opencode run --model opencode/deepseek-v4-flash-free 'Index cv-manual.pdf, then tell me my oil capacity. Cite the page.'"
 Sleep 500ms
 Enter
-Sleep 6s
+Sleep 180s
 
-# 1) Index + the headline question.
-Type "Index cv-manual.pdf, then tell me what my oil capacity is."
+Screenshot demos/_out/opencode-manual.png
+
+# Warm follow-ups (no re-indexing).
+Type "opencode run --model opencode/deepseek-v4-flash-free 'What does the oil pressure warning mean? Cite the page.'"
 Sleep 500ms
 Enter
 Sleep 60s
 
-Screenshot demos/_out/opencode-manual.png
-
-# 2) Oil pressure warning (matches the README copy).
-Type "What does the oil pressure warning mean?"
+Type "opencode run --model opencode/deepseek-v4-flash-free 'What tire pressure does it recommend? Cite the page.'"
 Sleep 500ms
 Enter
-Sleep 40s
-
-# 3) Tire pressure.
-Type "What tire pressure does it recommend?"
-Sleep 500ms
-Enter
-Sleep 40s
-
-# 4) Engine + fuel.
-Type "What engine does it have, and what fuel and octane does it take?"
-Sleep 500ms
-Enter
-Sleep 45s
-
-Ctrl+C
-Sleep 1s
-Type "exit"
-Sleep 400ms
-Enter
-Sleep 1s
+Sleep 60s
