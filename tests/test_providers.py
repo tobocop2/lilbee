@@ -1923,8 +1923,12 @@ class TestVulkanGpuSelect:
         )
 
         devices = [
-            VulkanDevice(index=0, device_type=VkDeviceType.INTEGRATED_GPU, device_name="iGPU"),
-            VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dGPU"),
+            VulkanDevice(
+                index=0, device_type=VkDeviceType.INTEGRATED_GPU, device_name="iGPU", vendor_id=0
+            ),
+            VulkanDevice(
+                index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dGPU", vendor_id=0
+            ),
         ]
         best = _pick_best_device(devices)
         assert best is not None
@@ -1938,7 +1942,9 @@ class TestVulkanGpuSelect:
         )
 
         devices = [
-            VulkanDevice(index=0, device_type=VkDeviceType.CPU, device_name="llvmpipe"),
+            VulkanDevice(
+                index=0, device_type=VkDeviceType.CPU, device_name="llvmpipe", vendor_id=0
+            ),
         ]
         assert _pick_best_device(devices) is None
 
@@ -1966,8 +1972,18 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(index=0, device_type=VkDeviceType.INTEGRATED_GPU, device_name="iGPU"),
-                VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dGPU"),
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.INTEGRATED_GPU,
+                    device_name="iGPU",
+                    vendor_id=0,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="dGPU",
+                    vendor_id=0,
+                ),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() == "1"
@@ -1990,6 +2006,7 @@ class TestVulkanGpuSelect:
                     index=0,
                     device_type=VkDeviceType.DISCRETE_GPU,
                     device_name="RTX 4090",
+                    vendor_id=0,
                 ),
             ],
         )
@@ -2017,8 +2034,12 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(index=0, device_type=VkDeviceType.CPU, device_name="cpu0"),
-                VulkanDevice(index=1, device_type=VkDeviceType.CPU, device_name="cpu1"),
+                VulkanDevice(
+                    index=0, device_type=VkDeviceType.CPU, device_name="cpu0", vendor_id=0
+                ),
+                VulkanDevice(
+                    index=1, device_type=VkDeviceType.CPU, device_name="cpu1", vendor_id=0
+                ),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2037,8 +2058,18 @@ class TestVulkanGpuSelect:
             gpu_select,
             "_enumerate_vulkan_devices",
             lambda: [
-                VulkanDevice(index=0, device_type=VkDeviceType.DISCRETE_GPU, device_name="dgpu0"),
-                VulkanDevice(index=1, device_type=VkDeviceType.DISCRETE_GPU, device_name="dgpu1"),
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="dgpu0",
+                    vendor_id=0,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="dgpu1",
+                    vendor_id=0,
+                ),
             ],
         )
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2266,6 +2297,163 @@ class TestVulkanGpuSelect:
         monkeypatch.setattr(gpu_select.ctypes, "CDLL", _cdll)
         monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _n: "/lib/libvulkan.so")
         assert gpu_select._load_vulkan_loader() is None
+
+
+class TestDisableConflictingVulkanIcds:
+    """``disable_conflicting_vulkan_icds`` automates the NVIDIA-recommended ICD pin on Windows.
+
+    On a dual-vendor Windows box (NVIDIA dGPU + AMD/Intel iGPU) the
+    Vulkan loader loads every registered ICD into the process at
+    ``vkCreateInstance`` time. The AMD ICD has a known heap-corruption
+    interaction with this layout that takes the worker subprocess down
+    with ``STATUS_HEAP_CORRUPTION``. The helper picks the discrete
+    adapter's vendor and returns a ``VK_LOADER_DRIVERS_DISABLE`` glob
+    that keeps that vendor's ICD only.
+    """
+
+    def test_pins_nvidia_when_amd_igpu_also_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NVIDIA dGPU + AMD iGPU on Windows -> disable AMD ICD globs."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.INTEGRATED_GPU,
+                    device_name="AMD Radeon Graphics",
+                    vendor_id=PCIVendorID.AMD,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="NVIDIA GeForce RTX 4090",
+                    vendor_id=PCIVendorID.NVIDIA,
+                ),
+            ],
+        )
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        assert "amdvlk*" in result
+        assert "radeon*" in result
+        # NVIDIA's own ICD must NOT be disabled -- it's the one we're keeping.
+        assert "nv*" not in result
+
+    def test_returns_none_on_non_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux and macOS keep today's behavior; no env var is set."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        for platform_name in ("linux", "darwin"):
+            monkeypatch.setattr(gpu_select.sys, "platform", platform_name)
+            assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_returns_none_when_only_one_vendor_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-vendor systems aren't at risk; no pin needed."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="NVIDIA GeForce RTX 4090",
+                    vendor_id=PCIVendorID.NVIDIA,
+                ),
+            ],
+        )
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_user_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the user set any Vulkan ICD-selection env var, we don't override it."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        devices = [
+            VulkanDevice(
+                index=0,
+                device_type=VkDeviceType.INTEGRATED_GPU,
+                device_name="AMD Radeon",
+                vendor_id=PCIVendorID.AMD,
+            ),
+            VulkanDevice(
+                index=1,
+                device_type=VkDeviceType.DISCRETE_GPU,
+                device_name="NVIDIA",
+                vendor_id=PCIVendorID.NVIDIA,
+            ),
+        ]
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: devices)
+        # Source the override-var list from the module so the test moves in
+        # lockstep with the production tuple (e.g., when a new loader env var
+        # joins the set).
+        for override_var in gpu_select._VK_USER_OVERRIDE_ENV_VARS:
+            monkeypatch.setattr(gpu_select.os, "environ", {override_var: "user-set"})
+            assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_empty_probe_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A loader that returns no adapters yields no pin."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: [])
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_unknown_vendor_ids_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Adapters with vendor IDs we don't recognize don't trigger a pin alone."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="NVIDIA",
+                    vendor_id=PCIVendorID.NVIDIA,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.INTEGRATED_GPU,
+                    device_name="Mystery Vendor",
+                    vendor_id=0xDEAD,
+                ),
+            ],
+        )
+        # Only one *known* vendor present -> no conflict to resolve.
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
 
 
 class TestImportLlamaCpp:
