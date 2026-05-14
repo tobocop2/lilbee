@@ -10,6 +10,7 @@ see why it exists.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 from unittest import mock
 
@@ -2172,3 +2173,50 @@ class TestCatalogSmallEdgeBranches:
             with mock.patch.object(screen, "_fetch_initial_hf_models_for_task") as mock_fetch:
                 screen.action_toggle_view()
                 mock_fetch.assert_called_once_with(ModelTask.CHAT)
+
+
+class TestAppSetActiveModelTaskGuard:
+    """`set_active_model` rejects refs whose catalog task does not match
+    the field, so a chat-only model cannot land in the embedding slot.
+    """
+
+    @pytest.fixture()
+    def _validation_enabled(self):
+        """Pop the conftest-level bypass so the validator actually fires."""
+        prev = os.environ.pop("LILBEE_SKIP_MODEL_TASK_VALIDATION", None)
+        try:
+            yield
+        finally:
+            if prev is not None:
+                os.environ["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = prev
+
+    async def test_chat_ref_assigned_to_embedding_slot_is_rejected(
+        self, _validation_enabled
+    ) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.core.config import cfg
+
+        chat_ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+        embed_default = cfg.embedding_model
+        notifications: list[tuple[Any, ...]] = []
+        notify_kwargs: list[dict[str, Any]] = []
+        app = LilbeeApp()
+        try:
+            with (
+                mock.patch.object(
+                    app,
+                    "notify",
+                    side_effect=lambda *a, **kw: (
+                        notifications.append(a),
+                        notify_kwargs.append(kw),
+                    ),
+                ),
+                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
+            ):
+                app.set_active_model("embedding_model", chat_ref)
+            assert cfg.embedding_model == embed_default, "rejected assignment must not mutate cfg"
+            mock_set_value.assert_not_called()
+            assert len(notifications) == 1
+            assert notify_kwargs[-1].get("severity") == "error"
+        finally:
+            cfg.embedding_model = embed_default
