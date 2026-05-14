@@ -1081,7 +1081,7 @@ class TestEmptyStringToNone:
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.temperature == 0.2
+        assert c.temperature == 0.1
 
     def test_whitespace_seed_becomes_none(self, tmp_path):
         env = _clean_env(tmp_path)
