@@ -231,7 +231,7 @@ def _apply_gpu_device_env() -> None:
     """
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.gpu_select import (
-        VK_LOADER_DRIVERS_DISABLE_ENV_VAR,
+        VulkanIcdEnvVar,
         autoselect_best_gpu_index,
         disable_conflicting_vulkan_icds,
     )
@@ -242,7 +242,7 @@ def _apply_gpu_device_env() -> None:
     # prevent a buggy second-vendor ICD from corrupting the heap.
     disable_glob = disable_conflicting_vulkan_icds()
     if disable_glob is not None:
-        os.environ.setdefault(VK_LOADER_DRIVERS_DISABLE_ENV_VAR, disable_glob)
+        os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
         log.info("Disabling conflicting Vulkan ICDs on Windows: %s", disable_glob)
 
     if cfg.gpu_devices:

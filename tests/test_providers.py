@@ -2407,11 +2407,11 @@ class TestDisableConflictingVulkanIcds:
             ),
         ]
         monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: devices)
-        # Source the override-var list from the module so the test moves in
-        # lockstep with the production tuple (e.g., when a new loader env var
-        # joins the set).
-        for override_var in gpu_select._VK_USER_OVERRIDE_ENV_VARS:
-            monkeypatch.setattr(gpu_select.os, "environ", {override_var: "user-set"})
+        # Source the override-var list from the enum so the test moves in
+        # lockstep with the production set (e.g., when a new loader env var
+        # joins the spec).
+        for env_var in gpu_select.VulkanIcdEnvVar:
+            monkeypatch.setattr(gpu_select.os, "environ", {env_var.value: "user-set"})
             assert gpu_select.disable_conflicting_vulkan_icds() is None
 
     def test_empty_probe_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:

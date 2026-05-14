@@ -35,7 +35,7 @@ import os
 import sys
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 
 log = logging.getLogger(__name__)
 
@@ -121,21 +121,22 @@ _VENDOR_ICD_GLOBS: dict[PCIVendorID, tuple[str, ...]] = {
 }
 
 
-VK_LOADER_DRIVERS_DISABLE_ENV_VAR = "VK_LOADER_DRIVERS_DISABLE"
-"""Loader env var that names a comma-separated list of ICD manifest globs to disable."""
+class VulkanIcdEnvVar(StrEnum):
+    """Every documented Vulkan loader env var that influences ICD selection.
 
+    Names are the verbatim loader env vars from the Khronos
+    LoaderInterfaceArchitecture spec; the StrEnum lets each member be
+    used directly as a ``str`` argument to ``os.environ.get`` /
+    ``os.environ.setdefault`` without ``.value`` plumbing. Any value
+    being non-empty in the environment is treated as a user override
+    and suppresses the dual-vendor auto-pin.
+    """
 
-# Env vars that, when already set by the user, cause us to skip the dual-vendor
-# ICD-disable path entirely. The user has spoken; we don't second-guess. Covers
-# every documented Vulkan loader ICD-selection env var (see Vulkan-Loader
-# LoaderInterfaceArchitecture.md).
-_VK_USER_OVERRIDE_ENV_VARS = (
-    "VK_DRIVER_FILES",
-    "VK_ICD_FILENAMES",
-    "VK_ADD_DRIVER_FILES",
-    VK_LOADER_DRIVERS_DISABLE_ENV_VAR,
-    "VK_LOADER_DRIVERS_SELECT",
-)
+    DRIVER_FILES = "VK_DRIVER_FILES"
+    ICD_FILENAMES = "VK_ICD_FILENAMES"
+    ADD_DRIVER_FILES = "VK_ADD_DRIVER_FILES"
+    LOADER_DRIVERS_DISABLE = "VK_LOADER_DRIVERS_DISABLE"
+    LOADER_DRIVERS_SELECT = "VK_LOADER_DRIVERS_SELECT"
 
 
 # Field layouts from the Vulkan 1.0 spec. ctypes maps the C structs
@@ -410,34 +411,36 @@ def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[s
     return globs
 
 
+# References for the dual-vendor ICD mitigation below:
+#   - Khronos Vulkan-Loader env var spec (VK_LOADER_DRIVERS_DISABLE / VK_DRIVER_FILES):
+#     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md
+#   - ICD manifest filename conventions:
+#     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md
+#   - "Failure in one ICD causes total failure of vkEnumeratePhysicalDevices" (the failure mode):
+#     https://github.com/KhronosGroup/Vulkan-Loader/issues/1467
+#   - NVIDIA help article 5182, dual-vendor Vulkan apps on notebooks:
+#     https://nvidia.custhelp.com/app/answers/detail/a_id/5182/
+#   - Heroic Games Launcher ICD-selection issue (same mitigation pattern in prod):
+#     https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/issues/3796
+#   - Blender Vulkan backend startup failure on dual-vendor hosts:
+#     https://projects.blender.org/blender/blender/issues/129917
 def disable_conflicting_vulkan_icds() -> str | None:
     """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor Windows boxes.
 
-    When ``vkCreateInstance`` runs, the Vulkan loader loads every ICD
-    registered on the system into the process. On a dual-vendor box
-    (typical case: NVIDIA discrete + AMD integrated) both vendor
-    DLLs end up loaded side by side. The AMD ICD (``amdvlk64.dll``)
-    is known to corrupt the heap of host applications when this
-    happens, taking the worker subprocess down with
-    ``STATUS_HEAP_CORRUPTION``. NVIDIA documents the same workaround
-    for games on the same hardware combination (see help article 5182).
+    Returns a comma-separated glob list naming the ICD manifest filenames
+    of every vendor *except* the highest-ranked adapter's vendor, or
+    ``None`` when there's no conflict to resolve, the user has set any
+    Vulkan ICD-selection env var, or the probe fails. The caller writes
+    the returned value to ``VK_LOADER_DRIVERS_DISABLE`` so the Vulkan
+    loader skips those ICDs at the next ``vkCreateInstance``.
 
-    We probe the loader once, identify the highest-ranked adapter
-    (already discrete-over-integrated via ``_pick_best_device``), and
-    return a glob that disables the *other* vendors' ICDs. The caller
-    writes it to ``VK_LOADER_DRIVERS_DISABLE`` so the loader honors
-    it on the next ``vkCreateInstance``. Returns ``None`` when there's
-    no conflict to resolve, when the user has already set any Vulkan
-    ICD-selection env var, or when the probe fails. The "do nothing"
-    branches preserve today's behavior, so this is strictly additive.
-
-    Windows-only: macOS uses Metal (no Vulkan loader); Linux has the
-    same loader mechanism but no reproduced crashes yet, so we don't
-    pin there until a report drives it.
+    Windows-only: macOS uses Metal; Linux has the same loader mechanism
+    but no reported crashes, so we don't pin there until a report drives
+    it.
     """
     if sys.platform != "win32":
         return None
-    if any(os.environ.get(name) for name in _VK_USER_OVERRIDE_ENV_VARS):
+    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
         return None
     devices = _enumerate_vulkan_devices() or []
     vendors = _known_vendors(devices)
