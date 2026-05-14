@@ -2455,6 +2455,79 @@ class TestDisableConflictingVulkanIcds:
         # Only one *known* vendor present -> no conflict to resolve.
         assert gpu_select.disable_conflicting_vulkan_icds() is None
 
+    def test_unknown_best_vendor_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Multi-vendor list where the discrete (best) adapter is an unknown vendor.
+
+        ``_known_vendors`` sees AMD + NVIDIA (both integrated), but the
+        highest-ranked adapter is the discrete mystery vendor. Pinning to
+        an ICD we can't name is worse than not pinning, so we bail.
+        """
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.INTEGRATED_GPU,
+                    device_name="AMD Radeon",
+                    vendor_id=PCIVendorID.AMD,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.INTEGRATED_GPU,
+                    device_name="NVIDIA",
+                    vendor_id=PCIVendorID.NVIDIA,
+                ),
+                VulkanDevice(
+                    index=2,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="Mystery Discrete",
+                    vendor_id=0xDEAD,
+                ),
+            ],
+        )
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_no_rank_eligible_adapter_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If every adapter is CPU-rank, ``_pick_best_device`` returns None and we bail."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            VkDeviceType,
+            VulkanDevice,
+        )
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.CPU,
+                    device_name="AMD software fallback",
+                    vendor_id=PCIVendorID.AMD,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.CPU,
+                    device_name="NVIDIA software fallback",
+                    vendor_id=PCIVendorID.NVIDIA,
+                ),
+            ],
+        )
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
 
 class TestImportLlamaCpp:
     """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError."""

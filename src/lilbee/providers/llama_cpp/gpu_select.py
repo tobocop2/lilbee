@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-import functools
 import logging
 import os
 import sys
@@ -220,15 +219,14 @@ def autoselect_best_gpu_index() -> str | None:
     return str(best.index)
 
 
-@functools.cache
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     """Open libvulkan, create a throwaway instance, enumerate adapters.
 
     Returns ``None`` if the loader can't be found or any Vulkan call
     fails; empty list ("loader present, no adapters") is a distinct
-    outcome and propagates back. Cached for the process lifetime: the
-    bootstrap calls this twice (autoselect plus the dual-vendor ICD
-    pin) and the GPU set doesn't change at runtime.
+    outcome and propagates back. The bootstrap calls this twice
+    (autoselect plus the dual-vendor ICD pin) at process startup; the
+    Vulkan probe is ms-scale, no caching needed.
     """
     lib = _load_vulkan_loader()
     if lib is None:
@@ -453,5 +451,6 @@ def disable_conflicting_vulkan_icds() -> str | None:
         best_vendor = PCIVendorID(best.vendor_id)
     except ValueError:
         return None
-    globs = _icds_to_disable(best_vendor, vendors)
-    return ",".join(globs) if globs else None
+    # ``vendors`` has at least two members and we filter out ``best_vendor``,
+    # so ``_icds_to_disable`` always returns a non-empty list here.
+    return ",".join(_icds_to_disable(best_vendor, vendors))
