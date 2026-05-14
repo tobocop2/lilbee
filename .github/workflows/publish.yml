@@ -2,11 +2,13 @@ name: Publish to PyPI
 
 # Pure publish step -- no builds. Finds the release-candidate.yml run for this
 # tag, downloads its default wheels + sdist, uploads them to PyPI, then dispatches
-# the packaging fan-out (Docker / Homebrew / AUR / Nix). It needs only the default
-# wheels + sdist (they finish ~25 min into the RC run), so it does NOT wait on the
-# executables / CUDA matrix / QA -- run it as soon as those artifacts are up. The
-# fan-out does need the executables on the GH release; it self-skips if they're
-# not attached yet (re-run this workflow once the RC run has attached them).
+# the packaging fan-out (Docker / Homebrew / AUR / Nix). PyPI publish only needs
+# the default wheels + sdist (they finish ~25 min into the RC run), so this can
+# run as soon as those artifacts are up. The fan-out needs the executables on the
+# GH release; if they're not attached yet it waits up to 5 hours for the RC run
+# to attach them (the Windows nuitka build alone has been observed at ~3h45m) and
+# fails loudly past that. No second dispatch is needed even when the wheels land
+# before the executables.
 #
 # Filename `publish.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
