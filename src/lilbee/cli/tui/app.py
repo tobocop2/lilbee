@@ -20,7 +20,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
-from lilbee.core.config import cfg
+from lilbee.core.config import cfg, validate_model_task_assignment
 from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -291,8 +291,18 @@ class LilbeeApp(App[None]):
         settings.set_value(cfg.data_root, "theme", name)
 
     def set_active_model(self, key: str, value: str) -> None:
-        """Single write boundary for active model refs."""
-        setattr(cfg, key, value)
+        """Single write boundary for active model refs.
+
+        Validates the ref's catalog task matches the field, so a chat-only
+        model cannot land in the embedding slot (and equivalents for vision /
+        rerank). Provider-prefixed refs and the empty string pass through.
+        """
+        try:
+            canonical = validate_model_task_assignment(key, value)
+        except ValueError as exc:
+            self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
+            return
+        setattr(cfg, key, canonical)
         normalized = getattr(cfg, key)
         settings.set_value(cfg.data_root, key, normalized)
         self.settings_changed_signal.publish((key, normalized))

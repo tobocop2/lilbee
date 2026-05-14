@@ -186,6 +186,7 @@ EMBED_SWAP_CONFIRM_MESSAGE = (
     "Continue?"
 )
 EMBED_SWAP_CANCELLED = "Embedding model swap cancelled"
+MODEL_ASSIGN_REJECTED = "Model not set: {error}"
 
 SETTINGS_RESET_ALL_LABEL = "Reset all defaults"
 SETTINGS_RESET_ALL_CONFIRM_TITLE = "Reset all settings?"
