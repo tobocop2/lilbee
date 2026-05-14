@@ -27,34 +27,36 @@ Sleep 1500ms
 
 # Tour every inner tab: Discover / Chat / Embed / Vision / Rerank / Library.
 # Keys 1..6 are priority bindings -- they win over the search input.
+# Slower sleeps (3s per tab) give the viewer time to actually read each
+# pane before the next jump rather than feeling like a slot-machine.
 Type "1"
-Sleep 1800ms
+Sleep 3s
 Type "2"
-Sleep 1800ms
+Sleep 3s
 Type "3"
-Sleep 1800ms
+Sleep 3s
 Type "4"
-Sleep 1800ms
+Sleep 3s
 Type "5"
-Sleep 1800ms
+Sleep 3s
 Type "6"
-Sleep 1800ms
+Sleep 3s
 
 # Back to Discover for the rest of the tour.
 Type "1"
-Sleep 1200ms
+Sleep 2s
 
 # Grid <-> list toggle.
 Type "v"
-Sleep 1500ms
+Sleep 2s
 Type "v"
-Sleep 1500ms
+Sleep 2s
 
 # Infinite scroll: load more pages.
 Type "n"
-Sleep 1200ms
+Sleep 1500ms
 Type "n"
-Sleep 1200ms
+Sleep 1500ms
 
 # Info modal on a local installed row. `i` notifies "frontier no info" on
 # HF Hub rows, so we trigger it from Library where Qwen3 0.6B lives.
@@ -88,12 +90,15 @@ Sleep 300ms
 Enter
 Sleep 1s
 
-# Switch to Tasks so the download progress is visible on camera. Four `[`
-# walks back: Catalog -> Status -> Settings -> Tasks (wrap), but we just
-# use `t` from NORMAL mode after Escape.
-Escape
-Sleep 300ms
-Type "t"
+# Switch to Tasks (next-tab from Catalog: Status -> Settings -> Tasks).
+# `t` doesn't fire reliably from the catalog because the search input
+# may still be focused; `]` is a priority binding that always works.
+Type "]"
+Sleep 400ms
+Type "]"
+Sleep 400ms
+Type "]"
+Sleep 800ms
 Sleep 32s
 
 Type "/quit"

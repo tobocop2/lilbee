@@ -58,10 +58,8 @@ Sleep 1200ms
 Type ">"
 Sleep 1200ms
 
-# 4. Task Center.
-Escape
-Sleep 300ms
-Type "t"
+# 4. Task Center. From Settings, one `]` advances to Tasks.
+Type "]"
 Sleep 1800ms
 
 # 5. Help panel.

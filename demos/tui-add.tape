@@ -30,10 +30,19 @@ Sleep 600ms
 Enter
 Sleep 1s
 
-# Jump to the Task Center to watch the ingest run.
-Escape
-Sleep 300ms
-Type "t"
+# Walk forward through the screen tabs to Tasks. `]` is a priority
+# binding (always works), unlike `t` which only fires when the chat
+# input doesn't have focus -- and Escape from chat only toggles
+# NORMAL/INSERT mode without releasing the input's focus, so `t`
+# would type literal "t" into the prompt.
+Type "]"
+Sleep 400ms
+Type "]"
+Sleep 400ms
+Type "]"
+Sleep 400ms
+Type "]"
+Sleep 800ms
 Sleep 38s
 
 Screenshot demos/_out/tui-add.png
