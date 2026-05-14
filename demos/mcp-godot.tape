@@ -1,5 +1,10 @@
 Source demos/_shared.tape
 Output demos/_out/mcp-godot.gif
+# VHS folds the final PlaybackSpeed into one ffmpeg `setpts=PTS/n` filter,
+# applied to the whole recording. So we pick a single global speed-up
+# that lands the gif near two minutes given a ~7-minute real-time
+# recording. No Hide: every frame is on camera.
+Set PlaybackSpeed 4.0
 
 # opencode driving lilbee over MCP, full TUI, against Godot 4 class
 # reference XML (810 files). Mirrors the prompt from the
@@ -24,6 +29,11 @@ Output demos/_out/mcp-godot.gif
 # kickoff, the live searches, and the cited answer play at near-real
 # speed (1.5x). Final GIF lands around two minutes.
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+# 810 XML files index for ~5m 20s, brushing right up against the default
+# 300s worker-pool call timeout; bump to 10 minutes so the demo doesn't
+# time out before lilbee_add (or a `sync` fallback the agent might pick)
+# completes.
+Env LILBEE_WORKER_POOL_CALL_TIMEOUT_S "600"
 
 Type "cd /tmp/lilbee-demo/opencode-godot"
 Sleep 400ms
@@ -42,20 +52,14 @@ Type "Index ./godot-classes/ then write a procedural level generator that places
 Sleep 600ms
 Enter
 
-# Kickoff phase: skill load, planning, lilbee-worker spawn -- keep at
-# the shared playback speed (1.5x).
-Sleep 25s
-
-# Indexing phase: the worker streams its lilbee_add progress for ~5
-# minutes. No Hide -- speed playback up to 8x so the bar fills on
-# camera, fast.
-Set PlaybackSpeed 8
-Sleep 300s
-
-# Back to demo speed for the agent's lilbee_search calls, the file
-# write, and the final cited answer.
-Set PlaybackSpeed 1.5
-Sleep 90s
+# Real time: opencode kickoff (~25s) + worker indexing the 810 XML
+# files (~5-7 min depending on MiniMax speed) + post-indexing search
+# and cited code generation (~90-120s). Total wall is ~7-9 min on M1.
+# All on camera at the global 4x playback speed; the gif lands at
+# ~2 min and viewers can pause for the parts they want to read.
+Sleep 30s
+Sleep 420s
+Sleep 120s
 
 Screenshot demos/_out/mcp-godot.png
 Sleep 5s
