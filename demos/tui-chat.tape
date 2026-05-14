@@ -12,37 +12,38 @@ Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
+# Wider retrieval and bigger context for the fuse-table extraction. The
+# cv-manual has three different fuse boxes (instrument panel, BJB, smart
+# junction box); bumping top_k gives the model enough chunks to cover
+# the full panel without missing rows.
+Env LILBEE_TOP_K "20"
+Env LILBEE_NUM_CTX "16384"
 
 Type "lilbee"
 Sleep 300ms
 Enter
 Sleep 2500ms
 
-# Off-camera warm-up: load model + KV cache, then clear the conversation.
-Hide
-Type "ping"
-Sleep 400ms
-Enter
-Sleep 45s
-Type "/clear"
-Sleep 400ms
-Enter
-Sleep 1s
-Show
-
-# Centerpiece: a structured-extraction prompt that turns the fuse-box
-# section of the manual into a markdown table. Qwen3 4B + lilbee
-# retrieval renders this richly with inline `[N]` citations and a
-# multi-page Sources line. The prompt scopes well: 0.6B handles it too,
-# so the demo is reproducible on the wizard's first card.
+# Centerpiece: a structured-extraction prompt that turns the instrument
+# cluster warning-lights section into a markdown table. The cluster
+# section is self-contained (one page block, no cross-refs to other
+# fuse boxes), so retrieval anchors cleanly and Qwen3 4B can produce a
+# full-coverage table with one Sources line.
 #
-# While Qwen3 4B is streaming, the chat input is disabled and any
-# queued Enter is dropped (the next Type's text would append to
-# whatever's in the field). Sleep covers a long structured answer.
-Type "Provide me a markdown table containing all of the fuses for my Crown Vic and their colors and their purpose."
+# We DON'T do a warm-up sandwich here -- the warm-up `ping` + `/clear`
+# was reducing answer quality (the kv reset seems to leave the model
+# more conservative). Cold first turn is slower but produces the
+# comprehensive 5-row table the manual tmux test verified. Hide elides
+# the cold load + streaming so the GIF stays short.
+Type "Provide a markdown table of the instrument cluster warning indicator lights from the Crown Victoria manual, with columns Symbol, Color, and Meaning. Include every warning light documented."
 Sleep 600ms
 Enter
-Sleep 60s
+
+Sleep 4s
+Hide
+Sleep 110s
+Show
+Sleep 5s
 
 Screenshot demos/_out/tui-chat.png
 
