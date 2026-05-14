@@ -104,19 +104,22 @@ setup_opencode_dir() {
 }
 
 link_godot_classes() {
-    # Symlink godot's class reference XMLs into the godot demo dir. The
+    # Copy godot's class reference XMLs into the godot demo dir. The
     # local godot checkout is whatever the dev has at GODOT_SRC (defaults
-    # to ~/projects/godot). The agent indexes these via lilbee_add and
-    # then answers questions about Godot 4 APIs with file:line citations.
+    # to ~/projects/godot). We copy (not symlink) so the path resolves
+    # inside the opencode project root; opencode prompts the user before
+    # touching paths outside the project root, which would block the
+    # render.
     local dest="$ROOT/opencode-godot/godot-classes"
-    [[ -L "$dest" || -d "$dest" ]] && return 0
+    [[ -d "$dest" && ! -L "$dest" ]] && return 0
     local godot_src="${GODOT_SRC:-$HOME/projects/godot}"
     if [[ ! -d "$godot_src/doc/classes" ]]; then
-        printf 'warn: %s/doc/classes not found; skipping godot demo link.\n' \
+        printf 'warn: %s/doc/classes not found; skipping godot demo copy.\n' \
             "$godot_src" >&2
         return 0
     fi
-    ln -sf "$godot_src/doc/classes" "$dest"
+    rm -rf "$dest"
+    cp -R "$godot_src/doc/classes" "$dest"
 }
 
 main() {
