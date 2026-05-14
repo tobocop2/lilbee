@@ -9,6 +9,7 @@ Output demos/_out/tui-add.gif
 # instead, the better-looking screen).
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-add"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -37,15 +38,16 @@ Sleep 38s
 
 Screenshot demos/_out/tui-add.png
 
-# Back to chat to confirm the corpus is live (warm-up sandwich is overkill
-# for one question right after a 38s wait; the model is already loaded).
+# Back to chat to confirm the corpus is live. Model load + warm answer
+# takes ~30-40s on the first question after /add.
 Type "["
 Sleep 1s
 Type "what's my oil capacity?"
 Sleep 400ms
 Enter
-Sleep 13s
+Sleep 35s
 
+Sleep 2s
 Type "/quit"
 Sleep 400ms
 Enter

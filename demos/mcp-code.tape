@@ -19,16 +19,19 @@ Sleep 600ms
 Type "opencode"
 Sleep 400ms
 Enter
-Sleep 4s
+Sleep 8s
 
-# One turn: index the slice, then answer.
+# One turn: index the slice, then answer. The agent runs through:
+# (a) load lilbee-mcp skill, (b) delegate lilbee_add to lilbee-worker
+# (~25s), (c) run lilbee_search, (d) cite the answer. Sleep covers the
+# whole sequence with margin.
 Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then explain how lilbee discovers a project-local .lilbee/ directory. Cite the file and line range."
 Sleep 600ms
 Enter
-Sleep 85s
+Sleep 150s
 
 Screenshot demos/_out/mcp-code.png
-Sleep 2s
+Sleep 3s
 
 Ctrl+C
 Sleep 1s

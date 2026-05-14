@@ -25,16 +25,18 @@ Sleep 600ms
 Type "opencode"
 Sleep 400ms
 Enter
-Sleep 4s
+Sleep 8s
 
-# One turn: index + cited answer.
+# One turn: index + cited answer. The agent runs lilbee_add via the
+# lilbee-worker subagent (~30s), then lilbee_search, then writes the
+# cited answer. 100s already worked once; 120s gives margin.
 Type "Index cv-manual.pdf, then tell me my oil capacity. Cite the page."
 Sleep 600ms
 Enter
-Sleep 85s
+Sleep 120s
 
 Screenshot demos/_out/mcp-manual.png
-Sleep 2s
+Sleep 3s
 
 Ctrl+C
 Sleep 1s

@@ -6,6 +6,7 @@ Output demos/_out/tui-tour.gif
 # surface (per user feedback: cover all evenly, don't lean on just two).
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-tour"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -26,11 +27,12 @@ Enter
 Sleep 1s
 Show
 
-# 1. Chat with citations.
+# 1. Chat with citations. Qwen3 4B's full answer typically streams for
+# 18-22s including the Sources line; sleep budget covers the worst case.
 Type "what's my oil capacity?"
 Sleep 400ms
 Enter
-Sleep 13s
+Sleep 25s
 
 Screenshot demos/_out/tui-tour.png
 

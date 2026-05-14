@@ -43,9 +43,8 @@ Sleep 1500ms
 Type ">"
 Sleep 1500ms
 
-# Land on Retrieval (longest pane, best screenshot).
-Type "<"
-Sleep 500ms
+# From System, four `<` presses lands on Retrieval (longest pane, best
+# screenshot): API-Keys -> Crawling -> Display -> Retrieval.
 Type "<"
 Sleep 500ms
 Type "<"
@@ -57,9 +56,8 @@ Sleep 500ms
 
 Screenshot demos/_out/tui-settings.png
 
-# Demonstrate the model-select dropdown on the Models pane.
-Type "<"
-Sleep 500ms
+# Demonstrate the model-select dropdown on the Models pane: three more `<`
+# back: Generation -> Ingest -> Models.
 Type "<"
 Sleep 500ms
 Type "<"

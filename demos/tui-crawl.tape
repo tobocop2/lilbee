@@ -11,6 +11,7 @@ Output demos/_out/tui-crawl.gif
 #   Cold first chat turn after warm-up        ~14s
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-crawl"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -53,11 +54,14 @@ Sleep 1s
 Show
 
 # The on-camera question, narrowed to one sub-era so retrieval lands clean.
+# Qwen3 4B answer takes 18-25s warm against the crawled Wikipedia chunks.
 Type "What engines were available in the 1986-1990 Chevrolet Caprice?"
 Sleep 400ms
 Enter
-Sleep 14s
+Sleep 28s
 
+# Buffer so the GIF doesn't end mid-stream.
+Sleep 2s
 Type "/quit"
 Sleep 400ms
 Enter
