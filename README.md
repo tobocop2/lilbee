@@ -127,9 +127,11 @@ Standing this up used to mean a background daemon, a separate inference server, 
 
 <p align="center"><img alt="lilbee crawl modal" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.png" width="800"></p>
 
-<details><summary>▶ Watch: crawl a Wikipedia page, then ask about it</summary>
+<details><summary>▶ Watch: crawl a Wikipedia page, then ask about it (sped up; real time ≈ 2 min on M1)</summary>
 
 <p align="center"><img alt="lilbee crawl demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif" width="800"></p>
+
+<sub>Playback is 1.5× the recorded speed for the modal flow and Task Center, and 3× during the Qwen3 4B answer stream. Wall-clock on a MacBook Air M1 was around 2 minutes end-to-end.</sub>
 </details>
 
 **Settings.** ~50 knobs grouped into Models, Ingest, Generation, Retrieval, Display, Crawling, API-Keys, System. Edit in the TUI, environment variables, or a project-local config file.
@@ -326,9 +328,11 @@ lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: sear
 
 <p align="center"><img alt="opencode + lilbee MCP writing Godot 4 code with file:line citations" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.png" width="800"></p>
 
-<details><summary>▶ Watch: index the Godot class reference, then write cited code</summary>
+<details><summary>▶ Watch: index the Godot class reference, then write cited code (sped up; real time ≈ 7 min on M1)</summary>
 
 <p align="center"><img alt="opencode + lilbee MCP, Godot class reference demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif" width="800"></p>
+
+<sub>Playback is 1.5× the recorded speed, with the ~5-minute indexing window further sped up to 8×. Wall-clock on a MacBook Air M1 was around 7 minutes end-to-end (~25s kickoff + ~5min 20s indexing + ~90s of search and code generation).</sub>
 </details>
 
 **Querying an owner's manual.** The same shape, smaller corpus: index `cv-manual.pdf`, ask for the oil capacity, get a page-cited answer.
