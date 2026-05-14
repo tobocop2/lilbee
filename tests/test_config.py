@@ -316,6 +316,33 @@ class TestTomlConfigFile:
             c = Config()
             assert c.repeat_penalty == 1.1
 
+    def test_theme_defaults_to_rose_pine(self, tmp_path):
+        """Fresh Config opens in rose-pine; the muted palette is the agreed default.
+
+        Regression guard: the TUI fallback in app.py uses rose-pine, but
+        cfg.theme is always populated, so the fallback never fires. The
+        config-side default has to match or fresh installs see gruvbox.
+        """
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.theme == "rose-pine"
+
+    def test_theme_default_matches_app_fallback(self, tmp_path):
+        """The Config default and the TUI fallback constant must agree.
+
+        If they drift, the visible default and the documented default
+        diverge, which is how bb-akqw-style regressions sneak in.
+        """
+        from lilbee.cli.tui.app import _DEFAULT_THEME
+
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.theme == _DEFAULT_THEME
+
     def test_num_ctx_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("num_ctx = 4096\n")
