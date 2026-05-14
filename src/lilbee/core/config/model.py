@@ -111,7 +111,7 @@ class Config(BaseSettings):
     # single long-running vision OCR page can't starve the client into aborting.
     sse_heartbeat_interval: float = ConfigField(default=30.0, ge=0.0, writable=True)
     json_mode: bool = False
-    temperature: float | None = ConfigField(default=0.2, ge=0.0, writable=True)
+    temperature: float | None = ConfigField(default=0.1, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=0.9, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=40, ge=1, writable=True)
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
