@@ -97,13 +97,16 @@ then `lilbee_search`-es for the oil capacity and returns a page-cited answer.
 
 ![mcp + manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif)
 
-### Indexing and querying lilbee's own source
+### Writing Godot 4 code against the indexed class reference
 
-Same shape against a code corpus. The agent indexes a slice of `src/lilbee/`, then
-`lilbee_search`-es for the `.lilbee/` discovery mechanism and cites the actual file and
-line range (`src/lilbee/core/system.py:23-33`).
+Same shape against an XML reference corpus. The agent indexes Godot 4's class reference
+(810 XML files, 3449 chunks) via `lilbee-worker`, then `lilbee_search`-es for
+`AStarGrid2D`, `TileMap`, `RandomNumberGenerator`, and friends as it writes a procedural
+level generator. Every API call is backed by a `godot-classes/<Class>.xml:line` citation.
+See [`docs/benchmarks/godot-level-generator.md`](benchmarks/godot-level-generator.md) for
+the side-by-side against the no-RAG baseline (4 hallucinated APIs without lilbee, 0 with).
 
-![mcp + lilbee source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
+![mcp + godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
 ## Written walkthroughs
 

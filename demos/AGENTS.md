@@ -39,6 +39,24 @@ via the `task` tool. Wait for the worker to report done, then continue answering
 - `lilbee_crawl` — fetch a docs site (worker polls `lilbee_crawl_status` to completion).
 - `lilbee_model_pull` — download a model from Hugging Face.
 
+## Writing code from an indexed API reference
+
+When the corpus is an API or class reference (Godot XML, a library's source, a docs site)
+and the user asks you to write code against it, your training data is outdated relative to
+the corpus. Follow this four-step workflow on every code-generation task:
+
+1. **Plan** — list every class, method, property, and enum your solution will need.
+2. **Search** — call `lilbee_search` for each item individually. Do not skip this for any
+   class, even ones you're confident about. Check whether each class still exists or was
+   replaced by a newer variant. Verify every method signature individually.
+3. **Write** — only use class names, methods, and properties exactly as confirmed by the
+   search results. If something wasn't found, do not use it.
+4. **Verify** — before saving the file, re-search every class and method call in your code
+   via `lilbee_search`. Fix anything that doesn't match the search results exactly.
+
+This is the difference between a 0-hallucinated-API run and a 4-hallucinated-API run in
+the [godot-level-generator benchmark](docs/benchmarks/godot-level-generator.md).
+
 ## End-to-end shape of a question that needs new content
 
 User asks "what does X say about Y?" against a file you haven't indexed yet:
