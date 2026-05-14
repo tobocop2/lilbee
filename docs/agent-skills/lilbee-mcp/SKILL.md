@@ -45,6 +45,25 @@ A matching `AGENTS.md` snippet and a `lilbee-worker` subagent live in
 3. **Long ops go to a subagent.** They block. Run them through a `lilbee-worker` agent (or
    any background-capable subagent the host provides) so you stay responsive.
 
+## Hard rule: search and indexing cannot run at the same time
+
+The lilbee MCP server hosts one shared embedder worker. Indexing (`lilbee_add`,
+`lilbee_sync`, `lilbee_crawl`, `lilbee_model_pull`) pins that worker for as long as it runs;
+`lilbee_search` needs the same worker to embed the query. Until indexing finishes, search
+calls will hang and your MCP client will time them out.
+
+The rule for you (the agent):
+
+1. Decide whether to index. If yes, delegate to a `lilbee-worker` subagent and **wait** for
+   the worker's `task` call to return. Don't fire `lilbee_search` (or any other inline
+   `lilbee_*` tool) from your own thread while the worker is still running.
+2. After the worker returns, run `lilbee_status` once to confirm the expected counts.
+3. Then search.
+
+If a `lilbee_search` call ever returns an MCP timeout, treat it as "indexing isn't fully
+done yet" — wait 10 seconds, re-check `lilbee_status`, and retry. Do **not** change
+strategy and reach for other tools; the search will work the moment the embedder is free.
+
 ## Tools, by cost
 
 ### Quick (run inline)

@@ -33,3 +33,8 @@ and report what changed.
 - If a call errors, surface the error message verbatim. Don't retry silently.
 - If the corpus is already populated when you were asked to index, run the add anyway with
   `force=false` (lilbee will deduplicate via SHA-256) and report what was added vs. skipped.
+- **Block until the operation finishes.** `lilbee_add` (and the other long ops) return
+  only when the embedder is fully done. Wait for the response. Confirm the expected
+  source / chunk counts with `lilbee_status` before reporting back. The primary
+  agent uses your return as the green light to start searching, so a premature "done"
+  causes its first `lilbee_search` to time out against a still-busy embedder.

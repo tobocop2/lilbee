@@ -5,6 +5,28 @@ question about a file in this project, every claim about code or documents, ever
 does X say about Y" goes through `lilbee_*` tools. The built-in `codesearch`, `websearch`,
 and `webfetch` are deliberately denied here so you can't shortcut around the corpus.
 
+## Hard rule: never search while indexing
+
+`lilbee_search` and indexing (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`,
+`lilbee_model_pull`) share a single in-process embedder worker inside the lilbee MCP
+server. They cannot run at the same time. If you call `lilbee_search` while indexing is
+still in progress, the call will hang and your client will time it out.
+
+**Sequence every task this way:**
+
+1. Decide whether the corpus needs indexing or updating. If yes, delegate the long op to
+   the `lilbee-worker` subagent via `task` and **wait for it to return**. Do not call any
+   `lilbee_*` tool from your own thread while the worker is running. Do not start a parallel
+   thought to "save time"; there is nothing to do until the worker reports back.
+2. After the worker returns, run `lilbee_status` once to confirm the expected source /
+   chunk counts before searching.
+3. Then call `lilbee_search` (and friends) freely; the embedder is no longer pinned.
+
+If you skip step 2 and your first `lilbee_search` returns an MCP timeout, that's the
+indexing finishing up. Wait 10 seconds, re-check `lilbee_status`, and retry the search.
+Do not change retrieval strategy or fall back to other tools; the search will work the
+moment the embedder is free.
+
 You will spend most of your time on two things:
 
 1. **Setting the corpus up** — indexing files, crawling a docs site, swapping models. These
