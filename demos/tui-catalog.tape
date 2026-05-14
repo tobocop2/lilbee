@@ -10,6 +10,7 @@ Output demos/_out/tui-catalog.gif
 #   SmolLM2 135M cold pull                      ~30s (101 MB, bartowski mirror)
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-catalog"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -90,9 +91,10 @@ Sleep 300ms
 Enter
 Sleep 1s
 
-# Switch to Tasks (next-tab from Catalog: Status -> Settings -> Tasks).
-# `t` doesn't fire reliably from the catalog because the search input
-# may still be focused; `]` is a priority binding that always works.
+# Switch to Tasks. The catalog's `/` filter input is focused after the
+# search step above; Escape releases focus so the screen-nav `]` works.
+Escape
+Sleep 400ms
 Type "]"
 Sleep 400ms
 Type "]"

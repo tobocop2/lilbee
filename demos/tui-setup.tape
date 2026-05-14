@@ -11,6 +11,7 @@ Output demos/_out/tui-setup.gif
 # wizard. That's why tui-catalog (not this tape) shows the SmolLM2 pull.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-setup"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/setup-models"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 # Point Ollama at an unused port so the wizard can't detect locally

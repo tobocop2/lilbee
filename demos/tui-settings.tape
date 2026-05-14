@@ -6,6 +6,7 @@ Output demos/_out/tui-settings.gif
 # panes. Less jumpy than cycling all 8 panes at once.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-settings"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -14,14 +15,19 @@ Sleep 300ms
 Enter
 Sleep 2500ms
 
+# Two Escapes: first dismisses the wizard, second drops chat into NORMAL
+# (Chat starts in INSERT mode after wizard dismiss). Without the second
+# Escape, the next `]` types as a literal in the chat input.
 Escape
-Sleep 1s
+Sleep 500ms
+Escape
+Sleep 500ms
 
 # Walk to Settings: Chat -> Catalog -> Status -> Settings. 3 `]` presses.
 Type "]"
-Sleep 600ms
+Sleep 800ms
 Type "]"
-Sleep 600ms
+Sleep 800ms
 Type "]"
 Sleep 1500ms
 

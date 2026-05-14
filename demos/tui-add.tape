@@ -10,6 +10,7 @@ Output demos/_out/tui-add.gif
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-add"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -30,33 +31,49 @@ Sleep 600ms
 Enter
 Sleep 1s
 
-# Walk forward through the screen tabs to Tasks. `]` is a priority
-# binding (always works), unlike `t` which only fires when the chat
-# input doesn't have focus -- and Escape from chat only toggles
-# NORMAL/INSERT mode without releasing the input's focus, so `t`
-# would type literal "t" into the prompt.
-Type "]"
+# Drop into NORMAL mode FIRST: while the chat input is focused (the
+# default after a slash submission) every printable character including
+# `]` and `t` types as a literal into the prompt. Escape sets the chat
+# input unfocusable and moves focus to the chat log; `t` then opens
+# the Task Center via the priority binding.
+Escape
 Sleep 400ms
-Type "]"
-Sleep 400ms
-Type "]"
-Sleep 400ms
-Type "]"
-Sleep 800ms
+Type "t"
 Sleep 38s
 
 Screenshot demos/_out/tui-add.png
 
-# Back to chat to confirm the corpus is live. Model load + warm answer
-# takes ~30-40s on the first question after /add.
+# Back to chat. From Tasks, `[` walks back: Tasks -> Settings -> Status
+# -> Catalog -> Chat. 4 presses. Each press is a priority binding.
 Type "["
-Sleep 1s
+Sleep 400ms
+Type "["
+Sleep 400ms
+Type "["
+Sleep 400ms
+Type "["
+Sleep 800ms
+
+# Re-focus the chat input via `i` (NORMAL -> INSERT). `i` is bound only
+# when chat is in NORMAL mode; it's a no-op in INSERT.
+Type "i"
+Sleep 300ms
+
+# Confirm the corpus is live with a chat question.
 Type "what's my oil capacity?"
 Sleep 400ms
 Enter
+
+# Cold first turn after the wait above; Hide the bulk of the answer.
+Sleep 4s
+Hide
 Sleep 35s
+Show
+Sleep 4s
 
 Sleep 2s
+Escape
+Sleep 200ms
 Type "/quit"
 Sleep 400ms
 Enter

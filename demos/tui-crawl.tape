@@ -7,6 +7,7 @@ Output demos/_out/tui-crawl.gif
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-crawl"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
@@ -54,6 +55,11 @@ Sleep 400ms
 Enter
 Sleep 1500ms
 
+# After the modal closes, focus is back on the chat input (INSERT).
+# Escape -> NORMAL so `]` works as a screen-nav binding.
+Escape
+Sleep 400ms
+
 # Walk to the Task Center so the crawl progress is visible (4 `]`
 # from Chat: Catalog -> Status -> Settings -> Tasks).
 Type "]"
@@ -67,14 +73,12 @@ Sleep 30s
 
 Screenshot demos/_out/tui-crawl.png
 
-# Back to Chat (`[` from Tasks wraps backward through Settings... or use
-# /chat slash if available). Use one `[` to go to Settings, then 3 more
-# for Status, Catalog, Chat. Or simpler: type a slash and lilbee's
-# global slash binding routes to chat.
-Type "/"
-Sleep 400ms
-Backspace
-Sleep 400ms
+# Back to Chat (one `]` from Tasks wraps to Chat). Then `i` to drop
+# back into INSERT for the next question.
+Type "]"
+Sleep 800ms
+Type "i"
+Sleep 300ms
 
 # The on-camera question, narrowed to one sub-era so retrieval lands clean.
 # Cold first turn (no warm-up) inside Hide so the GIF stays short.
@@ -90,6 +94,8 @@ Sleep 5s
 
 # Buffer so the GIF doesn't end mid-stream.
 Sleep 2s
+Escape
+Sleep 200ms
 Type "/quit"
 Sleep 400ms
 Enter

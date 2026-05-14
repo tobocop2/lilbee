@@ -10,6 +10,7 @@ Output demos/_out/tui-chat.gif
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-chat"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_CHAT_MODEL "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 # Wider retrieval and bigger context for the fuse-table extraction. The

@@ -53,8 +53,9 @@ demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
 	vhs demos/tui-crawl.tape
 	vhs demos/tui-tour.tape
 	vhs demos/cli.tape
-	vhs demos/mcp-godot.tape
+	vhs demos/mcp-code.tape
 	vhs demos/mcp-manual.tape
+	# vhs demos/mcp-godot.tape  # blocked on embed-worker timeout bug
 	@command -v gifsicle >/dev/null 2>&1 && \
 		for f in demos/_out/*.gif; do gifsicle -O3 --lossy=80 -b "$$f"; done || \
 		echo "(install gifsicle to shrink GIFs further)"
