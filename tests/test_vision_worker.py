@@ -128,24 +128,24 @@ async def test_vision_worker_unknown_kind_returns_error(
 
 
 class _RecordingConn:
-    """Captures raw ``(call_id, kind, payload)`` 3-tuples sent through Reply."""
+    """Captures ``(kind, payload)`` frames sent through Reply."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[int, str, Any]] = []
+        self.sent: list[tuple[str, Any]] = []
 
-    def send(self, message: tuple[int, str, Any]) -> None:
+    def send(self, message: tuple[str, Any]) -> None:
         self.sent.append(message)
 
 
-def _make_reply(call_id: int = 1):
+def _make_reply():
     from lilbee.providers.worker.worker_runtime import Reply
 
     conn = _RecordingConn()
-    return Reply(conn, call_id), conn
+    return Reply(conn), conn
 
 
 def _kinds_payloads(conn: _RecordingConn) -> list[tuple[str, Any]]:
-    return [(kind, payload) for _call_id, kind, payload in conn.sent]
+    return list(conn.sent)
 
 
 class _StubSession:

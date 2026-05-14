@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import os
 import pickle
-import threading
 import time
 from multiprocessing.connection import wait
 from typing import Any
@@ -54,33 +53,34 @@ def _drive_test_worker(
     abort_flag: Any,
     on_data: Any,
 ) -> None:
-    """Test-worker multiplexer using the new ``(call_id, kind, payload)`` frame format.
+    """Test-worker multiplexer for the ``(kind, payload)`` wire format.
 
-    The dedicated heartbeat thread responsibility lives in real workers via
+    The dedicated heartbeat-thread responsibility lives in real workers via
     ``worker_runtime.run_worker``; tests bake an inline equivalent so each
     test worker stays self-contained. *on_data* signature is
-    ``(conn, call_id, kind, payload, abort_flag) -> None`` and it owns
-    sending response frames with the right call_id echoed back.
+    ``(conn, kind, payload, abort_flag) -> None`` and it owns sending
+    response frames on the data pipe. SHUTDOWN arrives on the health pipe.
     """
     try:
         while True:
             ready = wait([data_conn, health_conn], timeout=_POLL_TIMEOUT_S)
             if data_conn in ready:
                 try:
-                    call_id, kind, payload = data_conn.recv()
+                    kind, payload = data_conn.recv()
                 except EOFError:
                     return
-                if kind == "shutdown":
-                    data_conn.send((call_id, "ack", None))
-                    return
-                on_data(data_conn, call_id, kind, payload, abort_flag)
+                on_data(data_conn, kind, payload, abort_flag)
             if health_conn in ready:
                 try:
-                    hcall_id, hkind, _ = health_conn.recv()
+                    hkind, _ = health_conn.recv()
                 except EOFError:
                     continue
                 if hkind == "ping":
-                    health_conn.send((hcall_id, "pong", None))
+                    health_conn.send(("pong", None))
+                elif hkind == "shutdown":
+                    with contextlib.suppress(BrokenPipeError, OSError):
+                        health_conn.send(("ack", None))
+                    return
     finally:  # pragma: no cover - cleanup runs in subprocess
         with contextlib.suppress(Exception):
             data_conn.close()
@@ -88,54 +88,44 @@ def _drive_test_worker(
             health_conn.close()
 
 
-def _handle_echo(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
-    conn.send((call_id, "result", payload))
+def _handle_echo(conn: Any, payload: Any, _abort: Any) -> None:
+    conn.send(("result", payload))
 
 
-def _handle_raise(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
+def _handle_raise(conn: Any, payload: Any, _abort: Any) -> None:
     try:
         raise RuntimeError(payload)
     except RuntimeError as exc:
-        conn.send((call_id, "error", _serialize_exception(exc)))
+        conn.send(("error", _serialize_exception(exc)))
 
 
-def _handle_stream_error(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
-    conn.send((call_id, "stream_chunk", "first"))
+def _handle_stream_error(conn: Any, payload: Any, _abort: Any) -> None:
+    conn.send(("stream_chunk", "first"))
     try:
         raise ValueError(payload)
     except ValueError as exc:
-        conn.send((call_id, "error", _serialize_exception(exc)))
+        conn.send(("error", _serialize_exception(exc)))
 
 
-def _handle_stream(conn: Any, call_id: int, payload: Any, _abort: Any) -> None:
+def _handle_stream(conn: Any, payload: Any, _abort: Any) -> None:
     count, suffix = payload
     for i in range(count):
-        conn.send((call_id, "stream_chunk", f"{suffix}{i}"))
-    conn.send((call_id, "stream_end", None))
+        conn.send(("stream_chunk", f"{suffix}{i}"))
+    conn.send(("stream_end", None))
 
 
-def _handle_abort_loop(conn: Any, call_id: int, _payload: Any, abort: Any) -> None:
+def _handle_abort_loop(conn: Any, _payload: Any, abort: Any) -> None:
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if abort.value:
-            conn.send((call_id, "result", "aborted"))
+            conn.send(("result", "aborted"))
             return
         time.sleep(0.01)
-    conn.send((call_id, "result", "timeout"))
+    conn.send(("result", "timeout"))
 
 
-def _handle_bad_kind(conn: Any, call_id: int, _payload: Any, _abort: Any) -> None:
-    conn.send((call_id, "not_a_known_kind", None))
-
-
-def _handle_bad_stream_kind(conn: Any, call_id: int, _payload: Any, _abort: Any) -> None:
-    conn.send((call_id, "totally_bogus_kind", None))
-
-
-def _handle_bad_ping_kind(conn: Any, _call_id: int, _payload: Any, _abort: Any) -> None:
-    """Reply to ping with non-pong kind on the health pipe (separate driver)."""
-    # Unused. bad_ping behavior lives in _ping_replies_garbage_main.
-    raise NotImplementedError
+def _handle_bad_kind(conn: Any, _payload: Any, _abort: Any) -> None:
+    conn.send(("not_a_known_kind", None))
 
 
 _ECHO_DISPATCH = {
@@ -145,20 +135,18 @@ _ECHO_DISPATCH = {
     "stream_error": _handle_stream_error,
     "abort_loop": _handle_abort_loop,
     "bad_kind": _handle_bad_kind,
-    "bad_stream_kind": _handle_bad_stream_kind,
-    "bad_ping_kind": _handle_bad_ping_kind,
 }
 
 
 def _echo_worker_main(
     data_conn: Any, health_conn: Any, abort_flag: Any, _role_config: RoleConfig
 ) -> None:
-    """Worker that dispatches data-pipe kinds via _ECHO_DISPATCH and pings on health."""
+    """Worker that dispatches data-pipe kinds via _ECHO_DISPATCH; pings + shutdown on health."""
 
-    def _on_data(conn: Any, call_id: int, kind: str, payload: Any, abort: Any) -> None:
+    def _on_data(conn: Any, kind: str, payload: Any, abort: Any) -> None:
         handler = _ECHO_DISPATCH.get(kind)
         if handler is not None:
-            handler(conn, call_id, payload, abort)
+            handler(conn, payload, abort)
 
     _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
 
@@ -166,7 +154,7 @@ def _echo_worker_main(
 def _crash_worker_main(
     data_conn: Any, _health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
 ) -> None:
-    """Worker that exits abruptly on the first request, simulating a crash."""
+    """Worker that exits abruptly on the first data frame, simulating a crash."""
     if data_conn.poll(timeout=_POLL_TIMEOUT_S * 50):
         with contextlib.suppress(EOFError):
             data_conn.recv()
@@ -176,7 +164,7 @@ def _crash_worker_main(
 def _hang_worker_main(
     data_conn: Any, _health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
 ) -> None:
-    """Worker that polls the data pipe forever; never replies. Used for timeout paths."""
+    """Worker that polls the data pipe forever; never replies. Used for shutdown-on-hang paths."""
     while True:
         if data_conn.poll(timeout=_POLL_TIMEOUT_S):
             with contextlib.suppress(EOFError):
@@ -191,10 +179,14 @@ def _ping_replies_garbage_main(
         if not health_conn.poll(timeout=_POLL_TIMEOUT_S):
             continue
         try:
-            call_id, _kind, _ = health_conn.recv()
+            kind, _ = health_conn.recv()
         except EOFError:
             return
-        health_conn.send((call_id, "not_a_known_reply", None))
+        if kind == "shutdown":
+            with contextlib.suppress(BrokenPipeError, OSError):
+                health_conn.send(("ack", None))
+            return
+        health_conn.send(("not_a_known_reply", None))
 
 
 def _stream_replies_garbage_main(
@@ -202,10 +194,23 @@ def _stream_replies_garbage_main(
 ) -> None:
     """Worker that replies to a streaming kind with a non-stream message."""
 
-    def _on_data(conn: Any, call_id: int, _kind: str, _payload: Any, _abort: Any) -> None:
-        conn.send((call_id, "totally_bogus_kind", None))
+    def _on_data(conn: Any, _kind: str, _payload: Any, _abort: Any) -> None:
+        conn.send(("totally_bogus_kind", None))
 
     _drive_test_worker(data_conn, health_conn, abort_flag, _on_data)
+
+
+def _crashing_health_pipe_main(
+    data_conn: Any, health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
+) -> None:
+    """Worker that closes the health pipe immediately, leaves data alive."""
+    health_conn.close()
+    while True:
+        if data_conn.poll(timeout=_POLL_TIMEOUT_S):
+            try:
+                _kind, _payload = data_conn.recv()
+            except EOFError:
+                return
 
 
 # =====================================================================
@@ -302,6 +307,38 @@ async def test_stream_raises_on_worker_error_terminator(
 
 
 # =====================================================================
+# Channel-level serialization: only one call in flight at a time.
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_serialize_on_channel_lock(
+    echo_channel: PipeChannel,
+) -> None:
+    """Concurrent ``call()`` coroutines must complete one at a time and each
+    one must observe the exact payload it sent. With the old multiplexed
+    design, a reply could land on the wrong waiter; with channel-level
+    serialization this is impossible by construction."""
+
+    async def _one(value: int) -> int:
+        return await echo_channel.call("echo", value, timeout=_TEST_CALL_TIMEOUT_S)
+
+    results = await asyncio.gather(*(_one(i) for i in range(20)))
+    assert results == list(range(20))
+
+
+@pytest.mark.asyncio
+async def test_call_after_stream_sees_fresh_reply(
+    echo_channel: PipeChannel,
+) -> None:
+    """A non-empty stream followed by a call must not get a leftover stream chunk."""
+    chunks = [chunk async for chunk in echo_channel.stream("stream", (3, "x"))]
+    assert chunks == ["x0", "x1", "x2"]
+    result = await echo_channel.call("echo", "after-stream", timeout=_TEST_CALL_TIMEOUT_S)
+    assert result == "after-stream"
+
+
+# =====================================================================
 # Cancellation: parent flips the abort flag, worker observes it.
 # =====================================================================
 
@@ -319,8 +356,7 @@ async def test_cancel_sets_abort_flag_and_worker_observes_it(
     await cancel_task
     assert result == "aborted"
     echo_channel.clear_abort()
-    # After clear_abort, the worker should run to its 5s timeout instead.
-    # Re-running the abort loop and not flipping anything proves the reset.
+    # After clear_abort, subsequent calls must work normally.
     result_after = await asyncio.wait_for(
         echo_channel.call("echo", "post-abort", timeout=_TEST_CALL_TIMEOUT_S),
         timeout=_TEST_CALL_TIMEOUT_S,
@@ -515,9 +551,8 @@ async def test_concurrent_ping_and_stream_do_not_interfere(
 
     Spawn a long-running stream, fire several pings while it's emitting,
     confirm the stream still produces every chunk in order and every ping
-    completes without raising. This is the architectural fix for bb-ubnm:
-    pings and streams travel on separate pipes by construction, so no
-    orphan-pong defenses are needed in PipeChannel.
+    completes without raising. Pings and streams travel on separate pipes
+    by construction, so they cannot interfere.
     """
     chunks: list[str] = []
     ping_count = 0
@@ -549,7 +584,6 @@ async def test_ping_raises_on_non_pong_reply(
         with pytest.raises(WorkerError) as excinfo:
             await channel.ping(timeout=_TEST_PING_TIMEOUT_S)
         assert excinfo.value.original_type == "ProtocolError"
-        assert "not_a_known_reply" in str(excinfo.value)
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 
@@ -560,24 +594,8 @@ def test_check_pickle_size_wraps_pickle_failure() -> None:
 
     # Lambda is famously unpicklable; pickle.dumps raises immediately.
     with pytest.raises(WorkerError) as excinfo:
-        _check_pickle_size(lambda: None, "echo", call_id=1)
+        _check_pickle_size(lambda: None, "echo")
     assert excinfo.value.original_type == "PickleError"
-
-
-def _crashing_health_pipe_main(
-    data_conn: Any, health_conn: Any, _abort_flag: Any, _role_config: RoleConfig
-) -> None:
-    """Worker that closes the health pipe immediately, leaves data alive."""
-    health_conn.close()
-    while True:
-        if data_conn.poll(timeout=_POLL_TIMEOUT_S):
-            try:
-                call_id, kind, _ = data_conn.recv()
-            except EOFError:
-                return
-            if kind == "shutdown":
-                data_conn.send((call_id, "ack", None))
-                return
 
 
 @pytest.mark.asyncio
@@ -643,20 +661,6 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
             child_health.close()
 
 
-def test_reader_main_short_circuits_when_async_setup_incomplete() -> None:
-    """``_reader_main`` returns immediately when ``_reader_loop`` /
-    ``_frame_queue`` haven't been wired up yet. Without this guard a thread
-    would spin on a recv() against the data pipe with no consumer."""
-
-    class _DummyChannel:
-        _reader_loop: Any = None
-        _frame_queue: Any = None
-        _conn: Any = None  # never read because we early-return
-
-    # Bind the real method to the dummy via descriptor protocol.
-    PipeChannel._reader_main(_DummyChannel())  # must return cleanly
-
-
 def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
     """Without LILBEE_DATA the log path resolver returns None."""
     from lilbee.providers.worker.transport_pipe import _worker_log_path
@@ -675,16 +679,12 @@ def test_worker_log_path_joins_data_dir_when_env_set(monkeypatch, tmp_path) -> N
 
 def test_format_exit_reason_for_normal_exit_code() -> None:
     """Non-zero code surfaces as 'exited with code N'."""
-    from lilbee.providers.worker.transport_pipe import PipeChannel
-
     assert PipeChannel._format_exit_reason(2) == "exited with code 2"
 
 
 def test_format_exit_reason_for_known_signal() -> None:
     """Negative exit code maps to the signal name."""
     import signal as _signal
-
-    from lilbee.providers.worker.transport_pipe import PipeChannel
 
     msg = PipeChannel._format_exit_reason(-_signal.SIGTERM)
     assert "SIGTERM" in msg
@@ -693,8 +693,6 @@ def test_format_exit_reason_for_known_signal() -> None:
 
 def test_format_exit_reason_for_unknown_signal() -> None:
     """Unrecognised signum (no Signals enum entry) falls back to SIG<num>."""
-    from lilbee.providers.worker.transport_pipe import PipeChannel
-
     msg = PipeChannel._format_exit_reason(-9999)
     assert "SIG9999" in msg
 
@@ -775,193 +773,3 @@ def test_record_exit_reason_skips_when_log_path_unset(monkeypatch, caplog) -> No
         with contextlib.suppress(Exception):
             child_health.close()
     assert any("exited with code 7" in rec.message for rec in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_recv_for_drains_stale_call_id_frames(caplog) -> None:
-    """Frames with mismatched call_id are silently discarded; the right one wins."""
-    import multiprocessing as _mp
-
-    ctx = _mp.get_context("spawn")
-    parent_data, child_data = ctx.Pipe(duplex=True)
-    parent_health, child_health = ctx.Pipe(duplex=True)
-    abort_flag = ctx.Value("b", 0, lock=True)
-
-    class _FakeProcess:
-        def is_alive(self) -> bool:
-            return True
-
-        @property
-        def pid(self) -> int:
-            return -1
-
-    channel = PipeChannel(
-        role="echo",
-        process=_FakeProcess(),  # type: ignore[arg-type]
-        parent_conn=parent_data,
-        health_conn=parent_health,
-        abort_flag=abort_flag,
-    )
-    # Stuff three frames into the parent end via the child side: stale,
-    # stale, then matching call_id=42.
-    child_data.send((1, "result", "stale-1"))
-    child_data.send((2, "result", "stale-2"))
-    child_data.send((42, "result", "winner"))
-    try:
-        with caplog.at_level("DEBUG", logger="lilbee.providers.worker.transport_pipe"):
-            kind, value = await channel._recv_for(42)
-        assert kind == "result"
-        assert value == "winner"
-        assert any("discarding stale frame" in rec.message for rec in caplog.records)
-    finally:
-        channel._executor.shutdown(wait=False, cancel_futures=True)
-        with contextlib.suppress(Exception):
-            parent_data.close()
-        with contextlib.suppress(Exception):
-            parent_health.close()
-        with contextlib.suppress(Exception):
-            child_data.close()
-        with contextlib.suppress(Exception):
-            child_health.close()
-
-
-@pytest.mark.asyncio
-async def test_reader_thread_starts_lazily_on_first_recv() -> None:
-    """No reader thread spins up until a coroutine awaits a frame."""
-    import multiprocessing as _mp
-
-    ctx = _mp.get_context("spawn")
-    parent_data, child_data = ctx.Pipe(duplex=True)
-    parent_health, child_health = ctx.Pipe(duplex=True)
-    abort_flag = ctx.Value("b", 0, lock=True)
-
-    class _FakeProcess:
-        def is_alive(self) -> bool:
-            return True
-
-        @property
-        def pid(self) -> int:
-            return -1
-
-    channel = PipeChannel(
-        role="echo",
-        process=_FakeProcess(),  # type: ignore[arg-type]
-        parent_conn=parent_data,
-        health_conn=parent_health,
-        abort_flag=abort_flag,
-    )
-    try:
-        assert channel._reader_thread is None
-        assert not channel._reader_started.is_set()
-        child_data.send((1, "result", "go"))
-        _, _, value = await channel._recv()
-        assert value == "go"
-        assert channel._reader_started.is_set()
-        assert channel._reader_thread is not None
-        assert channel._reader_thread.is_alive()
-    finally:
-        channel._executor.shutdown(wait=False, cancel_futures=True)
-        for handle in (parent_data, parent_health, child_data, child_health):
-            with contextlib.suppress(Exception):
-                handle.close()
-
-
-@pytest.mark.asyncio
-async def test_reader_thread_surfaces_eof_as_worker_crash() -> None:
-    """Closing the parent conn drains EOF into a WorkerCrashError on next recv."""
-    import multiprocessing as _mp
-
-    ctx = _mp.get_context("spawn")
-    parent_data, child_data = ctx.Pipe(duplex=True)
-    parent_health, child_health = ctx.Pipe(duplex=True)
-    abort_flag = ctx.Value("b", 0, lock=True)
-
-    class _FakeProcess:
-        def is_alive(self) -> bool:
-            return True
-
-        @property
-        def pid(self) -> int:
-            return -1
-
-    channel = PipeChannel(
-        role="echo",
-        process=_FakeProcess(),  # type: ignore[arg-type]
-        parent_conn=parent_data,
-        health_conn=parent_health,
-        abort_flag=abort_flag,
-    )
-    try:
-        child_data.send((1, "result", "primer"))
-        await channel._recv()
-        # Close both ends so the reader's blocking recv() raises EOFError;
-        # the next _recv() should then surface the crash to the caller.
-        with contextlib.suppress(Exception):
-            child_data.close()
-        with contextlib.suppress(Exception):
-            parent_data.close()
-        with pytest.raises(WorkerCrashError):
-            await asyncio.wait_for(channel._recv(), timeout=2.0)
-    finally:
-        channel._executor.shutdown(wait=False, cancel_futures=True)
-        for handle in (parent_health, child_health):
-            with contextlib.suppress(Exception):
-                handle.close()
-
-
-@pytest.mark.asyncio
-async def test_stream_preserves_frame_ordering_under_burst() -> None:
-    """A burst of stream_chunks is delivered to stream() in send order."""
-    import multiprocessing as _mp
-
-    from lilbee.providers.worker.wire_kinds import WireKind
-
-    ctx = _mp.get_context("spawn")
-    parent_data, child_data = ctx.Pipe(duplex=True)
-    parent_health, child_health = ctx.Pipe(duplex=True)
-    abort_flag = ctx.Value("b", 0, lock=True)
-
-    class _FakeProcess:
-        def is_alive(self) -> bool:
-            return True
-
-        @property
-        def pid(self) -> int:
-            return -1
-
-    channel = PipeChannel(
-        role="echo",
-        process=_FakeProcess(),  # type: ignore[arg-type]
-        parent_conn=parent_data,
-        health_conn=parent_health,
-        abort_flag=abort_flag,
-    )
-    burst_count = 250
-    try:
-        # Start the reader first so the OS pipe buffer drains as we send;
-        # otherwise child_data.send() blocks once the buffer fills.
-        channel._ensure_reader()
-
-        def _produce() -> None:
-            for i in range(burst_count):
-                child_data.send((7, WireKind.STREAM_CHUNK, f"chunk-{i}"))
-            child_data.send((7, WireKind.STREAM_END, None))
-
-        producer = threading.Thread(target=_produce, daemon=True)
-        producer.start()
-
-        received: list[str] = []
-        seen_end = False
-        while not seen_end:
-            kind, value = await asyncio.wait_for(channel._recv_for(7), timeout=5.0)
-            if kind == WireKind.STREAM_END:
-                seen_end = True
-            else:
-                received.append(value)
-        producer.join(timeout=1.0)
-        assert received == [f"chunk-{i}" for i in range(burst_count)]
-    finally:
-        channel._executor.shutdown(wait=False, cancel_futures=True)
-        for handle in (parent_data, parent_health, child_data, child_health):
-            with contextlib.suppress(Exception):
-                handle.close()
