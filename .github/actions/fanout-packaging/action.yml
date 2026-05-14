@@ -1,5 +1,5 @@
 name: Fan out downstream packaging
-description: "Trigger publish-docker.yml and publish-packages.yml for a tag once its executables are attached to the GH release. Waits up to 45 minutes for the executables to land before failing loudly. Caller needs actions:write."
+description: "Trigger publish-docker.yml and publish-packages.yml for a tag once its executables are attached to the GH release. Waits up to 5 hours for the executables to land before failing loudly. Caller needs actions:write."
 
 inputs:
   tag:
@@ -8,7 +8,7 @@ inputs:
   wait_minutes:
     description: "Max minutes to wait for all three executables to be attached before failing."
     required: false
-    default: "45"
+    default: "300"
 
 runs:
   using: composite
@@ -26,8 +26,10 @@ runs:
       run: |
         set -uo pipefail
         # Default wheels finish ~25 min into the RC run; the executables take
-        # another 15-25 min on top, so a 45 minute ceiling covers the common
-        # case with headroom. Past the ceiling something is wrong with the RC
+        # the lion's share -- the Windows nuitka build alone has been observed
+        # at ~3h45m, Linux ~2h15m, macOS ~1h25m. 5 hours covers the worst
+        # observed plus headroom while staying inside GitHub Actions' 6-hour
+        # per-job ceiling. Past the deadline something is wrong with the RC
         # build and we want a loud failure here rather than a silent skip
         # that strands the fan-out until an operator notices.
         deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))

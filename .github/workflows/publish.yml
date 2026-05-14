@@ -5,9 +5,10 @@ name: Publish to PyPI
 # the packaging fan-out (Docker / Homebrew / AUR / Nix). PyPI publish only needs
 # the default wheels + sdist (they finish ~25 min into the RC run), so this can
 # run as soon as those artifacts are up. The fan-out needs the executables on the
-# GH release; if they're not attached yet it waits up to 45 minutes for the RC
-# run to attach them and fails loudly past that. No second dispatch is needed
-# even when the wheels land before the executables.
+# GH release; if they're not attached yet it waits up to 5 hours for the RC run
+# to attach them (the Windows nuitka build alone has been observed at ~3h45m) and
+# fails loudly past that. No second dispatch is needed even when the wheels land
+# before the executables.
 #
 # Filename `publish.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
