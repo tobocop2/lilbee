@@ -54,6 +54,7 @@ demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
 	vhs demos/tui-tour.tape
 	vhs demos/cli.tape
 	vhs demos/mcp-godot.tape
+	bash demos/_postprocess_speed.sh demos/_out/mcp-godot.gif demos/_out/mcp-godot.gif 0-30@1.5 30-450@8 450-570@1.5
 	vhs demos/mcp-manual.tape
 	@command -v gifsicle >/dev/null 2>&1 && \
 		for f in demos/_out/*.gif; do gifsicle -O3 --lossy=80 -b "$$f"; done || \

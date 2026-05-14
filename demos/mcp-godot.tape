@@ -1,10 +1,12 @@
 Source demos/_shared.tape
 Output demos/_out/mcp-godot.gif
-# VHS folds the final PlaybackSpeed into one ffmpeg `setpts=PTS/n` filter,
-# applied to the whole recording. So we pick a single global speed-up
-# that lands the gif near two minutes given a ~7-minute real-time
-# recording. No Hide: every frame is on camera.
-Set PlaybackSpeed 4.0
+# Record at 1x (override shared.tape's 1.5x default) so a follow-up
+# `demos/_postprocess_speed.sh` pass can apply per-section speeds: the
+# kickoff and the final cited answer play near real speed, the
+# 5-minute indexing window is fast-forwarded. VHS can't vary speed
+# mid-tape on its own; it always folds the final PlaybackSpeed into
+# one global ffmpeg `setpts=PTS/n` filter.
+Set PlaybackSpeed 1.0
 
 # opencode driving lilbee over MCP, full TUI, against Godot 4 class
 # reference XML (810 files). Mirrors the prompt from the

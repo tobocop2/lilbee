@@ -72,27 +72,29 @@ Sleep 800ms
 #
 # The `/` filter input is hidden on Discover and Library by design; only
 # the task-scoped tabs (Chat / Embed / Vision / Rerank) show it. Search
-# for "smol" from Chat -> first visible match installs on Enter (the
-# screen's _on_search_submitted handler picks the first card).
+# for "smol" from Chat -> local filter shows 0 hits -> HF Hub round-trip
+# brings in SmolLM2 1.7B / 360M / 135M cards.
 Type "2"
 Sleep 1500ms
-
-Screenshot demos/_out/tui-catalog.png
 
 Type "/"
 Sleep 400ms
 Type "smol"
-# Wait for the HF Hub round-trip so the SmolLM cards land in the grid
-# BEFORE Enter fires; otherwise Enter falls through to "trigger remote
-# search" instead of "install first visible card".
-Sleep 5s
+Sleep 1500ms
+# Local filter shows "0 loaded · keep scrolling" + a "Search HuggingFace
+# for 'smol'" CTA. Enter triggers the remote search.
 Enter
-Sleep 6s
+# HF Hub round-trip + grid populates with SmolLM2 cards.
+Sleep 7s
 
-# Enter on the search input installs the first visible match.
-# Switch to Tasks to watch the download. Escape releases the search
-# input focus so the screen-nav `]` fires.
+Screenshot demos/_out/tui-catalog.png
+
+# Esc clears the filter and releases focus so screen-nav `]` works.
 Escape
+Sleep 800ms
+
+# Cycle back to Chat to close the demo.
+Type "]"
 Sleep 400ms
 Type "]"
 Sleep 400ms
@@ -100,7 +102,6 @@ Type "]"
 Sleep 400ms
 Type "]"
 Sleep 800ms
-Sleep 32s
 
 Type "/quit"
 Sleep 400ms

@@ -7,6 +7,8 @@ the Rich renderers below adapt them for human-readable terminal output.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -196,27 +198,65 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
     json_output({**final.model_dump(), "event": PullEvent.DONE.value})
 
 
-def _pull_rich_progress(ref: str, src: ModelSource) -> None:
-    """Drive a Rich progress bar during a native HuggingFace download."""
-    # ``force_terminal=True`` keeps Rich's progress rendering in-place even
-    # when stderr isn't detected as a TTY (VHS recordings, some pipes). Real
-    # terminals are already TTYs so the flag is a no-op there.
-    err_console = Console(stderr=True, force_terminal=True)
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        TextColumn("{task.fields[detail]}"),
-        TimeRemainingColumn(),
-        console=err_console,
-        transient=False,
-    ) as progress:
-        task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
+def _pull_plain_progress(ref: str, src: ModelSource) -> PullResult:
+    """Ollama-style \\r-overwrite progress for hosts that don't render Rich's
+    Live display well (notably VHS recordings via ttyd; the cursor moves
+    Rich emits get captured as separate frames). Opt in by setting
+    ``LILBEE_PLAIN_PROGRESS=1``; not advertised as a public knob.
+    """
+    bar_width = 32
+    last_pct = -1
 
-        def on_update(p: DownloadProgress) -> None:
-            progress.update(task_id, completed=p.percent, detail=p.detail)
+    def on_update(p: DownloadProgress) -> None:
+        nonlocal last_pct
+        pct = int(p.percent)
+        if pct == last_pct:
+            return
+        last_pct = pct
+        filled = bar_width * pct // 100
+        bar = "█" * filled + " " * (bar_width - filled)
+        detail = f" {p.detail}" if p.detail else ""
+        # Trailing ``\033[K`` clears from the cursor to end of line so a
+        # shorter line on this refresh doesn't leave stray characters
+        # from the previous, longer line behind.
+        sys.stderr.write(f"\rDownloading {ref}  {pct:3d}% ▕{bar}▏{detail}\033[K")
+        sys.stderr.flush()
 
-        final = _run_pull(ref, src, on_update)
+    final = _run_pull(ref, src, on_update)
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+    return final
+
+
+def _pull_interactive_progress(ref: str, src: ModelSource) -> None:
+    """Drive an interactive progress bar during a native HuggingFace download.
+
+    Defaults to Rich's Live display; falls back to a plain \\r-overwrite
+    bar when ``LILBEE_PLAIN_PROGRESS=1`` is set (see :func:`_pull_plain_progress`).
+    """
+    # Demo-only escape hatch: ``LILBEE_PLAIN_PROGRESS=1`` swaps Rich's Live
+    # display for a plain ``\r``-overwrite bar. Rich is the default for
+    # regular users; the plain bar exists for VHS recordings where the
+    # Live display's cursor moves get captured as stacked lines.
+    if os.environ.get("LILBEE_PLAIN_PROGRESS"):
+        final = _pull_plain_progress(ref, src)
+    else:
+        err_console = Console(stderr=True, force_terminal=True)
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            TextColumn("{task.fields[detail]}"),
+            TimeRemainingColumn(),
+            console=err_console,
+            transient=False,
+        ) as progress:
+            task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
+
+            def on_update(p: DownloadProgress) -> None:
+                progress.update(task_id, completed=p.percent, detail=p.detail)
+
+            final = _run_pull(ref, src, on_update)
 
     if final.status == PullStatus.ALREADY_INSTALLED:
         console.print(f"{ref} is already installed.")
@@ -244,7 +284,7 @@ def pull_cmd(
     if cfg.json_mode:
         _pull_json_stream(ref, src)
     else:
-        _pull_rich_progress(ref, src)
+        _pull_interactive_progress(ref, src)
 
 
 def _confirm_remove_or_exit(ref: str, yes: bool) -> None:

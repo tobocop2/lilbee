@@ -21,6 +21,10 @@ Output demos/_out/cli.gif
 Env LILBEE_DATA "/tmp/lilbee-demo/cli"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/cli-models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
+# Rich's Live display captures as stacked lines in VHS recordings; this
+# escape hatch falls back to a plain \r-overwrite progress that records
+# cleanly. Regular users still get the Rich progress.
+Env LILBEE_PLAIN_PROGRESS "1"
 
 Type "cd /tmp/lilbee-demo/cli"
 Sleep 300ms
