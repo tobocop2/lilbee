@@ -30,24 +30,19 @@ Enter
 Sleep 1s
 Show
 
-# Three single-fact retrieval lookups against the manual. While Qwen3 4B
-# is streaming, the chat input is disabled and any queued Enter is dropped
-# (the next Type's text appends to whatever's in the field). Sleeps below
-# allow each warm answer to fully complete before the next question types.
-Type "what's my oil capacity?"
-Sleep 400ms
+# Centerpiece: a structured-extraction prompt that turns the fuse-box
+# section of the manual into a markdown table. Qwen3 4B + lilbee
+# retrieval renders this richly with inline `[N]` citations and a
+# multi-page Sources line. The prompt scopes well: 0.6B handles it too,
+# so the demo is reproducible on the wizard's first card.
+#
+# While Qwen3 4B is streaming, the chat input is disabled and any
+# queued Enter is dropped (the next Type's text would append to
+# whatever's in the field). Sleep covers a long structured answer.
+Type "Provide me a markdown table containing all of the fuses for my Crown Vic and their colors and their purpose."
+Sleep 600ms
 Enter
-Sleep 22s
-
-Type "what tire pressure does it recommend?"
-Sleep 400ms
-Enter
-Sleep 22s
-
-Type "what fuel does it take?"
-Sleep 400ms
-Enter
-Sleep 22s
+Sleep 60s
 
 Screenshot demos/_out/tui-chat.png
 
