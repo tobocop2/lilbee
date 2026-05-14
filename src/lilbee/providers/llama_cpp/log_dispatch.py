@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -207,6 +208,28 @@ _GPU_VISIBLE_ENV_VARS = (
 _VULKAN_AUTODETECT_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES",)
 
 
+_VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
+
+_VK_LOADER_LAYERS_DISABLE_IMPLICIT = "~implicit~"
+"""Khronos-blessed special token: disable every implicit (auto-loaded) layer.
+
+Implicit Vulkan layers are registered under
+``HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers`` and auto-load into
+every ``vkCreateInstance`` regardless of what the application asked
+for. The list on a typical Windows machine includes overlay /
+recording / streaming layers from RivaTuner, OBS, Steam, GOG Galaxy,
+Discord, and AMD Radeon Software's user-experience stack. Several
+have documented heap-corruption bugs that crash headless Vulkan
+consumers; see https://github.com/ggml-org/llama.cpp/issues/18109 for
+the precedent that maps exactly onto the lilbee b473 QA crashes.
+~implicit~ is the
+https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md
+recommended safe-mode default for diagnosing layer-induced crashes
+and is the right default for an inference workload that never needs
+an overlay.
+"""
+
+
 def _apply_gpu_device_env() -> None:
     """Apply ``cfg.gpu_devices`` (or autodetect) to backend visibility env vars.
 
@@ -235,6 +258,16 @@ def _apply_gpu_device_env() -> None:
         autoselect_best_gpu_index,
         disable_conflicting_vulkan_icds,
     )
+
+    # Suppress implicit Vulkan layers on Windows. Must precede every
+    # subsequent vkCreateInstance call (our own probe in autoselect plus
+    # llama.cpp's), otherwise overlay/recording/streaming layers piggy-
+    # back on the first instance and stay resident even if disabled
+    # later. setdefault preserves a user-set VK_LOADER_LAYERS_DISABLE,
+    # and the loader composes ~implicit~ with the user's own ENABLE
+    # token per its spec.
+    if sys.platform == "win32":
+        os.environ.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_IMPLICIT)
 
     # Dual-vendor Vulkan crash mitigation runs first and unconditionally:
     # the loader loads every registered ICD at vkCreateInstance, before

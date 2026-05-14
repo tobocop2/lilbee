@@ -29,12 +29,18 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fnmatch
 import logging
+import ntpath
 import os
 import sys
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+
+from lilbee.providers.llama_cpp.vulkan_icd_registry import (
+    iter_windows_vulkan_manifest_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -388,15 +394,21 @@ only that vendor's ICD is loaded, no cross-vendor heap collision is possible.
 """
 
 
-def _known_vendors(devices: list[VulkanDevice]) -> set[PCIVendorID]:
-    """Project the adapter list down to recognized PCI vendors only."""
-    vendors: set[PCIVendorID] = set()
-    for device in devices:
-        try:
-            vendors.add(PCIVendorID(device.vendor_id))
-        except ValueError:
-            continue
-    return vendors
+_PREFERRED_VENDOR_ORDER: tuple[PCIVendorID, ...] = (
+    PCIVendorID.NVIDIA,
+    PCIVendorID.AMD,
+    PCIVendorID.INTEL,
+)
+"""Vendor pin priority for dual-vendor Windows boxes.
+
+The documented heap-corruption signature is AMDVLK loaded alongside
+NVIDIA in the same process (lilbee QA b473, Khronos forum, SHARK
+Studio #1636). NVIDIA-first keeps the discrete card that's
+overwhelmingly the user-visible "main GPU" on these boxes and disables
+the AMD ICD that's behind the crashes. AMD-then-Intel is the natural
+fall-through for AMD-discrete + Intel-iGPU laptops; Intel-only never
+needs disabling.
+"""
 
 
 def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[str]:
@@ -409,13 +421,62 @@ def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[s
     return globs
 
 
+def _classify_manifest_vendor(manifest_filename: str) -> PCIVendorID | None:
+    """Map a Vulkan ICD manifest filename to its GPU vendor.
+
+    Matches the bare filename (no directory) against ``_VENDOR_ICD_GLOBS``
+    using case-insensitive ``fnmatch``. Returns ``None`` for filenames
+    that don't match any vendor we know how to disable.
+    """
+    name = manifest_filename.lower()
+    for vendor, globs in _VENDOR_ICD_GLOBS.items():
+        for glob in globs:
+            if fnmatch.fnmatchcase(name, glob.lower()):
+                return vendor
+    return None
+
+
+def _windows_vulkan_vendors_present() -> set[PCIVendorID]:
+    """Set of GPU vendors with at least one installed Vulkan ICD on this host.
+
+    Pure-registry walk via :mod:`vulkan_icd_registry`, no Vulkan-loader
+    involvement. The detection runs before the disable env var is set,
+    so any ``vkCreateInstance`` call we triggered here would defeat the
+    fix's purpose by pre-loading the very ICD we're trying to disable.
+    Manifest filenames that don't match a known vendor glob are dropped:
+    we have no glob to disable them with so listing them is moot.
+    """
+    vendors: set[PCIVendorID] = set()
+    for manifest_path in iter_windows_vulkan_manifest_paths():
+        # ntpath.basename (rather than os.path.basename) splits on '\\'
+        # even when the test process runs on Linux/macOS; the registry
+        # always reports Windows-style paths.
+        filename = ntpath.basename(manifest_path)
+        vendor = _classify_manifest_vendor(filename)
+        if vendor is not None:
+            vendors.add(vendor)
+    return vendors
+
+
+def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
+    """Pick the vendor to keep when several are present, by ``_PREFERRED_VENDOR_ORDER``."""
+    for vendor in _PREFERRED_VENDOR_ORDER:
+        if vendor in vendors:
+            return vendor
+    return None
+
+
 # References for the dual-vendor ICD mitigation below:
 #   - Khronos Vulkan-Loader env var spec (VK_LOADER_DRIVERS_DISABLE / VK_DRIVER_FILES):
 #     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md
-#   - ICD manifest filename conventions:
+#   - ICD manifest filename conventions and Windows registry discovery order:
 #     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md
-#   - "Failure in one ICD causes total failure of vkEnumeratePhysicalDevices" (the failure mode):
+#   - "Failure in one ICD causes total failure of vkEnumeratePhysicalDevices":
 #     https://github.com/KhronosGroup/Vulkan-Loader/issues/1467
+#   - Khronos forum: amdvlk64.dll crashes in vkCreateInstance on mixed-vendor hosts:
+#     https://community.khronos.org/t/crash-in-amdvlk64-dll-during-vkcreateinstance/105022
+#   - SHARK-Studio #1636 (the same crash hits another Python ML inference tool):
+#     https://github.com/nod-ai/SHARK-Studio/issues/1636
 #   - NVIDIA help article 5182, dual-vendor Vulkan apps on notebooks:
 #     https://nvidia.custhelp.com/app/answers/detail/a_id/5182/
 #   - Heroic Games Launcher ICD-selection issue (same mitigation pattern in prod):
@@ -426,11 +487,21 @@ def disable_conflicting_vulkan_icds() -> str | None:
     """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor Windows boxes.
 
     Returns a comma-separated glob list naming the ICD manifest filenames
-    of every vendor *except* the highest-ranked adapter's vendor, or
-    ``None`` when there's no conflict to resolve, the user has set any
-    Vulkan ICD-selection env var, or the probe fails. The caller writes
-    the returned value to ``VK_LOADER_DRIVERS_DISABLE`` so the Vulkan
-    loader skips those ICDs at the next ``vkCreateInstance``.
+    of every vendor *except* the preferred one (NVIDIA > AMD > Intel), or
+    ``None`` when there's no conflict, the user has set any Vulkan
+    ICD-selection env var, or registry enumeration finds at most one
+    known vendor. The caller writes the returned value to
+    ``VK_LOADER_DRIVERS_DISABLE`` so the Vulkan loader skips those ICDs
+    at the next ``vkCreateInstance``.
+
+    Detection reads installed ICD manifest paths from the Windows
+    registry directly (legacy Khronos software key plus per-adapter PnP
+    keys) so no Vulkan call runs while the disable env var is still
+    unset. The earlier ``vkCreateInstance``-based probe pre-loaded every
+    vendor's ICD into the process before the disable arrived, which
+    defeated the fix on hosts where AMDVLK self-pins its DLL handle and
+    survived ``FreeLibrary`` (lilbee QA b473 minidumps confirmed
+    ``amdvlk64.dll`` still resident in 5 of 9 crash dumps).
 
     Windows-only: macOS uses Metal; Linux has the same loader mechanism
     but no reported crashes, so we don't pin there until a report drives
@@ -440,17 +511,12 @@ def disable_conflicting_vulkan_icds() -> str | None:
         return None
     if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
         return None
-    devices = _enumerate_vulkan_devices() or []
-    vendors = _known_vendors(devices)
+    vendors = _windows_vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
-    best = _pick_best_device(devices)
+    best = _select_best_vendor(vendors)
     if best is None:
         return None
-    try:
-        best_vendor = PCIVendorID(best.vendor_id)
-    except ValueError:
-        return None
-    # ``vendors`` has at least two members and we filter out ``best_vendor``,
-    # so ``_icds_to_disable`` always returns a non-empty list here.
-    return ",".join(_icds_to_disable(best_vendor, vendors))
+    # ``vendors`` has >=2 members from the preferred set and ``best`` is one
+    # of them, so ``_icds_to_disable`` returns a non-empty list here.
+    return ",".join(_icds_to_disable(best, vendors))
