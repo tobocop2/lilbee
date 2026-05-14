@@ -13,6 +13,11 @@ Env LILBEE_DATA "/tmp/lilbee-demo/tui-setup"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/setup-models"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
+# Point Ollama at an unused port so the wizard can't detect locally
+# installed Ollama models. Without this, picking Qwen3 0.6B is a no-op
+# (the model is "already available via Ollama") and the Task Center
+# only shows the embedding download instead of two parallel pulls.
+Env OLLAMA_HOST "http://127.0.0.1:65535"
 
 Type "lilbee"
 Sleep 300ms
@@ -29,9 +34,16 @@ Sleep 300ms
 Enter
 Sleep 800ms
 
-# Jump to Task Center to watch the two parallel downloads.
+# Jump to Task Center; show the two parallel downloads kick off, then
+# elide the slow middle (Qwen3 0.6B is ~4min on a slow connection),
+# then show the final state with both at 100%.
 Type "t"
-Sleep 80s
+Sleep 6s
+
+Hide
+Sleep 240s
+Show
+Sleep 4s
 
 Screenshot demos/_out/tui-setup.png
 
