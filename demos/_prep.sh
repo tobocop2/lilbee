@@ -30,7 +30,7 @@ readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 # Tapes that start from a clean slate (the recording does its own ingest).
 readonly FRESH_TAPES=(tui-setup tui-add tui-crawl cli)
 # opencode demo dirs.
-readonly OPENCODE_TAPES=(opencode-code opencode-manual)
+readonly OPENCODE_TAPES=(opencode-godot opencode-manual)
 # Man pages indexed for the CLI tape.
 readonly MAN_PAGES=(find awk grep xargs sed)
 
@@ -103,17 +103,20 @@ setup_opencode_dir() {
     ( cd "$dir" && "$LILBEE" init >/dev/null )
 }
 
-clone_lilbee_source() {
-    # Shallow-clone lilbee main into <ROOT>/opencode-code so the agent can
-    # index `src/lilbee/` and answer questions about how lilbee itself works.
-    local dest="$ROOT/opencode-code"
-    [[ -d "$dest/src/lilbee" ]] && return 0
-    local tmp="$dest/_clone"
-    rm -rf "$tmp"
-    git clone --depth 1 https://github.com/tobocop2/lilbee.git "$tmp" >/dev/null 2>&1
-    mv "$tmp/src" "$dest/src"
-    cp "$tmp/pyproject.toml" "$dest/pyproject.toml" 2>/dev/null || true
-    rm -rf "$tmp"
+link_godot_classes() {
+    # Symlink godot's class reference XMLs into the godot demo dir. The
+    # local godot checkout is whatever the dev has at GODOT_SRC (defaults
+    # to ~/projects/godot). The agent indexes these via lilbee_add and
+    # then answers questions about Godot 4 APIs with file:line citations.
+    local dest="$ROOT/opencode-godot/godot-classes"
+    [[ -L "$dest" || -d "$dest" ]] && return 0
+    local godot_src="${GODOT_SRC:-$HOME/projects/godot}"
+    if [[ ! -d "$godot_src/doc/classes" ]]; then
+        printf 'warn: %s/doc/classes not found; skipping godot demo link.\n' \
+            "$godot_src" >&2
+        return 0
+    fi
+    ln -sf "$godot_src/doc/classes" "$dest"
 }
 
 main() {
@@ -151,7 +154,7 @@ main() {
         setup_opencode_dir "$tape"
     done
     cp "$CV_MANUAL" "$ROOT/opencode-manual/cv-manual.pdf"
-    clone_lilbee_source
+    link_godot_classes
 
     log "prep done. $ROOT is ready."
 }
