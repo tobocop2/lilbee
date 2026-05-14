@@ -1,9 +1,13 @@
 Source demos/_shared.tape
 Output demos/_out/tui-settings.gif
 
-# Settings tour: navigate to the screen via `]` (priority binding) and
-# use Tab to walk through the fields on a couple of representative
-# panes. Less jumpy than cycling all 8 panes at once.
+# Settings tour: cycle through every sub-tab via `>` and use `j` to
+# scroll the longer panes (Generation, Retrieval, Crawling).
+#
+# Critical: do NOT Tab into individual fields. Tab focuses an Input
+# widget, and once any input has focus, `>` / `q` / `/` all type as
+# literal characters into the field. Stay on screen-level bindings:
+# `>` (priority, cycle_pane), `j`/`k` (scroll, no focus), `q` (back).
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-settings"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 Env LILBEE_THEME "rose-pine"
@@ -15,61 +19,88 @@ Sleep 300ms
 Enter
 Sleep 2500ms
 
-# Two Escapes: first dismisses the wizard, second drops chat into NORMAL
-# (Chat starts in INSERT mode after wizard dismiss). Without the second
-# Escape, the next `]` types as a literal in the chat input.
+# Two Escapes: dismiss wizard, drop chat to NORMAL.
 Escape
 Sleep 500ms
 Escape
 Sleep 500ms
 
-# Walk to Settings: Chat -> Catalog -> Status -> Settings. 3 `]` presses.
+# Walk to Settings: 3 `]` presses (Chat -> Catalog -> Status -> Settings).
 Type "]"
-Sleep 800ms
+Sleep 700ms
 Type "]"
-Sleep 800ms
+Sleep 700ms
 Type "]"
 Sleep 1500ms
 
-# Lands on Models pane (the first one). Tab through a few fields.
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
+# Models pane (first, default). Hold a moment.
+Sleep 2s
 
-# Move to the Generation pane (next pane via `>`).
+# Ingest pane.
 Type ">"
-Sleep 1500ms
+Sleep 2s
 
-# Tab through the Generation fields (temperature, top_p, top_k_sampling,
-# repeat_penalty, num_ctx ...).
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
+# Generation pane: 17 fields, the longest. Scroll through with `j`.
+Type ">"
+Sleep 2s
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
 
-# One more pane: Retrieval (longest pane, best screenshot).
+# Retrieval pane: 20 fields. Scroll too.
 Type ">"
 Sleep 2s
 
 Screenshot demos/_out/tui-settings.png
 
-# Tab through the Retrieval fields too.
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
-Tab
-Sleep 1500ms
-
-Type "q"
+Type "j"
 Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+
+# Display pane.
+Type ">"
+Sleep 2s
+
+# Crawling pane (13 fields). Scroll.
+Type ">"
+Sleep 2s
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+Type "j"
+Sleep 800ms
+
+# API-Keys pane.
+Type ">"
+Sleep 2s
+
+# System pane.
+Type ">"
+Sleep 2s
+
+# Back to Chat via `q`. No fields are focused (we never Tabbed in),
+# so `q` fires the Settings screen's go_back binding cleanly.
+Type "q"
+Sleep 1000ms
 
 Type "/quit"
 Sleep 400ms

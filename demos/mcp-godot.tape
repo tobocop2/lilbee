@@ -16,11 +16,17 @@ Output demos/_out/mcp-godot.gif
 # Empirical timings (lilbee 0.6.66b472 with the embed pipe-routing fix):
 #   opencode boot                                  ~8s
 #   lilbee_add 810 XML files via lilbee-worker     ~5 min 20s (3449 chunks)
-#   3-5 lilbee_search calls + code generation      ~60-90s
-#   Total wall clock                               ~7 min
+#   3-5 lilbee_search calls + code generation      ~90-120s
+#   Total wall clock                               ~7-8 min
 #
-# The slow indexing minute is wrapped in Hide so the GIF shows the
-# kickoff, jumps forward, and lands on the cited final answer.
+# What viewers see, in order:
+#   1. opencode boots, the prompt is typed and submitted
+#   2. ~25s of the agent's initial activity: skill load, planning,
+#      Lilbee-Worker subagent kickoff with the lilbee_add tool call
+#   3. Hide elides ~5 minutes of bulk indexing (the dead middle)
+#   4. ~120s of post-indexing work: lilbee_search calls per Godot
+#      class, the verify pass, the code answer streaming in
+#   5. Final answer with file:line citations
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 
 Type "cd /tmp/lilbee-demo/opencode-godot"
@@ -40,16 +46,24 @@ Type "Index ./godot-classes/ then write a procedural level generator that places
 Sleep 600ms
 Enter
 
-# Show the kickoff: skill load + Lilbee-Worker delegation visible on
-# camera for ~10s. Then elide the slow indexing minutes.
-Sleep 10s
+# Show the kickoff: skill load, planning, and the Lilbee-Worker
+# delegation are all visible on camera before we Hide.
+Sleep 25s
+
+# Hide elides ~5 minutes of indexing dead time. We end the Hide
+# window EARLIER than the indexing actually finishes so Show resumes
+# while the worker is wrapping up + the agent is starting its
+# lilbee_search calls; viewers see real on-camera tool activity.
 Hide
-Sleep 380s
+Sleep 300s
 Show
-Sleep 60s
+
+# Post-indexing: lilbee_search calls, the verify pass, the code answer
+# streaming in. This is the most useful on-camera content.
+Sleep 120s
 
 Screenshot demos/_out/mcp-godot.png
-Sleep 3s
+Sleep 5s
 
 Ctrl+C
 Sleep 1s

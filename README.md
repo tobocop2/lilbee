@@ -85,7 +85,7 @@ Standing this up used to mean a background daemon, a separate inference server, 
 
 ## Previews
 
-> Stills below; the animated walkthroughs are tucked into `<details>` blocks under each one. The full reel and an opencode-over-MCP walkthrough are in [`docs/demos.md`](docs/demos.md).
+> A still for each screen and flow, with the animated walkthrough one click away under it. The full reel with captions lives in [`docs/demos.md`](docs/demos.md); the tape sources are in [`demos/`](demos).
 
 **Chat.** The default screen. Streaming replies with clickable citations.
 
@@ -105,22 +105,65 @@ Standing this up used to mean a background daemon, a separate inference server, 
 <p align="center"><img alt="lilbee setup wizard demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif" width="800"></p>
 </details>
 
+**Add documents.** `/add <path>` copies a file or folder into the corpus and indexes it; the Task Center shows live progress, and you can keep asking questions while it runs.
+
+<p align="center"><img alt="lilbee add documents and Task Center" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.png" width="800"></p>
+
+<details><summary>▶ Watch: /add a PDF, see Tasks, ask a question</summary>
+
+<p align="center"><img alt="lilbee add demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif" width="800"></p>
+</details>
+
 **Model catalog.** Browse models from Hugging Face Hub, pull one with a click, and switch roles without leaving the terminal. `*` marks the developer's pick for each role.
 
 <p align="center"><img alt="lilbee model catalog" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.png" width="800"></p>
 
-<details><summary>▶ Watch: catalog grid, filters, model info</summary>
+<details><summary>▶ Watch: catalog grid, filters, model info, live pull</summary>
 
 <p align="center"><img alt="lilbee model catalog demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif" width="800"></p>
 </details>
 
-**Settings.** ~50 knobs grouped into Models, Ingest, Generation, Retrieval, Display, System. Edit in the TUI, environment variables, or a project-local config file.
+**Crawl a URL.** `/crawl` opens a modal: paste a URL, pick depth and a page cap, and the page (or a small site) is fetched, converted to markdown, and added to your library. Then ask against it with the same cited-answer flow.
+
+<p align="center"><img alt="lilbee crawl modal" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.png" width="800"></p>
+
+<details><summary>▶ Watch: crawl a Wikipedia page, then ask about it</summary>
+
+<p align="center"><img alt="lilbee crawl demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif" width="800"></p>
+</details>
+
+**Settings.** ~50 knobs grouped into Models, Ingest, Generation, Retrieval, Display, Crawling, API-Keys, System. Edit in the TUI, environment variables, or a project-local config file.
 
 <p align="center"><img alt="lilbee settings screen" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.png" width="800"></p>
 
-<details><summary>▶ Watch: open settings</summary>
+<details><summary>▶ Watch: cycle every settings pane</summary>
 
 <p align="center"><img alt="lilbee settings demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif" width="800"></p>
+</details>
+
+**Command surface.** `Ctrl+P` opens the Textual command palette; `?` toggles a keybinding cheat sheet; `/help` opens the searchable slash-command catalog.
+
+<p align="center"><img alt="lilbee command palette" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.png" width="800"></p>
+
+<details><summary>▶ Watch: palette + cheat sheet + slash catalog</summary>
+
+<p align="center"><img alt="lilbee command palette demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif" width="800"></p>
+</details>
+
+**Tour.** Every screen at a glance.
+
+<details><summary>▶ Watch the 60-second tour</summary>
+
+<p align="center"><img alt="lilbee tour" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif" width="800"></p>
+</details>
+
+**CLI.** Ollama-style commands for scripts and one-off jobs: `init`, `model pull`, `model list`, `add`, `status`, `sync`, `search`.
+
+<p align="center"><img alt="lilbee CLI tour" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/cli.png" width="800"></p>
+
+<details><summary>▶ Watch: CLI tour</summary>
+
+<p align="center"><img alt="lilbee CLI demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/cli.gif" width="800"></p>
 </details>
 
 **Wiki.** Auto-generated concept and entity pages, with drafts awaiting review. (Experimental; still ascii-sketched while the redesign settles.)
@@ -279,11 +322,22 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for the long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill format) that documents the full MCP surface. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
 
+**Writing Godot 4 code against an indexed class reference.** opencode indexes Godot 4's class XMLs (810 files, 3449 chunks) via the `lilbee-worker` subagent, then `lilbee_search`-es for `AStarGrid2D`, `TileMap`, `RandomNumberGenerator`, and friends as it writes a procedural level generator. Every API call is backed by a `godot-classes/<Class>.xml:line` citation. (See [the benchmark](docs/benchmarks/godot-level-generator.md): 4 hallucinated APIs without lilbee, 0 with.)
+
+<p align="center"><img alt="opencode + lilbee MCP writing Godot 4 code with file:line citations" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.png" width="800"></p>
+
+<details><summary>▶ Watch: index the Godot class reference, then write cited code</summary>
+
+<p align="center"><img alt="opencode + lilbee MCP, Godot class reference demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif" width="800"></p>
+</details>
+
+**Querying an owner's manual.** The same shape, smaller corpus: index `cv-manual.pdf`, ask for the oil capacity, get a page-cited answer.
+
 <p align="center"><img alt="opencode + lilbee MCP over a manual" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.png" width="800"></p>
 
-<details><summary>▶ Watch: opencode indexes a PDF via lilbee MCP, then answers with a citation</summary>
+<details><summary>▶ Watch: index a PDF via lilbee MCP, then answer with a citation</summary>
 
-<p align="center"><img alt="opencode + lilbee MCP" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif" width="800"></p>
+<p align="center"><img alt="opencode + lilbee MCP, manual demo" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif" width="800"></p>
 </details>
 
 ## HTTP Server
