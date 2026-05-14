@@ -612,6 +612,54 @@ async def test_ping_raises_worker_crash_when_health_pipe_dies(
 
 
 @pytest.mark.asyncio
+async def test_call_raises_worker_crash_when_data_send_fails() -> None:
+    """If the data-pipe send raises, ``call`` surfaces ``WorkerCrashError``.
+
+    Closes the parent end of the data pipe before issuing the call so the
+    parent's ``_conn.send`` hits BrokenPipeError / OSError on its way out.
+    """
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_data, child_data = ctx.Pipe(duplex=True)
+    parent_health, child_health = ctx.Pipe(duplex=True)
+    abort_flag = ctx.Value("b", 0, lock=True)
+
+    class _FakeProcess:
+        def is_alive(self) -> bool:
+            return True
+
+        @property
+        def pid(self) -> int:
+            return -1
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    channel = PipeChannel(
+        role="echo",
+        process=_FakeProcess(),
+        parent_conn=parent_data,
+        health_conn=parent_health,
+        abort_flag=abort_flag,
+    )
+    parent_data.close()
+    try:
+        with pytest.raises(WorkerCrashError):
+            await channel.call("echo", "x", timeout=1.0)
+    finally:
+        with contextlib.suppress(Exception):
+            child_data.close()
+        with contextlib.suppress(Exception):
+            parent_health.close()
+        with contextlib.suppress(Exception):
+            child_health.close()
+
+
+@pytest.mark.asyncio
 async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
     """If the health-pipe send itself raises, ping surfaces WorkerCrashError.
 
