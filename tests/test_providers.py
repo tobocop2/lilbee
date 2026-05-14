@@ -126,6 +126,17 @@ class TestWorkerErrorMessage:
         )
         assert msg == "Embed worker reported an error: RuntimeError: boom. Please try again."
 
+    def test_worker_crash_error_uses_exited_phrasing(self) -> None:
+        """``WorkerCrashError`` renders with 'exited unexpectedly' framing rather
+        than the generic 'reported an error' template, so the user can tell a
+        crash apart from a worker-side exception."""
+        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.worker.transport_pipe import WorkerCrashError
+
+        msg = LlamaCppProvider._worker_error_message("Embedding", WorkerCrashError("embed"))
+        assert msg.startswith("Embedding worker exited unexpectedly.")
+        assert msg.endswith(". Please try again.")
+
 
 # ---------------------------------------------------------------------------
 # LlamaCppProvider
