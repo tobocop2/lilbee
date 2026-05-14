@@ -19,6 +19,7 @@ from typing import Any
 from lilbee.providers.base import ProviderError
 
 _llama_log = logging.getLogger("lilbee.llama_cpp")
+log = logging.getLogger(__name__)
 
 # ggml.h log levels (not exposed by llama-cpp-python).
 _GGML_LOG_LEVEL_INFO = 1
@@ -229,7 +230,20 @@ def _apply_gpu_device_env() -> None:
     environment, so step 1 is preserved.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.llama_cpp.gpu_select import autoselect_best_gpu_index
+    from lilbee.providers.llama_cpp.gpu_select import (
+        VulkanIcdEnvVar,
+        autoselect_best_gpu_index,
+        disable_conflicting_vulkan_icds,
+    )
+
+    # Dual-vendor Vulkan crash mitigation runs first and unconditionally:
+    # the loader loads every registered ICD at vkCreateInstance, before
+    # GGML_VK_VISIBLE_DEVICES is consulted, so device pinning alone cannot
+    # prevent a buggy second-vendor ICD from corrupting the heap.
+    disable_glob = disable_conflicting_vulkan_icds()
+    if disable_glob is not None:
+        os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
+        log.info("Disabling conflicting Vulkan ICDs on Windows: %s", disable_glob)
 
     if cfg.gpu_devices:
         for name in _GPU_VISIBLE_ENV_VARS:
