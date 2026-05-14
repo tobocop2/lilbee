@@ -2662,6 +2662,27 @@ class TestImportLlamaCpp:
         import_llama_cpp()
         assert os.environ["GGML_VK_VISIBLE_DEVICES"] == "1"
 
+    def test_conflicting_icd_glob_writes_loader_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the dual-vendor probe returns a glob, it lands in VK_LOADER_DRIVERS_DISABLE."""
+        from lilbee.providers.llama_cpp.gpu_select import VulkanIcdEnvVar
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+
+        monkeypatch.delenv(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, raising=False)
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            lambda: "amdvlk*,radeon*",
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "amdvlk*,radeon*"
+
 
 class TestReadChatTemplate:
     def test_reads_chat_template(self, tmp_path: Path) -> None:
