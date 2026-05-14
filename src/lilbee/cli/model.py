@@ -198,7 +198,10 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
 
 def _pull_rich_progress(ref: str, src: ModelSource) -> None:
     """Drive a Rich progress bar during a native HuggingFace download."""
-    err_console = Console(stderr=True)
+    # ``force_terminal=True`` keeps Rich's progress rendering in-place even
+    # when stderr isn't detected as a TTY (VHS recordings, some pipes). Real
+    # terminals are already TTYs so the flag is a no-op there.
+    err_console = Console(stderr=True, force_terminal=True)
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
