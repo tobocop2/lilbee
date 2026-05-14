@@ -21,16 +21,23 @@ from lilbee.providers.worker.worker_runtime import (
 
 
 class _RecordingConn:
-    """In-process stand-in for multiprocessing.Connection."""
+    """In-process stand-in for multiprocessing.Connection.
 
-    def __init__(self, incoming: list[tuple[int, str, Any]] | None = None) -> None:
+    ``poll`` is wired so the data loop test cases return True immediately
+    when an incoming frame is queued.
+    """
+
+    def __init__(self, incoming: list[tuple[str, Any]] | None = None) -> None:
         self._incoming = list(incoming or [])
-        self.sent: list[tuple[int, str, Any]] = []
+        self.sent: list[tuple[str, Any]] = []
 
-    def send(self, message: tuple[int, str, Any]) -> None:
+    def poll(self, _timeout: float = 0.0) -> bool:
+        return bool(self._incoming)
+
+    def send(self, message: tuple[str, Any]) -> None:
         self.sent.append(message)
 
-    def recv(self) -> tuple[int, str, Any]:
+    def recv(self) -> tuple[str, Any]:
         return self._incoming.pop(0)
 
 
@@ -38,16 +45,9 @@ def _state() -> WorkerLoopState:
     return WorkerLoopState(session=object())
 
 
-def test_handle_data_frame_shutdown_returns_false() -> None:
-    """Shutdown frame on the data pipe acks (echoing call_id) and stops the loop."""
-    conn = _RecordingConn(incoming=[(7, "shutdown", None)])
-    assert _handle_data_frame(conn, _state(), {}, "embed") is False
-    assert conn.sent == [(7, "ack", None)]
-
-
 def test_handle_data_frame_routes_to_role_handler() -> None:
-    """Recognized role kinds get a Reply bound to the request's call_id."""
-    conn = _RecordingConn(incoming=[(42, "embed", ["x"])])
+    """Recognized role kinds get a Reply that sends on the same data pipe."""
+    conn = _RecordingConn(incoming=[("embed", ["x"])])
     seen: list[tuple[Any, Any, WorkerLoopState]] = []
 
     def _handler(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
@@ -55,20 +55,19 @@ def test_handle_data_frame_routes_to_role_handler() -> None:
         reply.send("result", [[1.0]])
 
     state = WorkerLoopState(session="session-marker")
-    assert _handle_data_frame(conn, state, {"embed": _handler}, "embed") is True
+    assert _handle_data_frame(conn, state, {"embed": _handler}, "embed", threading.Event()) is True
     assert len(seen) == 1
     assert seen[0][1] == ["x"]
     assert seen[0][2] is state
-    assert conn.sent == [(42, "result", [[1.0]])]
+    assert conn.sent == [("result", [[1.0]])]
 
 
 def test_handle_data_frame_unknown_emits_serialized_value_error() -> None:
-    """Unknown kinds reply with a serialized ValueError tagged with the call_id."""
-    conn = _RecordingConn(incoming=[(99, "totally_unknown", None)])
-    assert _handle_data_frame(conn, _state(), {}, "embed") is True
+    """Unknown kinds reply with a serialized ValueError on the data pipe."""
+    conn = _RecordingConn(incoming=[("totally_unknown", None)])
+    assert _handle_data_frame(conn, _state(), {}, "embed", threading.Event()) is True
     assert len(conn.sent) == 1
-    call_id, kind, payload = conn.sent[0]
-    assert call_id == 99
+    kind, payload = conn.sent[0]
     assert kind == "error"
     assert payload.type_name == "ValueError"
     assert "totally_unknown" in payload.message
@@ -79,13 +78,38 @@ def test_handle_data_frame_eof_returns_false() -> None:
     """Pipe EOF on the data side stops the worker loop cleanly."""
 
     class _EOFConn:
-        def recv(self) -> tuple[int, str, Any]:
+        def poll(self, _timeout: float = 0.0) -> bool:
+            return True
+
+        def recv(self) -> tuple[str, Any]:
             raise EOFError
 
-        def send(self, message: tuple[int, str, Any]) -> None:
+        def send(self, message: tuple[str, Any]) -> None:
             raise AssertionError("worker must not send after EOF")
 
-    assert _handle_data_frame(_EOFConn(), _state(), {}, "embed") is False
+    assert _handle_data_frame(_EOFConn(), _state(), {}, "embed", threading.Event()) is False
+
+
+def test_handle_data_frame_idle_poll_returns_on_shutdown_event() -> None:
+    """When no frame is pending and shutdown_event fires, the loop exits."""
+
+    class _IdleConn:
+        polls: int = 0
+
+        def poll(self, _timeout: float = 0.0) -> bool:
+            _IdleConn.polls += 1
+            return False
+
+        def recv(self) -> tuple[str, Any]:
+            raise AssertionError("recv must not be called when poll returns False")
+
+        def send(self, message: tuple[str, Any]) -> None:
+            raise AssertionError("worker must not send during idle shutdown")
+
+    event = threading.Event()
+    event.set()
+    assert _handle_data_frame(_IdleConn(), _state(), {}, "embed", event) is False
+    assert _IdleConn.polls == 1
 
 
 def test_heartbeat_loop_pongs_pings() -> None:
@@ -94,61 +118,171 @@ def test_heartbeat_loop_pongs_pings() -> None:
     class _EOFAfterFirst(_RecordingConn):
         """RecordingConn that raises EOF after the first recv, to exit the loop."""
 
-        def recv(self) -> tuple[int, str, Any]:
+        def recv(self) -> tuple[str, Any]:
             if self._incoming:
                 return self._incoming.pop(0)
             raise EOFError
 
-    health = _EOFAfterFirst(incoming=[(0, "ping", None)])
-    _heartbeat_loop(health, "embed")
-    assert health.sent == [(0, "pong", None)]
+    health = _EOFAfterFirst(incoming=[("ping", None)])
+    event = threading.Event()
+    _heartbeat_loop(health, "embed", event)
+    assert health.sent == [("pong", None)]
+    assert event.is_set()
 
 
-def test_heartbeat_loop_drops_unexpected_kind(caplog) -> None:
-    """Anything other than ping on the health pipe logs a warning and drops."""
+def test_heartbeat_loop_acks_shutdown_and_sets_event() -> None:
+    """SHUTDOWN on the health pipe acks back and signals the data loop to stop."""
 
     class _Pump:
         def __init__(self) -> None:
-            self._pending = [(0, "garbage", None)]
-            self.sent: list[tuple[int, str, Any]] = []
+            self._pending = [("shutdown", None)]
+            self.sent: list[tuple[str, Any]] = []
 
-        def recv(self) -> tuple[int, str, Any]:
+        def recv(self) -> tuple[str, Any]:
             if self._pending:
                 return self._pending.pop(0)
             raise EOFError
 
-        def send(self, message: tuple[int, str, Any]) -> None:
+        def send(self, message: tuple[str, Any]) -> None:
             self.sent.append(message)
 
     health = _Pump()
+    event = threading.Event()
+    _heartbeat_loop(health, "embed", event)
+    assert health.sent == [("ack", None)]
+    assert event.is_set()
+
+
+def test_heartbeat_loop_shutdown_survives_send_error() -> None:
+    """If the ack send fails because the parent already closed, exit quietly."""
+
+    class _Pump:
+        def __init__(self) -> None:
+            self._pending = [("shutdown", None)]
+
+        def recv(self) -> tuple[str, Any]:
+            if self._pending:
+                return self._pending.pop(0)
+            raise EOFError
+
+        def send(self, _message: tuple[str, Any]) -> None:
+            raise BrokenPipeError("parent gone")
+
+    event = threading.Event()
+    _heartbeat_loop(_Pump(), "embed", event)  # must not raise
+    assert event.is_set()
+
+
+def test_heartbeat_loop_drops_unexpected_kind(caplog) -> None:
+    """Anything other than ping or shutdown on the health pipe logs a warning."""
+
+    class _Pump:
+        def __init__(self) -> None:
+            self._pending = [("garbage", None)]
+            self.sent: list[tuple[str, Any]] = []
+
+        def recv(self) -> tuple[str, Any]:
+            if self._pending:
+                return self._pending.pop(0)
+            raise EOFError
+
+        def send(self, message: tuple[str, Any]) -> None:
+            self.sent.append(message)
+
+    health = _Pump()
+    event = threading.Event()
     with caplog.at_level("WARNING", logger="lilbee.providers.worker.worker_runtime"):
-        _heartbeat_loop(health, "embed")
+        _heartbeat_loop(health, "embed", event)
     assert health.sent == []
+    assert event.is_set()  # set on EOF after the warning frame
     assert any("unexpected health-pipe kind" in rec.message for rec in caplog.records)
 
 
-def test_heartbeat_loop_returns_on_send_error() -> None:
+def test_heartbeat_loop_returns_on_ping_send_error() -> None:
     """Pong send that fails (parent already closed) exits the loop quietly."""
 
     class _BadSend:
         def __init__(self) -> None:
-            self._pending = [(0, "ping", None)]
+            self._pending = [("ping", None)]
 
-        def recv(self) -> tuple[int, str, Any]:
+        def recv(self) -> tuple[str, Any]:
             if self._pending:
                 return self._pending.pop(0)
             raise EOFError
 
-        def send(self, _message: tuple[int, str, Any]) -> None:
+        def send(self, _message: tuple[str, Any]) -> None:
             raise BrokenPipeError("parent gone")
 
-    _heartbeat_loop(_BadSend(), "embed")  # must not raise
+    event = threading.Event()
+    _heartbeat_loop(_BadSend(), "embed", event)  # must not raise
+    assert event.is_set()
 
 
-def test_run_worker_dispatches_data_then_shutdown(monkeypatch) -> None:
-    """End-to-end: run_worker reads data frames, dispatches handler, exits on shutdown."""
-    from collections import deque
+class _FakeDataConn:
+    """Module-level fake data conn for the run_worker integration test."""
 
+    def __init__(self, incoming: list[tuple[str, Any]]) -> None:
+        from collections import deque
+
+        self._incoming = deque(incoming)
+        self.sent: list[tuple[str, Any]] = []
+        self.closed = False
+
+    def poll(self, _timeout: float = 0.0) -> bool:
+        return bool(self._incoming)
+
+    def recv(self) -> tuple[str, Any]:
+        if self._incoming:
+            return self._incoming.popleft()
+        raise EOFError
+
+    def send(self, message: tuple[str, Any]) -> None:
+        self.sent.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _GatedHealthConn:
+    """Health pipe that delivers SHUTDOWN only after a gating event fires.
+
+    Gating eliminates the race between the heartbeat daemon thread and
+    the main data loop so the test deterministically observes that
+    run_worker dispatched the data frame before exiting on shutdown.
+    """
+
+    def __init__(self, gate: threading.Event) -> None:
+        self._gate = gate
+        self._sent_shutdown = False
+        self.sent: list[tuple[str, Any]] = []
+        self.closed = False
+
+    def recv(self) -> tuple[str, Any]:
+        if not self._sent_shutdown:
+            self._gate.wait(timeout=2.0)
+            self._sent_shutdown = True
+            return ("shutdown", None)
+        raise EOFError
+
+    def send(self, message: tuple[str, Any]) -> None:
+        self.sent.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RecordingSession:
+    """Session stub that records ``close()`` for assertion in run_worker tests."""
+
+    def __init__(self, log: list[bool]) -> None:
+        self._log = log
+
+    def close(self) -> None:
+        self._log.append(True)
+
+
+def test_run_worker_dispatches_data_then_health_shutdown(monkeypatch) -> None:
+    """run_worker reads data frames, dispatches handler, exits on health shutdown."""
     from lilbee.providers.worker import worker_runtime
     from lilbee.providers.worker.transport import RoleConfig
 
@@ -159,40 +293,18 @@ def test_run_worker_dispatches_data_then_shutdown(monkeypatch) -> None:
         "lilbee.providers.worker.worker_runtime.configure_worker_logging", lambda _r: None
     )
 
-    class _FakeConn:
-        def __init__(self, incoming: list[tuple[int, str, Any]]) -> None:
-            self._incoming = deque(incoming)
-            self.sent: list[tuple[int, str, Any]] = []
-            self.closed = False
-
-        def recv(self) -> tuple[int, str, Any]:
-            if self._incoming:
-                return self._incoming.popleft()
-            raise EOFError
-
-        def send(self, message: tuple[int, str, Any]) -> None:
-            self.sent.append(message)
-
-        def close(self) -> None:
-            self.closed = True
-
-    data = _FakeConn(incoming=[(11, "embed", ["x"]), (0, "shutdown", None)])
-    health = _FakeConn(incoming=[])  # heartbeat thread will get EOF and exit
+    data = _FakeDataConn(incoming=[("embed", ["x"])])
+    handler_done = threading.Event()
+    health = _GatedHealthConn(gate=handler_done)
 
     seen_payloads: list[Any] = []
-    handler_started = threading.Event()
 
     def _embed_handler(reply: Reply, payload: Any, _state: WorkerLoopState) -> None:
         seen_payloads.append(payload)
         reply.send("result", [[1.0]])
-        handler_started.set()
+        handler_done.set()
 
     closed_sessions: list[bool] = []
-
-    class _Session:
-        def close(self) -> None:
-            closed_sessions.append(True)
-
     role_config = RoleConfig(
         role="embed", model_path=__import__("pathlib").Path("/nope"), mode="embed"
     )
@@ -201,15 +313,15 @@ def test_run_worker_dispatches_data_then_shutdown(monkeypatch) -> None:
         health,
         None,
         role_config,
-        session_factory=lambda *_a: _Session(),
+        session_factory=lambda *_a: _RecordingSession(closed_sessions),
         kind_handlers={"embed": _embed_handler},
     )
-    assert handler_started.is_set()
-    # Brief wait so the heartbeat daemon thread can observe the EOF on health.
+    assert handler_done.is_set()
+    # Brief wait so heartbeat daemon thread is observably finished.
     time.sleep(0.05)
     assert seen_payloads == [["x"]]
-    assert (11, "result", [[1.0]]) in data.sent
-    assert (0, "ack", None) in data.sent
+    assert ("result", [[1.0]]) in data.sent
+    assert ("ack", None) in health.sent
     assert closed_sessions == [True]
     assert data.closed
     assert health.closed
