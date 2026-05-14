@@ -279,11 +279,11 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for the long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill format) that documents the full MCP surface. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
 
-<p align="center"><img alt="opencode + lilbee MCP over a manual" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/opencode-manual.png" width="800"></p>
+<p align="center"><img alt="opencode + lilbee MCP over a manual" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.png" width="800"></p>
 
 <details><summary>▶ Watch: opencode indexes a PDF via lilbee MCP, then answers with a citation</summary>
 
-<p align="center"><img alt="opencode + lilbee MCP" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/opencode-manual.gif" width="800"></p>
+<p align="center"><img alt="opencode + lilbee MCP" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif" width="800"></p>
 </details>
 
 ## HTTP Server
