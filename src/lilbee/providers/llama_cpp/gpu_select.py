@@ -30,10 +30,11 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import os
 import sys
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +92,50 @@ class VulkanDevice:
     index: int
     device_type: int
     device_name: str
+    vendor_id: int
+
+
+class PCIVendorID(IntEnum):
+    """PCI-SIG vendor IDs for the GPU vendors that ship Vulkan ICDs.
+
+    Values are the canonical PCI vendor IDs that ``VkPhysicalDeviceProperties.vendorID``
+    surfaces. Only the vendors we have explicit ICD-disable globs for are
+    enumerated; unknown vendors fall through the dispatch as no-op.
+    """
+
+    NVIDIA = 0x10DE
+    AMD = 0x1002
+    INTEL = 0x8086
+
+
+# Vulkan loader manifest filename globs, per vendor. The loader matches these
+# against the JSON manifest filename in its known-drivers list (see
+# https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md).
+# Each vendor ships under multiple names across drivers/OSes; list every form
+# we may encounter so disabling one vendor's drivers doesn't half-disable them.
+_VENDOR_ICD_GLOBS: dict[PCIVendorID, tuple[str, ...]] = {
+    PCIVendorID.NVIDIA: ("nv*",),
+    PCIVendorID.AMD: ("amdvlk*", "amd-vulkan*", "radeon*"),
+    PCIVendorID.INTEL: ("intel*", "igvk*"),
+}
+
+
+class VulkanIcdEnvVar(StrEnum):
+    """Every documented Vulkan loader env var that influences ICD selection.
+
+    Names are the verbatim loader env vars from the Khronos
+    LoaderInterfaceArchitecture spec; the StrEnum lets each member be
+    used directly as a ``str`` argument to ``os.environ.get`` /
+    ``os.environ.setdefault`` without ``.value`` plumbing. Any value
+    being non-empty in the environment is treated as a user override
+    and suppresses the dual-vendor auto-pin.
+    """
+
+    DRIVER_FILES = "VK_DRIVER_FILES"
+    ICD_FILENAMES = "VK_ICD_FILENAMES"
+    ADD_DRIVER_FILES = "VK_ADD_DRIVER_FILES"
+    LOADER_DRIVERS_DISABLE = "VK_LOADER_DRIVERS_DISABLE"
+    LOADER_DRIVERS_SELECT = "VK_LOADER_DRIVERS_SELECT"
 
 
 # Field layouts from the Vulkan 1.0 spec. ctypes maps the C structs
@@ -179,7 +224,9 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
 
     Returns ``None`` if the loader can't be found or any Vulkan call
     fails; empty list ("loader present, no adapters") is a distinct
-    outcome and propagates back.
+    outcome and propagates back. The bootstrap calls this twice
+    (autoselect plus the dual-vendor ICD pin) at process startup; the
+    Vulkan probe is ms-scale, no caching needed.
     """
     lib = _load_vulkan_loader()
     if lib is None:
@@ -277,6 +324,7 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
                     index=i,
                     device_type=int(props.deviceType),
                     device_name=props.deviceName.decode("utf-8", errors="replace"),
+                    vendor_id=int(props.vendorID),
                 )
             )
         return devices
@@ -330,3 +378,79 @@ def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
     if _rank_for(best.device_type) <= 0:
         return None
     return best
+
+
+_MIN_VENDORS_FOR_CONFLICT = 2
+"""Number of distinct GPU vendors that must be present before pinning kicks in.
+
+A single-vendor box (e.g., laptop with one AMD iGPU only) is not at risk:
+only that vendor's ICD is loaded, no cross-vendor heap collision is possible.
+"""
+
+
+def _known_vendors(devices: list[VulkanDevice]) -> set[PCIVendorID]:
+    """Project the adapter list down to recognized PCI vendors only."""
+    vendors: set[PCIVendorID] = set()
+    for device in devices:
+        try:
+            vendors.add(PCIVendorID(device.vendor_id))
+        except ValueError:
+            continue
+    return vendors
+
+
+def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[str]:
+    """Return the manifest globs for every known vendor except *best*."""
+    globs: list[str] = []
+    for vendor in sorted(all_vendors, key=int):
+        if vendor is best:
+            continue
+        globs.extend(_VENDOR_ICD_GLOBS[vendor])
+    return globs
+
+
+# References for the dual-vendor ICD mitigation below:
+#   - Khronos Vulkan-Loader env var spec (VK_LOADER_DRIVERS_DISABLE / VK_DRIVER_FILES):
+#     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md
+#   - ICD manifest filename conventions:
+#     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md
+#   - "Failure in one ICD causes total failure of vkEnumeratePhysicalDevices" (the failure mode):
+#     https://github.com/KhronosGroup/Vulkan-Loader/issues/1467
+#   - NVIDIA help article 5182, dual-vendor Vulkan apps on notebooks:
+#     https://nvidia.custhelp.com/app/answers/detail/a_id/5182/
+#   - Heroic Games Launcher ICD-selection issue (same mitigation pattern in prod):
+#     https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/issues/3796
+#   - Blender Vulkan backend startup failure on dual-vendor hosts:
+#     https://projects.blender.org/blender/blender/issues/129917
+def disable_conflicting_vulkan_icds() -> str | None:
+    """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor Windows boxes.
+
+    Returns a comma-separated glob list naming the ICD manifest filenames
+    of every vendor *except* the highest-ranked adapter's vendor, or
+    ``None`` when there's no conflict to resolve, the user has set any
+    Vulkan ICD-selection env var, or the probe fails. The caller writes
+    the returned value to ``VK_LOADER_DRIVERS_DISABLE`` so the Vulkan
+    loader skips those ICDs at the next ``vkCreateInstance``.
+
+    Windows-only: macOS uses Metal; Linux has the same loader mechanism
+    but no reported crashes, so we don't pin there until a report drives
+    it.
+    """
+    if sys.platform != "win32":
+        return None
+    if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
+        return None
+    devices = _enumerate_vulkan_devices() or []
+    vendors = _known_vendors(devices)
+    if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
+        return None
+    best = _pick_best_device(devices)
+    if best is None:
+        return None
+    try:
+        best_vendor = PCIVendorID(best.vendor_id)
+    except ValueError:
+        return None
+    # ``vendors`` has at least two members and we filter out ``best_vendor``,
+    # so ``_icds_to_disable`` always returns a non-empty list here.
+    return ",".join(_icds_to_disable(best_vendor, vendors))
