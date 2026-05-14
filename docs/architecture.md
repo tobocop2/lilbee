@@ -158,7 +158,7 @@ flowchart LR
     Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -->|flip shared abort flag| EW & RW & CW & VW
 ```
 
-Every byte across a pipe is a `(call_id, kind, payload)` tuple. The parent assigns a monotonic `call_id` per request; the worker echoes it on every response frame. The parent's reader silently discards any frame whose `call_id` does not match the current expected id, so leftover stream_chunk / result frames from a cancelled prior call cannot poison the next request. Control frames (`shutdown`, `ack`, `ping`, `pong`) use `call_id = 0`.
+Every byte across a pipe is a `(kind, payload)` tuple. The data pipe carries one call at a time: `PipeChannel.call` and `PipeChannel.stream` hold a channel-level `asyncio.Lock` for the full request/reply (or request/stream) window, so a frame the parent reads can only belong to the call that currently holds the lock. New callers queue on the lock until the active call returns. There is no per-frame routing id and no dispatcher thread; the call that holds the lock is the sole reader.
 
 Three patterns cover all traffic:
 
@@ -168,20 +168,22 @@ sequenceDiagram
     participant Worker as worker subprocess
 
     Note over Parent,Worker: Call / response (embed, rerank, vision)
-    Parent->>Worker: (42, embed, texts)
-    Worker-->>Parent: (42, result, vectors)
+    Parent->>Worker: (embed, texts)
+    Worker-->>Parent: (result, vectors)
 
-    Note over Parent,Worker: Streaming (chat) — token batching
-    Parent->>Worker: (43, chat, prompt)
-    Worker-->>Parent: (43, stream_chunk, "first token")
+    Note over Parent,Worker: Streaming (chat), token batching
+    Parent->>Worker: (chat, prompt)
+    Worker-->>Parent: (stream_chunk, "first token")
     loop batched: 16 tokens or 50ms whichever comes first
-        Worker-->>Parent: (43, stream_chunk, "batched tokens")
+        Worker-->>Parent: (stream_chunk, "batched tokens")
     end
-    Worker-->>Parent: (43, stream_end, None)
+    Worker-->>Parent: (stream_end, None)
 
-    Note over Parent,Worker: Liveness (dedicated thread)
-    Parent->>Worker: (0, ping, None)
-    Worker-->>Parent: (0, pong, None)
+    Note over Parent,Worker: Liveness and shutdown (dedicated thread)
+    Parent->>Worker: (ping, None)
+    Worker-->>Parent: (pong, None)
+    Parent->>Worker: (shutdown, None)
+    Worker-->>Parent: (ack, None)
 ```
 
 `WorkerPool` (in `providers/worker/pool.py`) owns lifecycle. `Services` constructs it once at startup with a `default_spawner()` from `providers/worker/transport.py`. The pool talks to workers exclusively through the `WorkerChannel` and `WorkerSpawner` Protocols; the only concrete impl today is `transport_pipe.PipeChannel` / `PipeSpawner`, backed by `multiprocessing.Pipe`.
@@ -210,9 +212,9 @@ If `cfg.worker_pool_max_idle_s > 0`, every successful round-trip stamps the role
 
 ### Health pipe isolation
 
-Health pings travel on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream/shutdown. Pings cannot interleave with stream chunks by-construction; the parent reader on each pipe never sees frames meant for the other.
+The control plane (pings, shutdown) travels on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream traffic. Control frames cannot interleave with stream chunks by construction; the parent reader on each pipe never sees frames meant for the other.
 
-The worker dedicates a daemon thread to the health pipe. The thread blocks in `health_conn.recv()`, answers `ping` with `pong`, and exits on `EOFError` when the parent closes the pipe at shutdown. This means a long-running data-frame handler (a chat stream that spends seconds inside `_handle_chat_streaming`, an embed batch chewing through a multi-thousand-vector payload) cannot starve the heartbeat, so the supervisor never declares a busy worker dead and force-terminates it.
+The worker dedicates a daemon thread to the health pipe. The thread blocks in `health_conn.recv()`, answers `ping` with `pong`, and on `shutdown` sends `ack` and sets a shared `shutdown_event` that the main data loop checks every `_DATA_POLL_INTERVAL_S` poll. This means a long-running data-frame handler (a chat stream that spends seconds inside `_handle_chat_streaming`, an embed batch chewing through a multi-thousand-vector payload) cannot starve the heartbeat or block shutdown: pings return promptly, and `close()` ack returns within the heartbeat thread's processing budget regardless of what the data loop is doing. The main data loop exits within one poll interval after the event fires.
 
 ### Cross-boundary cancel
 
@@ -224,16 +226,18 @@ Per-token `conn.send()` was the largest non-inference cost in the chat worker (9
 
 ### IPC discipline rules (pipe transport)
 
-The pipe transport (`transport_pipe.py`) enforces eight rules that keep the parent and worker in lockstep:
+The pipe transport (`transport_pipe.py`) enforces these rules that keep the parent and worker in lockstep:
 
-1. **Pull-based backpressure.** Pipe buffers are ~64 KiB on Linux; `conn.send()` blocks once full. The streaming consumer is the only awaiter on `recv` for that channel and yields chunks directly off the pipe. Slow consumers cannot starve the recv loop because the recv loop only fires when the consumer awaits the next chunk.
-2. **Pickle size cap.** `Connection.send()` raises `ValueError` past about 32 MiB on POSIX. `call` and `stream` enforce the cap (`_PICKLE_MAX_BYTES`) with a clear `PayloadTooLarge` error before the pickle round-trip.
-3. **Bounded poll.** Worker main loops use `conn.poll(timeout=...)` not bare `recv` so SIGTERM and shutdown timeouts fire (bare `recv` ignores signals). Lives in `worker_runtime.run_worker`.
-4. **Picklable error wire.** Exceptions are serialized through `_serialize_exception` to a `(type_name, message, traceback)` triple, which falls back gracefully when the live exception is not picklable (`_thread.RLock` references in tracebacks, several `OSError` subclasses, structlog wrappers).
-5. **In-flight counter for idle reaping.** Idle reaping checks `PipeChannel.in_flight` is zero, not "no recent message". A pending `recv` in the middle of a request stays in-flight until the terminator arrives.
-6. **xdist isolation.** `pytest-xdist` parallelism nests with our spawn; integration tests that exercise the pool annotate themselves with `pytest.mark.xdist_group(...)` so two pool tests do not race.
-7. **Daemon flag.** `daemon=True` workers cannot spawn children. `PipeSpawner` defaults to `daemon=True`; vision/mtmd workers that ever shell out to ffmpeg etc. must override via `PipeSpawner(daemon=False)` and rely on the pool's `atexit` shutdown.
-8. **Best-effort abort.** Once the parent flips the abort flag, in-flight `stream_chunk` messages already in the pipe still drain (a few extra tokens). The user-facing toast should say "Cancelling..." until the worker emits its terminator.
+1. **Channel-level serialization.** A single `asyncio.Lock` (`_call_lock`) per channel is held for the full request/reply or request/stream lifetime. Concurrent callers queue on the lock; the call that holds the lock is the sole reader of the data pipe. A reply or stream frame can only belong to the active call by construction, so no frame-routing id is needed and no stale-frame discard is possible.
+2. **Pull-based backpressure.** Pipe buffers are ~64 KiB on Linux; `conn.send()` blocks once full. Because there is only one in-flight call at a time, the worker's reply send never queues behind earlier pending replies, and a slow consumer applies backpressure naturally.
+3. **Pickle size cap.** `Connection.send()` raises `ValueError` past about 32 MiB on POSIX. `call` and `stream` enforce the cap (`_PICKLE_MAX_BYTES`) with a clear `PayloadTooLarge` error before the pickle round-trip.
+4. **Bounded poll.** Worker main loops use `conn.poll(timeout=...)` not bare `recv` so the shutdown event set by the heartbeat thread (and SIGTERM in real deployments) fires within `_DATA_POLL_INTERVAL_S`. Bare `recv` ignores both signals and event flags.
+5. **Picklable error wire.** Exceptions are serialized through `_serialize_exception` to a `(type_name, message, traceback)` triple, which falls back gracefully when the live exception is not picklable (`_thread.RLock` references in tracebacks, several `OSError` subclasses, structlog wrappers).
+6. **In-flight counter for idle reaping.** Idle reaping checks `PipeChannel.in_flight` is zero, not "no recent message". A pending `recv` in the middle of a request stays in-flight until the terminator arrives.
+7. **Control plane on the health pipe.** Ping/pong and shutdown/ack travel on a dedicated `mp.Pipe`, served by a worker-side daemon thread. A long inference on the data pipe never blocks liveness checks or process termination.
+8. **xdist isolation.** `pytest-xdist` parallelism nests with our spawn; integration tests that exercise the pool annotate themselves with `pytest.mark.xdist_group(...)` so two pool tests do not race.
+9. **Daemon flag.** `daemon=True` workers cannot spawn children. `PipeSpawner` defaults to `daemon=True`; vision/mtmd workers that ever shell out to ffmpeg etc. must override via `PipeSpawner(daemon=False)` and rely on the pool's `atexit` shutdown.
+10. **Best-effort abort.** Once the parent flips the abort flag, in-flight `stream_chunk` messages already in the pipe still drain (a few extra tokens). The user-facing toast should say "Cancelling..." until the worker emits its terminator.
 
 ### Spawn context must be spawn
 
