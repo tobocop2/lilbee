@@ -231,12 +231,17 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     its meta lazy-initialized from the NEW cfg on the next read, hiding the
     drift the caller just introduced.
     """
+    from lilbee.data.store.lance_helpers import refs_compatible
+
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
     store = get_services().store
     store.initialize_meta_if_legacy()
     await _set_model("embedding_model", normalized)
+    store.canonicalize_meta_if_legacy()
     meta = store.get_meta()
-    reindex_required = meta is not None and meta["embedding_model"] != normalized
+    reindex_required = meta is not None and not refs_compatible(
+        meta["embedding_model"], normalized, meta["embedding_dim"], meta["embedding_dim"]
+    )
     return SetModelResponse(model=normalized, reindex_required=reindex_required)
 
 

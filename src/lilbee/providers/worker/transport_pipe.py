@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import logging
 import multiprocessing
 import pickle
@@ -34,12 +33,6 @@ log = logging.getLogger(__name__)
 
 _PICKLE_MAX_BYTES = 32 * 1024 * 1024
 """``Connection.send`` raises past about 32 MiB on POSIX."""
-
-_CONTROL_CALL_ID = 0
-"""Sentinel call-id for shutdown/ack frames not associated with a user call."""
-
-_READER_EOF: object = object()
-"""Sentinel pushed to the frame queue when the reader thread exits."""
 
 
 @dataclass(frozen=True)
@@ -94,10 +87,10 @@ def _deserialize_exception(payload: _SerializedException) -> WorkerError:
     return WorkerError(payload.type_name, payload.message, payload.traceback_str)
 
 
-def _check_pickle_size(payload: Any, kind: WireKind, call_id: int) -> None:
-    """Raise ``ValueError`` early if *payload* would exceed the pipe send cap."""
+def _check_pickle_size(payload: Any, kind: WireKind) -> None:
+    """Raise ``WorkerError`` early if *payload* would exceed the pipe send cap."""
     try:
-        size = len(pickle.dumps((call_id, kind, payload)))
+        size = len(pickle.dumps((kind, payload)))
     except Exception as exc:
         raise WorkerError("PickleError", f"Failed to pickle {kind!r} payload: {exc}", "") from exc
     if size > _PICKLE_MAX_BYTES:
@@ -122,9 +115,13 @@ class PipeChannel:
     """One worker process talked to via a duplex :class:`multiprocessing.Pipe`.
 
     Owns the parent end of two pipes (data and health), the abort flag,
-    and a per-channel :class:`ThreadPoolExecutor`. Frames carry a monotonic
-    ``call_id`` so leftover frames from a cancelled prior call can be
-    discarded by the next call's reader instead of poisoning the protocol.
+    and a per-channel :class:`ThreadPoolExecutor`. The data pipe carries
+    one call at a time: ``call`` and ``stream`` acquire ``_call_lock`` for
+    their full request/reply or request/stream lifetime, so a reply (or
+    stream chunk) can only ever belong to the call currently holding the
+    lock. The health pipe carries ping/pong and shutdown/ack and is
+    served by a dedicated daemon thread on the worker side, so a long
+    inference never starves liveness or shutdown.
     """
 
     def __init__(
@@ -142,24 +139,15 @@ class PipeChannel:
         self._health_conn = health_conn
         self._abort = abort_flag
         self._executor = ThreadPoolExecutor(
-            max_workers=4,
+            max_workers=2,
             thread_name_prefix=f"pipechan-{role}",
         )
-        self._send_lock = asyncio.Lock()
-        self._health_send_lock = asyncio.Lock()
-        self._health_recv_lock = asyncio.Lock()
+        self._call_lock = asyncio.Lock()
+        self._health_lock = asyncio.Lock()
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._closed = False
         self._closed_lock = threading.Lock()
-        self._call_ids = itertools.count(start=1)
-        self._call_id_lock = threading.Lock()
-        # Dedicated reader thread state. Lazy-started on first _recv so
-        # the thread captures the running asyncio loop for its bridge.
-        self._reader_thread: threading.Thread | None = None
-        self._frame_queue: asyncio.Queue[Any] | None = None
-        self._reader_loop: asyncio.AbstractEventLoop | None = None
-        self._reader_started = threading.Event()
 
     @property
     def role(self) -> WorkerRole:
@@ -186,10 +174,6 @@ class PipeChannel:
         with self._in_flight_lock:
             self._in_flight += delta
 
-    def _next_call_id(self) -> int:
-        with self._call_id_lock:
-            return next(self._call_ids)
-
     def _ensure_open(self) -> None:
         with self._closed_lock:
             if self._closed:
@@ -202,152 +186,115 @@ class PipeChannel:
     def _crash(self) -> WorkerCrashError:
         return WorkerCrashError(self._role, log_path=_worker_log_path(self._role))
 
-    async def _send(self, call_id: int, kind: WireKind, payload: Any) -> None:
-        """Pickle-pre-check + thread-bounded ``conn.send`` under the send lock."""
-        _check_pickle_size(payload, kind, call_id)
+    async def _send_data(self, kind: WireKind, payload: Any) -> None:
+        """Pickle-pre-check + thread-bounded ``conn.send`` on the data pipe."""
+        _check_pickle_size(payload, kind)
         loop = asyncio.get_running_loop()
-        async with self._send_lock:
-            try:
-                await loop.run_in_executor(
-                    self._executor, self._conn.send, (call_id, kind, payload)
-                )
-            except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
-                raise self._crash() from exc
+        try:
+            await loop.run_in_executor(self._executor, self._conn.send, (kind, payload))
+        except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
+            raise self._crash() from exc
 
-    def _ensure_reader(self) -> None:
-        """Lazy-start the dedicated reader thread bound to the current loop."""
-        if self._reader_started.is_set():
-            return
-        self._reader_loop = asyncio.get_running_loop()
-        self._frame_queue = asyncio.Queue()
-        self._reader_thread = threading.Thread(
-            target=self._reader_main,
-            name=f"pipe-reader-{self._role}",
-            daemon=True,
-        )
-        self._reader_thread.start()
-        self._reader_started.set()
-
-    def _reader_main(self) -> None:
-        """Pump frames from the data pipe into the asyncio frame queue."""
-        loop = self._reader_loop
-        queue = self._frame_queue
-        if loop is None or queue is None:
-            return
-        while True:
-            try:
-                frame = self._conn.recv()
-            except (EOFError, OSError, ConnectionResetError, BrokenPipeError):
-                with contextlib.suppress(RuntimeError):
-                    loop.call_soon_threadsafe(queue.put_nowait, _READER_EOF)
-                return
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(queue.put_nowait, frame)
-
-    async def _recv(self) -> tuple[int, WireKind, Any]:
-        """Await the next frame from the reader thread; raise on EOF/crash."""
-        self._ensure_reader()
-        queue = self._frame_queue
-        assert queue is not None  # _ensure_reader sets it  # noqa: S101
-        frame = await queue.get()
-        if frame is _READER_EOF:
-            raise self._crash()
+    async def _recv_data(self) -> tuple[WireKind, Any]:
+        """Block in a worker thread until the next ``(kind, payload)`` frame arrives."""
+        loop = asyncio.get_running_loop()
+        try:
+            frame = await loop.run_in_executor(self._executor, self._conn.recv)
+        except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
+            raise self._crash() from exc
         return frame  # type: ignore[no-any-return]
-
-    async def _recv_for(self, expected_call_id: int) -> tuple[WireKind, Any]:
-        """Read frames until one matches *expected_call_id*; drain stale ones."""
-        while True:
-            call_id, kind, value = await self._recv()
-            if call_id == expected_call_id:
-                return kind, value
-            log.debug(
-                "Worker %s: discarding stale frame call_id=%s kind=%s (expected %s)",
-                self._role,
-                call_id,
-                kind,
-                expected_call_id,
-            )
 
     async def call(self, kind: WireKind, payload: Any, *, timeout: float) -> Any:
         """Send one request, await one reply on the data pipe.
 
-        Frames carry a per-call id; leftover frames from a cancelled prior
-        call are silently drained instead of raising :class:`ProtocolError`.
+        The ``_call_lock`` is held for the full request/reply window so a
+        reply that lands on the pipe can only belong to the call holding
+        the lock. New callers queue on the lock behind the in-flight one.
         """
         self._ensure_open()
-        call_id = self._next_call_id()
-        self._bump_in_flight(1)
-        try:
-            await self._send(call_id, kind, payload)
-            msg_kind, value = await asyncio.wait_for(self._recv_for(call_id), timeout=timeout)
-            if msg_kind == WireKind.ERROR:
-                raise _deserialize_exception(value)
-            if msg_kind != WireKind.RESULT:
-                raise WorkerError(
-                    "ProtocolError",
-                    f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
-                    "",
-                )
-            return value
-        finally:
-            self._bump_in_flight(-1)
-
-    async def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
-        """Send one request, yield streamed chunks on the data pipe."""
-        self._ensure_open()
-        call_id = self._next_call_id()
-        self._bump_in_flight(1)
-        await self._send(call_id, kind, payload)
-        try:
-            while True:
-                msg_kind, value = await self._recv_for(call_id)
-                if msg_kind == WireKind.STREAM_CHUNK:
-                    yield value
-                elif msg_kind == WireKind.STREAM_END:
-                    return
-                elif msg_kind == WireKind.ERROR:
+        async with self._call_lock:
+            self._bump_in_flight(1)
+            try:
+                await self._send_data(kind, payload)
+                msg_kind, value = await asyncio.wait_for(self._recv_data(), timeout=timeout)
+                if msg_kind == WireKind.ERROR:
                     raise _deserialize_exception(value)
-                else:
+                if msg_kind != WireKind.RESULT:
                     raise WorkerError(
                         "ProtocolError",
-                        f"Worker '{self._role}' streamed unexpected kind {msg_kind!r}.",
+                        f"Worker '{self._role}' replied with unexpected kind {msg_kind!r}.",
                         "",
                     )
-        finally:
-            self._bump_in_flight(-1)
+                return value
+            finally:
+                self._bump_in_flight(-1)
 
-    async def ping(self, *, timeout: float) -> None:
-        """Round-trip a ping over the dedicated health pipe; raise on timeout.
+    async def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
+        """Send one request, yield streamed chunks until the terminator arrives.
 
-        The health pipe is owned by a worker-side daemon thread that
-        answers ping → pong without depending on the data-frame handler,
-        so a long inference cannot starve the heartbeat.
+        The ``_call_lock`` is held for the full stream lifetime, so frames
+        recv'd by this coroutine belong to this stream by construction.
+        New callers queue behind the active stream.
         """
         self._ensure_open()
-        loop = asyncio.get_running_loop()
-        try:
-            async with self._health_send_lock:
-                await loop.run_in_executor(
-                    self._executor,
-                    self._health_conn.send,
-                    (_CONTROL_CALL_ID, WireKind.PING, None),
-                )
-        except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
-            raise self._crash() from exc
-        async with self._health_recv_lock:
+        async with self._call_lock:
+            self._bump_in_flight(1)
             try:
-                _call_id, msg_kind, _ = await asyncio.wait_for(
+                await self._send_data(kind, payload)
+                while True:
+                    msg_kind, value = await self._recv_data()
+                    if msg_kind == WireKind.STREAM_CHUNK:
+                        yield value
+                    elif msg_kind == WireKind.STREAM_END:
+                        return
+                    elif msg_kind == WireKind.ERROR:
+                        raise _deserialize_exception(value)
+                    else:
+                        raise WorkerError(
+                            "ProtocolError",
+                            f"Worker '{self._role}' streamed unexpected kind {msg_kind!r}.",
+                            "",
+                        )
+            finally:
+                self._bump_in_flight(-1)
+
+    async def ping(self, *, timeout: float) -> None:
+        """Round-trip a ping over the health pipe; raise on timeout / crash.
+
+        The worker dedicates a daemon thread to the health pipe so pings
+        and shutdown can be served while the data loop is busy in
+        ``session.embed`` / ``create_chat_completion``.
+        """
+        self._ensure_open()
+        kind = await self._health_round_trip(WireKind.PING, None, timeout=timeout)
+        if kind != WireKind.PONG:
+            raise WorkerError(
+                "ProtocolError",
+                f"Worker '{self._role}' ping reply was {kind!r}, want 'pong'.",
+                "",
+            )
+
+    async def _health_round_trip(
+        self, send_kind: WireKind, send_payload: Any, *, timeout: float
+    ) -> WireKind:
+        """Send one frame on the health pipe and await its reply within *timeout*."""
+        loop = asyncio.get_running_loop()
+        async with self._health_lock:
+            try:
+                await loop.run_in_executor(
+                    self._executor, self._health_conn.send, (send_kind, send_payload)
+                )
+            except (BrokenPipeError, ConnectionResetError, EOFError, OSError) as exc:
+                raise self._crash() from exc
+            try:
+                frame = await asyncio.wait_for(
                     loop.run_in_executor(self._executor, self._health_conn.recv),
                     timeout=timeout,
                 )
             except (EOFError, OSError, ConnectionResetError, BrokenPipeError) as exc:
                 raise self._crash() from exc
-        if msg_kind != WireKind.PONG:
-            raise WorkerError(
-                "ProtocolError",
-                f"Worker '{self._role}' ping reply was {msg_kind!r}, want 'pong'.",
-                "",
-            )
+        reply_kind, _ = frame
+        return reply_kind  # type: ignore[no-any-return]
 
     def cancel(self) -> None:
         """Flip the abort flag to 1; in-flight tokens may still drain."""
@@ -358,16 +305,22 @@ class PipeChannel:
         self._abort.value = 0
 
     async def close(self, *, timeout: float) -> None:
-        """Send shutdown, await ack, terminate if it overruns *timeout*."""
+        """Send shutdown on the health pipe, await ack, then join the process.
+
+        The data pipe is never used for shutdown: a long in-flight call
+        on the data pipe would otherwise serialize behind a shutdown
+        request. Health-pipe shutdown is served by the worker's
+        dedicated heartbeat thread, so this returns within the timeout
+        regardless of what the data loop is doing. Any in-flight data
+        call sees the process exit and surfaces as :class:`WorkerCrashError`.
+        """
         with self._closed_lock:
             if self._closed:
                 return
             self._closed = True
         try:
-            with contextlib.suppress(asyncio.TimeoutError, WorkerError):
-                await self._send(_CONTROL_CALL_ID, WireKind.SHUTDOWN, None)
-                with contextlib.suppress(asyncio.TimeoutError, WorkerError):
-                    await asyncio.wait_for(self._recv(), timeout=timeout)
+            with contextlib.suppress(TimeoutError, WorkerError):
+                await self._health_round_trip(WireKind.SHUTDOWN, None, timeout=timeout)
             await asyncio.get_running_loop().run_in_executor(
                 self._executor, self._join_process, timeout
             )
@@ -377,8 +330,6 @@ class PipeChannel:
             with contextlib.suppress(Exception):
                 self._health_conn.close()
             self._executor.shutdown(wait=False, cancel_futures=True)
-            if self._reader_thread is not None:
-                self._reader_thread.join(timeout=timeout)
 
     def _join_process(self, timeout: float) -> None:
         """Wait *timeout* seconds for the process; terminate if still alive.
@@ -434,10 +385,10 @@ class PipeSpawner:
     ) -> tuple[WorkerChannel, WorkerHandle]:
         """Start a worker subprocess and return its channel + handle.
 
-        Two pipes per worker: ``data_pipe`` carries call/stream/shutdown
-        traffic, ``health_pipe`` carries ping/pong. The worker dedicates a
-        daemon thread to the health pipe so heartbeats stay live during
-        long inference.
+        Two pipes per worker: ``data_pipe`` carries call/stream traffic,
+        ``health_pipe`` carries ping/pong and shutdown/ack. The worker
+        dedicates a daemon thread to the health pipe so heartbeats and
+        shutdown stay live during long inference.
         """
         parent_data, child_data = self._ctx.Pipe(duplex=True)
         parent_health, child_health = self._ctx.Pipe(duplex=True)

@@ -1,40 +1,57 @@
 name: Fan out downstream packaging
-description: "Trigger publish-docker.yml and publish-packages.yml for a tag whose executables are attached to its GH release; self-skips if they aren't there yet. Caller needs actions:write."
+description: "Trigger publish-docker.yml and publish-packages.yml for a tag once its executables are attached to the GH release. Waits up to 5 hours for the executables to land before failing loudly. Caller needs actions:write."
 
 inputs:
   tag:
     description: "Tag whose executables are on the GH release (e.g. v0.6.66b469)."
     required: true
+  wait_minutes:
+    description: "Max minutes to wait for all three executables to be attached before failing."
+    required: false
+    default: "300"
 
 runs:
   using: composite
   steps:
     # publish-docker.yml curls the GH-release Linux binary; publish-packages.yml
-    # pins all three by hash. Both consume the release, not PyPI, so this only
-    # needs the executables attached -- it does not wait on the wheels.
-    - name: Check the release has the platform executables
-      id: assets
+    # pins all three by hash. Both consume the release, not PyPI, so this waits
+    # on the executables -- it does not wait on the wheels.
+    - name: Wait for the release to have the platform executables
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         TAG: ${{ inputs.tag }}
+        WAIT_MINUTES: ${{ inputs.wait_minutes }}
       run: |
         set -uo pipefail
-        NAMES=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
-        MISSING=""
-        for a in lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe; do
-          case " ${NAMES} " in *" ${a} "*) ;; *) MISSING="${MISSING} ${a}" ;; esac
+        # Default wheels finish ~25 min into the RC run; the executables take
+        # the lion's share -- the Windows nuitka build alone has been observed
+        # at ~3h45m, Linux ~2h15m, macOS ~1h25m. 5 hours covers the worst
+        # observed plus headroom while staying inside GitHub Actions' 6-hour
+        # per-job ceiling. Past the deadline something is wrong with the RC
+        # build and we want a loud failure here rather than a silent skip
+        # that strands the fan-out until an operator notices.
+        deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+        while true; do
+          names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
+          missing=""
+          for a in lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe; do
+            case " ${names} " in *" ${a} "*) ;; *) missing="${missing} ${a}" ;; esac
+          done
+          if [ -z "${missing}" ]; then
+            echo "release ${TAG} has all executables; proceeding with fan-out"
+            break
+          fi
+          if [ "$(date +%s)" -ge "${deadline}" ]; then
+            echo "::error::release ${TAG} still missing executables after ${WAIT_MINUTES} minutes:${missing}"
+            exit 1
+          fi
+          echo "release ${TAG} missing executables:${missing}; sleeping 60s"
+          sleep 60
         done
-        if [ -n "${MISSING}" ]; then
-          echo "::warning::release ${TAG} is missing executables:${MISSING} -- skipping the Docker/Homebrew/AUR/Nix fan-out; re-run publish.yml once release-candidate.yml has attached them"
-          echo "ready=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-        fi
 
     - name: Trigger Publish Docker Image
-      if: steps.assets.outputs.ready == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -44,7 +61,6 @@ runs:
           -f tag=${{ inputs.tag }}
 
     - name: Trigger Publish Packages
-      if: steps.assets.outputs.ready == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

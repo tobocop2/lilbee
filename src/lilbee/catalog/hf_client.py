@@ -16,6 +16,52 @@ from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
 
 log = logging.getLogger(__name__)
 
+# Substrings dropped from huggingface_hub's request / file-download loggers.
+# These advisories aren't actionable in a local TUI: HF prints an
+# unauthenticated-requests notice on every public pull, and the file_download
+# logger re-warns on every retry the library schedules. The catalog surfaces
+# the final download failure with a clear message, so per-attempt warnings
+# are noise.
+_HF_SUPPRESS_SUBSTRINGS = (
+    "unauthenticated requests to the HF Hub",
+    "Error while downloading from",
+    "Trying to resume download",
+)
+
+_HF_FILTERED_LOGGER_NAMES = (
+    "huggingface_hub.utils._http",
+    "huggingface_hub.file_download",
+)
+
+
+class _HfSubstringFilter(logging.Filter):
+    """Drop huggingface_hub log records whose message contains a suppressed substring."""
+
+    def __init__(self, needles: tuple[str, ...]) -> None:
+        super().__init__()
+        self._needles = needles
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not any(n in record.getMessage() for n in self._needles)
+
+
+def install_hf_log_filter() -> None:
+    """Attach the substring filter to huggingface_hub's chatty loggers.
+
+    Called automatically when this module is imported (see the module-top
+    invocation below) so the filter is in place before any catalog HTTP
+    call can emit a warning. Exposed as a function so tests can re-apply.
+    """
+    hf_filter = _HfSubstringFilter(_HF_SUPPRESS_SUBSTRINGS)
+    for name in _HF_FILTERED_LOGGER_NAMES:
+        logging.getLogger(name).addFilter(hf_filter)
+
+
+# Install the filter at module import. All HF HTTP traffic in lilbee
+# routes through this module, so installing here always beats the first
+# huggingface_hub warning to the punch.
+install_hf_log_filter()
+
 HF_API_URL = "https://huggingface.co/api/models"
 
 DEFAULT_TIMEOUT = 30.0

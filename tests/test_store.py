@@ -15,6 +15,7 @@ from lilbee.data.store import (
     mmr_rerank,
     scope_to_chunk_type,
 )
+from lilbee.runtime.lock import write_lock
 
 
 @pytest.fixture()
@@ -1107,6 +1108,124 @@ class TestEmbeddingModelGate:
         """No chunks, no meta = nothing to pin."""
         assert store.initialize_meta_if_legacy() is False
         assert store.get_meta() is None
+
+    def test_legacy_bare_repo_meta_is_compatible_with_full_ref(self, tmp_path):
+        """A pre-canonical store meta (bare ``<org>/<repo>``) matches the new full ref.
+
+        Same repo, same dim: gating treats them as the same model so search and
+        ingest do not refuse, and the chat error stops showing the legacy name.
+        """
+        full_ref = "org/repo-GGUF/model.Q4_K_M.gguf"
+        cfg_local = cfg.model_copy(
+            update={"lancedb_dir": tmp_path / "lance_legacy", "embedding_model": full_ref}
+        )
+        local_store = Store(cfg_local)
+        local_store.add_chunks(_make_records(dim=cfg_local.embedding_dim))
+        with write_lock():
+            local_store._write_meta_unlocked(
+                embedding_model="org/repo-GGUF", embedding_dim=cfg_local.embedding_dim
+            )
+        # Search must NOT raise: legacy bare-repo + matching dim is compatible.
+        local_store.search([0.1] * cfg_local.embedding_dim)
+
+    def test_canonicalize_meta_if_legacy_rewrites_to_full_ref(self, tmp_path):
+        """Legacy bare-repo meta is rewritten to the canonical full ref on first call.
+
+        Once migrated, the legacy name never surfaces in error messages, the
+        UI, or downstream inspections of the meta row.
+        """
+        full_ref = "org/repo-GGUF/model.Q4_K_M.gguf"
+        cfg_local = cfg.model_copy(
+            update={"lancedb_dir": tmp_path / "lance_migrate", "embedding_model": full_ref}
+        )
+        local_store = Store(cfg_local)
+        local_store.add_chunks(_make_records(dim=cfg_local.embedding_dim))
+        with write_lock():
+            local_store._write_meta_unlocked(
+                embedding_model="org/repo-GGUF", embedding_dim=cfg_local.embedding_dim
+            )
+
+        wrote = local_store.canonicalize_meta_if_legacy()
+        assert wrote is True
+        meta = local_store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == full_ref
+
+        # Idempotent: a second call is a no-op.
+        assert local_store.canonicalize_meta_if_legacy() is False
+
+    def test_canonicalize_meta_if_legacy_skips_when_already_canonical(self, store):
+        """No write when meta is already the canonical full ref."""
+        store.add_chunks(_make_records())
+        assert store.canonicalize_meta_if_legacy() is False
+
+    def test_canonicalize_meta_if_legacy_skips_when_meta_changes_under_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """Race path: another writer canonicalized between outer and inner check.
+
+        The outer (no-lock) check sees the rewrite is needed; the inner (under
+        write_lock) re-read sees it no longer is. Method short-circuits so the
+        racer's work isn't clobbered.
+        """
+        full_ref = "org/repo-GGUF/model.Q4_K_M.gguf"
+        cfg_local = cfg.model_copy(
+            update={"lancedb_dir": tmp_path / "lance_race", "embedding_model": full_ref}
+        )
+        local_store = Store(cfg_local)
+        local_store.add_chunks(_make_records(dim=cfg_local.embedding_dim))
+        with write_lock():
+            local_store._write_meta_unlocked(
+                embedding_model="org/repo-GGUF", embedding_dim=cfg_local.embedding_dim
+            )
+
+        # First check (outer) says yes; second check (inner, under lock) says no.
+        call_count = {"n": 0}
+        original = local_store._needs_canonical_meta_rewrite
+
+        def flipping_check(meta, current_model, current_dim):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return original(meta, current_model, current_dim)
+            return False
+
+        monkeypatch.setattr(local_store, "_needs_canonical_meta_rewrite", flipping_check)
+        assert local_store.canonicalize_meta_if_legacy() is False
+
+    def test_has_chunks_public_predicate(self, store):
+        """``has_chunks`` is True after add_chunks and False on an empty store."""
+        assert store.has_chunks() is False
+        store.add_chunks(_make_records())
+        assert store.has_chunks() is True
+
+    def test_refs_compatible_remote_refs_strict_equality(self):
+        """Two non-native refs (no ``.gguf``) require strict raw equality."""
+        from lilbee.data.store.lance_helpers import refs_compatible
+
+        assert refs_compatible("ollama/embed:a", "ollama/embed:a", 768, 768) is True
+        # Different non-native refs: not compatible even when dims match.
+        assert refs_compatible("ollama/embed:a", "ollama/embed:b", 768, 768) is False
+
+    def test_canonicalize_meta_if_legacy_skips_on_genuine_mismatch(self, tmp_path):
+        """Different file in the same repo is NOT a legacy match; gate still refuses."""
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        full_ref = "org/repo-GGUF/model.Q4_K_M.gguf"
+        cfg_local = cfg.model_copy(
+            update={"lancedb_dir": tmp_path / "lance_mismatch", "embedding_model": full_ref}
+        )
+        local_store = Store(cfg_local)
+        local_store.add_chunks(_make_records(dim=cfg_local.embedding_dim))
+        other_full = "org/repo-GGUF/model.Q8_0.gguf"
+        with write_lock():
+            local_store._write_meta_unlocked(
+                embedding_model=other_full, embedding_dim=cfg_local.embedding_dim
+            )
+        # canonicalize must not rewrite (refs are NOT compatible).
+        assert local_store.canonicalize_meta_if_legacy() is False
+        # And the gate still refuses.
+        with pytest.raises(EmbeddingModelMismatchError):
+            local_store.search([0.1] * cfg_local.embedding_dim)
 
     def test_initialize_meta_if_legacy_skips_when_another_caller_won_the_race(
         self, store, test_config

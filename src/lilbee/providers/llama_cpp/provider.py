@@ -742,6 +742,8 @@ def load_llama(
         "verbose": False,
         "n_gpu_layers": _resolve_n_gpu_layers(embedding=embedding),
     }
+    if cfg.main_gpu is not None:
+        kwargs["main_gpu"] = cfg.main_gpu
 
     if embedding:
         # Embedding/rerank uses the model's training context unconditionally.

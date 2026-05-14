@@ -181,6 +181,45 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
         )
 
 
+async def test_settings_tab_advances_within_pane() -> None:
+    """Tab from a non-last field moves focus to the next field in the same pane.
+
+    Counterpart to ``test_settings_tab_rolls_over_to_next_pane``: that test
+    exercises the boundary path (`next_index` out of range, advance the
+    active tab); this one covers the inner path where ``next_index`` stays
+    within ``focusables`` and ``focusables[next_index].focus()`` fires
+    without changing the active pane.
+    """
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen, _LazyGroupBody
+
+    app = LilbeeApp()
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        app.switch_view("Settings")
+        await pilot.pause(0.2)
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        screen.populate_all_panes()
+        await pilot.pause()
+        tabs = screen.query_one(TabbedContent)
+        starting_pane = tabs.active
+        body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
+        focusables = [w for w in body.query("*") if w.focusable]
+        assert len(focusables) >= 2, "pane needs at least two focusables to test mid-pane move"
+        focusables[0].focus()
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause(0.3)
+        assert tabs.active == starting_pane, (
+            f"Tab from a non-last field should keep the same pane, got {tabs.active}"
+        )
+        assert app.focused is focusables[1], (
+            f"Tab should land on the next focusable, got {app.focused!r}"
+        )
+
+
 async def test_catalog_tab_chain_visits_search() -> None:
     """Pressing / on CatalogScreen reveals + focuses the search input.
 
