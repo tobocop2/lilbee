@@ -68,31 +68,30 @@ Sleep 3s
 Escape
 Sleep 800ms
 
-# Back to Discover, search HF Hub for a small model.
-Type "1"
-Sleep 1200ms
+# Back to the Chat sub-tab for the HF Hub search.
+#
+# The `/` filter input is hidden on Discover and Library by design; only
+# the task-scoped tabs (Chat / Embed / Vision / Rerank) show it. Search
+# for "smol" from Chat -> first visible match installs on Enter (the
+# screen's _on_search_submitted handler picks the first card).
+Type "2"
+Sleep 1500ms
 
 Screenshot demos/_out/tui-catalog.png
 
 Type "/"
 Sleep 400ms
 Type "smol"
-Sleep 1500ms
+# Wait for the HF Hub round-trip so the SmolLM cards land in the grid
+# BEFORE Enter fires; otherwise Enter falls through to "trigger remote
+# search" instead of "install first visible card".
+Sleep 5s
 Enter
-Sleep 3500ms
+Sleep 6s
 
-# Focus the SmolLM2 135M card (third of four).
-Right
-Sleep 300ms
-Right
-Sleep 300ms
-
-# Pull it. Queues into Task Center; the catalog grid stays focused.
-Enter
-Sleep 1s
-
-# Switch to Tasks. The catalog's `/` filter input is focused after the
-# search step above; Escape releases focus so the screen-nav `]` works.
+# Enter on the search input installs the first visible match.
+# Switch to Tasks to watch the download. Escape releases the search
+# input focus so the screen-nav `]` fires.
 Escape
 Sleep 400ms
 Type "]"

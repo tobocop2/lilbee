@@ -84,16 +84,15 @@ Screenshot demos/_out/tui-crawl.png
 # Hold long enough for the single-page crawl to finish (~10s).
 Sleep 12s
 
-# Tasks -> Chat (cycle wraps). Re-enter INSERT for the question.
+# Tasks -> Chat (cycle wraps). Chat input is in INSERT after the wrap,
+# so the question lands directly.
 Type "]"
 Sleep 1000ms
-Type "i"
-Sleep 400ms
 
-# Single-fact question that maps to the article's opening section,
-# avoiding sub-era ambiguity (multiple generations of the Caprice
-# share the same article).
-Type "What model years were the Chevrolet Caprice produced over?"
+# Sub-era question that maps cleanly to a single section in the article.
+# Verified in tmux: returns the 305 cu in V8 with cite-backed details
+# from 1977-1990 (RPO LO3 fuel-injection update in 1989).
+Type "What displacement V8 engines were offered in the Caprice between 1977 and 1990?"
 Sleep 600ms
 Enter
 

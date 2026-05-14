@@ -68,6 +68,12 @@ reset_clean_slate() {
     local data="$ROOT/$tape"
     rm -rf "$data"
     mkdir -p "$data"
+    # The CLI tape pulls SmolLM2 cold so the rendered demo shows a real
+    # download bar. It uses its own LILBEE_MODELS_DIR so a previous run's
+    # cache makes the pull a no-op ("already installed"). Always wipe.
+    if [[ "$tape" == "cli" ]]; then
+        rm -rf "$ROOT/cli-models"
+    fi
 }
 
 render_man_page() {
