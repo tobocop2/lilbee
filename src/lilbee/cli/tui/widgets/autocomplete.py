@@ -30,10 +30,9 @@ _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
 
 # Cached document list for ``/delete`` and ``/reset`` Tab completion.
-# ``store.get_sources`` hits LanceDB; on Windows with Defender that query
-# stutters every Tab keypress. Cache the result until a document mutation
-# explicitly invalidates it. The cache is a list rather than a set so the
-# stable order matches what the dropdown previously rendered.
+# Invalidated by ``invalidate_document_cache`` on document mutations so
+# Tab returns the live set. Order is stable across reads because the
+# dropdown renders in fetch order.
 _doc_cache: list[str] | None = None
 
 

@@ -246,18 +246,13 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True, name="chat_setup_check", exit_on_error=False)
     def _setup_check_worker(self) -> None:
-        """Run ``_needs_setup`` off the UI thread; push the wizard if needed.
-
-        ``_needs_setup`` calls ``resolve_model_path`` for chat + embedding,
-        each of which walks the model registry on disk. On Windows + Defender
-        that walk takes seconds and froze the TUI on every chat-screen mount.
-        """
+        """Run ``_needs_setup`` off the UI thread; push the wizard if needed."""
         if not self._needs_setup():
             return
         call_from_thread(self, self._push_setup_wizard)
 
     def _push_setup_wizard(self) -> None:
-        """Push the SetupWizard from the UI thread (called via call_from_thread)."""
+        """Push the SetupWizard if the screen is still mounted."""
         if not self.is_mounted:
             return
         from lilbee.cli.tui.screens.setup import SetupWizard
@@ -772,19 +767,12 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
-        """Spawn the /delete worker so the UI stays responsive during DB I/O."""
+        """Run /delete in a worker so the chat screen stays interactive."""
         self._cmd_delete_worker(args.strip())
 
     @work(thread=True, name="chat_cmd_delete", exit_on_error=False)
     def _cmd_delete_worker(self, name: str) -> None:
-        """Validate and execute /delete off the UI thread.
-
-        ``get_sources`` and the two ``delete_*`` calls hit LanceDB; on
-        Windows with Defender real-time scanning each one used to stutter
-        the chat screen for hundreds of ms. Pulling the validation and
-        the writes into a worker keeps the screen interactive while the
-        backend churns.
-        """
+        """Validate and execute /delete off the UI thread; notify back via dispatch."""
         try:
             sources = get_services().store.get_sources()
         except Exception:

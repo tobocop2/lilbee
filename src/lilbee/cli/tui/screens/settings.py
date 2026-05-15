@@ -525,13 +525,7 @@ class SettingsScreen(Screen[None]):
 
     @work(thread=True, name="settings_has_chunks_check", exit_on_error=False)
     def _maybe_confirm_embedding_swap(self, key: str, ref: str) -> None:
-        """Check store chunk-count off the UI thread; confirm-modal if non-empty.
-
-        ``store.has_chunks`` hits LanceDB. On Windows with Defender that
-        read used to stall the picker-dismiss handler on the UI thread;
-        run it in a worker and dispatch back to push the confirm dialog
-        or apply the choice directly.
-        """
+        """Run ``store.has_chunks`` off the UI thread; confirm-modal if non-empty."""
         from lilbee.cli.tui.thread_safe import call_from_thread
 
         if get_services().store.has_chunks():
@@ -540,7 +534,7 @@ class SettingsScreen(Screen[None]):
             call_from_thread(self, self._apply_picker_choice, key, ref, True)
 
     def _push_embed_swap_confirm(self, key: str, ref: str) -> None:
-        """Show the embed-swap confirm dialog from the UI thread."""
+        """Push the embed-swap confirm dialog if the screen is still mounted."""
         if not self.is_mounted:
             return
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

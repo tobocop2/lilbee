@@ -2707,8 +2707,7 @@ async def test_chat_slash_theme_no_arg():
 async def test_chat_slash_delete_with_match(mock_svc):
     """``/delete <name>`` deletes both the chunks and the source row.
 
-    ``_cmd_delete`` spawns a worker (PR #244: DB I/O off the UI thread);
-    the assertion runs after the worker completes.
+    Awaits the worker before asserting so the dispatch lands first.
     """
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
