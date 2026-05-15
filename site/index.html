@@ -4,12 +4,44 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lilbee: a batteries-included local search engine you can talk to</title>
-<meta name="description" content="A batteries-included local search engine for your data and code that you can talk to: ask questions in plain English and get answers that link back to the file and line. Point it at nothing and it's a fast chatbot. One program that's a full-screen terminal app, a command-line tool, a Model Context Protocol server, a web API, and a Python library. Runs on your computer; sane defaults out of the box.">
-<link rel="stylesheet" href="style.css">
-<script src="main.js" defer></script>
+<meta name="description" content="A batteries-included local search engine for your data and code. Ask in plain English; every answer cites the file and line. CLI + TUI + MCP server.">
+<link rel="canonical" href="https://tobocop2.github.io/lilbee/">
+
+<!-- Open Graph: rich link previews for any client that reads the protocol. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="lilbee: a batteries-included local search engine you can talk to">
+<meta property="og:description" content="A batteries-included local search engine for your data and code. Ask in plain English; every answer cites the file and line.">
+<meta property="og:url" content="https://tobocop2.github.io/lilbee/">
+<meta property="og:image" content="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png">
+<meta property="og:image:width" content="1400">
+<meta property="og:image:height" content="900">
+<meta property="og:image:alt" content="lilbee chat with cited answers from a Crown Victoria owner's manual, terminal UI on rose-pine theme">
+
+<!-- SoftwareApplication JSON-LD: helps Google attach a rich-result card and tells search engines what kind of thing this is. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "lilbee",
+  "description": "A batteries-included local search engine for your data and code that you can talk to. Cited answers, local-first, with an MCP server for agent integration.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux, Windows",
+  "url": "https://tobocop2.github.io/lilbee/",
+  "downloadUrl": "https://pypi.org/project/lilbee/",
+  "license": "https://github.com/tobocop2/lilbee/blob/main/LICENSE",
+  "softwareVersion": "0.6.66b",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "programmingLanguage": "Python",
+  "author": { "@type": "Person", "name": "Tobias Perelstein", "url": "https://github.com/tobocop2" },
+  "codeRepository": "https://github.com/tobocop2/lilbee"
+}
+</script>
+
+<link rel="stylesheet" href="style.css?v=20260515a">
+<script src="main.js?v=20260515a" defer></script>
 </head>
 <body>
-<h1 class="sr">lilbee</h1>
 <div class="layout">
   <main class="main">
 
@@ -31,8 +63,8 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <p class="tagline">A <strong>batteries-included local search engine</strong> for your data and code that you can talk to.</p>
-      <p class="sub">Point it at your files, notes, and code; ask questions in plain English. Every answer links back to the file and line. Point it at nothing and it's just a chatbot.</p>
+      <h1 class="tagline">A <strong>batteries-included local search engine</strong> for your data and code that you can talk to.</h1>
+      <p class="sub">Point it at your files, notes, and code; ask questions in plain English. Every answer links back to the file and line. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key or use a frontier agent over MCP.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -47,15 +79,83 @@
     <section>
       <div class="label">install</div>
 
-      <div class="routes">
-        <div class="route recommended">
-          <div class="route-h">pip / uv</div>
-          <p>Installs into your own Python. Smaller download, picks the fastest CPU path for your machine at runtime, managed like any other package.</p>
+      <div class="reel">
+        <div class="reeltabs" role="tablist" aria-label="Demo reel">
+          <button type="button" class="reeltab" role="tab" id="reel-tab-setup"    aria-controls="reel-pane-setup"    aria-selected="true"  tabindex="0">first run</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-tour"     aria-controls="reel-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-chat"     aria-controls="reel-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-add"      aria-controls="reel-pane-add"      aria-selected="false" tabindex="-1">add files</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-crawl"    aria-controls="reel-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-catalog"  aria-controls="reel-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-settings" aria-controls="reel-pane-settings" aria-selected="false" tabindex="-1">settings</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-agent"    aria-controls="reel-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-pdf"      aria-controls="reel-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
         </div>
-        <div class="route">
-          <div class="route-h">binary &middot; homebrew &middot; AUR &middot; nix &middot; docker</div>
-          <p>A self-contained bundle. Nothing else to install, but a large file and a fixed CPU build, a touch slower on newer hardware than the pip / uv wheel.</p>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-setup" aria-labelledby="reel-tab-setup">
+          <div class="reel-frame">
+            <img alt="lilbee first-run setup wizard pulling models" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif">
+          </div>
+          <p class="reel-caption">First run: a setup wizard pulls a chat model and an embedder, then drops you straight into chat.</p>
         </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-tour" aria-labelledby="reel-tab-tour" hidden>
+          <div class="reel-frame">
+            <img alt="60-second sweep through every lilbee TUI screen" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif">
+          </div>
+          <p class="reel-caption">One-minute sweep through every screen: setup wizard, chat with citations, model catalog, settings, task center, palette.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-chat" aria-labelledby="reel-tab-chat" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee chat with cited answers" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif">
+          </div>
+          <p class="reel-caption">Streaming replies with clickable citations back to the file and line.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-add" aria-labelledby="reel-tab-add" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee add documents and Task Center" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif">
+          </div>
+          <p class="reel-caption"><code>/add &lt;path&gt;</code> copies a file or folder into your library and indexes it; ask questions while it syncs.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-crawl" aria-labelledby="reel-tab-crawl" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee crawl a Wikipedia page, then ask a cited question" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif">
+          </div>
+          <p class="reel-caption"><code>/crawl &lt;url&gt;</code> fetches a page into your library, then answers against it with a page citation.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-catalog" aria-labelledby="reel-tab-catalog" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee model catalog with Hugging Face search" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif">
+          </div>
+          <p class="reel-caption">Browse models on Hugging Face Hub, pull one live, switch a role without leaving the terminal.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-settings" aria-labelledby="reel-tab-settings" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee settings screen with tabbed sections" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif">
+          </div>
+          <p class="reel-caption">50+ settings: search depth, reranking, sampling, parsers. Sane defaults; tune the moment you want to.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-agent" aria-labelledby="reel-tab-agent" hidden>
+          <div class="reel-frame">
+            <img alt="an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif">
+          </div>
+          <p class="reel-caption">lilbee talking to lilbee. An agent indexes <em>lilbee's own source</em> through <em>lilbee's MCP server</em>, then answers questions about how lilbee works, with file:line citations.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-pdf" aria-labelledby="reel-tab-pdf" hidden>
+          <div class="reel-frame">
+            <img alt="an agent reads a Crown Victoria owner's manual through lilbee's MCP server" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif">
+          </div>
+          <p class="reel-caption">Same setup, talking to a PDF: the agent asks lilbee to index <code>cv-manual.pdf</code>, then builds a fuse table with page citations.</p>
+        </div>
+
+        <p class="reel-more"><kbd>&larr;</kbd>/<kbd>&rarr;</kbd> scrub. More on the recordings: <a href="https://github.com/tobocop2/lilbee/blob/main/docs/demos.md">the full reel &rarr;</a></p>
       </div>
 
       <div class="installtabs" role="tablist" aria-label="Install methods">
@@ -228,24 +328,6 @@
             <li>runs on a laptop or headless over a remote shell; move it between machines</li>
           </ul>
           <div class="shape-note">one install command, sane defaults. point it at a folder, ask.</div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="label">preview</div>
-      <div class="demo" role="figure" aria-label="terminal preview">
-        <div class="titlebar">
-          <span class="title">lilbee chat . owner's manuals</span>
-          <span>[qwen3:0.6b]</span>
-        </div>
-        <div class="body">
-          <div class="line"><span class="prompt">&gt;</span><span class="answer">what does the oil pressure warning mean?</span></div>
-          <div class="line"><span class="answer">the oil pressure warning indicates low oil pressure.<sup>[1]</sup></span></div>
-          <div class="line"><span class="answer">when the light stays on, stop the engine immediately.<sup>[2]</sup></span></div>
-          <div class="rule">─── sources ─────────────────────────────────</div>
-          <div class="cite">[1] owners-manual.pdf:42 &nbsp;&nbsp; [2] owners-manual.pdf:43</div>
-          <div class="line" style="margin-top:0.6rem"><span class="prompt">&gt;</span><span class="cursor"></span></div>
         </div>
       </div>
     </section>

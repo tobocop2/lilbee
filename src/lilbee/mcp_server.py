@@ -25,6 +25,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
+from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import SearchScope, scope_to_chunk_type
@@ -256,7 +257,7 @@ def init(path: str = "") -> dict[str, Any]:
     subsequent tool calls.
     """
     base = Path(path) if path else Path.cwd()
-    root = base / ".lilbee"
+    root = base / LOCAL_ROOT_DIRNAME
 
     created = False
     if not root.is_dir():
