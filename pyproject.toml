@@ -62,7 +62,7 @@ crawler = ["crawl4ai>=0.8.6"]
 release = ["lilbee[crawler,litellm,graph]"]
 
 [project.urls]
-Homepage = "https://tobocop2.github.io/lilbee/"
+Homepage = "https://lilbee.sh/"
 Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 

@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar dns-setup
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/
@@ -38,6 +38,9 @@ install:
 
 crawl-setup:  ## Download Playwright Chromium for /crawl
 	uv run playwright install chromium
+
+dns-setup:  ## One-time DNS setup for lilbee.sh at Porkbun (reads creds from pass)
+	bash scripts/porkbun-dns-setup.sh
 
 demo-prep:  ## Pre-stage models, data dirs, man pages, opencode demo dirs for `make demo`
 	bash demos/_prep.sh

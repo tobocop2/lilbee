@@ -372,7 +372,7 @@ defaults endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive API docs live at `/schema/redoc` when the server is
 running, and the full OpenAPI schema is published at the
-[API reference](https://tobocop2.github.io/lilbee/api/).
+[API reference](https://lilbee.sh/api/).
 
 **Configuration via env vars:**
 
@@ -555,7 +555,7 @@ pip install --pre 'lilbee[graph,crawler,litellm]'
 uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 ```
 
-For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://tobocop2.github.io/lilbee/cu125/` (or `cu124/` for older drivers).
+For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/` (or `cu124/` for older drivers).
 
 While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is required on every install.
 
