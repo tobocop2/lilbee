@@ -23,6 +23,56 @@ _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
+def train_ctx_from_meta(
+    meta: dict[str, str] | None,
+    *,
+    fallback: int,
+    model_path: Path,
+) -> int:
+    """Resolve ``<arch>.context_length`` from GGUF metadata, with a safe floor.
+
+    Several published GGUFs (nomic-embed, some Qwen3 variants, certain
+    vision models) report ``context_length=0`` in their headers. Passing
+    zero into ``Llama(n_ctx=...)`` for an embedding or vision loader
+    cascades into ``n_batch=0`` / ``n_ubatch=0`` and trips ggml's Vulkan
+    dispatch into undefined behaviour, surfacing as STATUS_HEAP_CORRUPTION
+    on Windows. Unparseable values (any non-integer string) raised
+    ``ValueError`` in three independent call sites before this helper
+    consolidated them.
+
+    Args:
+        meta: GGUF metadata dict from :func:`read_gguf_metadata`, or
+            ``None`` when the read itself failed.
+        fallback: Value to return when metadata is missing, unparseable,
+            or non-positive. Each loader picks the value appropriate for
+            its task (chat / embed / vision).
+        model_path: Used purely for the warning message so the user knows
+            which model produced the junk metadata.
+    """
+    if not meta:
+        return fallback
+    raw = meta.get("context_length", str(fallback))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "GGUF %s has unparseable context_length=%r; using %d",
+            model_path.name,
+            raw,
+            fallback,
+        )
+        return fallback
+    if value <= 0:
+        log.warning(
+            "GGUF %s reports context_length=%d; using %d to avoid n_batch=0 crash",
+            model_path.name,
+            value,
+            fallback,
+        )
+        return fallback
+    return value
+
+
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
 

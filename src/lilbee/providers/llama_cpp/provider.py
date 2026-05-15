@@ -19,6 +19,7 @@ from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
+    train_ctx_from_meta,
 )
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
@@ -755,7 +756,9 @@ def load_llama(
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
         embed_meta = _safe_read_gguf_metadata(model_path)
-        embed_train_ctx = _safe_embed_ctx(embed_meta, model_path)
+        embed_train_ctx = train_ctx_from_meta(
+            embed_meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
+        )
         kwargs["n_ctx"] = embed_train_ctx
     elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
@@ -808,46 +811,14 @@ def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 # Fallback used when an embedding GGUF reports zero, negative, or
 # unparseable ``context_length`` in its metadata header. Some published
 # nomic-embed and Qwen3 GGUFs in the wild report ``0`` (the b473 QA dump
-# logged ``n_ctx_seq (512) > n_ctx_train (0)``). With ``n_ctx=0`` the
-# embed loader sets ``n_batch=0`` / ``n_ubatch=0``, which trips ggml's
-# Vulkan dispatch into undefined behaviour and surfaces as
-# STATUS_HEAP_CORRUPTION on Windows. 2048 matches the bare-metal default
-# every supported embedding model trains against.
+# logged ``n_ctx_seq (512) > n_ctx_train (0)``). 2048 matches the
+# bare-metal default every supported embedding model trains against.
 _EMBED_FALLBACK_CTX = 2048
-
-
-def _safe_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Resolve an embed-loader ``n_ctx``, clamping junk metadata to a safe floor."""
-    raw = (meta or {}).get("context_length", str(_EMBED_FALLBACK_CTX))
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        log.warning(
-            "Embed GGUF %s has unparseable context_length=%r; using %d",
-            model_path.name,
-            raw,
-            _EMBED_FALLBACK_CTX,
-        )
-        return _EMBED_FALLBACK_CTX
-    if value <= 0:
-        log.warning(
-            "Embed GGUF %s reports context_length=%d; using %d to avoid n_batch=0 crash",
-            model_path.name,
-            value,
-            _EMBED_FALLBACK_CTX,
-        )
-        return _EMBED_FALLBACK_CTX
-    return value
 
 
 def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     """Pick the largest 256-multiple n_ctx that fits in available memory."""
-    training_ctx = DEFAULT_NUM_CTX
-    if meta:
-        try:
-            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
-        except (TypeError, ValueError):
-            training_ctx = DEFAULT_NUM_CTX
+    training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max
 
     try:
