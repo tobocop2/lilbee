@@ -47,13 +47,15 @@ class _CatalogTestApp(LilbeeAppHost):
 
 
 async def test_action_select_tab_switches_active_tab() -> None:
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen.action_select_tab(2)  # Embed
-        await pilot.pause()
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        await wait_until(pilot, lambda: tabs.active == "embed")
         assert tabs.active == "embed"
 
 
@@ -96,6 +98,8 @@ async def test_on_key_digit_calls_select_tab() -> None:
     activation to propagate through TabbedContent's TabActivated signal
     chain; the polling loop tolerates that without slowing other platforms.
     """
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
@@ -103,10 +107,7 @@ async def test_on_key_digit_calls_select_tab() -> None:
         event = Key(key="3", character="3")
         screen.on_key(event)
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
-        for _ in range(20):
-            await pilot.pause()
-            if tabs.active == "embed":
-                break
+        await wait_until(pilot, lambda: tabs.active == "embed")
         assert tabs.active == "embed"
 
 
@@ -317,15 +318,17 @@ def test_stamp_fit_no_op_without_probe() -> None:
 
 async def test_action_select_tab_idempotent_when_already_active() -> None:
     """Re-activating the same tab is a no-op (no spurious TabActivated)."""
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
         tabs.active = "rerank"
-        await pilot.pause()
+        await wait_until(pilot, lambda: tabs.active == "rerank")
         screen.action_select_tab(4)  # Rerank again
-        await pilot.pause()
+        await wait_until(pilot, lambda: tabs.active == "rerank")
         assert tabs.active == "rerank"
 
 
@@ -522,7 +525,7 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
         from lilbee.cli.tui.widgets.model_list import ModelList
 
         ml: ModelList | None = None
-        for _ in range(20):
+        for _ in range(50):
             screen._tab_list_cache = {}
             screen._populate_library_list()
             await pilot.pause()
@@ -889,16 +892,18 @@ async def test_library_grid_renders_installed_rows() -> None:
 
 async def test_action_select_tab_does_not_revert_after_focus_loss() -> None:
     """Pressing 6 (Library) must keep the active tab on Library, never auto-revert."""
+    from tests._async_wait import wait_until
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         screen.action_select_tab(5)
         tabs = screen.query_one("#catalog-tabs", TabbedContent)
-        for _ in range(20):
-            await pilot.pause()
-            if tabs.active == "library" and screen._active_tab_id_cache == "library":
-                break
+        await wait_until(
+            pilot,
+            lambda: tabs.active == "library" and screen._active_tab_id_cache == "library",
+        )
         assert tabs.active == "library"
         assert screen._active_tab_id_cache == "library"
 

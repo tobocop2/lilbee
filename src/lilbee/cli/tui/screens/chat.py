@@ -241,11 +241,23 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        if self._needs_setup():
-            from lilbee.cli.tui.screens.setup import SetupWizard
-
-            self.app.push_screen(SetupWizard(), self._on_setup_complete)
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self._setup_check_worker()
+
+    @work(thread=True, name="chat_setup_check", exit_on_error=False)
+    def _setup_check_worker(self) -> None:
+        """Run ``_needs_setup`` off the UI thread; push the wizard if needed."""
+        if not self._needs_setup():
+            return
+        call_from_thread(self, self._push_setup_wizard)
+
+    def _push_setup_wizard(self) -> None:
+        """Push the SetupWizard if the screen is still mounted."""
+        if not self.is_mounted:
+            return
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
@@ -755,31 +767,45 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
+        """Run /delete in a worker so the chat screen stays interactive."""
+        self._cmd_delete_worker(args.strip())
+
+    @work(thread=True, name="chat_cmd_delete", exit_on_error=False)
+    def _cmd_delete_worker(self, name: str) -> None:
+        """Validate and execute /delete off the UI thread; notify back via dispatch."""
         try:
             sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
-            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         known = {s.get("filename", s.get("source", "?")) for s in sources}
         if not known:
-            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
-        name = args.strip()
         if not name:
-            self.notify(msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known))))
+            usage = msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known)))
+            call_from_thread(self, self.notify, usage)
             return
 
         if name not in known:
-            self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_DELETE_NOT_FOUND.format(name=name),
+                severity="error",
+            )
             return
 
         store = get_services().store
         store.delete_by_source(name)
         store.delete_source(name)
-        self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
+        invalidate_document_cache()
+        call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
         self.action_show_command_catalog()
