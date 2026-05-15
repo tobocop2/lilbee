@@ -143,12 +143,21 @@ def _is_ollama(base_url: str) -> bool:
 
 @functools.cache
 def litellm_available() -> bool:
-    """Return True if ``litellm`` can be imported."""
-    try:
-        import litellm  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    """Return True if the ``litellm`` package is installed.
+
+    Uses ``importlib.util.find_spec`` rather than ``import litellm`` so the
+    check stays fast on the UI thread. Executing ``litellm`` on Windows
+    with Defender real-time scanning takes seconds (the package loads a
+    long list of provider plugins on first import); the Settings screen
+    builds synchronously and calls this in ``_FEATURE_GATED_GROUPS``, so
+    a real import here blocks the entire TUI on the first Settings open.
+    ``find_spec`` just walks ``sys.path`` to locate the package; the
+    heavy import runs later, in worker threads or remote-call paths
+    where the cost is expected.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("litellm") is not None
 
 
 _LITELLM_MISSING_MSG = (

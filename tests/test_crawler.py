@@ -213,14 +213,21 @@ def _no_dns(monkeypatch):
 
 
 class TestCrawlerAvailable:
-    """Exercises the un-patched ``crawler_available`` import probe."""
+    """Exercises the un-patched ``crawler_available`` install probe.
+
+    Uses ``importlib.util.find_spec`` so the check stays cheap on the UI
+    thread; the Settings screen calls this synchronously during compose
+    via ``_FEATURE_GATED_GROUPS``.
+    """
 
     def test_returns_true_when_installed(self):
         from lilbee.crawler import crawler_available
 
         crawler_available.cache_clear()
-        mock_crawl4ai = MagicMock()
-        with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
+        with patch(
+            "importlib.util.find_spec",
+            return_value=MagicMock(name="crawl4ai_spec"),
+        ):
             assert crawler_available() is True
         crawler_available.cache_clear()
 
@@ -228,8 +235,29 @@ class TestCrawlerAvailable:
         from lilbee.crawler import crawler_available
 
         crawler_available.cache_clear()
-        with patch.dict("sys.modules", {"crawl4ai": None}):
+        with patch("importlib.util.find_spec", return_value=None):
             assert crawler_available() is False
+        crawler_available.cache_clear()
+
+    def test_does_not_execute_module_init(self):
+        """Regression guard: probe must not actually import ``crawl4ai``.
+
+        ``crawl4ai`` is a known-heavy import (AGENTS.md lists it). The
+        Settings screen calls this on the UI thread, so executing the
+        module here would block the TUI.
+        """
+        import sys as _sys
+
+        from lilbee.crawler import crawler_available
+
+        crawler_available.cache_clear()
+        with patch(
+            "importlib.util.find_spec",
+            return_value=MagicMock(name="crawl4ai_spec"),
+        ):
+            had_module = "crawl4ai" in _sys.modules
+            crawler_available()
+            assert ("crawl4ai" in _sys.modules) is had_module
         crawler_available.cache_clear()
 
 

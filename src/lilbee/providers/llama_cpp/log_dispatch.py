@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -207,6 +208,31 @@ _GPU_VISIBLE_ENV_VARS = (
 _VULKAN_AUTODETECT_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES",)
 
 
+_VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
+
+# Layers with documented crashes against multi-VkDevice apps:
+#   https://github.com/ggml-org/llama.cpp/issues/18109 (RTSS / OBS / HudSight)
+#   https://github.com/ValveSoftware/steam-for-linux/issues/9120 (Steam overlay)
+#   https://alegruz.github.io/graphics/2025/03/22/galaxyoverlayvklayer-issue.html (Galaxy)
+# Vendor-dispatch layers (NV_optimus, AMD_switchable_graphics, MESA_device_select)
+# and user-opt-in overlays (MangoHud) are intentionally absent so GPU routing
+# stays identical to what every other Vulkan app on the host sees.
+_VK_LOADER_LAYERS_DISABLE_GLOBS: tuple[str, ...] = (
+    "VK_LAYER_VALVE_steam_overlay*",
+    "VK_LAYER_VALVE_steam_fossilize*",
+    "VK_LAYER_RTSS*",
+    "VK_LAYER_OBS_HOOK*",
+    "VK_LAYER_HudSight*",
+    "GalaxyOverlayVkLayer*",
+    "VK_LAYER_GalaxyOverlay*",
+    "VK_LAYER_DISCORD_overlay*",
+    "VK_LAYER_EOS_Overlay*",
+    "VK_LAYER_RESHADE*",
+    "VK_LAYER_VKBASALT*",
+)
+_VK_LOADER_LAYERS_DISABLE_VALUE = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS)
+
+
 def _apply_gpu_device_env() -> None:
     """Apply ``cfg.gpu_devices`` (or autodetect) to backend visibility env vars.
 
@@ -236,6 +262,16 @@ def _apply_gpu_device_env() -> None:
         disable_conflicting_vulkan_icds,
     )
 
+    # Suppress known-crashing third-party Vulkan overlay layers on
+    # Windows + Linux. Must precede every subsequent vkCreateInstance
+    # call (our own probe in autoselect plus llama.cpp's), otherwise the
+    # overlay piggy-backs on the first instance and stays resident even
+    # if disabled later. setdefault preserves a user-set
+    # VK_LOADER_LAYERS_DISABLE, and the loader composes our globs with
+    # the user's own ENABLE token per spec.
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        os.environ.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_VALUE)
+
     # Dual-vendor Vulkan crash mitigation runs first and unconditionally:
     # the loader loads every registered ICD at vkCreateInstance, before
     # GGML_VK_VISIBLE_DEVICES is consulted, so device pinning alone cannot
@@ -243,7 +279,7 @@ def _apply_gpu_device_env() -> None:
     disable_glob = disable_conflicting_vulkan_icds()
     if disable_glob is not None:
         os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
-        log.info("Disabling conflicting Vulkan ICDs on Windows: %s", disable_glob)
+        log.info("Disabling conflicting Vulkan ICDs: %s", disable_glob)
 
     if cfg.gpu_devices:
         for name in _GPU_VISIBLE_ENV_VARS:
