@@ -53,10 +53,21 @@ Sleep 2s
 Type "v"
 Sleep 2s
 
-# Infinite scroll: load more pages.
+# Infinite scroll: walk the grid down so the rows visibly shift, then
+# page down twice to trigger HF Hub fetch of more cards.
+Type "jjjjj"
+Sleep 1200ms
+Type "jjjjj"
+Sleep 1200ms
+Space
+Sleep 1500ms
+Space
+Sleep 1500ms
+# `n` explicitly loads the next page; with the cursor near the end it
+# visibly extends the grid.
 Type "n"
 Sleep 1500ms
-Type "n"
+Space
 Sleep 1500ms
 
 # Info modal on a local installed row. `i` notifies "frontier no info" on

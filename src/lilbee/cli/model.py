@@ -7,8 +7,6 @@ the Rich renderers below adapt them for human-readable terminal output.
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -198,67 +196,24 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
     json_output({**final.model_dump(), "event": PullEvent.DONE.value})
 
 
-def _pull_plain_progress(ref: str, src: ModelSource) -> PullResult:
-    """Newline-per-milestone progress. Opt in via ``LILBEE_PLAIN_PROGRESS=1``;
-    not advertised as a public knob.
-
-    Rich's Live display and ``\\r``-overwrite progress both fight ttyd's
-    frame capture inside VHS recordings: the terminal buffer ends up with
-    a stack of half-finished bars instead of one line in place. Print one
-    line per quartile (25 / 50 / 75 / 100%) with no cursor moves, so the
-    GIF shows a clean progressive log -- closer to Ollama's older
-    per-percent line emit than its modern in-place bar.
-    """
-    bar_width = 24
-    milestones = (25, 50, 75, 100)
-    next_idx = 0
-
-    def write_line(pct: int, detail: str) -> None:
-        filled = bar_width * pct // 100
-        bar = "█" * filled + " " * (bar_width - filled)
-        detail_part = f"  {detail}" if detail else ""
-        sys.stdout.write(f"Downloading {ref}  {pct:3d}% ▕{bar}▏{detail_part}\n")
-        sys.stdout.flush()
-
-    def on_update(p: DownloadProgress) -> None:
-        nonlocal next_idx
-        pct = int(p.percent)
-        while next_idx < len(milestones) and pct >= milestones[next_idx]:
-            write_line(milestones[next_idx], p.detail)
-            next_idx += 1
-
-    return _run_pull(ref, src, on_update)
-
-
 def _pull_interactive_progress(ref: str, src: ModelSource) -> None:
-    """Drive an interactive progress bar during a native HuggingFace download.
+    """Drive Rich's Live progress bar during a native HuggingFace download."""
+    err_console = Console(stderr=True, force_terminal=True)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TextColumn("{task.fields[detail]}"),
+        TimeRemainingColumn(),
+        console=err_console,
+        transient=False,
+    ) as progress:
+        task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
 
-    Defaults to Rich's Live display; falls back to a plain \\r-overwrite
-    bar when ``LILBEE_PLAIN_PROGRESS=1`` is set (see :func:`_pull_plain_progress`).
-    """
-    # Demo-only escape hatch: ``LILBEE_PLAIN_PROGRESS=1`` swaps Rich's Live
-    # display for a plain ``\r``-overwrite bar. Rich is the default for
-    # regular users; the plain bar exists for VHS recordings where the
-    # Live display's cursor moves get captured as stacked lines.
-    if os.environ.get("LILBEE_PLAIN_PROGRESS"):
-        final = _pull_plain_progress(ref, src)
-    else:
-        err_console = Console(stderr=True, force_terminal=True)
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.percentage:>3.0f}%"),
-            TextColumn("{task.fields[detail]}"),
-            TimeRemainingColumn(),
-            console=err_console,
-            transient=False,
-        ) as progress:
-            task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
+        def on_update(p: DownloadProgress) -> None:
+            progress.update(task_id, completed=p.percent, detail=p.detail)
 
-            def on_update(p: DownloadProgress) -> None:
-                progress.update(task_id, completed=p.percent, detail=p.detail)
-
-            final = _run_pull(ref, src, on_update)
+        final = _run_pull(ref, src, on_update)
 
     if final.status == PullStatus.ALREADY_INSTALLED:
         console.print(f"{ref} is already installed.")

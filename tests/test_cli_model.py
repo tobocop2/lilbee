@@ -465,40 +465,6 @@ class TestPullCmd:
         assert result.exit_code != 0
 
 
-class TestPlainProgress:
-    """`LILBEE_PLAIN_PROGRESS=1` swaps Rich's Live display for newline-per-quartile output.
-
-    Demo-only escape hatch; covers the env-var dispatch in ``_pull_interactive_progress``
-    and the milestone bookkeeping in ``_pull_plain_progress``.
-    """
-
-    def test_emits_one_line_per_milestone_reached(self, capsys, fake_manager, native_manifests):
-        from lilbee.cli import model as cli_model
-
-        target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
-        cli_model._pull_plain_progress(target, ModelSource.NATIVE)
-        out = capsys.readouterr().out
-        # FakeManager.pull emits on_bytes(50, 100) once -> 25% and 50% milestones fire.
-        assert f"Downloading {target}   25%" in out
-        assert f"Downloading {target}   50%" in out
-        assert "75%" not in out
-        assert "100%" not in out
-
-    def test_env_var_routes_pull_cmd_through_plain_progress(
-        self, monkeypatch, fake_manager, native_manifests
-    ):
-        monkeypatch.setenv("LILBEE_PLAIN_PROGRESS", "1")
-        target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
-        result = runner.invoke(app, ["model", "pull", target])
-        assert result.exit_code == 0, result.output
-        # Plain progress emits a fresh "Downloading <ref>" line per milestone
-        # then prints the final "Pulled" message via the console.
-        assert f"Downloading {target}" in result.output
-        assert " 25%" in result.output
-        assert " 50%" in result.output
-        assert "Pulled" in result.output
-
-
 class TestRemoveModelData:
     def test_removes_and_reports_freed(self, fake_manager, native_manifests):
         result = model_mod.remove_model_data(_CHAT_REF)
