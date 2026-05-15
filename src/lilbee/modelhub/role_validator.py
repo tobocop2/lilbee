@@ -15,19 +15,16 @@ from lilbee.providers.model_ref import PROVIDER_PREFIXES
 # leaked env var cannot disable validation in production.
 _SKIP_MODEL_TASK_VALIDATION_ENV = "LILBEE_SKIP_MODEL_TASK_VALIDATION"
 
-
-def _model_task_validation_bypassed() -> bool:
-    if not os.environ.get(_SKIP_MODEL_TASK_VALIDATION_ENV):
-        return False
-    return sys.modules.get("pytest") is not None
-
-
 _MODEL_FIELD_TO_TASK: dict[str, str] = {
     "chat_model": "chat",
     "embedding_model": "embedding",
     "vision_model": "vision",
     "reranker_model": "rerank",
 }
+
+# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
+# two ``/`` separators; one-slash refs are bare repo IDs.
+_NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 class TaskMismatchError(ValueError):
@@ -45,9 +42,10 @@ class TaskMismatchError(ValueError):
         super().__init__(f"Model '{ref}' is a {entry_task} model, not {expected_task}.")
 
 
-# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
-# two ``/`` separators; one-slash refs are bare repo IDs.
-_NATIVE_GGUF_REF_MIN_SLASHES = 2
+def _model_task_validation_bypassed() -> bool:
+    if not os.environ.get(_SKIP_MODEL_TASK_VALIDATION_ENV):
+        return False
+    return sys.modules.get("pytest") is not None
 
 
 def _resolve_installed_task(ref: str) -> ModelTask | None:
