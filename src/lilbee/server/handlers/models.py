@@ -25,8 +25,8 @@ from lilbee.catalog import (
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.core import settings
-from lilbee.core.config import cfg, validate_model_task_assignment
-from lilbee.core.config.validators import _MODEL_FIELD_TO_TASK
+from lilbee.core.config import cfg
+from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.runtime.hardware import (
     FitLevel,

@@ -1972,7 +1972,7 @@ class TestSetVisionModel:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
         from lilbee.catalog.types import ModelTask
-        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.role_validator import TaskMismatchError
 
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -2033,7 +2033,7 @@ class TestSetRerankerModel:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model(self, mock_svc):
         from lilbee.catalog.types import ModelTask
-        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.role_validator import TaskMismatchError
 
         mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -2044,7 +2044,7 @@ class TestSetRerankerModel:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_vision_model(self, mock_svc):
         from lilbee.catalog.types import ModelTask
-        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.role_validator import TaskMismatchError
 
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -2056,7 +2056,7 @@ class TestSetRerankerModel:
     async def test_rejects_embedding_model_in_vision_slot(self, mock_svc):
         """Embedding model in the reranker slot carries the structured task pair."""
         from lilbee.catalog.types import ModelTask
-        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.role_validator import TaskMismatchError
 
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         with pytest.raises(TaskMismatchError) as exc:
@@ -2068,7 +2068,7 @@ class TestSetRerankerModel:
     async def test_rejects_reranker_in_vision_slot(self, mock_svc):
         """Reranker in the vision slot reports the rerank/vision task pair."""
         from lilbee.catalog.types import ModelTask
-        from lilbee.core.config.validators import TaskMismatchError
+        from lilbee.modelhub.role_validator import TaskMismatchError
 
         mock_svc.return_value.provider.list_models.return_value = [_RERANK_REF]
         with pytest.raises(TaskMismatchError) as exc:

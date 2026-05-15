@@ -20,7 +20,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core import settings
-from lilbee.core.config import cfg, validate_model_task_assignment
+from lilbee.core.config import cfg
+from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
