@@ -3062,6 +3062,30 @@ class TestDisableConflictingVulkanIcds:
             monkeypatch.setattr(gpu_select.os, "environ", {env_var.value: "user-set"})
             assert gpu_select.disable_conflicting_vulkan_icds() is None
 
+    def test_cfg_gpu_devices_pin_defers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the user has set ``cfg.gpu_devices``, we leave vendor selection alone.
+
+        The lilbee-level GPU pin is a deliberate user choice. Forcing a
+        vendor disable on top would be surprising: the dual-vendor mitigation
+        is for the case where lilbee picks the GPU; if the user has picked,
+        defer to them. Without this defer an AMD-discrete + NVIDIA host
+        where the user pinned device 0 (their AMD card) would silently
+        get its AMD ICD disabled by the NVIDIA-first preference.
+        """
+        from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
+        )
+        monkeypatch.setattr(cfg, "gpu_devices", "1")
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
 
 class TestImportLlamaCpp:
     """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError."""
@@ -3217,12 +3241,12 @@ class TestImportLlamaCpp:
         import_llama_cpp()
         assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "amdvlk*,radeon*"
 
-    def test_implicit_layers_disabled_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Windows, ~implicit~ is written so overlay/recording layers don't auto-load."""
+    def test_curated_layer_globs_written_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Windows the layer-disable env var holds the curated overlay glob list."""
         from lilbee.providers.llama_cpp import log_dispatch
         from lilbee.providers.llama_cpp.log_dispatch import (
             _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            _VK_LOADER_LAYERS_DISABLE_IMPLICIT,
+            _VK_LOADER_LAYERS_DISABLE_VALUE,
             import_llama_cpp,
         )
 
@@ -3239,14 +3263,14 @@ class TestImportLlamaCpp:
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
 
         import_llama_cpp()
-        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_IMPLICIT
+        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
 
-    def test_implicit_layers_disabled_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Linux too, ~implicit~ is written: Steam overlay + Mesa device-select etc."""
+    def test_curated_layer_globs_written_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Linux the same curated overlay list lands."""
         from lilbee.providers.llama_cpp import log_dispatch
         from lilbee.providers.llama_cpp.log_dispatch import (
             _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            _VK_LOADER_LAYERS_DISABLE_IMPLICIT,
+            _VK_LOADER_LAYERS_DISABLE_VALUE,
             import_llama_cpp,
         )
 
@@ -3263,7 +3287,29 @@ class TestImportLlamaCpp:
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
 
         import_llama_cpp()
-        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_IMPLICIT
+        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
+
+    def test_curated_layer_list_does_not_disable_vendor_dispatch(self) -> None:
+        """Mesa device-select, NV Optimus, AMD switchable, MangoHud must survive.
+
+        The curated list targets known-crashing third-party overlays only.
+        Disabling vendor-dispatch layers would change GPU routing in ways
+        that don't match what other Vulkan apps see, and disabling MangoHud
+        / Mesa overlay would surprise users who explicitly opted into them.
+        """
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_GLOBS,
+        )
+
+        flat = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS).lower()
+        for survivor in (
+            "VK_LAYER_MESA_device_select",
+            "VK_LAYER_NV_optimus",
+            "VK_LAYER_AMD_switchable_graphics",
+            "VK_LAYER_MANGOHUD_overlay",
+            "VK_LAYER_MESA_overlay",
+        ):
+            assert survivor.lower() not in flat, survivor
 
     def test_implicit_layer_disable_skipped_on_darwin(
         self, monkeypatch: pytest.MonkeyPatch

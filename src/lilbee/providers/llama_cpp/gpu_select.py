@@ -530,8 +530,19 @@ def disable_conflicting_vulkan_icds() -> str | None:
 
     Returns a comma-separated glob list naming the ICD manifest filenames
     of every vendor *except* the preferred one (NVIDIA > AMD > Intel), or
-    ``None`` when there's no conflict, the user has set any Vulkan
-    ICD-selection env var, or discovery finds at most one known vendor.
+    ``None`` when:
+
+    * The platform has no documented dual-vendor crash class (macOS).
+    * The user has set any Vulkan ICD-selection env var
+      (``VK_DRIVER_FILES``, ``VK_ICD_FILENAMES``, ``VK_ADD_DRIVER_FILES``,
+      ``VK_LOADER_DRIVERS_DISABLE``, ``VK_LOADER_DRIVERS_SELECT``).
+    * The user has set ``cfg.gpu_devices`` -- the lilbee-level GPU pin.
+      That means they've already chosen a specific Vulkan device index,
+      so overriding their vendor selection on top of that would be
+      surprising. The vendor-preference heuristic is for the case
+      where lilbee has to choose; if the user has chosen, defer.
+    * Discovery finds at most one known vendor.
+
     The caller writes the returned value to ``VK_LOADER_DRIVERS_DISABLE``
     so the Vulkan loader skips those ICDs at the next ``vkCreateInstance``.
 
@@ -548,9 +559,13 @@ def disable_conflicting_vulkan_icds() -> str | None:
     Active on Windows and Linux; macOS uses Metal directly so the
     Vulkan loader isn't on the path.
     """
+    from lilbee.core.config import cfg
+
     if not _platform_supports_icd_pin():
         return None
     if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
+        return None
+    if cfg.gpu_devices:
         return None
     vendors = _vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
