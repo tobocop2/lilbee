@@ -40,6 +40,22 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
         resolve.assert_not_called()
 
 
+def test_push_setup_wizard_no_op_when_unmounted():
+    """``_push_setup_wizard`` short-circuits when the screen is no longer mounted.
+
+    The setup-check worker may race a view switch: by the time the worker
+    finishes, the chat screen is already gone. Ensure the push is gated
+    on ``is_mounted`` so we don't push onto whatever screen is now on top.
+    """
+    screen = ChatScreen.__new__(ChatScreen)
+    ChatScreen.is_mounted = property(lambda self: False)
+    try:
+        # If the guard breaks, this would AttributeError on ``self.app``.
+        screen._push_setup_wizard()
+    finally:
+        del ChatScreen.is_mounted
+
+
 def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir):
     """Initialized data dir plus resolvable models skips the wizard."""
     cfg.lancedb_dir.mkdir(parents=True)
