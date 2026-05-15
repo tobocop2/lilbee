@@ -1,21 +1,36 @@
 /* lilbee site
-   Refined amber CRT. Cream body on near-black, no scanline overlay on copy,
-   no flicker, larger type, sharper hierarchy. */
+   Rose-pine-moon. Same palette as the TUI demo recordings; the site and
+   the demos read as one piece. Body soft-lavender on deep plum, primary
+   accent rose, trust accent foam (cyan). No flicker, no scanline overlay
+   on copy. */
 
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
 
 :root {
-  --bg: #100d0a;
-  --bg-elev: #1a160f;
-  --bg-card: #1c1810;
-  --ink: #f1e6cd;        /* primary readable cream */
-  --ink-2: #c8b896;      /* secondary text */
-  --ink-3: #8a7b5a;      /* tertiary / metadata */
-  --rule: #2e2616;
-  --rule-2: #443824;
-  --amber: #e0b86a;      /* antique gold, not neon */
-  --amber-hot: #f0d29a;
-  --green: #7be08c;
+  /* surfaces (rose-pine main, the darker variant; moon is too bright for body
+     copy at this column width and against the lavender ink) */
+  --bg: #191724;          /* base */
+  --bg-elev: #1f1d2e;     /* surface */
+  --bg-card: #26233a;     /* overlay */
+
+  /* text */
+  --ink: #e0def4;         /* primary readable lavender */
+  --ink-2: #908caa;       /* secondary text (subtle) */
+  --ink-3: #6e6a86;       /* tertiary / metadata (muted) */
+
+  /* rules */
+  --rule: #26233a;        /* overlay-grade, near-invisible */
+  --rule-2: #393552;      /* highlight med */
+
+  /* accents */
+  --accent: #ebbcba;      /* rose-soft: primary accent. Quieter than the harder
+                             #ea9a97 (still rose-pine, just less saturated) so
+                             it lives well next to lavender body copy. */
+  --accent-hot: #f1cfcd;  /* rose-soft, a hair brighter, for hover */
+  --trust: #9ccfd8;       /* foam (cyan): trust/safety accent, replaces green */
+  --iris: #c4a7e7;        /* iris (purple): secondary accent for variety */
+  --gold: #f6c177;        /* gold: tertiary accent (used sparingly) */
+
   --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
 
   --content-w: 760px;
@@ -40,27 +55,27 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* a single soft amber wash, never on top of text */
+/* very soft rose + iris wash, off the copy column so it never sits under text */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(900px 600px at 70% -10%, rgba(224, 184, 106, 0.045), transparent 60%),
-    radial-gradient(700px 500px at 0% 100%, rgba(224, 184, 106, 0.025), transparent 65%);
+    radial-gradient(900px 600px at 80% -15%, rgba(235, 188, 186, 0.04), transparent 60%),
+    radial-gradient(700px 500px at -10% 100%, rgba(196, 167, 231, 0.03), transparent 65%);
   pointer-events: none;
   z-index: 0;
 }
 
 a {
-  color: var(--amber);
+  color: var(--accent);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: color 140ms, border-color 140ms;
 }
 a:hover {
-  color: var(--amber-hot);
-  border-bottom-color: var(--amber-hot);
+  color: var(--accent-hot);
+  border-bottom-color: var(--accent-hot);
 }
 
 pre { font: inherit; white-space: pre; }
@@ -88,10 +103,9 @@ pre { font: inherit; white-space: pre; }
   .bee-art { animation: lb-fade 1100ms ease 260ms both; }
 }
 
-h1.sr {
-  position: absolute; width: 1px; height: 1px;
-  overflow: hidden; clip: rect(0, 0, 0, 0);
-}
+/* Reset h1 defaults so .tagline (now an h1) keeps its tagline styling without
+   browser-default margin / font-size leaking in. */
+h1 { font-size: inherit; font-weight: inherit; margin: 0; }
 
 .layout {
   position: relative;
@@ -134,10 +148,10 @@ h1.sr {
 .hero { margin: 2.2rem 0 2.4rem; }
 
 .wordmark {
-  color: var(--amber);
+  color: var(--accent);
   font-size: 14px;
   line-height: 1;
-  text-shadow: 0 0 13px rgba(224, 184, 106, 0.13);
+  text-shadow: 0 0 10px rgba(235, 188, 186, 0.10);
   margin-bottom: 1.5rem;
   display: block;
 }
@@ -151,24 +165,24 @@ h1.sr {
   margin-bottom: 0.9rem;
 }
 .tagline strong {
-  color: var(--amber);
+  color: var(--accent);
   font-weight: 500;
 }
 .tagline + .sub {
   color: var(--ink-2);
   font-size: 14.5px;
-  max-width: 52ch;
+  max-width: 78ch;
 }
 .trust {
   margin-top: 0.95rem;
   padding-left: 0.95rem;
-  border-left: 2px solid var(--green);
+  border-left: 2px solid var(--trust);
   color: var(--ink);
   font-size: 14px;
   line-height: 1.6;
   max-width: 54ch;
 }
-.trust strong { color: var(--green); font-weight: 500; }
+.trust strong { color: var(--trust); font-weight: 500; }
 
 .surfaces {
   margin-top: 1.15rem;
@@ -194,7 +208,7 @@ h1.sr {
   padding: 2px 9px;
   transition: color 140ms, border-color 140ms;
 }
-.surface:hover { color: var(--amber-hot); border-color: var(--amber-hot); }
+.surface:hover { color: var(--accent-hot); border-color: var(--accent-hot); }
 
 /* section labels ----------------------------------------------------- */
 .label {
@@ -228,13 +242,13 @@ h1.sr {
   font-size: 13.5px;
   line-height: 1.6;
   overflow: hidden;
-  box-shadow: 0 20px 55px -24px rgba(0, 0, 0, 0.75), 0 0 26px -6px rgba(224, 184, 106, 0.05);
+  box-shadow: 0 20px 55px -24px rgba(0, 0, 0, 0.75), 0 0 26px -6px rgba(235, 188, 186, 0.05);
 }
 .demo .titlebar {
   display: flex;
   justify-content: space-between;
   padding: 0.55rem 0.95rem;
-  background: #100c05;
+  background: #191724;
   border-bottom: 1px solid var(--rule-2);
   color: var(--ink-3);
   font-size: 12px;
@@ -244,9 +258,9 @@ h1.sr {
   padding: 0.85rem 1.05rem 1.1rem;
 }
 .demo .line { margin: 0.05rem 0; }
-.demo .prompt { color: var(--green); margin-right: 0.5em; }
+.demo .prompt { color: var(--trust); margin-right: 0.5em; }
 .demo .answer { color: var(--ink); }
-.demo sup { color: var(--amber); font-size: 0.78em; }
+.demo sup { color: var(--accent); font-size: 0.78em; }
 .demo .rule {
   color: var(--ink-3);
   margin: 0.6rem 0 0.25rem;
@@ -258,7 +272,7 @@ h1.sr {
   display: inline-block;
   width: 0.55em;
   height: 1em;
-  background: var(--amber);
+  background: var(--accent);
   vertical-align: text-bottom;
   margin-left: 2px;
   animation: blink 1.05s steps(2, end) infinite;
@@ -274,16 +288,16 @@ h1.sr {
 .cap {
   background: var(--bg-card);
   border: 1px solid var(--rule);
-  border-left: 2px solid var(--amber);
+  border-left: 2px solid var(--accent);
   border-radius: 3px;
   padding: 1rem 1.1rem;
   transition: border-color 160ms, transform 160ms;
 }
-.cap:hover { border-color: var(--rule-2); border-left-color: var(--amber-hot); transform: translateY(-1px); }
+.cap:hover { border-color: var(--rule-2); border-left-color: var(--accent-hot); transform: translateY(-1px); }
 .cap h3 {
   font-size: 14px;
   font-weight: 700;
-  color: var(--amber);
+  color: var(--accent);
   letter-spacing: 0.02em;
   margin-bottom: 0.45rem;
 }
@@ -301,11 +315,11 @@ h1.sr {
   max-width: 58ch;
   background: var(--bg-card);
   border: 1px solid var(--rule);
-  border-left: 2px solid var(--amber);
+  border-left: 2px solid var(--accent);
   border-radius: 3px;
   padding: 0.85rem 1.05rem;
 }
-.note strong { color: var(--amber); font-weight: 500; }
+.note strong { color: var(--accent); font-weight: 500; }
 
 /* one-program comparison --------------------------------------------- */
 .shape {
@@ -319,7 +333,7 @@ h1.sr {
   border-radius: 3px;
   padding: 0.9rem 1.05rem;
 }
-.shape-box.one { border-left: 2px solid var(--amber); }
+.shape-box.one { border-left: 2px solid var(--accent); }
 .shape-h {
   font-size: 12px;
   font-weight: 700;
@@ -327,7 +341,7 @@ h1.sr {
   margin-bottom: 0.55rem;
 }
 .shape-box.many .shape-h { color: var(--ink-3); }
-.shape-box.one .shape-h { color: var(--amber); }
+.shape-box.one .shape-h { color: var(--accent); }
 .shape-box ul { list-style: none; }
 .shape-box li {
   font-size: 13px;
@@ -338,7 +352,7 @@ h1.sr {
   margin: 0.1rem 0;
 }
 .shape-box li::before { content: "·"; position: absolute; left: 0; color: var(--ink-3); }
-.shape-box.one li::before { color: var(--amber); }
+.shape-box.one li::before { color: var(--accent); }
 .shape-note {
   font-size: 12px;
   color: var(--ink-3);
@@ -359,7 +373,7 @@ h1.sr {
   border-radius: 4px;
   overflow: hidden;
 }
-.install .prompt { color: var(--green); padding: 0.7rem 0.9rem 0.7rem 1.05rem; }
+.install .prompt { color: var(--trust); padding: 0.7rem 0.9rem 0.7rem 1.05rem; }
 .install .cmd {
   flex: 1;
   padding: 0.7rem 0.4rem;
@@ -379,7 +393,7 @@ h1.sr {
   cursor: pointer;
   white-space: nowrap;
 }
-.install .copy:hover { color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
+.install .copy:hover { color: var(--accent-hot); background: rgba(235, 188, 186, 0.07); }
 
 /* install: which route ----------------------------------------------- */
 .routes {
@@ -395,7 +409,7 @@ h1.sr {
   border-radius: 3px;
   padding: 0.85rem 1.05rem;
 }
-.route.recommended { border-left-color: var(--amber); }
+.route.recommended { border-left-color: var(--accent); }
 .route-h {
   font-size: 12.5px;
   font-weight: 700;
@@ -403,7 +417,7 @@ h1.sr {
   color: var(--ink-3);
   margin-bottom: 0.4rem;
 }
-.route.recommended .route-h { color: var(--amber); }
+.route.recommended .route-h { color: var(--accent); }
 .route p {
   font-size: 13.5px;
   color: var(--ink-2);
@@ -432,8 +446,8 @@ h1.sr {
 }
 .installtabs .tab:hover { color: var(--ink-2); }
 .installtabs .tab[aria-selected="true"] {
-  color: var(--amber);
-  border-bottom-color: var(--amber);
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 .installpane { padding-top: 1rem; }
 .installpane[hidden] { display: none; }
@@ -470,7 +484,7 @@ h1.sr {
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.08em;
-  color: var(--amber);
+  color: var(--accent);
   padding: 0.25rem 0.6rem;
   margin-top: 0.65rem;
   transition: color 140ms, border-color 140ms, background 140ms;
@@ -483,7 +497,7 @@ h1.sr {
   transition: transform 140ms;
 }
 .notes-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
-.notes-toggle:hover { color: var(--amber-hot); border-color: var(--amber-hot); background: rgba(255, 194, 74, 0.06); }
+.notes-toggle:hover { color: var(--accent-hot); border-color: var(--accent-hot); background: rgba(235, 188, 186, 0.07); }
 .notes-body[hidden] { display: none; }
 .notes-body { padding-top: 0.1rem; }
 .notes-body .extras:first-child { margin-top: 0.4rem; }
@@ -524,13 +538,13 @@ h1.sr {
   line-height: 1.55;
   background: var(--bg-card);
   border: 1px solid var(--rule);
-  border-left: 2px solid var(--amber);
+  border-left: 2px solid var(--accent);
   border-radius: 3px;
   padding: 0.5rem 0.8rem;
   transition: border-color 160ms;
 }
-.extra:hover { border-color: var(--rule-2); border-left-color: var(--amber-hot); }
-.extra .tag { color: var(--amber); font-weight: 700; flex: none; min-width: 5.4em; }
+.extra:hover { border-color: var(--rule-2); border-left-color: var(--accent-hot); }
+.extra .tag { color: var(--accent); font-weight: 700; flex: none; min-width: 5.4em; }
 
 .extras {
   font-size: 13px;
@@ -545,7 +559,7 @@ h1.sr {
   color: var(--ink);
 }
 .extras .tag {
-  color: var(--amber);
+  color: var(--accent);
   font-weight: 500;
 }
 .extras .k {
@@ -568,7 +582,7 @@ h1.sr {
   border-bottom: none;
   color: var(--ink);
 }
-.links a .num { color: var(--amber); width: 2.6em; flex: none; }
+.links a .num { color: var(--accent); width: 2.6em; flex: none; }
 .links a .dots {
   color: var(--rule-2);
   flex: 1;
@@ -580,7 +594,7 @@ h1.sr {
   color: var(--ink-3);
   font-size: 12.5px;
 }
-.links a:hover .num { color: var(--amber-hot); }
+.links a:hover .num { color: var(--accent-hot); }
 .links a:hover .desc { color: var(--ink); }
 
 /* built-on credit ---------------------------------------------------- */
@@ -608,7 +622,7 @@ h1.sr {
 .deps li::before { content: "·"; color: var(--rule-2); flex: none; }
 .dep-name { color: var(--ink-3); flex: none; }
 .dep-name a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
-.dep-name a:hover { color: var(--amber-hot); border-bottom-color: var(--amber-hot); }
+.dep-name a:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
 .dep-role { color: var(--ink-3); }
 
 /* footer ------------------------------------------------------------- */
@@ -644,8 +658,124 @@ footer .meta { text-align: right; font-size: 12px; }
 .bee-art pre {
   font-size: 7.5px;
   line-height: 1.1;
-  color: var(--amber);
-  text-shadow: 0 0 9px rgba(224, 184, 106, 0.09);
+  color: var(--accent);
+  text-shadow: 0 0 9px rgba(235, 188, 186, 0.08);
+}
+
+/* demo reel ---------------------------------------------------------- */
+.reel { margin: 0.3rem 0 1.8rem; }
+
+.reeltabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--rule-2);
+  margin-bottom: 1rem;
+}
+.reeltabs .reeltab {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 3px 3px 0 0;
+  color: var(--ink-3);
+  padding: 0.5rem 0.9rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color 140ms, background-color 140ms, border-color 140ms;
+}
+.reeltabs .reeltab:hover {
+  color: var(--ink);
+  background: rgba(235, 188, 186, 0.05);
+}
+.reeltabs .reeltab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.reeltabs .reeltab[aria-selected="true"] {
+  color: var(--accent);
+  background: rgba(235, 188, 186, 0.10);
+  border-color: var(--rule-2);
+  border-bottom-color: var(--accent);
+}
+
+.reelpane[hidden] { display: none; }
+
+.reel-frame {
+  background: var(--bg-card);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 22px 60px -26px rgba(0, 0, 0, 0.78);
+  /* Keep the frame from collapsing to ~0 height while the GIF streams in,
+     so a click never lands on an empty void. 1400x900 = 9:14 ratio. */
+  aspect-ratio: 1400 / 900;
+  position: relative;
+}
+.reel-frame::before {
+  /* Subtle "loading" wash so a fresh pane doesn't look empty for the seconds
+     it takes the multi-MB GIF to arrive from raw.githubusercontent.com. */
+  content: "loading recording.";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  background:
+    repeating-linear-gradient(135deg, transparent 0 8px, rgba(255, 255, 255, 0.012) 8px 16px),
+    var(--bg-card);
+}
+.reel-frame img {
+  /* Transparent until the GIF starts decoding, so the ::before "loading"
+     placeholder shows through during the first roundtrip. */
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  z-index: 1;
+}
+
+.reel-caption {
+  margin-top: 0.8rem;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  max-width: 64ch;
+}
+.reel-caption code {
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+.reel-caption em { color: var(--accent); font-style: normal; font-weight: 500; }
+
+.reel-more {
+  margin-top: 1.1rem;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.lede kbd {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 0 0.35rem;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  color: var(--ink-2);
+  background: var(--bg-card);
+  margin: 0 0.05rem;
+  vertical-align: 1px;
 }
 
 /* responsive --------------------------------------------------------- */

@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo build publish docs docs-api docs-site site site-serve site-tar
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/
@@ -39,11 +39,30 @@ install:
 crawl-setup:  ## Download Playwright Chromium for /crawl
 	uv run playwright install chromium
 
-demo:  ## Record all demo GIFs via VHS
-	vhs demos/chat.tape
-	vhs demos/code-search.tape
-	vhs demos/json.tape
-	vhs demos/opencode.tape
+demo-prep:  ## Pre-stage models, data dirs, man pages, opencode demo dirs for `make demo`
+	bash demos/_prep.sh
+
+demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
+	mkdir -p demos/_out
+	vhs demos/tui-setup.tape
+	vhs demos/tui-chat.tape
+	vhs demos/tui-add.tape
+	vhs demos/tui-catalog.tape
+	vhs demos/tui-settings.tape
+	vhs demos/tui-palette.tape
+	vhs demos/tui-crawl.tape
+	vhs demos/tui-tour.tape
+	vhs demos/cli.tape
+	vhs demos/mcp-godot-search.tape
+	vhs demos/mcp-godot.tape
+	vhs demos/mcp-manual.tape
+	@command -v gifsicle >/dev/null 2>&1 && \
+		for f in demos/_out/*.gif; do gifsicle -O3 --lossy=80 -b "$$f"; done || \
+		echo "(install gifsicle to shrink GIFs further)"
+
+demo-publish:  ## Push rendered GIFs / PNGs to the gh-pages branch (asset store, off main)
+	@test -d demos/_out || (echo "run \`make demo\` first" >&2; exit 1)
+	bash demos/_publish.sh
 
 build:
 	uv build

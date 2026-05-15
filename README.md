@@ -22,17 +22,9 @@
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
 
-Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's just a fast chatbot.
+Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key or use a frontier agent over MCP.
 
-```
-> what does the oil pressure warning mean?
-
-  the oil pressure warning indicates low oil pressure.[1]
-  when the light stays on, stop the engine immediately.[2]
-
-  ─── sources ──────────────────────────────────
-  [1] owners-manual.pdf:42    [2] owners-manual.pdf:43
-```
+![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
 It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
@@ -47,7 +39,6 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [Quick start](#quick-start)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
-- [Previews](#previews)
 - [What you can do with it](#what-you-can-do-with-it)
 - [TUI](#tui)
 - [Hardware requirements](#hardware-requirements)
@@ -80,116 +71,27 @@ Standing this up used to mean a background daemon, a separate inference server, 
 
 > An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
-## Previews
-
-> ASCII sketches of each screen below: the shape, not the pixels. Written walkthroughs are under [`docs/benchmarks/`](docs/benchmarks/): [Godot level generator](docs/benchmarks/godot-level-generator.md) and [vision OCR model comparison](docs/benchmarks/vision-ocr.md).
-
-**Chat.** The default screen. Streaming replies with clickable citations.
-
-```
- ┌─ lilbee ──────────────────────────────────────────────────────┐
- │ [Chat]  Catalog  Status  Settings  Tasks         [INSERT]     │
- │                                                               │
- │ You:    what does the oil pressure warning mean?              │
- │                                                               │
- │ lilbee: The oil pressure warning indicates low oil            │
- │         pressure.[1] When the light stays on, stop the        │
- │         engine immediately.[2]                                │
- │         ─────────────────────                                 │
- │         Sources                                               │
- │         [1 owners-manual.pdf:42]   <- click to open           │
- │         [2 owners-manual.pdf:43]                              │
- │                                                               │
- │ ┌───────────────────────────────────────────────────────────┐ │
- │ │ Ask anything...                                           │ │
- │ │                                                           │ │
- │ │ Chat [Qwen3 0.6B]  Embed [Nomic v1.5]   [Search|Chat]     │ │
- │ └───────────────────────────────────────────────────────────┘ │
- │ SYNC vault   [============------------]  42%                  │
- └───────────────────────────────────────────────────────────────┘
-```
-
-**Task Center.** Every background job (sync, crawl, wiki build, model pull) in one place. Global concurrency cap; new tasks queue when full.
-
-```
- ┌─ Task Center ─────────────── [cap 3/3] [Clear]┐
- │ ACTIVE (2)                                    │
- │   [============-----]  42%  PULL  Qwen3 8B    │
- │   [======-----------]  18%  SYNC  vault       │
- │ QUEUED (1)                                    │
- │   CRAWL  https://docs.example.com             │
- │ COMPLETED                                     │
- │   [v] SYNC  vault                  2 min ago  │
- │   [x] PULL  mistral                5 min ago  │
- │   [v] ADD   cv-manual.pdf         12 min ago  │
- └───────────────────────────────────────────────┘
-```
-
-**Wiki.** Auto-generated concept and entity pages, with drafts awaiting review.
-
-```
- ┌─ Wiki ────────────────────────────────────────┐
- │ Filter pages...                               │
- │                                               │
- │ Concepts (8)                                  │
- │   Braking Systems               5 src         │
- │   Cooling System                2 src         │
- │ Entities (12)                                 │
- │   Henry Ford                    3 src         │
- │ Drafts (2)                                    │
- │   Tire Pressure                 1 src         │
- ├───────────────────────────────────────────────┤
- │ ┌─ Braking Systems ────────────────────────┐  │
- │ │ 5 sources | faithfulness 0.92            │  │
- │ │                                          │  │
- │ │ Modern braking systems combine hydraulic │  │
- │ │ actuation with ABS to prevent wheel      │  │
- │ │ lockup under heavy deceleration.[1]      │  │
- │ │                                          │  │
- │ │ [1 brake-primer.pdf:8]  <- click         │  │
- │ └──────────────────────────────────────────┘  │
- └───────────────────────────────────────────────┘
-```
-
-**Model catalog.** Browse models from Hugging Face Hub, pull one with a click, and switch roles without leaving the terminal. `*` marks the developer's pick for each role.
-
-```
- ┌─ Model Catalog ───────────────────────────────────┐
- │ [ Local | Frontier ]                              │
- │ [All tasks v] [All sizes v]                       │
- │ search...                       [Grid | List]     │
- │                                                   │
- │ Our picks                                         │
- │ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
- │ │ Qwen3 0.6B *│ │ Nomic v1.5  │ │ BGE Rerank  │   │
- │ │ [chat]      │ │ [embed]     │ │ [rerank]    │   │
- │ │ 450 MB  ok  │ │ 274 MB  ok  │ │ 1.2 GB      │   │
- │ │ [Use]       │ │ [Use]       │ │ [Pull]      │   │
- │ └─────────────┘ └─────────────┘ └─────────────┘   │
- │                                                   │
- │ Chat                                              │
- │ ┌─────────────┐ ┌─────────────┐                   │
- │ │ Qwen3 8B    │ │ Phi-4 14B   │                   │
- │ │ 4.9 GB      │ │ 9.1 GB      │                   │
- │ │ [Pull]      │ │ [Pull]      │                   │
- │ └─────────────┘ └─────────────┘                   │
- │                  [Load more]                      │
- └───────────────────────────────────────────────────┘
-```
-
 ## What you can do with it
 
 ### A library of your own files
 
 Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searchable library, with citations that click back to the source line. The pattern works for anything you have a lot of text about: a medical-textbook collection, a field's research papers, a car's service manuals, your company's internal wiki. Whatever you give it becomes searchable, and you can talk to it.
 
+![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
+
 ### Grounding for AI agents
 
-lilbee plugs into whatever AI agent you already use, over MCP. Feed it your project's docs, your dependency source, the vendor SDK reference, your design notes, and the agent stops making up function names: it reads the actual code it's about to call, cites the file and line, and says it doesn't know when the answer isn't in the corpus, instead of guessing.
+lilbee plugs into whatever AI agent you already use, over MCP. Feed it your project's docs, your dependency source, your API documentation, your design notes, and the agent stops making up function names: it reads the actual code it's about to call, cites the file and line, and says it doesn't know when the answer isn't in your library, instead of guessing.
+
+The agent can be local or a cloud frontier model. lilbee is the local part: your files, the search index, and the embeddings all stay on your machine. The agent calls `lilbee_search` over MCP and gets back a list of cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations.
+
+![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
 ### Offline copies of websites
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
+
+![/crawl a Wikipedia page, then ask a cited question against it](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
 
 ### How it's built
 
@@ -216,15 +118,24 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, a second-pass re-scorer, how much weight topic relationships carry), edited from the TUI, environment variables, or a project-local config file. Sane defaults out of the box.
 
+![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
+
 ### Cloud models, when you want them
 
-lilbee runs entirely on your machine by default. To point a role at a cloud-hosted model, install the `[litellm]` extra and add an API key; the TUI shows a persistent warning whenever a cloud model is active, so it's clear when chunks are leaving the machine.
+lilbee runs entirely on your machine by default. There are two ways to use cloud models when you want to:
+
+- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add an API key, then point the chat / embedding / vision / rerank role at a cloud model from the same model catalog. The TUI shows a persistent warning whenever a cloud role is active, so it's clear when chunks are leaving the machine.
+- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part: your files, the embeddings, the search index. The agent (opencode, Claude Code, anything that speaks MCP) calls `lilbee_search` / `lilbee_add` and gets back cited snippets. The Godot demo above is exactly this shape: opencode driving MiniMax M2.7 (a cloud frontier model), with the indexed Godot 4 reference and the search both running locally.
+
+Either way your files and the index never leave the machine; only the queries and the snippets the model needs to answer cross the wire when you opt in.
 
 ## TUI
 
 `lilbee` (no args) launches a full Textual terminal app: streaming chat with clickable citations, a model bar with searchable pickers and a Search/Chat toggle, a Task Center for background jobs, and screens for the model catalog, settings, the setup wizard, and the auto-built wiki. Type `/` for the command list; tab completion works everywhere.
 
-See [Previews](#previews) for the shapes and the [usage guide](docs/usage.md) for commands and settings.
+![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
+
+The full demo reel (every screen and the MCP integration too) lives in [`docs/demos.md`](docs/demos.md). The tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## Hardware requirements
 
@@ -305,7 +216,15 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
+lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for the long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill format) that documents the full MCP surface. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
+
+The privacy boundary is the MCP layer: the agent (local or cloud) calls `lilbee_search`, `lilbee_add`, etc., and lilbee answers from your local library. Your files, the embeddings, and the search index never leave the machine. Only the queries and returned snippets cross the wire when you choose a cloud agent.
+
+A live-indexing example: opencode (driving MiniMax M2.7 in the cloud) indexes a small Godot 4 pathfinding subset via the `lilbee-worker` subagent (~3s), `lilbee_search`-es for `AStarGrid2D`, and answers with a method-by-method cited list against your *local* files.
+
+![opencode + cloud frontier model indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+
+The full reel (live indexing on a small subset, the level-generator example above against the pre-indexed full 810-XML reference, and a PDF owner's manual example) is in [`docs/demos.md`](docs/demos.md). For a side-by-side against a no-RAG baseline (4 hallucinated APIs without lilbee, 0 with), see [`docs/benchmarks/godot-level-generator.md`](docs/benchmarks/godot-level-generator.md).
 
 ## HTTP Server
 
@@ -332,7 +251,7 @@ See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](do
 
 ## Experimental
 
-Two opt-in features that work but are still finding their final shape. Generation quality and retrieval behavior depend on corpus, models, and knobs; expect to iterate. Feedback is welcome.
+Two opt-in features that work but are still finding their final shape. Generation quality and retrieval behavior depend on your library, models, and knobs; expect to iterate. Feedback is welcome.
 
 ### Wiki
 
@@ -344,7 +263,7 @@ See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full comma
 
 ### Semantic chunking
 
-A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy corpora like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
+A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy collections like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
 
 See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
 

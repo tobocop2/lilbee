@@ -21,6 +21,7 @@ htmlcov/
 !tools/qa/**/*.txt
 !tools/qa/**/*.pdf
 !tools/qa/**/*.html
+!demos/sample-corpus/**
 CLAUDE.md
 .worktrees/
 docs/plans/
@@ -55,3 +56,8 @@ tools/qa-binary.sh
 site/api/
 site/coverage/
 site.tar.gz
+
+# Rendered demo binaries land in demos/_out/ and ship from the gh-pages branch,
+# not main. The tape sources and prep scripts stay tracked.
+demos/_out/
+demos/_sandbox/
