@@ -32,6 +32,12 @@ GH_PAGES_IPS=(
   185.199.111.153
 )
 
+# Subdomains that resolve to GitHub Pages projects via CNAME. Each repo's
+# own site/CNAME file tells GH which repo to serve for each host. 'www' is
+# an apex alias whose CNAME lets GH issue a SAN HTTPS cert covering both
+# lilbee.sh and www.lilbee.sh.
+GH_PAGES_SUBDOMAINS=(obsidian www)
+
 # Wildcard URL forward: any *.lilbee.sh subdomain that isn't otherwise defined
 # 301-redirects to the canonical site, preserving the request path.
 WILDCARD_REDIRECT_TARGET="https://$DOMAIN"
@@ -137,7 +143,9 @@ log
 log "==> Deleting existing records"
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/A")" "delete A @ apex" || true
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/ALIAS")" "delete ALIAS @ apex" || true
-check_status "$(api "/dns/deleteByNameType/$DOMAIN/CNAME/obsidian")" "delete CNAME @ obsidian" || true
+for subdomain in "${GH_PAGES_SUBDOMAINS[@]}"; do
+  check_status "$(api "/dns/deleteByNameType/$DOMAIN/CNAME/$subdomain")" "delete CNAME @ $subdomain" || true
+done
 
 log "==> Deleting existing wildcard CNAME (Porkbun parking default)"
 api "/dns/retrieve/$DOMAIN" | jq -r '.records[]? | select(.type == "CNAME" and (.name | startswith("*."))) | .id' | while IFS= read -r record_id; do
@@ -158,9 +166,11 @@ for ip in "${GH_PAGES_IPS[@]}"; do
   create_record "" "A" "$ip"
 done
 
-log
-log "==> Creating CNAME obsidian.$DOMAIN -> $GH_PAGES_HOST"
-create_record "obsidian" "CNAME" "$GH_PAGES_HOST"
+for subdomain in "${GH_PAGES_SUBDOMAINS[@]}"; do
+  log
+  log "==> Creating CNAME $subdomain.$DOMAIN -> $GH_PAGES_HOST"
+  create_record "$subdomain" "CNAME" "$GH_PAGES_HOST"
+done
 
 log
 log "==> Creating wildcard URL forward *.$DOMAIN -> $WILDCARD_REDIRECT_TARGET (permanent, include path)"
@@ -181,11 +191,18 @@ print_forwards
 cat >&2 <<EOF
 
 Done. Wait 5-30 min for DNS to propagate, then verify externally:
-  dig lilbee.sh +short             # should return the 4 GitHub IPs
-  dig obsidian.lilbee.sh +short    # should return tobocop2.github.io, then IPs
-  curl -I https://www.lilbee.sh    # should 301 redirect to https://lilbee.sh/
+  dig lilbee.sh +short              # 4 GitHub IPs
+  dig www.lilbee.sh +short          # CNAME chain through tobocop2.github.io
+  dig obsidian.lilbee.sh +short     # CNAME chain through tobocop2.github.io
+  curl -I http://anything.lilbee.sh # 301 to https://lilbee.sh/ via Porkbun forward
 
 The repo's site/CNAME files activate the custom domains on the next Pages
 deploy. After GitHub provisions HTTPS certs (5-30 min post-deploy), enable
-"Enforce HTTPS" in each repo's Pages settings.
+"Enforce HTTPS" in each repo's Pages settings. The www alias gets covered
+by the same SAN cert as the apex automatically.
+
+Note: HTTPS to wildcard subdomains (https://foo.lilbee.sh) returns a cert
+error because Porkbun's URL forwarder doesn't ship a wildcard cert. HTTP
+works and redirects cleanly. Specific subdomains (www, obsidian) get real
+GH Pages HTTPS.
 EOF
