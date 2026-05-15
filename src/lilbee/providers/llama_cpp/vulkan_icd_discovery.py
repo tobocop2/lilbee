@@ -48,9 +48,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# ----- Top-level dispatcher --------------------------------------------------
-
-
 def iter_vulkan_manifest_paths() -> Iterator[str]:
     """Yield every Vulkan ICD manifest path the loader would discover here.
 
@@ -71,9 +68,6 @@ def iter_vulkan_manifest_paths() -> Iterator[str]:
         # Vulkan loader isn't present; the empty yield-from keeps the
         # function a generator without yielding anything.
         yield from ()
-
-
-# ----- Windows: registry walk -----------------------------------------------
 
 
 # Windows PnP device-class GUIDs that publish Vulkan ICD manifest paths.
@@ -201,9 +195,6 @@ def _read_vulkan_driver_name_values(winreg: Any, subkey: Any) -> Iterator[str]:
             for entry in value:
                 if isinstance(entry, str) and entry:
                     yield entry
-
-
-# ----- Linux: XDG directory walk --------------------------------------------
 
 
 # Suffix appended to every XDG-derived path in the Khronos loader's Linux

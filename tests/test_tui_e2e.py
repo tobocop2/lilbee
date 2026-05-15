@@ -7,7 +7,6 @@ Every test here reproduces a bug that was found by manual testing.
 
 from __future__ import annotations
 
-import contextlib
 import threading
 from typing import Any
 from unittest import mock
@@ -431,27 +430,11 @@ def _mock_catalog_deps():
             ),
         ),
     ]
-    # ``_fetch_installed_names`` became a ``@work(thread=True)`` in PR #242,
-    # so its worker-result callback can land AFTER the test has set up
-    # grid focus / highlight, kicking off a ``_refresh_view`` that
-    # clears the test's highlighted index. Patch it to a no-op alongside
-    # the other catalog network mocks so the e2e tests don't race the
-    # worker. The TUI callers don't depend on the return value.
-    stack = contextlib.ExitStack()
-    stack.enter_context(
-        mock.patch.multiple(
-            "lilbee.cli.tui.screens.catalog",
-            get_families=mock.MagicMock(return_value=families),
-            get_catalog=mock.MagicMock(return_value=mock.MagicMock(models=[])),
-        )
+    return mock.patch.multiple(
+        "lilbee.cli.tui.screens.catalog",
+        get_families=mock.MagicMock(return_value=families),
+        get_catalog=mock.MagicMock(return_value=mock.MagicMock(models=[])),
     )
-    stack.enter_context(
-        mock.patch(
-            "lilbee.cli.tui.screens.catalog.CatalogScreen._fetch_installed_names",
-            return_value=None,
-        )
-    )
-    return stack
 
 
 def _mock_remote_models():
