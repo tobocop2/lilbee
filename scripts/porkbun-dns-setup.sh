@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Porkbun DNS setup for lilbee.sh.
 #
-# Configures DNS at Porkbun for the marketing site (apex, GitHub Pages) and
-# the Obsidian plugin site (obsidian subdomain). Run once; idempotent.
+# Configures DNS at Porkbun for the marketing site (apex, GitHub Pages),
+# the Obsidian plugin site (obsidian subdomain), and a wildcard URL forward
+# that redirects any other subdomain to the canonical https://lilbee.sh.
+# Run once; idempotent.
 #
 # Credential resolution order:
 #   1. pass: `pass show porkbun/tobocop/api-key` and `pass show porkbun/tobocop/api-secret`
@@ -29,6 +31,10 @@ GH_PAGES_IPS=(
   185.199.110.153
   185.199.111.153
 )
+
+# Wildcard URL forward: any *.lilbee.sh subdomain that isn't otherwise defined
+# 301-redirects to the canonical site, preserving the request path.
+WILDCARD_REDIRECT_TARGET="https://$DOMAIN"
 
 # log goes to stderr so command-substitution stdout stays clean for get_secret.
 log() { echo "$@" >&2; }
@@ -78,6 +84,14 @@ print_records() {
   ' | column -t -s $'\t' >&2
 }
 
+print_forwards() {
+  api "/domain/getUrlForwarding/$DOMAIN" | jq -r --arg dom "$DOMAIN" '
+    .forwards // []
+    | .[]
+    | "\(if .wildcard == "yes" then "*" else (.subdomain // "") end).\($dom)\t\(.type)\t-> \(.location)\tincludePath=\(.includePath)"
+  ' | column -t -s $'\t' >&2
+}
+
 create_record() {
   local name="$1" type="$2" content="$3"
   local body
@@ -112,7 +126,11 @@ log "==> Current DNS records for $DOMAIN:"
 print_records
 
 log
-read -r -p "Proceed: replace apex A/ALIAS and obsidian CNAME? [y/N] " confirm
+log "==> Current URL forwards for $DOMAIN:"
+print_forwards
+
+log
+read -r -p "Proceed: replace records + wildcard forward to $WILDCARD_REDIRECT_TARGET? [y/N] " confirm
 [[ "$confirm" =~ ^[Yy]$ ]] || { log "aborted"; exit 0; }
 
 log
@@ -120,6 +138,18 @@ log "==> Deleting existing records"
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/A")" "delete A @ apex" || true
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/ALIAS")" "delete ALIAS @ apex" || true
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/CNAME/obsidian")" "delete CNAME @ obsidian" || true
+
+log "==> Deleting existing wildcard CNAME (Porkbun parking default)"
+api "/dns/retrieve/$DOMAIN" | jq -r '.records[]? | select(.type == "CNAME" and (.name | startswith("*."))) | .id' | while IFS= read -r rid; do
+  [[ -z "$rid" ]] && continue
+  check_status "$(api "/dns/delete/$DOMAIN/$rid")" "delete wildcard CNAME id=$rid" || true
+done
+
+log "==> Deleting existing wildcard URL forwards"
+api "/domain/getUrlForwarding/$DOMAIN" | jq -r '.forwards[]? | select(.wildcard == "yes") | .id' | while IFS= read -r fid; do
+  [[ -z "$fid" ]] && continue
+  check_status "$(api "/domain/deleteUrlForward/$DOMAIN/$fid")" "delete URL forward id=$fid" || true
+done
 
 log
 log "==> Creating 4 A records on apex (GitHub Pages)"
@@ -133,15 +163,29 @@ log "==> Creating CNAME obsidian.$DOMAIN -> $GH_PAGES_HOST"
 create_record "obsidian" "CNAME" "$GH_PAGES_HOST"
 
 log
+log "==> Creating wildcard URL forward *.$DOMAIN -> $WILDCARD_REDIRECT_TARGET (permanent, include path)"
+forward_body=$(jq -n \
+  --arg k "$API_KEY" --arg s "$SECRET_KEY" \
+  --arg loc "$WILDCARD_REDIRECT_TARGET" \
+  '{apikey:$k, secretapikey:$s, subdomain:"", location:$loc, type:"permanent", includePath:"yes", wildcard:"yes"}')
+check_status "$(api "/domain/addUrlForward/$DOMAIN" "$forward_body")" "create wildcard URL forward"
+
+log
 log "==> Resulting DNS records:"
 print_records
+
+log
+log "==> Resulting URL forwards:"
+print_forwards
 
 cat >&2 <<EOF
 
 Done. Wait 5-30 min for DNS to propagate, then verify externally:
   dig lilbee.sh +short             # should return the 4 GitHub IPs
   dig obsidian.lilbee.sh +short    # should return tobocop2.github.io, then IPs
+  curl -I https://www.lilbee.sh    # should 301 redirect to https://lilbee.sh/
 
-Once both resolve correctly, push the CNAME files to both repos and update
-the README / pyproject.toml URL references.
+The repo's site/CNAME files activate the custom domains on the next Pages
+deploy. After GitHub provisions HTTPS certs (5-30 min post-deploy), enable
+"Enforce HTTPS" in each repo's Pages settings.
 EOF
