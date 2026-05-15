@@ -29,7 +29,6 @@ from .model import (
 )
 from .validators import (
     ConfigField as ConfigField,
-    validate_model_task_assignment as validate_model_task_assignment,
 )
 
 __all__ = [
@@ -50,5 +49,4 @@ __all__ = [
     "WikiEntityMode",
     "cfg",
     "config_load_error",
-    "validate_model_task_assignment",
 ]

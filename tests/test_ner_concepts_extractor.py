@@ -94,6 +94,18 @@ class TestEmptyAndMissingCases:
 
 
 class TestLoadSpacyFallbacks:
+    @pytest.fixture(autouse=True)
+    def _reset_load_spacy_cache(self):
+        """``_load_spacy`` is ``@functools.cache``d; clear it so each fallback
+        test actually executes the function body instead of returning whatever
+        the first test in this worker happened to cache.
+        """
+        from lilbee.wiki.entity_extractor import ner_concepts
+
+        ner_concepts._load_spacy.cache_clear()
+        yield
+        ner_concepts._load_spacy.cache_clear()
+
     def test_concepts_module_import_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import builtins
 
