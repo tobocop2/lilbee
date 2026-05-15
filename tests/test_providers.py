@@ -2592,6 +2592,15 @@ class TestIterWindowsVulkanManifestPaths:
         assert vulkan_icd_discovery._PNP_SOFTWARE_COMPONENT_CLASS_GUID in pnp_calls
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Linux Vulkan-ICD walker is gated to sys.platform.startswith('linux')"
+        " in production; the XDG path-list split on ':' collides with the"
+        " 'C:' drive-letter colon when tests on Windows feed tmp_path"
+        " through XDG_* env vars. The function never runs on Windows."
+    ),
+)
 class TestIterLinuxVulkanManifestPaths:
     """``_iter_linux_vulkan_manifest_paths`` walks the XDG-spec ICD directory hierarchy."""
 
