@@ -193,6 +193,10 @@ main() {
         reset_clean_slate "$tape"
     done
 
+    # tui-setup's first chat is `/add ./README.md` against lilbee's own README,
+    # so stage it in the demo's data dir after the clean-slate reset.
+    cp "$REPO_DIR/README.md" "$ROOT/tui-setup/README.md"
+
     local man_dir="$ROOT/cli/man-pages"
     mkdir -p "$man_dir"
     for page in "${MAN_PAGES[@]}"; do
