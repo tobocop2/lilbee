@@ -28,7 +28,9 @@ INPUT="$1"
 OUTPUT="$2"
 shift 2
 
-# Build the ffmpeg filter_complex: one trim+setpts per segment, then concat.
+# Build the ffmpeg filter_complex: one trim+setpts per segment, then concat,
+# then palettegen + paletteuse so the GIF is properly indexed (otherwise
+# the output is 100x larger than necessary).
 filter=""
 labels=""
 n=0
@@ -44,7 +46,10 @@ for spec in "$@"; do
     labels+="[s${n}]"
     n=$((n + 1))
 done
-filter+="${labels}concat=n=${n}:v=1:a=0[v]"
+filter+="${labels}concat=n=${n}:v=1:a=0[concat];"
+filter+="[concat]split[plt_a][plt_b];"
+filter+="[plt_a]palettegen=max_colors=256[plt];"
+filter+="[plt_b][plt]paletteuse[v]"
 
 TMP=$(mktemp -t lilbee_pp_XXXXXX).gif
 

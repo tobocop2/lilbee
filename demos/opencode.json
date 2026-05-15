@@ -16,7 +16,8 @@
   "mcp": {
     "lilbee": {
       "type": "local",
-      "command": ["lilbee", "mcp"]
+      "command": ["lilbee", "mcp"],
+      "timeout": 900000
     }
   }
 }
