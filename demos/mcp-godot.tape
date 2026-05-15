@@ -19,8 +19,9 @@ Output demos/_out/mcp-godot.gif
 #   prompt + planning + lilbee_status check       ~10s
 #   lilbee_search (1-3 calls)                    ~10-15s
 #   cited code answer streaming                  ~150-180s
-# Total real time: ~3-3.5 min. PlaybackSpeed 4 -> ~50s GIF.
-Set PlaybackSpeed 4.0
+# Total real time: ~3-3.5 min. PlaybackSpeed 1.0 -> GIF plays at real
+# time so the citation rows + code stream stay legible.
+Set PlaybackSpeed 1.0
 
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 

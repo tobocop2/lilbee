@@ -67,11 +67,31 @@ Sleep 400ms
 Enter
 Sleep 3s
 
-Screenshot demos/_out/tui-palette.png
-
 Sleep 1s
 Escape
 Sleep 800ms
+
+# Restore rose-pine explicitly so the GIF starts AND ends in the same
+# theme. Without this, "Cycle theme" leaves the demo on whatever the
+# next theme in the cycle happens to be (usually a light theme), which
+# clashes with the rose-pine palette of every other tape.
+#
+# Two Escapes here are defensive: closing the /help modal returns chat
+# to INSERT in some Textual states, so the leading `i` of "i/theme..."
+# would land as content (the chat would send "i/theme rose-pine" as a
+# user message). A second Escape forces NORMAL; THEN the explicit `i`
+# enters INSERT and `/theme rose-pine` types into the cleared input.
+Escape
+Sleep 400ms
+Type "i"
+Sleep 300ms
+Type "/theme rose-pine"
+Sleep 800ms
+Enter
+Sleep 2500ms
+
+Screenshot demos/_out/tui-palette.png
+Sleep 1s
 
 Type "/quit"
 Sleep 400ms

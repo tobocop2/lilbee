@@ -13,9 +13,10 @@ Output demos/_out/mcp-godot-search.gif
 #   opencode boot                                 ~10s
 #   prompt + planning + worker spawn              ~20s
 #   worker indexes 6 XMLs                         ~3s
-#   parent's lilbee_search + cited answer         ~30-45s
-# Total real time: ~70-90s. PlaybackSpeed 3 -> ~25s GIF.
-Set PlaybackSpeed 3.0
+#   parent's lilbee_search + cited answer         ~60-90s   (cited list takes a while to stream)
+# Total real time: ~2 min 20s. PlaybackSpeed 1.5 -> ~95s GIF;
+# stays readable, citations don't fly past.
+Set PlaybackSpeed 1.5
 
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 # 6 XMLs index in seconds; the 300s default is plenty.
@@ -37,8 +38,10 @@ Type "Index ./godot-pathfinding/, then list every method on AStarGrid2D for mark
 Sleep 600ms
 Enter
 
-# Indexing + search + cited answer.
-Sleep 75s
+# Indexing + search + cited answer. The cited method list streams for
+# ~90s on MiniMax M2.7; bump the wait so the screenshot lands AFTER the
+# answer has fully rendered.
+Sleep 120s
 
 Screenshot demos/_out/mcp-godot-search.png
 Sleep 2s
