@@ -222,7 +222,7 @@ Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding su
 
 ![opencode + cloud frontier model indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
-The full reel (live indexing on a small subset, the level-generator example above against the pre-indexed full 810-XML reference, and a PDF owner's manual example) is in [`docs/demos.md`](docs/demos.md). For a side-by-side against a no-RAG baseline (4 hallucinated APIs without lilbee, 0 with), see [`docs/benchmarks/godot-level-generator.md`](docs/benchmarks/godot-level-generator.md).
+The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md). For a side-by-side against a no-RAG baseline (4 hallucinated APIs without lilbee, 0 with), see [`docs/benchmarks/godot-level-generator.md`](docs/benchmarks/godot-level-generator.md).
 
 ## HTTP Server
 

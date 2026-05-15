@@ -60,11 +60,11 @@ For a project where you want the agent to use lilbee reliably, copy three things
 2. A `lilbee-worker` subagent that handles `lilbee_add` / `lilbee_sync` / `lilbee_crawl` /
    `lilbee_model_pull`. Copy from
    [`demos/.opencode/agents/lilbee-worker.md`](../demos/.opencode/agents/lilbee-worker.md).
-3. The `lilbee-mcp` skill at
-   [`docs/agent-skills/lilbee-mcp/`](agent-skills/lilbee-mcp/), copied into
-   `.opencode/skills/lilbee-mcp/` or `.claude/skills/lilbee-mcp/`. It's a single
-   `SKILL.md` documenting every lilbee MCP tool with a quick / long split, so the agent
-   knows which calls block and which don't.
+3. The [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude
+   Skill format), copied into `.opencode/skills/lilbee-mcp/` or
+   `.claude/skills/lilbee-mcp/`. A single `SKILL.md` that documents every lilbee
+   MCP tool with a quick-vs-long split, so the agent knows which calls block and
+   which don't.
 
 ### Tools
 
