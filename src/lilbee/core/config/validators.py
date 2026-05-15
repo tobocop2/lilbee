@@ -81,13 +81,28 @@ def _find_model_catalog_entry(ref: str) -> Any:
     return find_catalog_entry(ref)
 
 
-def _enforce_role_match(ref: str, entry: Any, field_name: str) -> None:
-    from lilbee.catalog.types import ModelTask
+def _resolve_installed_task(ref: str) -> Any:
+    """Return the ``ModelTask`` for an installed non-featured *ref*, or ``None``.
 
-    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
-    if entry.task == want:
-        return
-    raise TaskMismatchError(ref, ModelTask(entry.task), want)
+    Featured is a discovery overlay, not an admission check: any model the
+    user has actually pulled is a valid role assignment, even if its hf_repo
+    is not in ``FEATURED_ALL``. The picker shows installed models from the
+    registry, so the validator has to accept the same set or the picker is a
+    trap. ``reclassify_by_name`` mirrors the picker's bucketing so a ref
+    whose name reads as "reranker" / "vision" lands in the same role here.
+    """
+    from lilbee.catalog.types import ModelTask
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.model_manager.discovery import reclassify_by_name
+    from lilbee.modelhub.registry import ModelRegistry
+
+    try:
+        manifest = ModelRegistry(cfg.models_dir).get_manifest(ref)
+    except (OSError, ValueError):
+        return None
+    if manifest is None:
+        return None
+    return ModelTask(reclassify_by_name(ref, manifest.task))
 
 
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
@@ -100,20 +115,36 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
 
 
 def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Check *ref* is a catalog entry whose task matches *field_name*; return the canonical ref."""
+    """Check *ref* is assignable to *field_name*; return the canonical ref.
+
+    Accepts featured catalog refs and installed non-featured refs (any model
+    the user has pulled). Raises ``TaskMismatchError`` on role mismatch and
+    ``ValueError`` when the model is neither featured nor installed.
+    """
+    from lilbee.catalog.types import ModelTask
+
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
+    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
+
     entry = _find_model_catalog_entry(ref)
-    if entry is None:
+    if entry is not None:
+        if entry.task != want:
+            raise TaskMismatchError(ref, ModelTask(entry.task), want)
+        # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
+        # the exact installed quant; fall back to the catalog ref otherwise.
+        if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+            return ref
+        canonical: str = entry.ref
+        return canonical
+
+    installed_task = _resolve_installed_task(ref)
+    if installed_task is None:
         raise ValueError(
-            f"Model '{ref}' is not in the featured catalog. "
-            "Pick a featured model for this role, or install one with "
-            "'lilbee model pull <ref>' (or POST /api/models/pull) using a known catalog ref."
+            f"Model '{ref}' is not installed. "
+            "Install it with 'lilbee model pull <ref>' "
+            "(or POST /api/models/pull) before assigning it to a role."
         )
-    _enforce_role_match(ref, entry, field_name)
-    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
-    # the exact installed quant; fall back to the catalog ref otherwise.
-    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
-        return ref
-    canonical: str = entry.ref
-    return canonical
+    if installed_task != want:
+        raise TaskMismatchError(ref, installed_task, want)
+    return ref

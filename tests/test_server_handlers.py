@@ -22,6 +22,26 @@ from lilbee.server.handlers import (
     sse as _sse_h,
 )
 
+
+def _seed_manifest(hf_repo: str, gguf_filename: str, task: str) -> str:
+    """Write a manifest under ``cfg.models_dir`` and return the canonical ref."""
+    from lilbee.catalog.refs import format_native_gguf_ref
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    registry._write_manifest(
+        ModelManifest(
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
+            size_bytes=1024,
+            task=task,
+            downloaded_at="2026-05-15T00:00:00+00:00",
+            blob="0" * 64,
+        )
+    )
+    return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
     content_type="pdf",
@@ -893,12 +913,18 @@ class TestSetChatModel:
         assert result.model == _CHAT_REF
         assert cfg.chat_model == _CHAT_REF
 
-    async def test_rejects_out_of_catalog_model(self, tmp_path, mock_svc):
-        """Out-of-catalog installed models cannot be assigned to any role."""
-        custom = "org/Custom-GGUF/custom.gguf"
+    async def test_accepts_installed_out_of_catalog_chat_model(self, tmp_path, mock_svc):
+        """A non-featured chat model installed locally IS assignable to chat_model.
+
+        Featured is a discovery overlay, not an admission check, so any
+        chat model the user has pulled (e.g. via ``lilbee model pull``)
+        should be accepted for the chat role.
+        """
+        custom = _seed_manifest("org/Custom-GGUF", "custom.gguf", task="chat")
         mock_svc.provider.list_models.return_value = [custom]
-        with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_chat_model(custom)
+        result = await handlers.set_chat_model(custom)
+        assert result.model == custom
+        assert cfg.chat_model == custom
 
     async def test_rejects_vision_model_on_chat_endpoint(self, tmp_path, mock_svc):
         """Setting a vision-task model on the chat endpoint returns 422 semantics."""
@@ -915,9 +941,10 @@ class TestSetChatModel:
     async def test_provider_prefixed_bare_form_resolves_via_parse(self, tmp_path, mock_svc):
         """An ``ollama/<name>`` resolves to bare ``<name>`` when that's what list_models returns."""
         mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
-        with pytest.raises(ValueError, match="featured catalog"):
+        with pytest.raises(ValueError, match="not installed"):
             # parse path: "ollama/qwen3:0.6b" -> name="qwen3:0.6b" which is in
-            # available; the downstream catalog check rejects it for chat role.
+            # available; validate rejects the bare colon-form as not installed
+            # because no manifest exists for that ref in the native registry.
             await handlers.set_chat_model("ollama/qwen3:0.6b")
 
 
@@ -1656,12 +1683,13 @@ class TestSetEmbeddingModel:
             await handlers.set_embedding_model("org/Bogus-GGUF/bogus.gguf")
 
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_rejects_out_of_catalog_model(self, mock_svc):
-        """Non-catalog installed model cannot be assigned to the embedding role."""
-        custom = "org/Custom-Embed-GGUF/custom.gguf"
+    async def test_accepts_installed_out_of_catalog_embedding_model(self, mock_svc):
+        """A non-featured embedding model installed locally IS assignable to embedding_model."""
+        custom = _seed_manifest("org/Custom-Embed-GGUF", "custom.gguf", task="embedding")
         mock_svc.return_value.provider.list_models.return_value = [custom]
-        with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_embedding_model(custom)
+        result = await handlers.set_embedding_model(custom)
+        assert result.model == custom
+        assert cfg.embedding_model == custom
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_rejects_chat_model_on_embedding_endpoint(self, mock_svc):
@@ -1947,11 +1975,13 @@ class TestSetVisionModel:
         assert exc.value.expected_task == ModelTask.VISION
 
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_rejects_out_of_catalog(self, mock_svc):
-        custom = "org/Custom-Vision-GGUF/custom.gguf"
+    async def test_accepts_installed_out_of_catalog_vision_model(self, mock_svc):
+        """A non-featured vision model installed locally IS assignable to vision_model."""
+        custom = _seed_manifest("org/Custom-Vision-GGUF", "custom.gguf", task="vision")
         mock_svc.return_value.provider.list_models.return_value = [custom]
-        with pytest.raises(ValueError, match="featured catalog"):
-            await handlers.set_vision_model(custom)
+        result = await handlers.set_vision_model(custom)
+        assert result.model == custom
+        assert cfg.vision_model == custom
 
 
 _RERANK_REF = "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-Q4_K_M.gguf"

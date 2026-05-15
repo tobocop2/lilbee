@@ -1426,10 +1426,10 @@ class TestValidateModelTaskAssignment:
         assert result == "gpustack/bge-reranker-v2-m3-GGUF"
 
     def test_out_of_catalog_rejected(self, _task_validation_enabled):
-        """Out-of-catalog model names are rejected since we can't verify the role."""
+        """Refs that are neither featured nor installed are rejected as not installed."""
         from lilbee.core.config import validate_model_task_assignment
 
-        with pytest.raises(ValueError, match="featured catalog"):
+        with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
 
     def test_skip_env_var_disables_check(self, tmp_path):
@@ -1451,7 +1451,7 @@ class TestValidateModelTaskAssignment:
         try:
             with (
                 mock.patch.dict(os.environ, {"LILBEE_SKIP_MODEL_TASK_VALIDATION": "1"}),
-                pytest.raises(ValueError, match="featured catalog"),
+                pytest.raises(ValueError, match="not installed"),
             ):
                 validate_model_task_assignment("chat_model", "totally-unknown-model:99b")
         finally:
@@ -1472,6 +1472,48 @@ class TestValidateModelTaskAssignment:
         assert err.ref == vision
         assert err.entry_task == ModelTask.VISION
         assert err.expected_task == ModelTask.CHAT
+
+    @staticmethod
+    def _install_manifest(hf_repo: str, gguf_filename: str, task: str) -> str:
+        """Write a manifest under ``cfg.models_dir`` and return the canonical ref."""
+        from lilbee.catalog.refs import format_native_gguf_ref
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+        registry = ModelRegistry(cfg.models_dir)
+        manifest = ModelManifest(
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
+            size_bytes=1024,
+            task=task,
+            downloaded_at="2026-05-15T00:00:00+00:00",
+            blob="0" * 64,
+        )
+        registry._write_manifest(manifest)
+        return format_native_gguf_ref(hf_repo, gguf_filename)
+
+    def test_installed_non_featured_chat_model_accepted(self, _task_validation_enabled):
+        """A non-featured chat model installed locally is a valid chat_model assignment."""
+        from lilbee.core.config import validate_model_task_assignment
+
+        ref = self._install_manifest(
+            "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
+        )
+        assert validate_model_task_assignment("chat_model", ref) == ref
+
+    def test_installed_non_featured_wrong_role_rejected(self, _task_validation_enabled):
+        """An installed non-featured chat model in the reranker slot raises TaskMismatchError."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.core.config import validate_model_task_assignment
+        from lilbee.core.config.validators import TaskMismatchError
+
+        ref = self._install_manifest(
+            "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
+        )
+        with pytest.raises(TaskMismatchError) as exc_info:
+            validate_model_task_assignment("reranker_model", ref)
+        assert exc_info.value.entry_task == ModelTask.CHAT
+        assert exc_info.value.expected_task == ModelTask.RERANK
 
 
 class TestBuildCfgFallback:
