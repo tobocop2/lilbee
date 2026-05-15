@@ -133,6 +133,19 @@ class TestReadGgufDefaults:
         result = read_gguf_defaults(metadata)
         assert result.num_ctx is None
 
+    def test_zero_context_length_skipped(self):
+        """Published GGUFs reporting ``context_length=0`` must not seed num_ctx=0,
+        which would propagate through to ``Llama(n_ctx=0)`` and trip ggml's
+        Vulkan dispatch into STATUS_HEAP_CORRUPTION on Windows."""
+        metadata = {"context_length": "0"}
+        result = read_gguf_defaults(metadata)
+        assert result.num_ctx is None
+
+    def test_negative_context_length_skipped(self):
+        metadata = {"context_length": "-1"}
+        result = read_gguf_defaults(metadata)
+        assert result.num_ctx is None
+
     def test_max_reasoning_chars_from_gguf(self):
         metadata = {"general.max_reasoning_chars": "120000"}
         result = read_gguf_defaults(metadata)
