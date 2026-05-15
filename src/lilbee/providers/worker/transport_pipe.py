@@ -143,7 +143,7 @@ def _check_pickle_size(payload: Any, kind: WireKind) -> None:
 
 
 def _worker_log_path(role: WorkerRole) -> str | None:
-    """Return the worker's log file path. Falls back to cfg.data_root.
+    """Return the worker's log file path. Falls back to ``cfg.data_root``.
 
     Mirrors :func:`lilbee.providers.worker.worker_runtime.configure_worker_logging`
     so the parent's :class:`WorkerCrashError` can point at the same file
@@ -153,14 +153,11 @@ def _worker_log_path(role: WorkerRole) -> str | None:
 
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
-        try:
-            from lilbee.core.config import cfg
-        except ImportError:  # pragma: no cover - defensive
+        from lilbee.core.config import cfg
+
+        if not cfg.data_root:
             return None
-        root = getattr(cfg, "data_root", None)
-        if not root:
-            return None
-        data_dir = str(root)
+        data_dir = str(cfg.data_root)
     return os.path.join(data_dir, "logs", f"worker-{role}.log")
 
 

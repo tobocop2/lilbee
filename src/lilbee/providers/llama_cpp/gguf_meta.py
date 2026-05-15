@@ -29,25 +29,14 @@ def train_ctx_from_meta(
     fallback: int,
     model_path: Path,
 ) -> int:
-    """Resolve ``<arch>.context_length`` from GGUF metadata, with a safe floor.
+    """Resolve ``<arch>.context_length`` from GGUF metadata, clamping junk to ``fallback``.
 
-    Several published GGUFs (nomic-embed, some Qwen3 variants, certain
-    vision models) report ``context_length=0`` in their headers. Passing
-    zero into ``Llama(n_ctx=...)`` for an embedding or vision loader
-    cascades into ``n_batch=0`` / ``n_ubatch=0`` and trips ggml's Vulkan
-    dispatch into undefined behaviour, surfacing as STATUS_HEAP_CORRUPTION
-    on Windows. Unparseable values (any non-integer string) raised
-    ``ValueError`` in three independent call sites before this helper
-    consolidated them.
-
-    Args:
-        meta: GGUF metadata dict from :func:`read_gguf_metadata`, or
-            ``None`` when the read itself failed.
-        fallback: Value to return when metadata is missing, unparseable,
-            or non-positive. Each loader picks the value appropriate for
-            its task (chat / embed / vision).
-        model_path: Used purely for the warning message so the user knows
-            which model produced the junk metadata.
+    Some published GGUFs (nomic-embed, certain Qwen3 and vision builds)
+    report ``context_length=0`` in their headers. Passing zero into
+    ``Llama(n_ctx=...)`` cascades into ``n_batch=0`` / ``n_ubatch=0``,
+    which trips ggml's Vulkan dispatch into undefined behaviour and
+    surfaces as STATUS_HEAP_CORRUPTION on Windows. Unparseable values
+    and non-positive integers both route to ``fallback``.
     """
     if not meta:
         return fallback

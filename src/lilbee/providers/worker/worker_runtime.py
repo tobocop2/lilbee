@@ -68,19 +68,15 @@ def configure_worker_logging(role: WorkerRole) -> None:
 def _resolve_data_root() -> str | None:
     """Return the data root for worker log paths: env var first, then cfg.
 
-    Function-local cfg import: this module is loaded inside the spawned
-    worker process, and the cfg singleton's heavy validators only matter
-    when log paths actually need to resolve.
+    Function-local cfg import: this module loads inside the spawned
+    worker process and only needs cfg when the env-var fast path misses.
     """
     env_value = os.environ.get("LILBEE_DATA")
     if env_value:
         return env_value
-    try:
-        from lilbee.core.config import cfg
-    except ImportError:  # pragma: no cover - defensive
-        return None
-    root = getattr(cfg, "data_root", None)
-    return str(root) if root else None
+    from lilbee.core.config import cfg
+
+    return str(cfg.data_root) if cfg.data_root else None
 
 
 class Reply:
