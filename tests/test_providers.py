@@ -2722,29 +2722,38 @@ class TestIterLinuxVulkanManifestPaths:
 
 
 class TestLinuxVulkanIcdDirectories:
-    """``_linux_vulkan_icd_directories`` aggregates XDG + fixed-etc + Flatpak paths."""
+    """``_linux_vulkan_icd_directories`` aggregates XDG + fixed-etc + Flatpak paths.
+
+    Comparisons go through ``PurePosixPath`` so the test runs portably on
+    Windows CI without taking a dependency on ``os.sep``.
+    """
 
     def test_yields_expected_canonical_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """All XDG_* vars unset -> spec defaults plus fixed /etc and Flatpak trees."""
+        from pathlib import PurePosixPath
+
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
         for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"):
             monkeypatch.delenv(var, raising=False)
-        out = [str(p) for p in vulkan_icd_discovery._linux_vulkan_icd_directories()]
-        # XDG_CONFIG_HOME default
-        assert any(p.endswith("/.config/vulkan/icd.d") for p in out)
-        # XDG_CONFIG_DIRS default
-        assert any("/etc/xdg/vulkan/icd.d" in p for p in out)
-        # Fixed SYSCONFDIR + EXTRASYSCONFDIR
-        assert "/usr/local/etc/vulkan/icd.d" in out
-        assert "/etc/vulkan/icd.d" in out
-        # XDG_DATA_HOME default
-        assert any(p.endswith("/.local/share/vulkan/icd.d") for p in out)
-        # XDG_DATA_DIRS default (both)
-        assert any("/usr/local/share/vulkan/icd.d" in p for p in out)
-        assert any("/usr/share/vulkan/icd.d" in p for p in out)
-        # Flatpak export trees
-        assert any("flatpak/exports/share/vulkan/icd.d" in p for p in out)
+        out = [
+            PurePosixPath(str(p).replace("\\", "/"))
+            for p in vulkan_icd_discovery._linux_vulkan_icd_directories()
+        ]
+        flat = [str(p) for p in out]
+        # XDG_CONFIG_HOME / XDG_DATA_HOME defaults expand ``~``.
+        assert any(p.endswith(".config/vulkan/icd.d") for p in flat)
+        assert any(p.endswith(".local/share/vulkan/icd.d") for p in flat)
+        # XDG_CONFIG_DIRS default.
+        assert any(p.endswith("etc/xdg/vulkan/icd.d") for p in flat)
+        # SYSCONFDIR / EXTRASYSCONFDIR build-time constants.
+        assert "/usr/local/etc/vulkan/icd.d" in flat
+        assert "/etc/vulkan/icd.d" in flat
+        # XDG_DATA_DIRS default: /usr/local/share + /usr/share.
+        assert "/usr/local/share/vulkan/icd.d" in flat
+        assert "/usr/share/vulkan/icd.d" in flat
+        # Flatpak export trees (user + system).
+        assert any("flatpak/exports/share/vulkan/icd.d" in p for p in flat)
 
 
 class TestXdgDirs:
