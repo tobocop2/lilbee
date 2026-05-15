@@ -241,11 +241,28 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_input_style()
-        if self._needs_setup():
-            from lilbee.cli.tui.screens.setup import SetupWizard
-
-            self.app.push_screen(SetupWizard(), self._on_setup_complete)
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+        self._setup_check_worker()
+
+    @work(thread=True, name="chat_setup_check", exit_on_error=False)
+    def _setup_check_worker(self) -> None:
+        """Run ``_needs_setup`` off the UI thread; push the wizard if needed.
+
+        ``_needs_setup`` calls ``resolve_model_path`` for chat + embedding,
+        each of which walks the model registry on disk. On Windows + Defender
+        that walk takes seconds and froze the TUI on every chat-screen mount.
+        """
+        if not self._needs_setup():
+            return
+        call_from_thread(self, self._push_setup_wizard)
+
+    def _push_setup_wizard(self) -> None:
+        """Push the SetupWizard from the UI thread (called via call_from_thread)."""
+        if not self.is_mounted:
+            return
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def on_show(self) -> None:
         """Called when screen becomes visible."""
