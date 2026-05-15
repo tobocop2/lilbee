@@ -8,7 +8,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
-from lilbee.core.config.validators import TaskMismatchError
+from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.handlers import ModelsResponse, format_task_mismatch
