@@ -518,15 +518,37 @@ class SettingsScreen(Screen[None]):
         defn = SETTINGS_MAP.get(key)
         if not ref and (defn is None or not defn.nullable):
             return
-        if key == "embedding_model" and ref and get_services().store.has_chunks():
-            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-
-            self.app.push_screen(
-                ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE),
-                lambda confirmed: self._apply_picker_choice(key, ref, confirmed),
-            )
+        if key == "embedding_model" and ref:
+            self._maybe_confirm_embedding_swap(key, ref)
             return
         self._apply_picker_choice(key, ref, True)
+
+    @work(thread=True, name="settings_has_chunks_check", exit_on_error=False)
+    def _maybe_confirm_embedding_swap(self, key: str, ref: str) -> None:
+        """Check store chunk-count off the UI thread; confirm-modal if non-empty.
+
+        ``store.has_chunks`` hits LanceDB. On Windows with Defender that
+        read used to stall the picker-dismiss handler on the UI thread;
+        run it in a worker and dispatch back to push the confirm dialog
+        or apply the choice directly.
+        """
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
+        if get_services().store.has_chunks():
+            call_from_thread(self, self._push_embed_swap_confirm, key, ref)
+        else:
+            call_from_thread(self, self._apply_picker_choice, key, ref, True)
+
+    def _push_embed_swap_confirm(self, key: str, ref: str) -> None:
+        """Show the embed-swap confirm dialog from the UI thread."""
+        if not self.is_mounted:
+            return
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        self.app.push_screen(
+            ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE),
+            lambda confirmed: self._apply_picker_choice(key, ref, confirmed),
+        )
 
     def _apply_picker_choice(self, key: str, ref: str, confirmed: bool | None) -> None:
         """Commit the picker choice or notify cancel; ``confirmed`` mirrors ConfirmDialog."""

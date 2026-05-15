@@ -772,31 +772,52 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
+        """Spawn the /delete worker so the UI stays responsive during DB I/O."""
+        self._cmd_delete_worker(args.strip())
+
+    @work(thread=True, name="chat_cmd_delete", exit_on_error=False)
+    def _cmd_delete_worker(self, name: str) -> None:
+        """Validate and execute /delete off the UI thread.
+
+        ``get_sources`` and the two ``delete_*`` calls hit LanceDB; on
+        Windows with Defender real-time scanning each one used to stutter
+        the chat screen for hundreds of ms. Pulling the validation and
+        the writes into a worker keeps the screen interactive while the
+        backend churns.
+        """
         try:
             sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
-            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         known = {s.get("filename", s.get("source", "?")) for s in sources}
         if not known:
-            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
-        name = args.strip()
         if not name:
-            self.notify(msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known))))
+            usage = msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known)))
+            call_from_thread(self, self.notify, usage)
             return
 
         if name not in known:
-            self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_DELETE_NOT_FOUND.format(name=name),
+                severity="error",
+            )
             return
 
         store = get_services().store
         store.delete_by_source(name)
         store.delete_source(name)
-        self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
+        invalidate_document_cache()
+        call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
         self.action_show_command_catalog()

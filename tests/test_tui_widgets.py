@@ -2465,6 +2465,20 @@ class TestSettingOptions:
 
 
 class TestDocumentOptions:
+    """``_document_options`` caches the store's source list across Tab presses.
+
+    The cache is process-local; each test invalidates it up front so it
+    doesn't leak between cases.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_doc_cache(self):
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
+        invalidate_document_cache()
+        yield
+        invalidate_document_cache()
+
     def test_returns_filenames(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
@@ -2488,6 +2502,32 @@ class TestDocumentOptions:
         mock_svc.store.get_sources.return_value = [{"source": "b.pdf"}]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert _document_options() == ["b.pdf"]
+
+    def test_second_call_hits_cache(self) -> None:
+        """Second call must not re-invoke ``get_sources``."""
+        from lilbee.cli.tui.widgets.autocomplete import _document_options
+
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
+            assert _document_options() == ["a.txt"]
+            assert _document_options() == ["a.txt"]
+            assert mock_svc.store.get_sources.call_count == 1
+
+    def test_invalidate_forces_refetch(self) -> None:
+        """``invalidate_document_cache`` drops the memo; next call refetches."""
+        from lilbee.cli.tui.widgets.autocomplete import (
+            _document_options,
+            invalidate_document_cache,
+        )
+
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
+            _document_options()
+            invalidate_document_cache()
+            _document_options()
+            assert mock_svc.store.get_sources.call_count == 2
 
 
 class TestThemeOptions:

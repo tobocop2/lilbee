@@ -29,6 +29,14 @@ _MAX_PATH_COMPLETIONS = 20
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
 
+# Cached document list for ``/delete`` and ``/reset`` Tab completion.
+# ``store.get_sources`` hits LanceDB; on Windows with Defender that query
+# stutters every Tab keypress. Cache the result until a document mutation
+# explicitly invalidates it. The cache is a list rather than a set so the
+# stable order matches what the dropdown previously rendered.
+_doc_cache: list[str] | None = None
+
+
 def get_completions(text: str) -> list[str]:
     """Return completion options for the current input text."""
     if not text.startswith("/"):
@@ -70,11 +78,23 @@ def _setting_options() -> list[str]:
 
 
 def _document_options() -> list[str]:
+    global _doc_cache
+    if _doc_cache is not None:
+        return _doc_cache
     try:
-        return [s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()]
+        _doc_cache = [
+            s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()
+        ]
     except Exception:
         log.debug("Failed to list documents for autocomplete", exc_info=True)
-        return []
+        _doc_cache = []
+    return _doc_cache
+
+
+def invalidate_document_cache() -> None:
+    """Drop the cached document list; the next Tab refetches from the store."""
+    global _doc_cache
+    _doc_cache = None
 
 
 def _theme_options() -> list[str]:

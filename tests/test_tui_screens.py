@@ -2705,6 +2705,11 @@ async def test_chat_slash_theme_no_arg():
 
 
 async def test_chat_slash_delete_with_match(mock_svc):
+    """``/delete <name>`` deletes both the chunks and the source row.
+
+    ``_cmd_delete`` spawns a worker (PR #244: DB I/O off the UI thread);
+    the assertion runs after the worker completes.
+    """
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
@@ -2713,6 +2718,8 @@ async def test_chat_slash_delete_with_match(mock_svc):
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         app.screen._cmd_delete("notes.md")
+        await app.screen.workers.wait_for_complete()
+        await _pilot.pause()
         mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
         mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
@@ -2726,6 +2733,8 @@ async def test_chat_slash_delete_not_found(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("nonexistent.md")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "Not found" in mock_notify.call_args[0][0]
 
@@ -2739,6 +2748,8 @@ async def test_chat_slash_delete_no_arg(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "Documents:" in mock_notify.call_args[0][0]
 
@@ -2750,6 +2761,8 @@ async def test_chat_slash_delete_store_error(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("x")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "No documents" in mock_notify.call_args[0][0]
 
@@ -2761,6 +2774,8 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("x")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "No documents" in mock_notify.call_args[0][0]
 
@@ -3308,6 +3323,8 @@ async def test_chat_slash_delete_dispatch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/delete")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
 
 
