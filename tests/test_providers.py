@@ -1545,14 +1545,21 @@ class TestLitellmResponseView:
 
 
 class TestLitellmAvailable:
-    """Exercises the un-patched ``litellm_available`` import probe."""
+    """Exercises the un-patched ``litellm_available`` install probe.
+
+    The helper uses ``importlib.util.find_spec`` so the check is cheap to
+    call on the UI thread (Settings's ``_FEATURE_GATED_GROUPS`` hits it
+    synchronously during ``compose``). Mocking ``find_spec`` is the right
+    boundary for these tests; ``sys.modules`` doesn't matter for the
+    spec-lookup path.
+    """
 
     @pytest.mark.real_litellm_probe
     def test_returns_false_when_not_installed(self) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
         litellm_available.cache_clear()
-        with mock.patch.dict("sys.modules", {"litellm": None}):
+        with mock.patch("importlib.util.find_spec", return_value=None):
             assert litellm_available() is False
         litellm_available.cache_clear()
 
@@ -1561,8 +1568,33 @@ class TestLitellmAvailable:
         from lilbee.providers.litellm_sdk import litellm_available
 
         litellm_available.cache_clear()
-        with mock.patch.dict("sys.modules", {"litellm": mock.MagicMock()}):
+        with mock.patch(
+            "importlib.util.find_spec",
+            return_value=mock.MagicMock(name="litellm_spec"),
+        ):
             assert litellm_available() is True
+        litellm_available.cache_clear()
+
+    @pytest.mark.real_litellm_probe
+    def test_does_not_execute_module_init(self) -> None:
+        """Regression guard: the probe must not import the package itself.
+
+        ``litellm.__init__`` loads provider plugins and takes multi-second
+        time on Windows. Settings's compose calls this synchronously, so
+        executing the module would block the UI thread on every fresh
+        process. Asserting that no ``litellm`` entry lands in
+        ``sys.modules`` after the probe runs codifies the contract.
+        """
+        from lilbee.providers.litellm_sdk import litellm_available
+
+        litellm_available.cache_clear()
+        with mock.patch(
+            "importlib.util.find_spec",
+            return_value=mock.MagicMock(name="litellm_spec"),
+        ):
+            had_module = "litellm" in sys.modules
+            litellm_available()
+            assert ("litellm" in sys.modules) is had_module
         litellm_available.cache_clear()
 
 
