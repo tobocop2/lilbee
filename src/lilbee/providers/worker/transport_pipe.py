@@ -58,18 +58,59 @@ class WorkerCrashError(WorkerError):
 
     Carries an optional ``log_path`` so the surfaced message can point the
     user at the worker log file that contains the underlying traceback or
-    signal info.
+    signal info, plus a tail of that log inlined into the message so the
+    user does not have to hunt for the file (the Windows heap-corruption
+    path produces no Python-level exception to serialize, so the only
+    diagnostic trail lives in the worker's log file).
     """
 
     def __init__(self, role: WorkerRole, *, log_path: str | None = None) -> None:
-        suffix = f" See {log_path} for details." if log_path else ""
+        tail = _read_log_tail(log_path) if log_path else ""
+        suffix_parts: list[str] = []
+        if log_path:
+            suffix_parts.append(f" See {log_path} for details.")
+        if tail:
+            suffix_parts.append(f"\nLast log lines:\n{tail}")
         super().__init__(
             "WorkerCrashError",
-            f"Worker '{role}' subprocess exited unexpectedly.{suffix}",
+            f"Worker '{role}' subprocess exited unexpectedly.{''.join(suffix_parts)}",
             "",
         )
         self.role = role
         self.log_path = log_path
+        self.log_tail = tail
+
+
+_LOG_TAIL_BYTES = 4096
+"""Read at most this many bytes from the end of a worker log on crash.
+
+A llama.cpp init that aborts emits a few dozen lines tops; 4 KiB leaves
+enough room for a stack-like trace without pulling a multi-megabyte log
+file into a single error message.
+"""
+
+
+def _read_log_tail(log_path: str | None) -> str:
+    """Return the last ``_LOG_TAIL_BYTES`` of *log_path*, or ``""`` on any error.
+
+    Best-effort: a missing or unreadable log file must not turn a worker
+    crash into a different unrelated exception. Decoded as utf-8 with
+    ``errors="replace"`` so the Tesseract diacritic bytes that leak into
+    fd 2 on Windows do not crash the error path itself.
+    """
+    if not log_path:
+        return ""
+    try:
+        import os as _os
+
+        size = _os.path.getsize(log_path)
+        offset = max(0, size - _LOG_TAIL_BYTES)
+        with open(log_path, "rb") as handle:
+            handle.seek(offset)
+            data = handle.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")
 
 
 def _serialize_exception(exc: BaseException) -> _SerializedException:
@@ -102,12 +143,24 @@ def _check_pickle_size(payload: Any, kind: WireKind) -> None:
 
 
 def _worker_log_path(role: WorkerRole) -> str | None:
-    """Return the worker's log file path if ``LILBEE_DATA`` is set."""
+    """Return the worker's log file path. Falls back to cfg.data_root.
+
+    Mirrors :func:`lilbee.providers.worker.worker_runtime.configure_worker_logging`
+    so the parent's :class:`WorkerCrashError` can point at the same file
+    the worker wrote, even when ``LILBEE_DATA`` was never set in env.
+    """
     import os
 
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
-        return None
+        try:
+            from lilbee.core.config import cfg
+        except ImportError:  # pragma: no cover - defensive
+            return None
+        root = getattr(cfg, "data_root", None)
+        if not root:
+            return None
+        data_dir = str(root)
     return os.path.join(data_dir, "logs", f"worker-{role}.log")
 
 

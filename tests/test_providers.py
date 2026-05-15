@@ -3630,6 +3630,68 @@ class TestLoadLlama:
         assert call_kwargs["embedding"] is False
         assert "n_batch" not in call_kwargs
 
+    def test_embedding_clamps_zero_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """GGUF metadata reporting context_length=0 falls back to the safe default.
+
+        Several published GGUFs (nomic-embed, some Qwen3 variants) emit a
+        zero training context in their headers. Passing ``n_ctx=0`` into
+        ``Llama(embedding=True)`` propagates as ``n_batch=0`` /
+        ``n_ubatch=0``, which trips ggml's Vulkan dispatch into UB and
+        surfaces as STATUS_HEAP_CORRUPTION on Windows.
+        """
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "0"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
+        assert call_kwargs["n_ubatch"] == 2048
+
+    def test_embedding_clamps_negative_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Negative ``context_length`` (corrupt metadata) also falls back."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "-1"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
+
+    def test_embedding_clamps_unparseable_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Non-numeric ``context_length`` falls back rather than crashing the loader."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "garbage"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
+
 
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:

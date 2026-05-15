@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 from unittest import mock
@@ -610,6 +611,35 @@ class TestApplyOverrides:
 
         assert cfg.data_root == env_dir
         assert cfg.chat_model == "ollama/from-env:latest"
+
+    def test_apply_data_root_exports_lilbee_data_env(self, tmp_path, monkeypatch):
+        """``_apply_data_root`` exports ``LILBEE_DATA`` so workers can find log files.
+
+        Worker subprocesses (multiprocessing.spawn) re-import lilbee in a
+        fresh process with no inherited cfg state, so without this export
+        the worker's ``configure_worker_logging`` and the supervisor's
+        ``_worker_log_path`` would silently skip log-file creation when a
+        user invoked lilbee with ``--data-dir`` instead of via the env.
+        On Windows this turns an embed-worker heap-corruption crash into
+        an opaque "subprocess exited unexpectedly" with no trail.
+        """
+        from lilbee.cli import apply_overrides
+
+        monkeypatch.delenv("LILBEE_DATA", raising=False)
+        apply_overrides(data_dir=tmp_path)
+        assert os.environ.get("LILBEE_DATA") == str(tmp_path)
+
+    def test_apply_data_root_exports_lilbee_data_env_global(self, tmp_path, monkeypatch):
+        """``--global`` also exports ``LILBEE_DATA`` for worker visibility."""
+        from lilbee.cli import apply_overrides
+
+        fake_global = tmp_path / "global"
+        fake_global.mkdir()
+        monkeypatch.setattr("lilbee.core.system.default_data_dir", lambda: fake_global)
+        monkeypatch.delenv("LILBEE_DATA", raising=False)
+
+        apply_overrides(use_global=True)
+        assert os.environ.get("LILBEE_DATA") == str(fake_global)
 
     def test_data_dir_overlay_skips_unknown_keys(self, tmp_path):
         """Stale or unrecognised keys in config.toml don't blow up startup."""

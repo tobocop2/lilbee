@@ -40,8 +40,18 @@ def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swa
 
 
 def configure_worker_logging(role: WorkerRole) -> None:
-    """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log`` if set."""
-    data_dir = os.environ.get("LILBEE_DATA")
+    """Append worker logs to ``<data_root>/logs/worker-<role>.log``.
+
+    Reads ``LILBEE_DATA`` first (set by the parent's ``_apply_data_root``),
+    then falls back to ``cfg.data_root`` so the no-flag invocation path
+    (where the user has neither ``--data-dir`` nor ``LILBEE_DATA`` in
+    their shell) still produces worker logs. Both processes resolve to
+    the same path via the cfg validator's walk-up / platform-default
+    chain. Without this, a Windows worker that crashes during ``Llama()``
+    construction surfaces only as "subprocess exited unexpectedly" with
+    no trail to investigate.
+    """
+    data_dir = _resolve_data_root()
     if not data_dir:
         return
     logs_dir = os.path.join(data_dir, "logs")
@@ -53,6 +63,24 @@ def configure_worker_logging(role: WorkerRole) -> None:
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+
+
+def _resolve_data_root() -> str | None:
+    """Return the data root for worker log paths: env var first, then cfg.
+
+    Function-local cfg import: this module is loaded inside the spawned
+    worker process, and the cfg singleton's heavy validators only matter
+    when log paths actually need to resolve.
+    """
+    env_value = os.environ.get("LILBEE_DATA")
+    if env_value:
+        return env_value
+    try:
+        from lilbee.core.config import cfg
+    except ImportError:  # pragma: no cover - defensive
+        return None
+    root = getattr(cfg, "data_root", None)
+    return str(root) if root else None
 
 
 class Reply:

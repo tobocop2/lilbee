@@ -504,6 +504,43 @@ def test_worker_crash_error_carries_role_name() -> None:
     assert "embed" in str(err)
 
 
+def test_worker_crash_error_inlines_log_tail(tmp_path) -> None:
+    """When ``log_path`` exists, the crash message inlines its last bytes.
+
+    Verifies the field-debugging hook for the Windows heap-corruption path:
+    no Python exception serializes through the pipe, so the only signal a
+    user sees comes from the worker's own log tail.
+    """
+    log_file = tmp_path / "worker-embed.log"
+    log_file.write_text(
+        "boot\nload model\nLLAMA_ASSERT failed: n_batch == 0\nworker dying\n",
+        encoding="utf-8",
+    )
+    err = WorkerCrashError("embed", log_path=str(log_file))
+    assert err.log_tail
+    assert "LLAMA_ASSERT" in str(err)
+    assert "worker dying" in err.log_tail
+    assert str(log_file) in str(err)
+
+
+def test_worker_crash_error_handles_missing_log_file(tmp_path) -> None:
+    """A non-existent log path leaves ``log_tail`` empty without raising."""
+    missing = tmp_path / "absent.log"
+    err = WorkerCrashError("embed", log_path=str(missing))
+    assert err.log_tail == ""
+    assert "Last log lines" not in str(err)
+    assert str(missing) in str(err)
+
+
+def test_worker_crash_error_caps_log_tail_size(tmp_path) -> None:
+    """Long worker logs get tail-clamped instead of dumping the whole file."""
+    log_file = tmp_path / "worker-embed.log"
+    log_file.write_bytes(b"X" * (16 * 1024) + b"\nTAIL_MARKER\n")
+    err = WorkerCrashError("embed", log_path=str(log_file))
+    assert "TAIL_MARKER" in err.log_tail
+    assert len(err.log_tail) < 16 * 1024
+
+
 def test_pipe_spawner_uses_spawn_context() -> None:
     """The pipe spawner pins the multiprocessing context to spawn."""
     spawner = PipeSpawner()
@@ -709,12 +746,14 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
             child_health.close()
 
 
-def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
-    """Without LILBEE_DATA the log path resolver returns None."""
+def test_worker_log_path_falls_back_to_cfg_when_env_unset(monkeypatch, tmp_path) -> None:
+    """Without LILBEE_DATA the resolver uses cfg.data_root, not None."""
+    from lilbee.core.config import cfg
     from lilbee.providers.worker.transport_pipe import _worker_log_path
 
     monkeypatch.delenv("LILBEE_DATA", raising=False)
-    assert _worker_log_path("embed") is None
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    assert _worker_log_path("embed") == str(tmp_path / "logs" / "worker-embed.log")
 
 
 def test_worker_log_path_joins_data_dir_when_env_set(monkeypatch, tmp_path) -> None:
@@ -723,6 +762,18 @@ def test_worker_log_path_joins_data_dir_when_env_set(monkeypatch, tmp_path) -> N
 
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     assert _worker_log_path("chat") == str(tmp_path / "logs" / "worker-chat.log")
+
+
+def test_worker_log_path_env_wins_over_cfg(monkeypatch, tmp_path) -> None:
+    """Env takes precedence over cfg.data_root when both resolve."""
+    from lilbee.core.config import cfg
+    from lilbee.providers.worker.transport_pipe import _worker_log_path
+
+    env_dir = tmp_path / "env_root"
+    cfg_dir = tmp_path / "cfg_root"
+    monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+    monkeypatch.setattr(cfg, "data_root", cfg_dir)
+    assert _worker_log_path("rerank") == str(env_dir / "logs" / "worker-rerank.log")
 
 
 def test_format_exit_reason_for_normal_exit_code() -> None:
@@ -786,11 +837,17 @@ def test_record_exit_reason_writes_to_worker_log(monkeypatch, tmp_path) -> None:
     assert "SIGTERM" in body
 
 
-def test_record_exit_reason_skips_when_log_path_unset(monkeypatch, caplog) -> None:
-    """Without LILBEE_DATA the reason logs to stderr but no file is touched."""
+def test_record_exit_reason_falls_back_to_cfg_data_root(monkeypatch, tmp_path, caplog) -> None:
+    """When LILBEE_DATA env is unset, the supervisor reaches cfg.data_root for the log path."""
     import multiprocessing
 
+    from lilbee.core.config import cfg
+
     monkeypatch.delenv("LILBEE_DATA", raising=False)
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    (tmp_path / "logs").mkdir()
+    log_file = tmp_path / "logs" / "worker-chat.log"
+    log_file.write_text("preexisting\n")
 
     class _FakeProcess:
         @property
@@ -821,3 +878,6 @@ def test_record_exit_reason_skips_when_log_path_unset(monkeypatch, caplog) -> No
         with contextlib.suppress(Exception):
             child_health.close()
     assert any("exited with code 7" in rec.message for rec in caplog.records)
+    body = log_file.read_text()
+    assert "[supervisor]" in body
+    assert "exited with code 7" in body
