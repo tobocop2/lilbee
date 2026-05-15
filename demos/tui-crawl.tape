@@ -90,10 +90,12 @@ Sleep 1000ms
 Type "i"
 Sleep 400ms
 
-# Sub-era question that maps cleanly to a single section in the article.
-# Verified in tmux: returns the 305 cu in V8 with cite-backed details
-# from 1977-1990 (RPO LO3 fuel-injection update in 1989).
-Type "What displacement V8 engines were offered in the Caprice between 1977 and 1990?"
+# Single-fact question whose answer is one specific sentence in the
+# article. The previous prompt asked for cross-year engine specs and
+# Qwen3 4B confidently hallucinated (claimed the 427 was offered
+# 1977-1990; it ended in 1969). This prompt verifies cleanly in tmux
+# against the indexed page: "1986" with the article cited.
+Type "When was the 9C1 Caprice police package introduced?"
 Sleep 600ms
 Enter
 
