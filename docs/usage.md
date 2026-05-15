@@ -402,7 +402,32 @@ lilbee resolves the data directory in this order (highest priority first):
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
-Run `lilbee init` to create a `.lilbee/` directory in your project. It contains `documents/`, `data/`, and a `.gitignore` that excludes derived data.
+Run `lilbee init` to create a `.lilbee/` directory in your project. It contains `documents/` (your indexed files), `data/` (the search index), and a `.gitignore` that excludes derived data.
+
+### The config file
+
+Every persisted lilbee setting lives in a single TOML file at **`<data-dir>/config.toml`**. For the platform default that's `~/.local/share/lilbee/config.toml`; for a project, it's `.lilbee/config.toml` next to your code. Same file, same shape, regardless of which data dir you're on; the path just follows wherever the data dir is resolved to.
+
+Sections mirror the settings categories in the [Environment variables](#environment-variables) tables below: `[general]`, `[retrieval]`, `[chunking]`, `[generation]`, `[server]`, etc. Example:
+
+```toml
+# .lilbee/config.toml
+
+[general]
+chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+theme = "rose-pine"
+
+[retrieval]
+top_k = 12
+max_distance = 0.6
+reranker_model = "Qwen/Qwen3-Reranker-0.6B-GGUF/qwen3-reranker-0.6b.Q8_0.gguf"
+
+[generation]
+temperature = 0.2
+num_ctx_max = 32768
+```
+
+You don't have to write the file by hand: the TUI's `/settings` screen and the `/set <key> <value>` slash command both persist to it, and the equivalent `LILBEE_<KEY>=...` env vars override individual values at runtime without touching the file.
 
 ## Environment variables
 
@@ -415,7 +440,7 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
@@ -429,19 +454,19 @@ Reach for these when search quality matters. Defaults are solid; tune only if so
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_TOP_K` | `10` | Number of retrieval results returned |
-| `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff. Lower = stricter filtering, fewer but more relevant results. `1.0` disables filtering |
+| `LILBEE_TOP_K` | `8` | Number of retrieval results returned |
+| `LILBEE_MAX_DISTANCE` | `0.65` | Cosine distance cutoff. Lower = stricter filtering, fewer but more relevant results. `1.0` disables filtering |
 | `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance (1.0 = pure relevance, 0.0 = pure diversity). Raise for factual lookups, lower for exploratory queries |
 | `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
 | `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
-| `LILBEE_RERANK_CANDIDATES` | `20` | Candidates to rerank when a reranker is configured |
+| `LILBEE_RERANK_CANDIDATES` | `60` | Candidates to rerank when a reranker is configured |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | When too few results pass `LILBEE_MAX_DISTANCE`, widen the threshold step by step. Useful on small or noisy corpora |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
-| `LILBEE_MAX_CONTEXT_SOURCES` | `5` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_MAX_CONTEXT_SOURCES` | `6` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
 
 ### Ingestion and chunking
 
@@ -458,14 +483,14 @@ How documents become chunks. Changes here require `lilbee rebuild` to take effec
 
 ### Generation
 
-LLM output shape. Unset values fall through to the model's own defaults.
+LLM output shape. lilbee sets conservative defaults below; the model's own defaults apply only when a value is explicitly unset in code or config.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_TEMPERATURE` | *(model default)* | Sampling temperature |
-| `LILBEE_TOP_P` | *(model default)* | Nucleus sampling threshold |
-| `LILBEE_TOP_K_SAMPLING` | *(model default)* | Top-k sampling |
-| `LILBEE_REPEAT_PENALTY` | *(model default)* | Repetition penalty |
+| `LILBEE_TEMPERATURE` | `0.1` | Sampling temperature |
+| `LILBEE_TOP_P` | `0.9` | Nucleus sampling threshold |
+| `LILBEE_TOP_K_SAMPLING` | `40` | Top-k sampling |
+| `LILBEE_REPEAT_PENALTY` | `1.1` | Repetition penalty |
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically to the host's available memory, capped at `LILBEE_NUM_CTX_MAX`. Set explicitly to lock a specific value |
 | `LILBEE_NUM_CTX_MAX` | `16384` | Upper bound for the auto-sized context picker. Higher allows more retrieval context on hosts with spare memory |
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
