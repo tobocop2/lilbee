@@ -25,7 +25,7 @@ Sleep 8s
 # (a) load lilbee-mcp skill, (b) delegate lilbee_add to lilbee-worker
 # (~25s), (c) run lilbee_search, (d) cite the answer. Sleep covers the
 # whole sequence with margin.
-Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then explain how lilbee discovers a project-local .lilbee/ directory. Cite the file and line range."
+Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then show me the function that walks up from the current directory to find a project-local .lilbee/ directory. Quote the function body and cite the file and line range."
 Sleep 600ms
 Enter
 Sleep 150s
