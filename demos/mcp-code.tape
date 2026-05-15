@@ -28,7 +28,7 @@ Sleep 8s
 Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then show me the function that walks up from the current directory to find a project-local .lilbee/ directory. Quote the function body and cite the file and line range."
 Sleep 600ms
 Enter
-Sleep 150s
+Sleep 90s
 
 Screenshot demos/_out/mcp-code.png
 Sleep 3s
