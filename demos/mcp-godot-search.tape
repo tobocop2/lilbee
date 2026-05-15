@@ -32,9 +32,10 @@ Sleep 400ms
 Enter
 Sleep 10s
 
-# Tight, citation-dense prompt. Six XMLs index in ~3s; the search +
-# answer reads from AStarGrid2D.xml directly with method-level cites.
-Type "Index ./godot-pathfinding/, then list every method on AStarGrid2D for marking cells as solid or non-solid. Cite each method with its file."
+# Natural prompt -- no "cite each method" instruction (AGENTS.md
+# already requires file:line cites). The "index this folder" framing
+# is what a human would actually say to bootstrap a fresh corpus.
+Type "Index ./godot-pathfinding/ and tell me how AStarGrid2D handles marking cells as solid or non-solid."
 Sleep 600ms
 Enter
 

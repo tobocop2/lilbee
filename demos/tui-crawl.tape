@@ -99,15 +99,13 @@ Type "When was the 9C1 Caprice police package introduced?"
 Sleep 600ms
 Enter
 
-# Cold Qwen3 4B: ~134s loading bar before first token, ~10s of streaming.
-# Single combined wait so the global PlaybackSpeed compresses the whole
-# block uniformly -- per-section Set PlaybackSpeed gets folded into one
-# global setpts filter by ffmpeg, so it does not act as a local speedup.
-Sleep 150s
+# Cold Qwen3 4B: ~134s loading bar before first token, ~5-8s for the
+# short 9C1 answer. Wait just long enough to capture the cited answer;
+# any extra trailing time becomes a static-frame pause at the end of
+# the GIF before it loops, which reads as the demo being stuck.
+Sleep 145s
 
 # Capture the cited answer as the still, AFTER the stream has settled.
 Screenshot demos/_out/tui-crawl.png
-Sleep 1s
 
 Ctrl+C
-Sleep 500ms

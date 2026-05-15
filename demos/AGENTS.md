@@ -3,7 +3,7 @@
 This project pairs you with **lilbee**, a local retrieval engine wired in over MCP. Every
 question about a file in this project, every claim about code or documents, every "what
 does X say about Y" goes through `lilbee_*` tools. The built-in `codesearch`, `websearch`,
-and `webfetch` are deliberately denied here so you can't shortcut around the corpus.
+and `webfetch` are deliberately denied here so you can't shortcut around the library.
 
 ## Hard rule: never search while indexing
 
@@ -14,7 +14,7 @@ still in progress, the call will hang and your client will time it out.
 
 **Sequence every task this way:**
 
-1. Decide whether the corpus needs indexing or updating. If yes, hand the long op to the
+1. Decide whether the library needs indexing or updating. If yes, hand the long op to the
    `lilbee-worker` subagent — opencode supports `@lilbee-worker` mention syntax, Claude
    Code uses the Task/Agent tool. Use whichever your host supports. **Wait for the worker
    to report back** before doing anything else. Do not call any `lilbee_*` tool from your
@@ -31,14 +31,14 @@ moment the embedder is free.
 
 You will spend most of your time on two things:
 
-1. **Setting the corpus up** — indexing files, crawling a docs site, swapping models.
+1. **Setting the library up.** Indexing files, crawling a docs site, swapping models.
    These are long-running, so they go to the `lilbee-worker` subagent (your host's
    subagent invocation: `@lilbee-worker` in opencode, the Task / Agent tool in Claude
    Code). You wait for it to report done.
-2. **Talking to the corpus** — searching it, listing what's in it, checking status. These
+2. **Talking to the library.** Searching it, listing what's in it, checking status. These
    are fast, so you run them inline.
 
-## Querying the corpus (inline, fast)
+## Querying the library (inline, fast)
 
 1. **`lilbee_search` is your primary research tool.** Use it before answering any question
    about the project. The query should be the most distinct noun phrase from the user's
@@ -46,13 +46,13 @@ You will spend most of your time on two things:
    multiple searches when the answer needs more than one anchor.
 2. **Cite the file and line (or page) for every fact you state**, exactly as
    `lilbee_search` returned it. If a claim doesn't trace back to a chunk, drop it.
-3. **If the answer isn't in the corpus, say so.** Don't invent. Don't fall back to general
+3. **If the answer isn't in the library, say so.** Don't invent. Don't fall back to general
    knowledge without flagging the switch explicitly.
 4. **Other inline reads:** `lilbee_status` (what's indexed and which models are wired in),
    `lilbee_list_documents` (the file list), `lilbee_model_list` / `lilbee_model_show`
    (model surface), `lilbee_crawl_status` (poll an in-flight crawl).
 
-## Setting the corpus up (delegate to lilbee-worker)
+## Setting the library up (delegate to lilbee-worker)
 
 Long-running operations block the chat thread, so they go to the `lilbee-worker` subagent
 through your host's subagent mechanism (opencode: `@lilbee-worker` mention; Claude Code:
@@ -65,23 +65,38 @@ the Task / Agent tool). Wait for the worker to report done, then continue answer
 - `lilbee_crawl` — fetch a docs site (worker polls `lilbee_crawl_status` to completion).
 - `lilbee_model_pull` — download a model from Hugging Face.
 
-## Writing code from an indexed API reference
+## Writing code against an indexed API reference
 
-When the corpus is an API or class reference (Godot XML, a library's source, a docs site)
-and the user asks you to write code against it, your training data is outdated relative to
-the corpus. Follow this four-step workflow on every code-generation task:
+**This is the most important section for code-generation tasks.** When the indexed files
+are an API or class reference (Godot XML, a software package's source, a docs site,
+vendor SDK headers), assume your training data is outdated relative to those files and
+follow the Plan / Search / Write / Verify workflow below on every code-generation task.
+**Do not skip steps to "save time."** The benchmark difference is concrete: 0 hallucinated
+APIs with this workflow vs 4 hallucinated APIs without, in the
+[godot-level-generator benchmark](docs/benchmarks/godot-level-generator.md).
 
-1. **Plan** — list every class, method, property, and enum your solution will need.
-2. **Search** — call `lilbee_search` for each item individually. Do not skip this for any
-   class, even ones you're confident about. Check whether each class still exists or was
-   replaced by a newer variant. Verify every method signature individually.
-3. **Write** — only use class names, methods, and properties exactly as confirmed by the
-   search results. If something wasn't found, do not use it.
-4. **Verify** — before saving the file, re-search every class and method call in your code
-   via `lilbee_search`. Fix anything that doesn't match the search results exactly.
+1. **Plan.** Before writing any code, list every class, method, property, enum, signal,
+   and constant your solution will need. Be exhaustive: if your solution touches 12 named
+   things, plan for 12 searches.
+2. **Search.** Call `lilbee_search` for each item from your plan **individually**. Do not
+   batch them into a single query string. Do not skip an item because you're confident
+   about it; the point of the workflow is to verify confidence against the indexed reference.
+   For each search:
+   - Use the exact class or method name as the query.
+   - If a class returns nothing, it was renamed or removed in this version. Search for
+     near-matches.
+   - For each method, confirm the exact signature (parameter order, types, defaults,
+     return type) from the chunk text.
+3. **Write.** Only use class names, methods, properties, and constants exactly as
+   confirmed by the search results. If a name wasn't found, do not use it. If a signature
+   doesn't match what you'd write, rewrite the code to fit the confirmed signature, not
+   the other way around.
+4. **Verify.** Before the final write of the file, re-search every name in the code you
+   just wrote. Treat this as an audit, not a sanity check. Fix any mismatch by rewriting
+   the code, not by ignoring the search result.
 
-This is the difference between a 0-hallucinated-API run and a 4-hallucinated-API run in
-the [godot-level-generator benchmark](docs/benchmarks/godot-level-generator.md).
+If you find yourself thinking "I already know this API, I can skip step 2 for this one,"
+that is the exact moment the benchmark says you start hallucinating. Run the search.
 
 ## End-to-end shape of a question that needs new content
 

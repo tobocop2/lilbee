@@ -35,11 +35,13 @@ Sleep 400ms
 Enter
 Sleep 10s
 
-# Specific prompt: name the godot APIs to use so the agent goes
-# straight to lilbee_search and writes code instead of asking
-# clarifying questions. Names TileMap + AStarGrid2D + RandomNumberGenerator
-# explicitly so each show up as a separate lilbee_search hit on camera.
-Type "Use lilbee_search to look up the godot 4 docs you need, then write a procedural roguelike-dungeon level generator: place wall and floor tiles via TileMap, scatter collectibles with RandomNumberGenerator, connect rooms with AStarGrid2D pathfinding. Cite the godot-classes XML for every method you call."
+# Directive natural prompt -- specific enough that the agent goes
+# straight to lilbee_search + write instead of asking what to do.
+# AGENTS.md handles "use lilbee_search" and "cite file:line" so the
+# prompt doesn't have to. The first two sentences nail the deliverable;
+# the third is a hint about which godot 4 APIs are in scope so the
+# agent doesn't have to guess what to look up.
+Type "Write a procedural roguelike level generator in Godot 4. Rooms connected by corridors, walls and floors on a TileMap, collectibles scattered around with RandomNumberGenerator, A* pathfinding via AStarGrid2D for connectivity. Use my godot-classes/ reference, no clarifying questions."
 Sleep 800ms
 Enter
 

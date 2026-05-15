@@ -27,7 +27,7 @@ download in parallel and you can keep working while they pull.
 
 ### Add documents
 
-`/add <path>` copies the file into the corpus and embeds it. Switching to the Task Center
+`/add <path>` copies the file into your library and embeds it. Switching to the Task Center
 mid-ingest shows the live progress bar; once it lands you can ask away.
 
 ![add and task center](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
@@ -56,7 +56,7 @@ API-Keys, System.
 
 ### Crawl a URL
 
-`/crawl <url>` fetches a page (or a small site) into the corpus, then you can ask
+`/crawl <url>` fetches a page (or a small site) into your library, then you can ask
 questions against it with the same cited-answer flow.
 
 ![crawl Wikipedia + cited answer](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
@@ -82,13 +82,21 @@ project ships with a drop-in [`AGENTS.md`](../demos/AGENTS.md), a
 long-running ops (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`, `lilbee_model_pull`), and
 the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill
 format) that documents every MCP tool with a quick-vs-long-cost split. The agent runs on
-the dev's default cloud model (MiniMax M2.7); the lilbee corpus stays local.
+the dev's default cloud model (MiniMax M2.7); the lilbee library stays local.
 
 What you'll see on screen, inline:
 
 - `# lilbee_<tool>` for each tool call, with the query the agent picked.
 - `Lilbee-Worker Task — Index ...` whenever indexing is delegated to the subagent.
 - The cited answer (`cv-manual.pdf, page N` or `src/lilbee/.../file.py:LINE-RANGE`).
+
+### lilbee talking to lilbee
+
+The headline demo: an agent indexes lilbee's own source through lilbee's MCP server,
+then answers questions about how lilbee works, citing `src/lilbee/.../file.py:LINE`
+for every claim.
+
+![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
 ### Indexing and querying an owner's manual
 
@@ -99,7 +107,7 @@ then `lilbee_search`-es for the oil capacity and returns a page-cited answer.
 
 ### Writing Godot 4 code against the indexed class reference
 
-Same shape against an XML reference corpus. The agent indexes Godot 4's class reference
+Same shape against an XML reference library. The agent indexes Godot 4's class reference
 (810 XML files, 3449 chunks) via `lilbee-worker`, then `lilbee_search`-es for
 `AStarGrid2D`, `TileMap`, `RandomNumberGenerator`, and friends as it writes a procedural
 level generator. Every API call is backed by a `godot-classes/<Class>.xml:line` citation.

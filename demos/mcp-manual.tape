@@ -27,14 +27,18 @@ Sleep 400ms
 Enter
 Sleep 8s
 
-# One turn: index + cited answer. The agent runs lilbee_add via the
-# lilbee-worker subagent (~30s), then lilbee_status, then lilbee_search,
-# then writes the cited answer. Measured ~75s end-to-end on M1; 90s of
-# Sleep covers it with light margin and avoids a long idle tail.
-Type "Index cv-manual.pdf, then tell me my oil capacity. Cite the page."
+# Substantive prompt that produces a multi-row cited table -- the kind
+# of structured output a frontier model is good at when the underlying
+# data is in front of it. Verified in tmux against the indexed PDF:
+# MiniMax returns the engine-compartment fuse list (fuses 19-24 + 101-118
+# with mini/cartridge marker, amp rating, and the circuit each protects),
+# all from the manual's "Roadside Emergencies / Fuses and Relays" section.
+# Measured 1m 2s for the final-token render; the full demo (boot + index
+# ~25s + planning + render) is ~2 min end-to-end.
+Type "Index cv-manual.pdf and then make me a table of the fuses in the engine compartment with their amp ratings and the circuits they protect. Cite the page."
 Sleep 600ms
 Enter
-Sleep 90s
+Sleep 130s
 
 Screenshot demos/_out/mcp-manual.png
 Sleep 2s
