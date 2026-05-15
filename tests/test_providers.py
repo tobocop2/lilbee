@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -3508,6 +3509,66 @@ class TestFilterOptions:
         assert "top_p" not in result
 
 
+class TestTrainCtxFromMeta:
+    """``train_ctx_from_meta`` is the single guard against ``context_length=0``.
+
+    All three native llama-cpp loaders (chat, embed, vision) route through
+    it. Each verifies its own integration test in TestLoadLlama /
+    TestMtmdBackend; these tests cover the helper in isolation so an
+    edge case can be added here without instantiating a Llama mock.
+    """
+
+    @staticmethod
+    def _path() -> Path:
+        return Path("/tmp/test-model.gguf")
+
+    def test_returns_metadata_value_when_positive(self) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        meta = {"context_length": "8192"}
+        assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 8192
+
+    def test_returns_fallback_when_meta_is_none(self) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        assert train_ctx_from_meta(None, fallback=2048, model_path=self._path()) == 2048
+
+    def test_returns_fallback_when_context_length_missing(self) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        assert train_ctx_from_meta({}, fallback=4096, model_path=self._path()) == 4096
+
+    def test_clamps_zero_to_fallback(self) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        meta = {"context_length": "0"}
+        assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
+
+    def test_clamps_negative_to_fallback(self) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        meta = {"context_length": "-1"}
+        assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
+
+    def test_clamps_unparseable_to_fallback(self, caplog) -> None:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        meta = {"context_length": "garbage"}
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.llama_cpp.gguf_meta"):
+            assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
+        assert any("unparseable" in rec.message for rec in caplog.records)
+
+    def test_each_loader_uses_its_own_fallback(self) -> None:
+        """Embed / chat / vision picks reflect their respective task budgets."""
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        zero = {"context_length": "0"}
+        path = self._path()
+        assert train_ctx_from_meta(zero, fallback=2048, model_path=path) == 2048  # embed
+        assert train_ctx_from_meta(zero, fallback=8192, model_path=path) == 8192  # chat
+        assert train_ctx_from_meta(zero, fallback=4096, model_path=path) == 4096  # vision
+
+
 class TestReadGgufMetadata:
     def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata returns parsed fields."""
@@ -3629,6 +3690,68 @@ class TestLoadLlama:
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
         assert "n_batch" not in call_kwargs
+
+    def test_embedding_clamps_zero_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """GGUF metadata reporting context_length=0 falls back to the safe default.
+
+        Several published GGUFs (nomic-embed, some Qwen3 variants) emit a
+        zero training context in their headers. Passing ``n_ctx=0`` into
+        ``Llama(embedding=True)`` propagates as ``n_batch=0`` /
+        ``n_ubatch=0``, which trips ggml's Vulkan dispatch into UB and
+        surfaces as STATUS_HEAP_CORRUPTION on Windows.
+        """
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "0"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
+        assert call_kwargs["n_ubatch"] == 2048
+
+    def test_embedding_clamps_negative_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Negative ``context_length`` (corrupt metadata) also falls back."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "-1"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
+
+    def test_embedding_clamps_unparseable_context_length_metadata(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """Non-numeric ``context_length`` falls back rather than crashing the loader."""
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+            return_value={"context_length": "garbage"},
+        ):
+            load_llama(Path("/test.gguf"), mode="embed")
+
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 2048
+        assert call_kwargs["n_batch"] == 2048
 
 
 class TestFindMmprojForModel:

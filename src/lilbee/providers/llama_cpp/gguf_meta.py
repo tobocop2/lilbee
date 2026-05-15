@@ -23,6 +23,45 @@ _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 
 
+def train_ctx_from_meta(
+    meta: dict[str, str] | None,
+    *,
+    fallback: int,
+    model_path: Path,
+) -> int:
+    """Resolve ``<arch>.context_length`` from GGUF metadata, clamping junk to ``fallback``.
+
+    Some published GGUFs (nomic-embed, certain Qwen3 and vision builds)
+    report ``context_length=0`` in their headers. Passing zero into
+    ``Llama(n_ctx=...)`` cascades into ``n_batch=0`` / ``n_ubatch=0``,
+    which trips ggml's Vulkan dispatch into undefined behaviour and
+    surfaces as STATUS_HEAP_CORRUPTION on Windows. Unparseable values
+    and non-positive integers both route to ``fallback``.
+    """
+    if not meta:
+        return fallback
+    raw = meta.get("context_length", str(fallback))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "GGUF %s has unparseable context_length=%r; using %d",
+            model_path.name,
+            raw,
+            fallback,
+        )
+        return fallback
+    if value <= 0:
+        log.warning(
+            "GGUF %s reports context_length=%d; using %d to avoid n_batch=0 crash",
+            model_path.name,
+            value,
+            fallback,
+        )
+        return fallback
+    return value
+
+
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
 

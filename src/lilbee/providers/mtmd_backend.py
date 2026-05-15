@@ -12,7 +12,11 @@ from gguf import GGUFReader
 
 from lilbee.core.config import cfg
 from lilbee.providers.llama_cpp.abort_signal import abort_callback
-from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model, read_gguf_metadata
+from lilbee.providers.llama_cpp.gguf_meta import (
+    find_mmproj_for_model,
+    read_gguf_metadata,
+    train_ctx_from_meta,
+)
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,
@@ -179,5 +183,4 @@ def _resolve_vision_n_ctx(model_path: Path) -> int:
     except Exception:
         log.debug("read_gguf_metadata failed for vision %s", model_path, exc_info=True)
         meta = None
-    train_ctx = int((meta or {}).get("context_length", "0"))
-    return train_ctx if train_ctx > 0 else _VISION_FALLBACK_N_CTX
+    return train_ctx_from_meta(meta, fallback=_VISION_FALLBACK_N_CTX, model_path=model_path)

@@ -504,6 +504,43 @@ def test_worker_crash_error_carries_role_name() -> None:
     assert "embed" in str(err)
 
 
+def test_worker_crash_error_inlines_log_tail(tmp_path) -> None:
+    """When ``log_path`` exists, the crash message inlines its last bytes.
+
+    Verifies the field-debugging hook for the Windows heap-corruption path:
+    no Python exception serializes through the pipe, so the only signal a
+    user sees comes from the worker's own log tail.
+    """
+    log_file = tmp_path / "worker-embed.log"
+    log_file.write_text(
+        "boot\nload model\nLLAMA_ASSERT failed: n_batch == 0\nworker dying\n",
+        encoding="utf-8",
+    )
+    err = WorkerCrashError("embed", log_path=str(log_file))
+    assert err.log_tail
+    assert "LLAMA_ASSERT" in str(err)
+    assert "worker dying" in err.log_tail
+    assert str(log_file) in str(err)
+
+
+def test_worker_crash_error_handles_missing_log_file(tmp_path) -> None:
+    """A non-existent log path leaves ``log_tail`` empty without raising."""
+    missing = tmp_path / "absent.log"
+    err = WorkerCrashError("embed", log_path=str(missing))
+    assert err.log_tail == ""
+    assert "Last log lines" not in str(err)
+    assert str(missing) in str(err)
+
+
+def test_worker_crash_error_caps_log_tail_size(tmp_path) -> None:
+    """Long worker logs get tail-clamped instead of dumping the whole file."""
+    log_file = tmp_path / "worker-embed.log"
+    log_file.write_bytes(b"X" * (16 * 1024) + b"\nTAIL_MARKER\n")
+    err = WorkerCrashError("embed", log_path=str(log_file))
+    assert "TAIL_MARKER" in err.log_tail
+    assert len(err.log_tail) < 16 * 1024
+
+
 def test_pipe_spawner_uses_spawn_context() -> None:
     """The pipe spawner pins the multiprocessing context to spawn."""
     spawner = PipeSpawner()
@@ -709,20 +746,25 @@ async def test_ping_raises_worker_crash_when_health_send_fails() -> None:
             child_health.close()
 
 
-def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
-    """Without LILBEE_DATA the log path resolver returns None."""
-    from lilbee.providers.worker.transport_pipe import _worker_log_path
-
-    monkeypatch.delenv("LILBEE_DATA", raising=False)
-    assert _worker_log_path("embed") is None
-
-
 def test_worker_log_path_joins_data_dir_when_env_set(monkeypatch, tmp_path) -> None:
     """With LILBEE_DATA set, the path lands under <data>/logs/worker-<role>.log."""
     from lilbee.providers.worker.transport_pipe import _worker_log_path
 
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     assert _worker_log_path("chat") == str(tmp_path / "logs" / "worker-chat.log")
+
+
+def test_worker_log_path_returns_none_when_env_unset(monkeypatch) -> None:
+    """The env-only resolver returns None when ``LILBEE_DATA`` is missing.
+
+    In production this is unreachable because ``_build_cfg`` exports the
+    env var at cfg construction. The test covers the explicit-delenv
+    contract used by other tests that need a "no log path" state.
+    """
+    from lilbee.providers.worker.transport_pipe import _worker_log_path
+
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
+    assert _worker_log_path("embed") is None
 
 
 def test_format_exit_reason_for_normal_exit_code() -> None:

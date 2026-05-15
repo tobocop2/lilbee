@@ -28,6 +28,11 @@ log = logging.getLogger(__name__)
 # not to show up as CPU noise.
 _DATA_POLL_INTERVAL_S = 0.1
 
+#: Subdirectory of ``cfg.data_root`` where per-role worker logs land.
+#: Shared with :mod:`lilbee.providers.worker.transport_pipe` so the parent's
+#: :class:`WorkerCrashError` points at the exact file the worker wrote.
+WORKER_LOGS_DIR_NAME = "logs"
+
 
 def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swap
     """Send stdout/stderr to /dev/null so llama-cpp's C-level prints stay quiet."""
@@ -40,11 +45,17 @@ def redirect_stdio_to_devnull() -> None:  # pragma: no cover - subprocess fd swa
 
 
 def configure_worker_logging(role: WorkerRole) -> None:
-    """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log`` if set."""
+    """Append worker logs to ``$LILBEE_DATA/logs/worker-<role>.log``.
+
+    ``LILBEE_DATA`` is canonicalized at cfg construction
+    (:func:`lilbee.core.config.model._build_cfg`) and at every write
+    site that switches the data root, so the env is the single source
+    of truth.
+    """
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
         return
-    logs_dir = os.path.join(data_dir, "logs")
+    logs_dir = os.path.join(data_dir, WORKER_LOGS_DIR_NAME)
     with contextlib.suppress(OSError):
         os.makedirs(logs_dir, exist_ok=True)
     log_path = os.path.join(logs_dir, f"worker-{role}.log")

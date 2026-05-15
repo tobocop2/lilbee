@@ -341,11 +341,17 @@ def test_configure_worker_logging_writes_to_logs_dir(tmp_path, monkeypatch) -> N
 
 
 def test_configure_worker_logging_noop_when_lilbee_data_unset(monkeypatch) -> None:
-    monkeypatch.delenv("LILBEE_DATA", raising=False)
+    """Without ``LILBEE_DATA`` the worker installs no log handler.
+
+    Production never sees this state because ``_build_cfg`` canonicalizes
+    the env at cfg construction; the test pins the contract for tests that
+    explicitly clear the variable.
+    """
     import logging as _logging
 
     from lilbee.providers.worker.worker_runtime import configure_worker_logging
 
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     root = _logging.getLogger()
     handlers_before = len(root.handlers)
     configure_worker_logging("embed")
