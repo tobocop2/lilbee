@@ -20,9 +20,11 @@ import pytest
 os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
 from lilbee.catalog import CatalogModel
+from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
+from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -442,10 +444,6 @@ def make_test_catalog_model(
 
 def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
     """Install a tiny fake GGUF under ``cfg.models_dir`` and return its canonical ref."""
-    from lilbee.catalog.refs import format_native_gguf_ref
-    from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
-
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
     source = cfg.models_dir / f"_seed-{gguf_filename}"
     source.write_bytes(b"GGUF\x00")
