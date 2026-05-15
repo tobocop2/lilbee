@@ -97,6 +97,7 @@ _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 _WORKER_FETCH_SEARCH = "fetch_hf_search"
 _WORKER_FETCH_FRONTIER = "fetch_frontier_models"
+_WORKER_FETCH_INSTALLED = "fetch_installed_names"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
@@ -485,17 +486,25 @@ class CatalogScreen(Screen[None]):
             return
         self._focus_first_grid()
 
-    def _fetch_installed_names(self) -> None:
+    @work(thread=True, name=_WORKER_FETCH_INSTALLED, exit_on_error=False)
+    def _fetch_installed_names(self) -> list[str]:
         """Populate installed identities from the shared ModelManager cache.
 
-        The set contains both the canonical ref (``hf_repo/filename``) and
-        the bare ``hf_repo`` so catalog rows whose ref is the repo alone
-        still light up as installed when at least one quant of that repo
-        has a manifest.
+        Runs off the UI thread because ``list_native_identities`` walks the
+        registry on disk; on Windows with Defender real-time scanning the
+        walk can take seconds and ``on_mount`` would otherwise call it on
+        the main loop. The result lands back via ``_apply_worker_result``
+        so it picks up the same ``_data_version`` bump + view refresh as
+        every other catalog worker. The set contains both the canonical
+        ref (``hf_repo/filename``) and the bare ``hf_repo`` so catalog
+        rows whose ref is the repo alone still light up as installed when
+        at least one quant of that repo has a manifest.
         """
-        with contextlib.suppress(Exception):
-            self._installed_names = set(get_services().model_manager.list_native_identities())
-            self._data_version += 1
+        try:
+            return list(get_services().model_manager.list_native_identities())
+        except Exception:
+            log.debug("Failed to fetch installed model identities", exc_info=True)
+            return []
 
     def _active_tab_id(self) -> str:
         """Return the cached active tab id; falls back to TAB_CHAT pre-mount.
@@ -838,6 +847,8 @@ class CatalogScreen(Screen[None]):
         elif name == _WORKER_FETCH_FRONTIER:
             self._frontier_rows = result
             self._populate_library_list()
+        elif name == _WORKER_FETCH_INSTALLED:
+            self._installed_names = set(result)
         else:
             return False
         self._data_version += 1
