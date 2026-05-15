@@ -77,11 +77,27 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         self._try_submit()
 
     @staticmethod
+    def _parse_optional_non_negative_int(value: str) -> int | None:
+        """Parse a non-negative integer from *value*; empty string returns None.
+
+        None means "no cap" in the crawl API. Zero is meaningful for the
+        depth field (single-URL crawl per the crawler contract). Raises
+        ValueError on non-numeric input or negative integers.
+        """
+        if not value:
+            return None
+        n = int(value)
+        if n < 0:
+            raise ValueError
+        return n
+
+    @staticmethod
     def _parse_optional_positive_int(value: str) -> int | None:
         """Parse a positive integer from *value*; empty string returns None.
 
         None means "no cap" in the crawl API. Raises ValueError on non-numeric
-        input or non-positive integers.
+        input or non-positive integers. Used for fields like max_pages where
+        zero has no useful meaning.
         """
         if not value:
             return None
@@ -114,7 +130,8 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return CrawlParams(url=url, depth=0, max_pages=None)
 
         try:
-            depth = self._parse_optional_positive_int(depth_str)
+            # depth=0 means "single URL" per the crawler contract; allow it.
+            depth = self._parse_optional_non_negative_int(depth_str)
         except ValueError:
             return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
 
