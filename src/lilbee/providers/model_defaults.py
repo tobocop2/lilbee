@@ -120,7 +120,9 @@ def read_gguf_defaults(metadata: dict[str, str]) -> ModelDefaults:
                 log.debug("Skipping unparseable GGUF key %s=%r", gguf_key, metadata[gguf_key])
     if "context_length" in metadata:
         with contextlib.suppress(ValueError, TypeError):
-            values["num_ctx"] = int(metadata["context_length"])
+            ctx = int(metadata["context_length"])
+            if ctx > 0:
+                values["num_ctx"] = ctx
     return ModelDefaults(**values)
 
 

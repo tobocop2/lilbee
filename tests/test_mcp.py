@@ -1,5 +1,6 @@
 """Tests for the MCP server tools."""
 
+import os
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -420,6 +421,23 @@ class TestInit:
 
         with pytest.raises(ValidationError, match="must be a HuggingFace ref"):
             cfg.chat_model = "qwen3:0.6b"
+
+    def test_init_exports_lilbee_data_env(self, tmp_path, monkeypatch):
+        """``init`` exports ``LILBEE_DATA`` so MCP-spawned workers can write logs.
+
+        Parity with ``cli/app.py::_apply_data_root``. Without this, worker
+        subprocesses spawned during an MCP session (chat / embed / vision)
+        re-import lilbee with a fresh cfg, lose the project's data root,
+        and silently drop their log files on the floor. On Windows this
+        turns a worker heap-corruption crash into an opaque "subprocess
+        exited unexpectedly" with no diagnostic trail.
+        """
+        target = tmp_path / "myproject"
+        target.mkdir()
+        monkeypatch.delenv("LILBEE_DATA", raising=False)
+
+        init(str(target))
+        assert os.environ.get("LILBEE_DATA") == str(target)
 
     def test_init_overlays_per_root_config_toml(self, tmp_path):
         """init() must re-read the project base's config.toml, the same fix as
