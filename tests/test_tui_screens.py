@@ -2705,6 +2705,10 @@ async def test_chat_slash_theme_no_arg():
 
 
 async def test_chat_slash_delete_with_match(mock_svc):
+    """``/delete <name>`` deletes both the chunks and the source row.
+
+    Awaits the worker before asserting so the dispatch lands first.
+    """
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
@@ -2713,6 +2717,8 @@ async def test_chat_slash_delete_with_match(mock_svc):
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         app.screen._cmd_delete("notes.md")
+        await app.screen.workers.wait_for_complete()
+        await _pilot.pause()
         mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
         mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
@@ -2726,6 +2732,8 @@ async def test_chat_slash_delete_not_found(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("nonexistent.md")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "Not found" in mock_notify.call_args[0][0]
 
@@ -2739,6 +2747,8 @@ async def test_chat_slash_delete_no_arg(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "Documents:" in mock_notify.call_args[0][0]
 
@@ -2750,6 +2760,8 @@ async def test_chat_slash_delete_store_error(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("x")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "No documents" in mock_notify.call_args[0][0]
 
@@ -2761,6 +2773,8 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
         set_services(mock_svc)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_delete("x")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
             assert "No documents" in mock_notify.call_args[0][0]
 
@@ -3308,6 +3322,8 @@ async def test_chat_slash_delete_dispatch():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/delete")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
             mock_notify.assert_called_once()
 
 
@@ -11207,6 +11223,7 @@ async def test_catalog_auto_fetches_hf_on_mount():
     so the initial mount only costs one HF round-trip.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from tests._async_wait import wait_until
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -11214,7 +11231,10 @@ async def test_catalog_auto_fetches_hf_on_mount():
             screen = CatalogScreen()
             with patch.object(CatalogScreen, "_fetch_initial_hf_models_for_task") as mock_fetch:
                 app.push_screen(screen)
-                await _pilot.pause()
+                await wait_until(
+                    _pilot,
+                    lambda: any(c.args[0] == ModelTask.CHAT for c in mock_fetch.call_args_list),
+                )
                 tasks_called = [c.args[0] for c in mock_fetch.call_args_list]
                 assert ModelTask.CHAT in tasks_called
                 assert ModelTask.EMBEDDING not in tasks_called
@@ -11936,6 +11956,45 @@ async def test_settings_embed_picker_against_populated_store_pushes_confirm():
             mock_apply.assert_not_called()
 
 
+async def test_settings_embed_picker_against_empty_store_applies_directly():
+    """Empty store skips the confirm dialog and applies the picker choice immediately."""
+    from unittest.mock import patch
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            screen._on_model_picker_dismissed("embedding_model", "fake/new-embed.gguf")
+            await screen.workers.wait_for_complete()
+            await pilot.pause()
+            mock_apply.assert_called_once()
+            args = mock_apply.call_args.args
+            assert args[1] == "embedding_model"
+            assert args[2] == "fake/new-embed.gguf"
+
+
+def test_settings_push_embed_swap_confirm_no_op_when_unmounted():
+    """``_push_embed_swap_confirm`` short-circuits if the screen unmounted."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    screen = SettingsScreen.__new__(SettingsScreen)
+    # No ``app`` attribute and no DOM means push_screen would crash; the
+    # ``is_mounted`` guard returns before reaching it.
+    SettingsScreen.is_mounted = property(lambda self: False)
+    try:
+        screen._push_embed_swap_confirm("embedding_model", "fake/new.gguf")
+    finally:
+        del SettingsScreen.is_mounted
+
+
 def test_settings_model_picker_dismissed_no_op_on_blank_ref():
     """A blank/None ref short-circuits before reaching apply_active_model."""
     from unittest.mock import patch
@@ -12200,6 +12259,7 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
     from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
+    from tests._async_wait import wait_until
 
     row = LocalCatalogRow(
         name="m0",
@@ -12227,13 +12287,10 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             grid = GridSelect(min_column_width=20)
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
-            for _ in range(20):
-                if grid.children:
-                    break
-                await _pilot.pause()
+            await wait_until(_pilot, lambda: bool(grid.children))
             grid.highlighted = 0
             grid.focus()
-            await _pilot.pause()
+            await wait_until(_pilot, lambda: grid.highlighted == 0)
             with patch.object(screen, "_focused_grid", return_value=grid):
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
@@ -12243,6 +12300,7 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
     from textual.widgets import Static
 
     from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from tests._async_wait import wait_until
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -12261,7 +12319,15 @@ async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
                 await _pilot.pause()
                 screen._loading_more = True
                 screen._tick_loading_spinner()
-                await _pilot.pause()
+                await wait_until(
+                    _pilot,
+                    lambda: (
+                        "loading"
+                        in str(
+                            screen.query_one("#grid-chat > .scroll-hint", Static).render()
+                        ).lower()
+                    ),
+                )
                 hint = screen.query_one("#grid-chat > .scroll-hint", Static)
                 assert "loading" in str(hint.render()).lower()
 
