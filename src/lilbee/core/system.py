@@ -4,6 +4,9 @@ import os
 import sys
 from pathlib import Path
 
+#: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
+LOCAL_ROOT_DIRNAME = ".lilbee"
+
 
 def default_data_dir() -> Path:
     """Return platform-appropriate data directory.
@@ -21,16 +24,13 @@ def default_data_dir() -> Path:
 
 
 def find_local_root(start: Path | None = None) -> Path | None:
-    """Walk up from start (default: cwd) looking for .lilbee/ directory."""
-    current = start or Path.cwd()
-    while True:
-        candidate = current / ".lilbee"
-        if candidate.is_dir():
-            return candidate
-        parent = current.parent
-        if parent == current:
-            return None
-        current = parent
+    """Walk up from start (default: cwd) looking for a ``.lilbee/`` directory."""
+    start = start or Path.cwd()
+    for candidate in (start, *start.parents):
+        marker = candidate / LOCAL_ROOT_DIRNAME
+        if marker.is_dir():
+            return marker
+    return None
 
 
 def canonical_models_dir() -> Path:

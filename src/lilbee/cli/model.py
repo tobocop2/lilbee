@@ -196,9 +196,9 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
     json_output({**final.model_dump(), "event": PullEvent.DONE.value})
 
 
-def _pull_rich_progress(ref: str, src: ModelSource) -> None:
-    """Drive a Rich progress bar during a native HuggingFace download."""
-    err_console = Console(stderr=True)
+def _pull_interactive_progress(ref: str, src: ModelSource) -> None:
+    """Drive Rich's Live progress bar during a native HuggingFace download."""
+    err_console = Console(stderr=True, force_terminal=True)
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -241,7 +241,7 @@ def pull_cmd(
     if cfg.json_mode:
         _pull_json_stream(ref, src)
     else:
-        _pull_rich_progress(ref, src)
+        _pull_interactive_progress(ref, src)
 
 
 def _confirm_remove_or_exit(ref: str, yes: bool) -> None:
