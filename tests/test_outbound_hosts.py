@@ -28,9 +28,17 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "en.wikipedia.org",
         "example.com",
         "github.com",
-        # Citations for the dual-vendor Vulkan ICD workaround in gpu_select.py.
+        # Citations for the dual-vendor Vulkan ICD workaround in
+        # gpu_select.py, vulkan_icd_discovery.py, and log_dispatch.py.
+        "alegruz.github.io",
+        "community.khronos.org",
+        "devicehunt.com",
+        "docs.flatpak.org",
+        "learn.microsoft.com",
         "nvidia.custhelp.com",
+        "pcisig.com",
         "projects.blender.org",
+        "specifications.freedesktop.org",
     }
 )
 

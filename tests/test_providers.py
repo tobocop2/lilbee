@@ -1545,14 +1545,21 @@ class TestLitellmResponseView:
 
 
 class TestLitellmAvailable:
-    """Exercises the un-patched ``litellm_available`` import probe."""
+    """Exercises the un-patched ``litellm_available`` install probe.
+
+    The helper uses ``importlib.util.find_spec`` so the check is cheap to
+    call on the UI thread (Settings's ``_FEATURE_GATED_GROUPS`` hits it
+    synchronously during ``compose``). Mocking ``find_spec`` is the right
+    boundary for these tests; ``sys.modules`` doesn't matter for the
+    spec-lookup path.
+    """
 
     @pytest.mark.real_litellm_probe
     def test_returns_false_when_not_installed(self) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
         litellm_available.cache_clear()
-        with mock.patch.dict("sys.modules", {"litellm": None}):
+        with mock.patch("importlib.util.find_spec", return_value=None):
             assert litellm_available() is False
         litellm_available.cache_clear()
 
@@ -1561,8 +1568,33 @@ class TestLitellmAvailable:
         from lilbee.providers.litellm_sdk import litellm_available
 
         litellm_available.cache_clear()
-        with mock.patch.dict("sys.modules", {"litellm": mock.MagicMock()}):
+        with mock.patch(
+            "importlib.util.find_spec",
+            return_value=mock.MagicMock(name="litellm_spec"),
+        ):
             assert litellm_available() is True
+        litellm_available.cache_clear()
+
+    @pytest.mark.real_litellm_probe
+    def test_does_not_execute_module_init(self) -> None:
+        """Regression guard: the probe must not import the package itself.
+
+        ``litellm.__init__`` loads provider plugins and takes multi-second
+        time on Windows. Settings's compose calls this synchronously, so
+        executing the module would block the UI thread on every fresh
+        process. Asserting that no ``litellm`` entry lands in
+        ``sys.modules`` after the probe runs codifies the contract.
+        """
+        from lilbee.providers.litellm_sdk import litellm_available
+
+        litellm_available.cache_clear()
+        with mock.patch(
+            "importlib.util.find_spec",
+            return_value=mock.MagicMock(name="litellm_spec"),
+        ):
+            had_module = "litellm" in sys.modules
+            litellm_available()
+            assert ("litellm" in sys.modules) is had_module
         litellm_available.cache_clear()
 
 
@@ -2310,46 +2342,607 @@ class TestVulkanGpuSelect:
         assert gpu_select._load_vulkan_loader() is None
 
 
-class TestDisableConflictingVulkanIcds:
-    """``disable_conflicting_vulkan_icds`` automates the NVIDIA-recommended ICD pin on Windows.
+class TestClassifyManifestVendor:
+    """``_classify_manifest_vendor`` maps an ICD manifest filename to a vendor."""
 
-    On a dual-vendor Windows box (NVIDIA dGPU + AMD/Intel iGPU) the
-    Vulkan loader loads every registered ICD into the process at
-    ``vkCreateInstance`` time. The AMD ICD has a known heap-corruption
-    interaction with this layout that takes the worker subprocess down
-    with ``STATUS_HEAP_CORRUPTION``. The helper picks the discrete
-    adapter's vendor and returns a ``VK_LOADER_DRIVERS_DISABLE`` glob
-    that keeps that vendor's ICD only.
-    """
-
-    def test_pins_nvidia_when_amd_igpu_also_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """NVIDIA dGPU + AMD iGPU on Windows -> disable AMD ICD globs."""
-        from lilbee.providers.llama_cpp import gpu_select
+    def test_nvidia_manifest_is_classified(self) -> None:
         from lilbee.providers.llama_cpp.gpu_select import (
             PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
+            _classify_manifest_vendor,
         )
+
+        assert _classify_manifest_vendor("nv-vk64.json") is PCIVendorID.NVIDIA
+
+    def test_amdvlk_manifest_is_classified(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _classify_manifest_vendor,
+        )
+
+        assert _classify_manifest_vendor("amdvlk64.json") is PCIVendorID.AMD
+
+    def test_radeon_manifest_is_classified_as_amd(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _classify_manifest_vendor,
+        )
+
+        assert _classify_manifest_vendor("radeon_icd.x64.json") is PCIVendorID.AMD
+
+    def test_intel_manifest_is_classified(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _classify_manifest_vendor,
+        )
+
+        assert _classify_manifest_vendor("intel_icd.x64.json") is PCIVendorID.INTEL
+        assert _classify_manifest_vendor("igvk_icd.json") is PCIVendorID.INTEL
+
+    def test_classifier_is_case_insensitive(self) -> None:
+        """Windows file paths are case-insensitive; the loader's match is too."""
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _classify_manifest_vendor,
+        )
+
+        assert _classify_manifest_vendor("NV-VK64.JSON") is PCIVendorID.NVIDIA
+        assert _classify_manifest_vendor("AMDVLK64.JSON") is PCIVendorID.AMD
+
+    def test_unknown_manifest_returns_none(self) -> None:
+        """A manifest filename we don't recognise has no glob we can disable, so skip it."""
+        from lilbee.providers.llama_cpp.gpu_select import _classify_manifest_vendor
+
+        assert _classify_manifest_vendor("mesa_dzn.json") is None
+        assert _classify_manifest_vendor("microsoft_dozen.json") is None
+
+
+class TestSelectBestVendor:
+    """``_select_best_vendor`` walks the hardcoded preference order."""
+
+    def test_nvidia_wins_over_amd(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _select_best_vendor,
+        )
+
+        assert _select_best_vendor({PCIVendorID.NVIDIA, PCIVendorID.AMD}) is PCIVendorID.NVIDIA
+
+    def test_amd_wins_over_intel(self) -> None:
+        """AMD discrete + Intel iGPU laptops: keep the discrete card."""
+        from lilbee.providers.llama_cpp.gpu_select import (
+            PCIVendorID,
+            _select_best_vendor,
+        )
+
+        assert _select_best_vendor({PCIVendorID.AMD, PCIVendorID.INTEL}) is PCIVendorID.AMD
+
+    def test_returns_none_on_empty_set(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import _select_best_vendor
+
+        assert _select_best_vendor(set()) is None
+
+
+class TestVulkanVendorsPresent:
+    """``_vulkan_vendors_present`` walks manifest paths, never the Vulkan loader."""
+
+    def test_collects_vendors_from_windows_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows-style backslash paths classify by filename correctly."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        manifests = [
+            r"C:\Windows\System32\nv-vk64.json",
+            r"C:\Windows\System32\DriverStore\FileRepository\amdvlk64.inf_amd64_abc\amdvlk64.json",
+        ]
+        monkeypatch.setattr(
+            gpu_select,
+            "iter_vulkan_manifest_paths",
+            lambda: iter(manifests),
+        )
+        assert gpu_select._vulkan_vendors_present() == {
+            PCIVendorID.NVIDIA,
+            PCIVendorID.AMD,
+        }
+
+    def test_collects_vendors_from_linux_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """POSIX-style forward-slash paths classify by filename correctly.
+
+        Mesa RADV ships ``radeon_icd.x86_64.json`` (matches ``radeon*``),
+        NVIDIA proprietary ships ``nvidia_icd.json`` (matches ``nv*``).
+        """
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        manifests = [
+            "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+            "/usr/share/vulkan/icd.d/nvidia_icd.json",
+            "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+        ]
+        monkeypatch.setattr(
+            gpu_select,
+            "iter_vulkan_manifest_paths",
+            lambda: iter(manifests),
+        )
+        assert gpu_select._vulkan_vendors_present() == {
+            PCIVendorID.NVIDIA,
+            PCIVendorID.AMD,
+            PCIVendorID.INTEL,
+        }
+
+    def test_linux_amdvlk_manifest_classifies_as_amd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux AMDVLK ships as ``amd_icd64.json`` (no leading ``amdvlk`` prefix)."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(
+            gpu_select,
+            "iter_vulkan_manifest_paths",
+            lambda: iter(["/usr/share/vulkan/icd.d/amd_icd64.json"]),
+        )
+        assert gpu_select._vulkan_vendors_present() == {PCIVendorID.AMD}
+
+    def test_drops_unknown_manifest_filenames(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """We can only disable manifests we have a glob for; unknown ones are dropped."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        manifests = [
+            r"C:\Windows\System32\nv-vk64.json",
+            r"C:\Windows\System32\mesa_dzn.json",  # Microsoft compat pack, not a vendor we pin
+            "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",  # llvmpipe software renderer
+        ]
+        monkeypatch.setattr(
+            gpu_select,
+            "iter_vulkan_manifest_paths",
+            lambda: iter(manifests),
+        )
+        assert gpu_select._vulkan_vendors_present() == {PCIVendorID.NVIDIA}
+
+    def test_returns_empty_set_when_no_manifests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(
+            gpu_select,
+            "iter_vulkan_manifest_paths",
+            lambda: iter([]),
+        )
+        assert gpu_select._vulkan_vendors_present() == set()
+
+
+class TestIterVulkanManifestPaths:
+    """``iter_vulkan_manifest_paths`` dispatches to the platform-specific walker."""
+
+    def test_darwin_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """macOS uses Metal directly; the Vulkan loader is not on the path."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "darwin")
+        assert list(vulkan_icd_discovery.iter_vulkan_manifest_paths()) == []
+
+    def test_windows_dispatches_to_registry_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "win32")
+        monkeypatch.setattr(
+            vulkan_icd_discovery,
+            "_iter_windows_vulkan_manifest_paths",
+            lambda: iter([r"C:\Windows\System32\nv-vk64.json"]),
+        )
+        monkeypatch.setattr(
+            vulkan_icd_discovery,
+            "_iter_linux_vulkan_manifest_paths",
+            lambda: iter(["/should-not-be-called"]),
+        )
+        assert list(vulkan_icd_discovery.iter_vulkan_manifest_paths()) == [
+            r"C:\Windows\System32\nv-vk64.json"
+        ]
+
+    def test_linux_dispatches_to_xdg_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "linux")
+        monkeypatch.setattr(
+            vulkan_icd_discovery,
+            "_iter_windows_vulkan_manifest_paths",
+            lambda: iter(["should-not-be-called"]),
+        )
+        monkeypatch.setattr(
+            vulkan_icd_discovery,
+            "_iter_linux_vulkan_manifest_paths",
+            lambda: iter(["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"]),
+        )
+        assert list(vulkan_icd_discovery.iter_vulkan_manifest_paths()) == [
+            "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+        ]
+
+
+class TestIterWindowsVulkanManifestPaths:
+    """``_iter_windows_vulkan_manifest_paths`` combines every Khronos-documented registry path."""
+
+    def test_combines_khronos_and_pnp_sources(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The iterator must surface manifests from BOTH the legacy key and the PnP class walk.
+
+        A regression here would silently miss either AMD adapters (live in
+        the PnP path) or Microsoft software ICDs (live under
+        ``Khronos\\Vulkan\\Drivers``).
+        """
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg_stub = mock.MagicMock(name="winreg")
+        monkeypatch.setitem(sys.modules, "winreg", winreg_stub)
+        monkeypatch.setattr(
+            vulkan_icd_discovery,
+            "_iter_khronos_software_manifests",
+            lambda _wr: iter([r"C:\soft\nv-vk64.json"]),
+        )
+
+        pnp_calls: list[str] = []
+
+        def _fake_pnp(_wr: object, guid: str) -> object:
+            pnp_calls.append(guid)
+            return iter([rf"C:\pnp\{guid[:8]}\amdvlk64.json"])
+
+        monkeypatch.setattr(vulkan_icd_discovery, "_iter_pnp_class_manifests", _fake_pnp)
+
+        result = list(vulkan_icd_discovery._iter_windows_vulkan_manifest_paths())
+        assert r"C:\soft\nv-vk64.json" in result
+        assert any("amdvlk64.json" in path for path in result)
+        # Both PnP class GUIDs (display adapter + software component) must be walked.
+        assert vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID in pnp_calls
+        assert vulkan_icd_discovery._PNP_SOFTWARE_COMPONENT_CLASS_GUID in pnp_calls
+
+
+class TestIterLinuxVulkanManifestPaths:
+    """``_iter_linux_vulkan_manifest_paths`` walks the XDG ICD directory hierarchy.
+
+    Tests monkeypatch ``_linux_vulkan_icd_directories`` directly so they run
+    on any OS; the XDG env-var parsing in ``_xdg_dirs`` is covered separately
+    by :class:`TestXdgDirs` with strings that don't collide with Windows
+    drive-letter colons.
+    """
+
+    def test_yields_json_files_from_real_directory(self, tmp_path: Path) -> None:
+        """Globs ``*.json`` in each yielded directory, skips non-json names."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
+        (icd_dir / "nvidia_icd.json").write_text("{}")
+        (icd_dir / "radeon_icd.x86_64.json").write_text("{}")
+        (icd_dir / "not_an_icd.txt").write_text("ignored")
+
+        with mock.patch.object(
+            vulkan_icd_discovery, "_linux_vulkan_icd_directories", lambda: iter([icd_dir])
+        ):
+            result = sorted(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+
+        filenames = [os.path.basename(p) for p in result]
+        assert "nvidia_icd.json" in filenames
+        assert "radeon_icd.x86_64.json" in filenames
+        assert "not_an_icd.txt" not in filenames
+
+    def test_duplicate_directories_are_deduped(self, tmp_path: Path) -> None:
+        """A directory yielded twice must not produce duplicate manifest paths."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
+        (icd_dir / "intel_icd.x86_64.json").write_text("{}")
+
+        with mock.patch.object(
+            vulkan_icd_discovery,
+            "_linux_vulkan_icd_directories",
+            lambda: iter([icd_dir, icd_dir]),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        intel_hits = [p for p in result if p.endswith("intel_icd.x86_64.json")]
+        assert len(intel_hits) == 1
+
+    def test_missing_directories_are_silently_skipped(self, tmp_path: Path) -> None:
+        """A nonexistent directory doesn't raise; the walk continues."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        with mock.patch.object(
+            vulkan_icd_discovery,
+            "_linux_vulkan_icd_directories",
+            lambda: iter([tmp_path / "does_not_exist"]),
+        ):
+            assert list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths()) == []
+
+    def test_directory_with_dot_json_suffix_is_filtered_out(self, tmp_path: Path) -> None:
+        """``foo.json`` directories match the glob but ``is_file`` rejects them."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
+        (icd_dir / "nvidia_icd.json").write_text("{}")
+        (icd_dir / "stray_dir.json").mkdir()
+
+        with mock.patch.object(
+            vulkan_icd_discovery, "_linux_vulkan_icd_directories", lambda: iter([icd_dir])
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+        assert not any(p.endswith("stray_dir.json") for p in result)
+
+    def test_unreadable_directory_does_not_abort_walk(self, tmp_path: Path) -> None:
+        """``Path.glob`` raising OSError logs and continues to the next directory."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        readable = tmp_path / "ok"
+        readable.mkdir()
+        (readable / "nvidia_icd.json").write_text("{}")
+        unreadable = tmp_path / "bad"
+        unreadable.mkdir()
+
+        real_glob = Path.glob
+
+        def _fake_glob(self: Path, pattern: str) -> object:
+            if self == unreadable:
+                raise OSError("simulated EACCES")
+            return real_glob(self, pattern)
+
+        with (
+            mock.patch.object(Path, "glob", _fake_glob),
+            mock.patch.object(
+                vulkan_icd_discovery,
+                "_linux_vulkan_icd_directories",
+                lambda: iter([unreadable, readable]),
+            ),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+
+    def test_unexpandable_path_does_not_abort_walk(self, tmp_path: Path) -> None:
+        """``Path.expanduser`` raising ``RuntimeError`` (HOME unset) skips and continues."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        good_dir = tmp_path / "ok"
+        good_dir.mkdir()
+        (good_dir / "nvidia_icd.json").write_text("{}")
+        bad_path = Path("~/flatpak/vulkan/icd.d")
+
+        real_expanduser = Path.expanduser
+
+        def _fake_expanduser(self: Path) -> Path:
+            if self == bad_path:
+                raise RuntimeError("HOME not set")
+            return real_expanduser(self)
+
+        with (
+            mock.patch.object(Path, "expanduser", _fake_expanduser),
+            mock.patch.object(
+                vulkan_icd_discovery,
+                "_linux_vulkan_icd_directories",
+                lambda: iter([bad_path, good_dir]),
+            ),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+
+
+class TestLinuxVulkanIcdDirectories:
+    """``_linux_vulkan_icd_directories`` aggregates XDG + fixed-etc + Flatpak paths.
+
+    Comparisons go through ``PurePosixPath`` so the test runs portably on
+    Windows CI without taking a dependency on ``os.sep``.
+    """
+
+    def test_yields_expected_canonical_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """All XDG_* vars unset -> spec defaults plus fixed /etc and Flatpak trees."""
+        from pathlib import PurePosixPath
+
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"):
+            monkeypatch.delenv(var, raising=False)
+        out = [
+            PurePosixPath(str(p).replace("\\", "/"))
+            for p in vulkan_icd_discovery._linux_vulkan_icd_directories()
+        ]
+        flat = [str(p) for p in out]
+        # XDG_CONFIG_HOME / XDG_DATA_HOME defaults expand ``~``.
+        assert any(p.endswith(".config/vulkan/icd.d") for p in flat)
+        assert any(p.endswith(".local/share/vulkan/icd.d") for p in flat)
+        # XDG_CONFIG_DIRS default.
+        assert any(p.endswith("etc/xdg/vulkan/icd.d") for p in flat)
+        # SYSCONFDIR / EXTRASYSCONFDIR build-time constants.
+        assert "/usr/local/etc/vulkan/icd.d" in flat
+        assert "/etc/vulkan/icd.d" in flat
+        # XDG_DATA_DIRS default: /usr/local/share + /usr/share.
+        assert "/usr/local/share/vulkan/icd.d" in flat
+        assert "/usr/share/vulkan/icd.d" in flat
+        # Flatpak export trees (user + system).
+        assert any("flatpak/exports/share/vulkan/icd.d" in p for p in flat)
+
+
+class TestXdgDirs:
+    """``_xdg_dirs`` parses colon-separated XDG path lists.
+
+    Inputs use POSIX-style placeholders ("share", "etc") rather than
+    real ``tmp_path`` directories so the parser test is portable to
+    Windows (where a ``tmp_path`` would contain a drive-letter colon
+    and confuse the split).
+    """
+
+    def test_uses_default_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.delenv("X_UNSET_TEST", raising=False)
+        out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "default", "sub"))
+        assert out == [Path("default") / "sub"]
+
+    def test_splits_colon_delimited_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_LIST_TEST", "share:opt")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "default", "sub"))
+        assert out == [Path("share") / "sub", Path("opt") / "sub"]
+
+    def test_empty_components_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Vulkan-Loader#2331: ``"a::b"`` and trailing colons must not yield ``Path("")``."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_EXTRA_COLON_TEST", "::share:")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "default", "sub"))
+        assert out == [Path("share") / "sub"]
+
+
+class TestIterKhronosSoftwareManifests:
+    """``_iter_khronos_software_manifests`` honours the Khronos REG_DWORD = 0 enabled flag."""
+
+    def test_yields_only_enabled_entries(self) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0  # any sentinel; OpenKey is mocked
+        winreg.OpenKey.return_value = mock.MagicMock(name="hkey")
+
+        values_by_key: dict[str, list[tuple[str, int, int]]] = {
+            r"SOFTWARE\Khronos\Vulkan\Drivers": [
+                (r"C:\nv-vk64.json", 0, 4),  # enabled
+                (r"C:\disabled.json", 1, 4),  # explicitly disabled
+            ],
+            r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers": [
+                (r"C:\amdvlk32.json", 0, 4),
+            ],
+        }
+
+        opened_keys: list[str] = []
+
+        def _open(_root: int, sub_path: str) -> mock.MagicMock:
+            opened_keys.append(sub_path)
+            return mock.MagicMock(name=f"hkey:{sub_path}")
+
+        winreg.OpenKey.side_effect = _open
+
+        def _enum_value(key: mock.MagicMock, i: int) -> tuple[str, int, int]:
+            sub_path = opened_keys[-1]
+            entries = values_by_key.get(sub_path, [])
+            if i >= len(entries):
+                raise OSError("end of values")
+            return entries[i]
+
+        winreg.EnumValue.side_effect = _enum_value
+
+        result = list(vulkan_icd_discovery._iter_khronos_software_manifests(winreg))
+        assert r"C:\nv-vk64.json" in result
+        assert r"C:\amdvlk32.json" in result
+        assert r"C:\disabled.json" not in result
+
+    def test_missing_key_is_skipped(self) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0
+        winreg.OpenKey.side_effect = OSError("key not present")
+
+        assert list(vulkan_icd_discovery._iter_khronos_software_manifests(winreg)) == []
+
+
+class TestIterPnpClassManifests:
+    """``_iter_pnp_class_manifests`` reads VulkanDriverName{,Wow} off PnP adapter keys."""
+
+    def test_yields_strings_and_multi_sz_lists(self) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0
+        class_root = mock.MagicMock(name="class_root")
+        subkey0 = mock.MagicMock(name="0000")
+        subkey1 = mock.MagicMock(name="0001")
+
+        winreg.OpenKey.side_effect = [class_root, subkey0, subkey1]
+        winreg.EnumKey.side_effect = ["0000", "0001", OSError("end")]
+
+        def _query(key: mock.MagicMock, name: str) -> tuple[object, int]:
+            if key is subkey0 and name == "VulkanDriverName":
+                return (r"C:\nv-vk64.json", 1)
+            if key is subkey1 and name == "VulkanDriverName":
+                # REG_MULTI_SZ surfaces as list[str]
+                return (
+                    [r"C:\amdvlk64.json", "", r"C:\amdvlk32.json"],
+                    7,
+                )
+            raise OSError("missing value")
+
+        winreg.QueryValueEx.side_effect = _query
+
+        result = list(
+            vulkan_icd_discovery._iter_pnp_class_manifests(
+                winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+            )
+        )
+        assert r"C:\nv-vk64.json" in result
+        assert r"C:\amdvlk64.json" in result
+        assert r"C:\amdvlk32.json" in result
+        # Empty strings in REG_MULTI_SZ are filtered out.
+        assert "" not in result
+
+    def test_missing_root_returns_nothing(self) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0
+        winreg.OpenKey.side_effect = OSError("class GUID has no key")
+
+        assert (
+            list(
+                vulkan_icd_discovery._iter_pnp_class_manifests(
+                    winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+                )
+            )
+            == []
+        )
+
+    def test_unopenable_subkey_is_skipped(self) -> None:
+        """A subkey that EnumKey returned but OpenKey fails on must not abort the walk."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0
+        class_root = mock.MagicMock(name="class_root")
+        subkey1 = mock.MagicMock(name="0001")
+
+        # First OpenKey opens the class root, second opens 0000 (fails),
+        # third opens 0001 (succeeds).
+        winreg.OpenKey.side_effect = [class_root, OSError("locked"), subkey1]
+        winreg.EnumKey.side_effect = ["0000", "0001", OSError("end")]
+
+        def _query(_k: object, name: str) -> tuple[str, int]:
+            if name == "VulkanDriverName":
+                return (r"C:\nv-vk64.json", 1)
+            raise OSError("no Wow value")
+
+        winreg.QueryValueEx.side_effect = _query
+
+        result = list(
+            vulkan_icd_discovery._iter_pnp_class_manifests(
+                winreg, vulkan_icd_discovery._PNP_DISPLAY_ADAPTER_CLASS_GUID
+            )
+        )
+        assert result == [r"C:\nv-vk64.json"]
+
+
+class TestDisableConflictingVulkanIcds:
+    """``disable_conflicting_vulkan_icds`` picks the preferred vendor on dual-vendor Windows.
+
+    Detection is registry-only: no Vulkan call runs while the disable env var
+    is still unset, so the buggy vendor's ICD never gets pre-loaded into
+    the process before we ask the loader to skip it.
+    """
+
+    def test_pins_nvidia_when_amd_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NVIDIA + AMD installed on Windows -> disable AMD ICD globs, keep NVIDIA."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
         monkeypatch.setattr(
             gpu_select,
-            "_enumerate_vulkan_devices",
-            lambda: [
-                VulkanDevice(
-                    index=0,
-                    device_type=VkDeviceType.INTEGRATED_GPU,
-                    device_name="AMD Radeon Graphics",
-                    vendor_id=PCIVendorID.AMD,
-                ),
-                VulkanDevice(
-                    index=1,
-                    device_type=VkDeviceType.DISCRETE_GPU,
-                    device_name="NVIDIA GeForce RTX 4090",
-                    vendor_id=PCIVendorID.NVIDIA,
-                ),
-            ],
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
         )
         result = gpu_select.disable_conflicting_vulkan_icds()
         assert result is not None
@@ -2358,66 +2951,108 @@ class TestDisableConflictingVulkanIcds:
         # NVIDIA's own ICD must NOT be disabled -- it's the one we're keeping.
         assert "nv*" not in result
 
-    def test_returns_none_on_non_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Linux and macOS keep today's behavior; no env var is set."""
+    def test_pins_amd_when_intel_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AMD-discrete + Intel-iGPU laptops keep AMD; the documented crash is AMD vs NVIDIA."""
         from lilbee.providers.llama_cpp import gpu_select
-
-        for platform_name in ("linux", "darwin"):
-            monkeypatch.setattr(gpu_select.sys, "platform", platform_name)
-            assert gpu_select.disable_conflicting_vulkan_icds() is None
-
-    def test_returns_none_when_only_one_vendor_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Single-vendor systems aren't at risk; no pin needed."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
-            PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
-        )
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
         monkeypatch.setattr(
             gpu_select,
-            "_enumerate_vulkan_devices",
-            lambda: [
-                VulkanDevice(
-                    index=0,
-                    device_type=VkDeviceType.DISCRETE_GPU,
-                    device_name="NVIDIA GeForce RTX 4090",
-                    vendor_id=PCIVendorID.NVIDIA,
-                ),
-            ],
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.AMD, PCIVendorID.INTEL},
         )
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        assert "intel*" in result
+        assert "igvk*" in result
+        # AMD's own ICD must NOT be disabled -- it's the discrete card.
+        assert "amdvlk*" not in result
+
+    def test_pins_nvidia_when_all_three_vendors_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Triple-vendor host: NVIDIA wins per ``_PREFERRED_VENDOR_ORDER``."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD, PCIVendorID.INTEL},
+        )
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        assert "amdvlk*" in result
+        assert "intel*" in result
+        assert "nv*" not in result
+
+    def test_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """macOS uses Metal directly; the Vulkan loader is not on the path."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_active_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux gets the same dual-vendor pin (Steam overlay + AMDVLK/RADV are documented)."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
+        )
+        result = gpu_select.disable_conflicting_vulkan_icds()
+        assert result is not None
+        # Same preference order applies: keep NVIDIA, disable AMD globs.
+        assert "amdvlk*" in result
+        assert "amd_icd*" in result  # Linux AMDVLK manifest filename
+        assert "radeon*" in result  # Mesa RADV
+        assert "nv*" not in result
+
+    def test_returns_none_when_only_one_vendor_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-vendor systems aren't at risk; no pin needed."""
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA},
+        )
+        assert gpu_select.disable_conflicting_vulkan_icds() is None
+
+    def test_returns_none_when_no_vendors_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No matching manifests in the registry -> no pin (e.g. no Vulkan installed)."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_select.os, "environ", {})
+        monkeypatch.setattr(gpu_select, "_vulkan_vendors_present", set)
         assert gpu_select.disable_conflicting_vulkan_icds() is None
 
     def test_user_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If the user set any Vulkan ICD-selection env var, we don't override it."""
         from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
-            PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
-        )
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
-        devices = [
-            VulkanDevice(
-                index=0,
-                device_type=VkDeviceType.INTEGRATED_GPU,
-                device_name="AMD Radeon",
-                vendor_id=PCIVendorID.AMD,
-            ),
-            VulkanDevice(
-                index=1,
-                device_type=VkDeviceType.DISCRETE_GPU,
-                device_name="NVIDIA",
-                vendor_id=PCIVendorID.NVIDIA,
-            ),
-        ]
-        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: devices)
+        monkeypatch.setattr(
+            gpu_select,
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
+        )
         # Source the override-var list from the enum so the test moves in
         # lockstep with the production set (e.g., when a new loader env var
         # joins the spec).
@@ -2425,118 +3060,28 @@ class TestDisableConflictingVulkanIcds:
             monkeypatch.setattr(gpu_select.os, "environ", {env_var.value: "user-set"})
             assert gpu_select.disable_conflicting_vulkan_icds() is None
 
-    def test_empty_probe_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A loader that returns no adapters yields no pin."""
-        from lilbee.providers.llama_cpp import gpu_select
+    def test_cfg_gpu_devices_pin_defers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the user has set ``cfg.gpu_devices``, we leave vendor selection alone.
 
-        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
-        monkeypatch.setattr(gpu_select.os, "environ", {})
-        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: [])
-        assert gpu_select.disable_conflicting_vulkan_icds() is None
-
-    def test_unknown_vendor_ids_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Adapters with vendor IDs we don't recognize don't trigger a pin alone."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
-            PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
-        )
-
-        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
-        monkeypatch.setattr(gpu_select.os, "environ", {})
-        monkeypatch.setattr(
-            gpu_select,
-            "_enumerate_vulkan_devices",
-            lambda: [
-                VulkanDevice(
-                    index=0,
-                    device_type=VkDeviceType.DISCRETE_GPU,
-                    device_name="NVIDIA",
-                    vendor_id=PCIVendorID.NVIDIA,
-                ),
-                VulkanDevice(
-                    index=1,
-                    device_type=VkDeviceType.INTEGRATED_GPU,
-                    device_name="Mystery Vendor",
-                    vendor_id=0xDEAD,
-                ),
-            ],
-        )
-        # Only one *known* vendor present -> no conflict to resolve.
-        assert gpu_select.disable_conflicting_vulkan_icds() is None
-
-    def test_unknown_best_vendor_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Multi-vendor list where the discrete (best) adapter is an unknown vendor.
-
-        ``_known_vendors`` sees AMD + NVIDIA (both integrated), but the
-        highest-ranked adapter is the discrete mystery vendor. Pinning to
-        an ICD we can't name is worse than not pinning, so we bail.
+        The lilbee-level GPU pin is a deliberate user choice. Forcing a
+        vendor disable on top would be surprising: the dual-vendor mitigation
+        is for the case where lilbee picks the GPU; if the user has picked,
+        defer to them. Without this defer an AMD-discrete + NVIDIA host
+        where the user pinned device 0 (their AMD card) would silently
+        get its AMD ICD disabled by the NVIDIA-first preference.
         """
+        from lilbee.core.config import cfg
         from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
-            PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
-        )
+        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
         monkeypatch.setattr(
             gpu_select,
-            "_enumerate_vulkan_devices",
-            lambda: [
-                VulkanDevice(
-                    index=0,
-                    device_type=VkDeviceType.INTEGRATED_GPU,
-                    device_name="AMD Radeon",
-                    vendor_id=PCIVendorID.AMD,
-                ),
-                VulkanDevice(
-                    index=1,
-                    device_type=VkDeviceType.INTEGRATED_GPU,
-                    device_name="NVIDIA",
-                    vendor_id=PCIVendorID.NVIDIA,
-                ),
-                VulkanDevice(
-                    index=2,
-                    device_type=VkDeviceType.DISCRETE_GPU,
-                    device_name="Mystery Discrete",
-                    vendor_id=0xDEAD,
-                ),
-            ],
+            "_vulkan_vendors_present",
+            lambda: {PCIVendorID.NVIDIA, PCIVendorID.AMD},
         )
-        assert gpu_select.disable_conflicting_vulkan_icds() is None
-
-    def test_no_rank_eligible_adapter_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If every adapter is CPU-rank, ``_pick_best_device`` returns None and we bail."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
-            PCIVendorID,
-            VkDeviceType,
-            VulkanDevice,
-        )
-
-        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
-        monkeypatch.setattr(gpu_select.os, "environ", {})
-        monkeypatch.setattr(
-            gpu_select,
-            "_enumerate_vulkan_devices",
-            lambda: [
-                VulkanDevice(
-                    index=0,
-                    device_type=VkDeviceType.CPU,
-                    device_name="AMD software fallback",
-                    vendor_id=PCIVendorID.AMD,
-                ),
-                VulkanDevice(
-                    index=1,
-                    device_type=VkDeviceType.CPU,
-                    device_name="NVIDIA software fallback",
-                    vendor_id=PCIVendorID.NVIDIA,
-                ),
-            ],
-        )
+        monkeypatch.setattr(cfg, "gpu_devices", "1")
         assert gpu_select.disable_conflicting_vulkan_icds() is None
 
 
@@ -2693,6 +3238,124 @@ class TestImportLlamaCpp:
 
         import_llama_cpp()
         assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "amdvlk*,radeon*"
+
+    def test_curated_layer_globs_written_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Windows the layer-disable env var holds the curated overlay glob list."""
+        from lilbee.providers.llama_cpp import log_dispatch
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
+            _VK_LOADER_LAYERS_DISABLE_VALUE,
+            import_llama_cpp,
+        )
+
+        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
+        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
+
+    def test_curated_layer_globs_written_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Linux the same curated overlay list lands."""
+        from lilbee.providers.llama_cpp import log_dispatch
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
+            _VK_LOADER_LAYERS_DISABLE_VALUE,
+            import_llama_cpp,
+        )
+
+        monkeypatch.setattr(log_dispatch.sys, "platform", "linux")
+        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
+
+    def test_curated_layer_list_does_not_disable_vendor_dispatch(self) -> None:
+        """Mesa device-select, NV Optimus, AMD switchable, MangoHud must survive.
+
+        The curated list targets known-crashing third-party overlays only.
+        Disabling vendor-dispatch layers would change GPU routing in ways
+        that don't match what other Vulkan apps see, and disabling MangoHud
+        / Mesa overlay would surprise users who explicitly opted into them.
+        """
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_GLOBS,
+        )
+
+        flat = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS).lower()
+        for survivor in (
+            "VK_LAYER_MESA_device_select",
+            "VK_LAYER_NV_optimus",
+            "VK_LAYER_AMD_switchable_graphics",
+            "VK_LAYER_MANGOHUD_overlay",
+            "VK_LAYER_MESA_overlay",
+        ):
+            assert survivor.lower() not in flat, survivor
+
+    def test_implicit_layer_disable_skipped_on_darwin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """macOS uses Metal directly; the Vulkan loader is not on the path."""
+        from lilbee.providers.llama_cpp import log_dispatch
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
+            import_llama_cpp,
+        )
+
+        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setattr(log_dispatch.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert _VK_LOADER_LAYERS_DISABLE_ENV_VAR not in os.environ
+
+    def test_user_layer_disable_setting_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pre-set ``VK_LOADER_LAYERS_DISABLE`` survives our ~implicit~ default."""
+        from lilbee.providers.llama_cpp import log_dispatch
+        from lilbee.providers.llama_cpp.log_dispatch import (
+            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
+            import_llama_cpp,
+        )
+
+        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
+        monkeypatch.setenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, "VK_LAYER_MyDebugLayer")
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
+
+        import_llama_cpp()
+        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == "VK_LAYER_MyDebugLayer"
 
 
 class TestReadChatTemplate:

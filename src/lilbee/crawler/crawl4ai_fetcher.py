@@ -312,10 +312,17 @@ if TYPE_CHECKING:
 
 @functools.cache
 def crawler_available() -> bool:
-    """Check if the crawl4ai backend is importable (i.e. the extra is installed)."""
-    try:
-        import crawl4ai  # noqa: F401
+    """Check if the crawl4ai backend is importable (i.e. the extra is installed).
 
-        return True
-    except ImportError:
-        return False
+    Uses ``importlib.util.find_spec`` rather than ``import crawl4ai`` so the
+    check stays fast on the UI thread. ``crawl4ai`` is in AGENTS.md's
+    known-heavy-imports list; executing it on Windows with Defender
+    real-time scanning takes seconds, and the Settings screen's feature-
+    gate call (``_FEATURE_GATED_GROUPS``) hits it synchronously during
+    ``compose``. ``find_spec`` just walks ``sys.path`` to locate the
+    package; the actual import runs later from the crawler bootstrap
+    where the cost is expected.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("crawl4ai") is not None
