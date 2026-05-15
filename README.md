@@ -7,14 +7,14 @@
 
 <p align="center"><strong>A batteries-included local search engine for your data and code that you can talk to.</strong></p>
 
-<p align="center"><a href="https://tobocop2.github.io/lilbee/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://tobocop2.github.io/obsidian-lilbee/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://tobocop2.github.io/lilbee/api/">API docs</a></p>
+<p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">API docs</a></p>
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI" alt="lilbee on PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
   <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://tobocop2.github.io/lilbee/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
+  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
   <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-blue.svg" alt="Typed"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
@@ -44,7 +44,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
 - [Agent integration](#agent-integration)
-- [HTTP Server](#http-server) · [API reference](https://tobocop2.github.io/lilbee/api/)
+- [HTTP Server](#http-server) · [API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
 - [Experimental](#experimental)
 
@@ -171,14 +171,14 @@ No external services either way; lilbee downloads and runs models locally. Optio
 
 | How | Command | Notes |
 | --- | --- | --- |
-| **pip** | `pip install --pre lilbee` | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://tobocop2.github.io/lilbee/cpu/`. |
+| **pip** | `pip install --pre lilbee` | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/`. |
 | **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; fetches a Python for you if you need one. |
 | **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you. |
 | **AUR** | `paru -S lilbee` | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper. |
 | **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data` — mount a volume there. |
 | **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
-| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://tobocop2.github.io/lilbee/cu125/` | Recommended for NVIDIA users on Windows, both for stability and speed. The default Vulkan wheel works for most setups, but on a Windows box with both an NVIDIA discrete GPU and an integrated AMD or Intel GPU the Vulkan loader has to load every vendor's driver into one process, and some vendor combinations crash. CUDA wheels skip Vulkan entirely. Pick `cu121` / `cu124` / `cu125` to match `nvidia-smi`. |
+| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` | Recommended for NVIDIA users on Windows, both for stability and speed. The default Vulkan wheel works for most setups, but on a Windows box with both an NVIDIA discrete GPU and an integrated AMD or Intel GPU the Vulkan loader has to load every vendor's driver into one process, and some vendor combinations crash. CUDA wheels skip Vulkan entirely. Pick `cu121` / `cu124` / `cu125` to match `nvidia-smi`. |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
 
 Then check it runs and pick a model:
@@ -226,9 +226,9 @@ The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](doc
 
 ## HTTP Server
 
-`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [API reference](https://tobocop2.github.io/lilbee/api/) for the OpenAPI schema and the [usage guide](docs/usage.md) for options.
+`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md) for options.
 
-The [Obsidian plugin](https://tobocop2.github.io/obsidian-lilbee/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ## Supported formats
 
