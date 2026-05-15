@@ -30,7 +30,18 @@ readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 # Tapes that start from a clean slate (the recording does its own ingest).
 readonly FRESH_TAPES=(tui-setup tui-add tui-crawl cli)
 # opencode demo dirs.
-readonly OPENCODE_TAPES=(opencode-godot opencode-manual)
+readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual)
+# Subset of godot-classes used by the small live-indexing demo. Six
+# files = ~110 KB; indexes in seconds. Keeps mcp-godot-search.tape from
+# stalling on indexing dead air.
+readonly GODOT_SEARCH_FILES=(
+    AStarGrid2D.xml
+    AStar2D.xml
+    AStar3D.xml
+    Vector2.xml
+    Vector2i.xml
+    Rect2i.xml
+)
 # Man pages indexed for the CLI tape.
 readonly MAN_PAGES=(find awk grep xargs sed)
 
@@ -128,6 +139,35 @@ link_godot_classes() {
     cp -R "$godot_src/doc/classes" "$dest"
 }
 
+stage_godot_search_subset() {
+    # Copy a 6-file pathfinding subset of godot-classes into the
+    # opencode-godot-search demo dir; the live mcp-godot-search tape
+    # indexes these on camera in ~3 seconds.
+    local src="$ROOT/opencode-godot/godot-classes"
+    local dest="$ROOT/opencode-godot-search/godot-pathfinding"
+    [[ -d "$src" ]] || return 0
+    mkdir -p "$dest"
+    local f
+    for f in "${GODOT_SEARCH_FILES[@]}"; do
+        cp -f "$src/$f" "$dest/$f"
+    done
+}
+
+preindex_godot_corpus() {
+    # Pre-index the full 810-XML godot corpus into the opencode-godot
+    # demo dir so mcp-godot.tape opens straight into the cited-answer
+    # phase. Skips if already indexed (mtime gate makes lilbee add a
+    # near-no-op on rerun anyway, but the explicit check shaves the
+    # filesystem walk + manifest read).
+    local dir="$ROOT/opencode-godot"
+    [[ -d "$dir/godot-classes" ]] || return 0
+    if "$LILBEE" status --data-dir "$dir" 2>/dev/null | grep -q "Documents:.*[1-9]"; then
+        return 0
+    fi
+    log "pre-indexing godot-classes (one-time, ~5 min on M1)"
+    ( cd "$dir" && "$LILBEE" add ./godot-classes/ )
+}
+
 main() {
     require_manual
 
@@ -164,6 +204,8 @@ main() {
     done
     cp "$CV_MANUAL" "$ROOT/opencode-manual/cv-manual.pdf"
     link_godot_classes
+    stage_godot_search_subset
+    preindex_godot_corpus
 
     log "prep done. $ROOT is ready."
 }

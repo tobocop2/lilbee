@@ -1,26 +1,28 @@
 Source demos/_shared.tape
 Output demos/_out/mcp-godot.gif
-# Record at 2x global. The full real-time recording is ~10 min on a
-# MacBook M1 (boot + worker indexing 810 XML files + agent's lilbee_search
-# pass + the cited code answer). 2x lands the GIF at ~5 min, which is
-# long but readable: every frame is on camera, no Hide, no per-section
-# fast-forward that drops chars below the eye's scan rate.
-Set PlaybackSpeed 2.0
 
-# opencode driving lilbee over MCP, full TUI, against Godot 4 class
-# reference XML (810 files). Mirrors the prompt from the
-# godot-level-generator benchmark (docs/benchmarks/godot-level-generator.md):
-# the agent indexes the docs, then writes a procedural level generator
-# with cited Godot 4 API calls.
+# opencode driving lilbee over MCP, full TUI. Heavy cited-codegen demo
+# against the FULL Godot 4 class reference (810 XMLs). The corpus is
+# pre-indexed off-camera by demos/_prep.sh -- this tape opens straight
+# into the cited answer phase, which is what lilbee shines at.
 #
-# Demo dir prepped by demos/_prep.sh: AGENTS.md (with the Plan/Search/
-# Write/Verify workflow), opencode.json, lilbee-worker subagent,
-# lilbee-mcp skill, godot-classes copied in (~50MB of XML), and
-# `lilbee init` already run.
+# (The companion mcp-godot-search.tape covers the live-indexing flow on
+# a small subset; we don't repeat it here.)
+#
+# Demo dir prepped by demos/_prep.sh: AGENTS.md, opencode.json,
+# lilbee-worker subagent, lilbee-mcp skill, godot-classes/ copied in
+# (~50 MB of XML), `lilbee init` run, AND `lilbee add ./godot-classes/`
+# already executed so the corpus is ready.
+#
+# Empirical timing (lilbee 0.6.66b473, opencode 1.14, M1):
+#   opencode boot                                 ~10s
+#   prompt + planning + lilbee_status check       ~10s
+#   lilbee_search (1-3 calls)                    ~10-15s
+#   cited code answer streaming                  ~150-180s
+# Total real time: ~3-3.5 min. PlaybackSpeed 4 -> ~50s GIF.
+Set PlaybackSpeed 4.0
+
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
-# 810 XML files index for ~5m 20s, comfortably past the default 300s
-# worker-pool call timeout; bump to 15 minutes for headroom.
-Env LILBEE_WORKER_POOL_CALL_TIMEOUT_S "900"
 
 Type "cd /tmp/lilbee-demo/opencode-godot"
 Sleep 400ms
@@ -32,39 +34,19 @@ Sleep 400ms
 Enter
 Sleep 10s
 
-# Type the prompt and submit. Agent: load lilbee-mcp skill, plan,
-# hand `lilbee_add` to the @lilbee-worker subagent, run Plan / Search /
-# Write / Verify per AGENTS.md.
-Type "Index ./godot-classes/ then write a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Cite the API references for every method you call."
+# Specific prompt: name the godot APIs to use so the agent goes
+# straight to lilbee_search and writes code instead of asking
+# clarifying questions. Names TileMap + AStarGrid2D + RandomNumberGenerator
+# explicitly so each show up as a separate lilbee_search hit on camera.
+Type "Use lilbee_search to look up the godot 4 docs you need, then write a procedural roguelike-dungeon level generator: place wall and floor tiles via TileMap, scatter collectibles with RandomNumberGenerator, connect rooms with AStarGrid2D pathfinding. Cite the godot-classes XML for every method you call."
 Sleep 800ms
 Enter
 
-# Kickoff: skill load, planning, worker spawn (~30s).
-Sleep 30s
-
-# Indexing in progress. Drop into the subagent view (Ctrl+x Down) so the
-# camera shows the worker's lilbee_add progress instead of the parent
-# thread's idle "build" indicator. Hold there while the worker streams.
-Ctrl+x
-Sleep 100ms
-Down
-Sleep 5s
-
-# Worker indexes ~810 XMLs at ~3 files/sec; 4-5 min real time.
-Sleep 300s
-
-# Pop back to the parent agent (Ctrl+x Up) so we see the cited search
-# pass + code answer when the worker reports done.
-Ctrl+x
-Sleep 100ms
-Up
-Sleep 3s
-
-# Agent's lilbee_search pass + Plan/Verify + final cited code answer.
-Sleep 180s
+# Status check (~5s), search calls (~10s), cited code stream (~150-180s).
+Sleep 200s
 
 Screenshot demos/_out/mcp-godot.png
-Sleep 4s
+Sleep 3s
 
 Ctrl+C
 Sleep 1s

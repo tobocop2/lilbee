@@ -53,6 +53,7 @@ demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
 	vhs demos/tui-crawl.tape
 	vhs demos/tui-tour.tape
 	vhs demos/cli.tape
+	vhs demos/mcp-godot-search.tape
 	vhs demos/mcp-godot.tape
 	vhs demos/mcp-manual.tape
 	@command -v gifsicle >/dev/null 2>&1 && \
