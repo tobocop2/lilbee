@@ -2659,6 +2659,95 @@ class TestIterLinuxVulkanManifestPaths:
 
         assert list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths()) == []
 
+    def test_directories_with_dot_json_suffix_are_filtered_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A directory named ``foo.json`` inside ``icd.d`` must not be yielded.
+
+        A glob matches it because of the ``*.json`` pattern but
+        ``Path.is_file()`` rejects it; without that filter we'd hand a
+        directory path to the loader and confuse downstream classification.
+        """
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
+        icd_dir.mkdir(parents=True)
+        (icd_dir / "nvidia_icd.json").write_text("{}")
+        (icd_dir / "stray_dir.json").mkdir()  # a *directory* with .json suffix
+
+        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "share"))
+        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
+            monkeypatch.delenv(unset, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
+
+        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+        assert not any(p.endswith("stray_dir.json") for p in result)
+
+    def test_unreadable_directory_does_not_abort_walk(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An OSError from ``Path.glob`` (e.g. EPERM) is logged and the walk continues."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        readable = tmp_path / "ok" / "vulkan" / "icd.d"
+        readable.mkdir(parents=True)
+        (readable / "nvidia_icd.json").write_text("{}")
+        unreadable = tmp_path / "bad" / "vulkan" / "icd.d"
+        unreadable.mkdir(parents=True)
+
+        real_glob = Path.glob
+
+        def _fake_glob(self: Path, pattern: str) -> object:
+            if self == unreadable:
+                raise OSError("simulated EACCES")
+            return real_glob(self, pattern)
+
+        monkeypatch.setattr(Path, "glob", _fake_glob)
+        monkeypatch.setenv(
+            "XDG_DATA_DIRS",
+            f"{tmp_path / 'bad'}:{tmp_path / 'ok'}",
+        )
+        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
+            monkeypatch.delenv(unset, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
+
+        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+
+    def test_unexpandable_path_does_not_abort_walk(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``Path.expanduser`` raises ``RuntimeError`` when HOME is unset; skip and continue.
+
+        Reproduces the case by patching ``expanduser`` directly: setting
+        ``HOME=""`` doesn't reliably trigger the raise on every platform.
+        """
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
+        icd_dir.mkdir(parents=True)
+        (icd_dir / "nvidia_icd.json").write_text("{}")
+
+        real_expanduser = Path.expanduser
+        flatpak_marker = "flatpak"
+
+        def _fake_expanduser(self: Path) -> Path:
+            # Flatpak XDG paths start with ``~``; raise on those, leave others alone.
+            if flatpak_marker in str(self) and str(self).startswith("~"):
+                raise RuntimeError("HOME not set")
+            return real_expanduser(self)
+
+        monkeypatch.setattr(Path, "expanduser", _fake_expanduser)
+        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "share"))
+        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
+            monkeypatch.delenv(unset, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
+
+        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        # The Flatpak directory was skipped silently, but the regular path still yields.
+        assert any(p.endswith("nvidia_icd.json") for p in result)
+
 
 class TestIterKhronosSoftwareManifests:
     """``_iter_khronos_software_manifests`` honours the Khronos REG_DWORD = 0 enabled flag."""
