@@ -35,12 +35,13 @@ def _frontier(
     )
 
 
-async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int = 20) -> None:
+async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int = 50) -> None:
     """Pace until ``CatalogScreen._active_tab_id()`` reports *expected*.
 
     The bare ``tabs.active = "library"; await pilot.pause()`` pattern races
     on Windows: the assignment dispatches via a Textual message and a single
-    pause does not always flush before the next read. Poll instead.
+    pause does not always flush before the next read. Poll instead. 50
+    iterations covers the slowest observed Windows CI cascade.
     """
     import asyncio
 
