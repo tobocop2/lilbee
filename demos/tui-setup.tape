@@ -25,7 +25,12 @@ Sleep 300ms
 Enter
 Sleep 2500ms
 
-# Wizard opens with the first chat card (Qwen3 0.6B) auto-focused. Pick it.
+# Wizard is fully painted: chat cards on top, embedding cards below,
+# Qwen3 0.6B auto-focused. Capture the still here -- the wizard is the
+# screen the demo is actually about, not the Task Center after.
+Screenshot demos/_out/tui-setup.png
+
+# Pick the focused chat card.
 Enter
 Sleep 800ms
 
@@ -45,8 +50,6 @@ Hide
 Sleep 240s
 Show
 Sleep 4s
-
-Screenshot demos/_out/tui-setup.png
 
 # Back to the wizard so the user sees the two cards now marked installed.
 Type "q"

@@ -199,33 +199,35 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
 
 
 def _pull_plain_progress(ref: str, src: ModelSource) -> PullResult:
-    """Ollama-style \\r-overwrite progress for hosts that don't render Rich's
-    Live display well (notably VHS recordings via ttyd; the cursor moves
-    Rich emits get captured as separate frames). Opt in by setting
-    ``LILBEE_PLAIN_PROGRESS=1``; not advertised as a public knob.
-    """
-    bar_width = 32
-    last_pct = -1
+    """Newline-per-milestone progress. Opt in via ``LILBEE_PLAIN_PROGRESS=1``;
+    not advertised as a public knob.
 
-    def on_update(p: DownloadProgress) -> None:
-        nonlocal last_pct
-        pct = int(p.percent)
-        if pct == last_pct:
-            return
-        last_pct = pct
+    Rich's Live display and ``\\r``-overwrite progress both fight ttyd's
+    frame capture inside VHS recordings: the terminal buffer ends up with
+    a stack of half-finished bars instead of one line in place. Print one
+    line per quartile (25 / 50 / 75 / 100%) with no cursor moves, so the
+    GIF shows a clean progressive log -- closer to Ollama's older
+    per-percent line emit than its modern in-place bar.
+    """
+    bar_width = 24
+    milestones = (25, 50, 75, 100)
+    next_idx = 0
+
+    def write_line(pct: int, detail: str) -> None:
         filled = bar_width * pct // 100
         bar = "█" * filled + " " * (bar_width - filled)
-        detail = f" {p.detail}" if p.detail else ""
-        # Trailing ``\033[K`` clears from the cursor to end of line so a
-        # shorter line on this refresh doesn't leave stray characters
-        # from the previous, longer line behind.
-        sys.stderr.write(f"\rDownloading {ref}  {pct:3d}% ▕{bar}▏{detail}\033[K")
-        sys.stderr.flush()
+        detail_part = f"  {detail}" if detail else ""
+        sys.stdout.write(f"Downloading {ref}  {pct:3d}% ▕{bar}▏{detail_part}\n")
+        sys.stdout.flush()
 
-    final = _run_pull(ref, src, on_update)
-    sys.stderr.write("\n")
-    sys.stderr.flush()
-    return final
+    def on_update(p: DownloadProgress) -> None:
+        nonlocal next_idx
+        pct = int(p.percent)
+        while next_idx < len(milestones) and pct >= milestones[next_idx]:
+            write_line(milestones[next_idx], p.detail)
+            next_idx += 1
+
+    return _run_pull(ref, src, on_update)
 
 
 def _pull_interactive_progress(ref: str, src: ModelSource) -> None:

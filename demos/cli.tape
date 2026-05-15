@@ -36,16 +36,18 @@ Sleep 400ms
 Enter
 Sleep 2500ms
 
-# Real cold pull -- gives the demo a visible progress bar.
+# Real cold pull -- gives the demo a visible progress bar. Generous
+# wait: HF Hub speed varies; the 101 MB model is ~30s on a fast link
+# but 90s+ on a typical home connection.
 Type "lilbee model pull bartowski/SmolLM2-135M-Instruct-GGUF"
 Sleep 400ms
 Enter
-Sleep 32s
+Sleep 90s
 
 Type "lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF"
 Sleep 400ms
 Enter
-Sleep 2500ms
+Sleep 30s
 
 Type "lilbee model list"
 Sleep 400ms

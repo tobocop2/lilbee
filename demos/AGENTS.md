@@ -14,10 +14,12 @@ still in progress, the call will hang and your client will time it out.
 
 **Sequence every task this way:**
 
-1. Decide whether the corpus needs indexing or updating. If yes, delegate the long op to
-   the `lilbee-worker` subagent via `task` and **wait for it to return**. Do not call any
-   `lilbee_*` tool from your own thread while the worker is running. Do not start a parallel
-   thought to "save time"; there is nothing to do until the worker reports back.
+1. Decide whether the corpus needs indexing or updating. If yes, hand the long op to the
+   `lilbee-worker` subagent — opencode supports `@lilbee-worker` mention syntax, Claude
+   Code uses the Task/Agent tool. Use whichever your host supports. **Wait for the worker
+   to report back** before doing anything else. Do not call any `lilbee_*` tool from your
+   own thread while the worker is running. Do not start a parallel thought to "save time";
+   there is nothing to do until the worker reports done.
 2. After the worker returns, run `lilbee_status` once to confirm the expected source /
    chunk counts before searching.
 3. Then call `lilbee_search` (and friends) freely; the embedder is no longer pinned.
@@ -29,9 +31,10 @@ moment the embedder is free.
 
 You will spend most of your time on two things:
 
-1. **Setting the corpus up** — indexing files, crawling a docs site, swapping models. These
-   are long-running, so they go to the `lilbee-worker` subagent via the `task` tool and you
-   wait for it to report done.
+1. **Setting the corpus up** — indexing files, crawling a docs site, swapping models.
+   These are long-running, so they go to the `lilbee-worker` subagent (your host's
+   subagent invocation: `@lilbee-worker` in opencode, the Task / Agent tool in Claude
+   Code). You wait for it to report done.
 2. **Talking to the corpus** — searching it, listing what's in it, checking status. These
    are fast, so you run them inline.
 
@@ -52,7 +55,8 @@ You will spend most of your time on two things:
 ## Setting the corpus up (delegate to lilbee-worker)
 
 Long-running operations block the chat thread, so they go to the `lilbee-worker` subagent
-via the `task` tool. Wait for the worker to report done, then continue answering.
+through your host's subagent mechanism (opencode: `@lilbee-worker` mention; Claude Code:
+the Task / Agent tool). Wait for the worker to report done, then continue answering.
 
 - `lilbee_add` — index a file or folder. SHA-dedupes, so calling it on an already-indexed
   path is instant; you can call it unconditionally instead of probing first. The worker
@@ -83,7 +87,8 @@ the [godot-level-generator benchmark](docs/benchmarks/godot-level-generator.md).
 
 User asks "what does X say about Y?" against a file you haven't indexed yet:
 
-1. Delegate `lilbee_add(<path>)` to `lilbee-worker`. Wait for "done".
+1. Hand `lilbee_add(<path>)` to `lilbee-worker` via your host's subagent mechanism
+   (`@lilbee-worker` in opencode). Wait for "done".
 2. Run `lilbee_search("Y")` inline.
 3. Answer in your own words, citing `<file>:<line>` (or `<file>:p<N>` for PDFs) for each
    fact. If the search returned nothing useful, say so plainly.

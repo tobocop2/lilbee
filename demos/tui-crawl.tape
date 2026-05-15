@@ -84,10 +84,15 @@ Screenshot demos/_out/tui-crawl.png
 # Hold long enough for the single-page crawl to finish (~10s).
 Sleep 12s
 
-# Tasks -> Chat (cycle wraps). Chat input is in INSERT after the wrap,
-# so the question lands directly.
+# Tasks -> Chat wraps. Chat lands in NORMAL after the screen-nav cycle
+# (we Escaped earlier to drop INSERT for the `t` binding). Without an
+# explicit ``i`` here, the prompt's leading ``W``/``h`` get eaten as
+# unbound NORMAL-mode keys and ``a`` is the vim-style enter-INSERT
+# binding -- the question started landing as ``t displacement ...``.
 Type "]"
 Sleep 1000ms
+Type "i"
+Sleep 400ms
 
 # Sub-era question that maps cleanly to a single section in the article.
 # Verified in tmux: returns the 305 cu in V8 with cite-backed details
@@ -96,13 +101,14 @@ Type "What displacement V8 engines were offered in the Caprice between 1977 and 
 Sleep 600ms
 Enter
 
-# Streaming: ~90-120s on a cold Qwen3 4B. No Hide -- speed it up so the
-# whole stream is on camera. PlaybackSpeed 3 over ~120s of real time
-# produces ~40s of GIF; the answer streams visibly.
+# Streaming: ~90-120s on a cold Qwen3 4B. PlaybackSpeed 3 over ~120s of
+# real time keeps the answer on camera but drops gif length to ~40s.
 Set PlaybackSpeed 3
-Sleep 130s
+Sleep 110s
 Set PlaybackSpeed 1.5
 
-Sleep 3s
+# Brief tail so the cited answer is visible at the end -- not the long
+# blinking-cursor idle the prior render trailed off into.
+Sleep 1s
 Ctrl+C
 Sleep 500ms
