@@ -1,14 +1,11 @@
 Source demos/_shared.tape
 Output demos/_out/tui-setup.gif
 
-# Fresh-slate first run. Wizard appears with no installed models; the user
-# picks the curated defaults (Qwen3 0.6B, ~0.5 GB) and Nomic v1.5 (~84 MB),
-# then watches the Task Center fill. Tiny models keep the pulls short
-# enough to show live -- no Hide/Show eliding.
-#
-# The wizard's curated FEATURED_CHAT list is the only thing it shows here;
-# SmolLM2-class models live behind the catalog's HF Hub search, not the
-# wizard. That's why tui-catalog (not this tape) shows the SmolLM2 pull.
+# Fresh-slate first run. Wizard appears with no installed models. The
+# user steps right from the auto-focused Qwen3 0.6B to pick Qwen3 4B
+# (2.5 GB, Q8_0) for the chat model and Nomic v1.5 (~84 MB) for the
+# embedding, then watches the Task Center fill. 4B gives a coherent
+# cited answer on the first question after the wizard.
 Env LILBEE_DATA "/tmp/lilbee-demo/tui-setup"
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/setup-models"
 Env LILBEE_THEME "rose-pine"
@@ -33,13 +30,15 @@ Enter
 Sleep 2500ms
 
 # Wizard is fully painted: chat cards on top, embedding cards below,
-# Qwen3 0.6B auto-focused. Capture the still here -- the wizard is the
-# screen the demo is actually about, not the Task Center after.
-Screenshot demos/_out/tui-setup.png
-
-# Pick the focused chat card.
-Enter
+# Qwen3 0.6B auto-focused. Sleep first so the GridSelect has the
+# keyboard focus, then Right walks the cursor one card over to
+# Qwen3 4B (Q8_0, 2.5 GB) for a chat model that produces a coherent
+# answer on the first question.
 Sleep 800ms
+Right
+Sleep 1500ms
+Enter
+Sleep 1500ms
 
 # Tab into the Embedding row and pick Nomic v1.5 (first card).
 Tab
@@ -66,17 +65,20 @@ Sleep 1500ms
 Escape
 Sleep 2000ms
 
-# First chat: index lilbee's own README and ask a one-line question. The
-# downloaded chat model (Qwen3 0.6B) returns a short cited answer in ~18s.
+# First chat: index lilbee's own README and ask a starter question.
+# Qwen3 4B returns a structured cited answer in ~35s. The post-/add
+# sleep is long because the embedder mmaps the GGUF and warms up on
+# first use; without that wait, the next sync starts on a not-ready
+# worker and the question loses its retrieval context.
 Type "/add ./README.md"
 Sleep 600ms
 Enter
-Sleep 12s
-
-Type "What is lilbee?"
-Sleep 600ms
-Enter
 Sleep 25s
+
+Type "What is lilbee and how do I use it?"
+Sleep 1500ms
+Enter
+Sleep 55s
 
 # Overwrite the wizard still with the cited-answer screen -- that's the
 # moment the demo lands on.
