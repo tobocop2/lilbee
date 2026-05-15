@@ -9309,14 +9309,7 @@ def test_param_sort_value_no_match():
 
 
 async def test_fetch_installed_names_exception():
-    """``_fetch_installed_names`` suppresses worker exceptions and keeps empty set.
-
-    The worker now runs off the UI thread (registry walk is slow on
-    Windows with Defender, blocked the catalog screen for seconds on
-    cold open). ``wait_for_complete`` blocks the test until the spawned
-    worker's exception path lands so the assertion sees the post-worker
-    state, not the unset pre-worker one.
-    """
+    """_fetch_installed_names suppresses exception and keeps empty set."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -9336,7 +9329,6 @@ async def test_fetch_installed_names_exception():
                 return_value=services,
             ):
                 screen._fetch_installed_names()
-                await screen.workers.wait_for_complete()
             assert screen._installed_names == set()
 
 
@@ -10996,14 +10988,11 @@ def test_make_editor_with_choices():
 
 
 async def test_catalog_fetch_installed_names():
-    """``_fetch_installed_names`` populates ``_installed_names`` via ModelManager.
+    """_fetch_installed_names populates _installed_names via ModelManager.
 
     The set carries both the canonical ``hf_repo/filename`` ref and the
     bare ``hf_repo`` so catalog rows whose ref is the repo alone still
-    light up as installed. The fetch runs as a worker now (registry walk
-    is slow under Windows Defender real-time scanning), so the test
-    awaits ``workers.wait_for_complete`` to let the result land via
-    ``on_worker_state_changed`` -> ``_apply_worker_result``.
+    light up as installed.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -11025,8 +11014,6 @@ async def test_catalog_fetch_installed_names():
                 return_value=services,
             ):
                 screen._fetch_installed_names()
-                await screen.workers.wait_for_complete()
-                await _pilot.pause()
             assert "org/test-model-GGUF/test.gguf" in screen._installed_names
             assert "org/test-model-GGUF" in screen._installed_names
 
