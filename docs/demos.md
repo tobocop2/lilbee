@@ -1,6 +1,6 @@
 # The full reel
 
-Same demos as on [tobocop2.github.io/lilbee/](https://tobocop2.github.io/lilbee/),
+Same demos as on [lilbee.sh/](https://lilbee.sh/),
 with the captions long-form and a handful of extras that don't fit in the site's
 tab list.
 
