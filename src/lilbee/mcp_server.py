@@ -267,12 +267,14 @@ def init(path: str = "") -> dict[str, Any]:
         created = True
 
     # Switch MCP session to this project's KB. Overlay any persisted
-    # config.toml in the project base so per-vault model / generation
-    # settings take effect, matching the CLI's --data-dir behaviour.
+    # config.toml so per-vault model / generation settings take effect,
+    # matching the CLI's --data-dir behaviour. Env export mirrors
+    # cli/app.py::_apply_data_root for worker-log parity.
     cfg.data_root = base
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
+    os.environ["LILBEE_DATA"] = str(base)
     overlay_persisted_settings(base)
     reset_services()
 

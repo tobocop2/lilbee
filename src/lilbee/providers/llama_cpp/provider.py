@@ -19,6 +19,7 @@ from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
+    train_ctx_from_meta,
 )
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
@@ -755,7 +756,9 @@ def load_llama(
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
         embed_meta = _safe_read_gguf_metadata(model_path)
-        embed_train_ctx = int((embed_meta or {}).get("context_length", "2048"))
+        embed_train_ctx = train_ctx_from_meta(
+            embed_meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
+        )
         kwargs["n_ctx"] = embed_train_ctx
     elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
@@ -805,14 +808,21 @@ def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
         return None
 
 
+# Fallback used when an embedding GGUF reports zero, negative, or
+# unparseable ``context_length`` in its metadata header. Some published
+# nomic-embed and Qwen3 GGUFs in the wild report ``0`` (the b473 QA dump
+# logged ``n_ctx_seq (512) > n_ctx_train (0)``). 2048 is the documented
+# training-context for the smallest featured embedder that uses it
+# (Google's EmbeddingGemma-300m, see
+# https://huggingface.co/google/embeddinggemma-300m), and llama.cpp
+# tolerates n_ctx > n_ctx_train with a warning, so the larger nomic
+# embedder still loads cleanly under the same fallback.
+_EMBED_FALLBACK_CTX = 2048
+
+
 def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     """Pick the largest 256-multiple n_ctx that fits in available memory."""
-    training_ctx = DEFAULT_NUM_CTX
-    if meta:
-        try:
-            training_ctx = int(meta.get("context_length", DEFAULT_NUM_CTX))
-        except (TypeError, ValueError):
-            training_ctx = DEFAULT_NUM_CTX
+    training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max
 
     try:
