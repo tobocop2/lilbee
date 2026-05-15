@@ -82,15 +82,7 @@ def _find_model_catalog_entry(ref: str) -> Any:
 
 
 def _resolve_installed_task(ref: str) -> Any:
-    """Return the ``ModelTask`` for an installed non-featured *ref*, or ``None``.
-
-    Featured is a discovery overlay, not an admission check: any model the
-    user has actually pulled is a valid role assignment, even if its hf_repo
-    is not in ``FEATURED_ALL``. The picker shows installed models from the
-    registry, so the validator has to accept the same set or the picker is a
-    trap. ``reclassify_by_name`` mirrors the picker's bucketing so a ref
-    whose name reads as "reranker" / "vision" lands in the same role here.
-    """
+    """Return the manifest's ``ModelTask`` for *ref*, name-reclassified, or ``None``."""
     from lilbee.catalog.types import ModelTask
     from lilbee.core.config import cfg
     from lilbee.modelhub.model_manager.discovery import reclassify_by_name
