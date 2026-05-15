@@ -340,39 +340,22 @@ def test_configure_worker_logging_writes_to_logs_dir(tmp_path, monkeypatch) -> N
                 handler.close()
 
 
-def test_configure_worker_logging_falls_back_to_cfg_data_root(monkeypatch, tmp_path) -> None:
-    """When ``LILBEE_DATA`` env is unset, the worker still logs under cfg.data_root.
+def test_configure_worker_logging_noop_when_lilbee_data_unset(monkeypatch) -> None:
+    """Without ``LILBEE_DATA`` the worker installs no log handler.
 
-    Worker subprocesses spawned via ``multiprocessing.spawn`` re-import
-    lilbee in a fresh process, so without this fallback a user running
-    ``lilbee chat`` (with no explicit ``--data-dir`` and no env var) used
-    to get no worker logs at all. On Windows that turns an embed-worker
-    heap-corruption crash into an opaque "subprocess exited unexpectedly"
-    with no diagnostic trail.
+    Production never sees this state because ``_build_cfg`` canonicalizes
+    the env at cfg construction; the test pins the contract for tests that
+    explicitly clear the variable.
     """
     import logging as _logging
 
-    from lilbee.core.config import cfg
     from lilbee.providers.worker.worker_runtime import configure_worker_logging
 
     monkeypatch.delenv("LILBEE_DATA", raising=False)
-    monkeypatch.setattr(cfg, "data_root", tmp_path)
-
     root = _logging.getLogger()
-    handlers_before = list(root.handlers)
-    try:
-        configure_worker_logging("embed")
-        log_path = tmp_path / "logs" / "worker-embed.log"
-        assert log_path.parent.is_dir()
-        _logging.getLogger("lilbee.test").info("hello-from-cfg-fallback")
-        for handler in root.handlers:
-            handler.flush()
-        assert "hello-from-cfg-fallback" in log_path.read_text()
-    finally:
-        for handler in list(root.handlers):
-            if handler not in handlers_before:
-                root.removeHandler(handler)
-                handler.close()
+    handlers_before = len(root.handlers)
+    configure_worker_logging("embed")
+    assert len(root.handlers) == handlers_before
 
 
 def test_handle_embed_rejects_non_list_payload_in_process() -> None:

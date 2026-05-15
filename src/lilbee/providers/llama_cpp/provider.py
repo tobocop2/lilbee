@@ -811,8 +811,12 @@ def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 # Fallback used when an embedding GGUF reports zero, negative, or
 # unparseable ``context_length`` in its metadata header. Some published
 # nomic-embed and Qwen3 GGUFs in the wild report ``0`` (the b473 QA dump
-# logged ``n_ctx_seq (512) > n_ctx_train (0)``). 2048 matches the
-# bare-metal default every supported embedding model trains against.
+# logged ``n_ctx_seq (512) > n_ctx_train (0)``). 2048 is the documented
+# training-context for the smallest featured embedder that uses it
+# (Google's EmbeddingGemma-300m, see
+# https://huggingface.co/google/embeddinggemma-300m), and llama.cpp
+# tolerates n_ctx > n_ctx_train with a warning, so the larger nomic
+# embedder still loads cleanly under the same fallback.
 _EMBED_FALLBACK_CTX = 2048
 
 

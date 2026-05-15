@@ -90,16 +90,15 @@ file into a single error message.
 """
 
 
-def _read_log_tail(log_path: str | None) -> str:
+def _read_log_tail(log_path: str) -> str:
     """Return the last ``_LOG_TAIL_BYTES`` of *log_path*, or ``""`` on any error.
 
     Best-effort: a missing or unreadable log file must not turn a worker
     crash into a different unrelated exception. Decoded as utf-8 with
     ``errors="replace"`` so the Tesseract diacritic bytes that leak into
-    fd 2 on Windows do not crash the error path itself.
+    fd 2 on Windows do not crash the error path itself. The caller has
+    already verified ``log_path`` is non-empty.
     """
-    if not log_path:
-        return ""
     try:
         import os as _os
 
@@ -143,22 +142,23 @@ def _check_pickle_size(payload: Any, kind: WireKind) -> None:
 
 
 def _worker_log_path(role: WorkerRole) -> str | None:
-    """Return the worker's log file path. Falls back to ``cfg.data_root``.
+    """Return the worker's log file path, or ``None`` if no data root is set.
 
     Mirrors :func:`lilbee.providers.worker.worker_runtime.configure_worker_logging`
-    so the parent's :class:`WorkerCrashError` can point at the same file
-    the worker wrote, even when ``LILBEE_DATA`` was never set in env.
+    so the parent's :class:`WorkerCrashError` points at the file the worker
+    wrote. ``LILBEE_DATA`` is canonicalized at cfg construction, so this
+    only returns ``None`` in tests that explicitly clear the env.
     """
     import os
 
+    # circular: worker_runtime imports transport_pipe._serialize_exception at
+    # module top, so the constant import lives inline at the one call site.
+    from lilbee.providers.worker.worker_runtime import WORKER_LOGS_DIR_NAME
+
     data_dir = os.environ.get("LILBEE_DATA")
     if not data_dir:
-        from lilbee.core.config import cfg
-
-        if not cfg.data_root:
-            return None
-        data_dir = str(cfg.data_root)
-    return os.path.join(data_dir, "logs", f"worker-{role}.log")
+        return None
+    return os.path.join(data_dir, WORKER_LOGS_DIR_NAME, f"worker-{role}.log")
 
 
 class PipeChannel:
