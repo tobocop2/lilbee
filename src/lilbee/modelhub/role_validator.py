@@ -65,28 +65,20 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
     return ref.split("/", 1)[0] in PROVIDER_PREFIXES
 
 
-def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
-    """Check *ref* is assignable to *field_name*; return the canonical ref.
-
-    Accepts featured catalog refs and installed non-featured refs (any model
-    the user has pulled). Raises ``TaskMismatchError`` on role mismatch and
-    ``ValueError`` when the model is neither featured nor installed.
-    """
-    if _skips_catalog_check(ref, allow_bypass=allow_bypass):
+def _canonical_featured_ref(ref: str, entry: Any, want: ModelTask) -> str:
+    """Role-check a featured entry and pick the canonical ref to persist."""
+    if entry.task != want:
+        raise TaskMismatchError(ref, ModelTask(entry.task), want)
+    # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
+    # the exact installed quant; fall back to the catalog ref otherwise.
+    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
         return ref
-    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
+    canonical: str = entry.ref
+    return canonical
 
-    entry: Any = find_catalog_entry(ref)
-    if entry is not None:
-        if entry.task != want:
-            raise TaskMismatchError(ref, ModelTask(entry.task), want)
-        # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
-        # the exact installed quant; fall back to the catalog ref otherwise.
-        if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
-            return ref
-        canonical: str = entry.ref
-        return canonical
 
+def _validate_installed_ref(ref: str, want: ModelTask) -> str:
+    """Role-check a non-featured ref by consulting the installed registry."""
     installed_task = _resolve_installed_task(ref)
     if installed_task is None:
         raise ValueError(
@@ -97,3 +89,19 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     if installed_task != want:
         raise TaskMismatchError(ref, installed_task, want)
     return ref
+
+
+def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: bool = True) -> str:
+    """Check *ref* is assignable to *field_name*; return the canonical ref.
+
+    Accepts featured catalog refs and installed non-featured refs (any model
+    the user has pulled). Raises ``TaskMismatchError`` on role mismatch and
+    ``ValueError`` when the model is neither featured nor installed.
+    """
+    if _skips_catalog_check(ref, allow_bypass=allow_bypass):
+        return ref
+    want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
+    entry: Any = find_catalog_entry(ref)
+    if entry is not None:
+        return _canonical_featured_ref(ref, entry, want)
+    return _validate_installed_ref(ref, want)
