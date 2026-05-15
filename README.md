@@ -216,11 +216,9 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee is a retrieval backend for AI coding agents, over MCP or a JSON CLI: search, document lifecycle, crawling, model management, and the wiki, all exposed as tools, scoped to documents, wiki pages, or both. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for the long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill format) that documents the full MCP surface. See [docs/agent-integration.md](docs/agent-integration.md) for how to wire it up.
+lilbee plugs into any agent over MCP or a JSON CLI. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md). See [docs/agent-integration.md](docs/agent-integration.md) to wire it up.
 
-The privacy boundary is the MCP layer: the agent (local or cloud) calls `lilbee_search`, `lilbee_add`, etc., and lilbee answers from your local library. Your files, the embeddings, and the search index never leave the machine. Only the queries and returned snippets cross the wire when you choose a cloud agent.
-
-A live-indexing example: opencode (driving MiniMax M2.7 in the cloud) indexes a small Godot 4 pathfinding subset via the `lilbee-worker` subagent (~3s), `lilbee_search`-es for `AStarGrid2D`, and answers with a method-by-method cited list against your *local* files.
+Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
 ![opencode + cloud frontier model indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
