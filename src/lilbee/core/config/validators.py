@@ -88,10 +88,7 @@ def _resolve_installed_task(ref: str) -> Any:
     from lilbee.modelhub.model_manager.discovery import reclassify_by_name
     from lilbee.modelhub.registry import ModelRegistry
 
-    try:
-        manifest = ModelRegistry(cfg.models_dir).get_manifest(ref)
-    except (OSError, ValueError):
-        return None
+    manifest = ModelRegistry(cfg.models_dir).get_manifest(ref)
     if manifest is None:
         return None
     return ModelTask(reclassify_by_name(ref, manifest.task))
