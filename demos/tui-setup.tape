@@ -20,6 +20,13 @@ Env LILBEE_NO_SPLASH "1"
 # only shows the embedding download instead of two parallel pulls.
 Env OLLAMA_HOST "http://127.0.0.1:65535"
 
+# cd into the data dir so `/add ./README.md` after the wizard resolves
+# to the staged README (lilbee's own, pre-copied by demos/_prep.sh).
+Type "cd /tmp/lilbee-demo/tui-setup"
+Sleep 300ms
+Enter
+Sleep 500ms
+
 Type "lilbee"
 Sleep 300ms
 Enter
@@ -58,6 +65,23 @@ Sleep 1500ms
 # Dismiss into Chat.
 Escape
 Sleep 2000ms
+
+# First chat: index lilbee's own README and ask a one-line question. The
+# downloaded chat model (Qwen3 0.6B) returns a short cited answer in ~18s.
+Type "/add ./README.md"
+Sleep 600ms
+Enter
+Sleep 12s
+
+Type "What is lilbee?"
+Sleep 600ms
+Enter
+Sleep 25s
+
+# Overwrite the wizard still with the cited-answer screen -- that's the
+# moment the demo lands on.
+Screenshot demos/_out/tui-setup.png
+Sleep 3s
 
 Type "/quit"
 Enter
