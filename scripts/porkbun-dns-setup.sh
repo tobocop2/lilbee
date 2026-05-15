@@ -18,10 +18,11 @@ API_BASE="https://api.porkbun.com/api/json/v3"
 PASS_KEY_PATH="porkbun/tobocop/api-key"
 PASS_SECRET_PATH="porkbun/tobocop/api-secret"
 RECORD_TTL="600"
-OBSIDIAN_CNAME_TARGET="tobocop2.github.io"
 
-# GitHub Pages anycast IPs. Update if GH ever rotates them; see
+# GitHub Pages user-page host (CNAME target for project subdomains) and the
+# anycast IPs (A records for the apex). Update if GH ever rotates them; see
 # https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site
+GH_PAGES_HOST="tobocop2.github.io"
 GH_PAGES_IPS=(
   185.199.108.153
   185.199.109.153
@@ -128,8 +129,8 @@ for ip in "${GH_PAGES_IPS[@]}"; do
 done
 
 log
-log "==> Creating CNAME obsidian.$DOMAIN -> $OBSIDIAN_CNAME_TARGET"
-create_record "obsidian" "CNAME" "$OBSIDIAN_CNAME_TARGET"
+log "==> Creating CNAME obsidian.$DOMAIN -> $GH_PAGES_HOST"
+create_record "obsidian" "CNAME" "$GH_PAGES_HOST"
 
 log
 log "==> Resulting DNS records:"
