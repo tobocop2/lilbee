@@ -19,6 +19,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output, render_status
 from lilbee.core.config import cfg
+from lilbee.core.system import LOCAL_ROOT_DIRNAME
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 
@@ -86,7 +87,7 @@ def reset(
 
 def init() -> None:
     """Initialize a local .lilbee/ knowledge base in the current directory."""
-    root = Path.cwd() / ".lilbee"
+    root = Path.cwd() / LOCAL_ROOT_DIRNAME
     if root.is_dir():
         if cfg.json_mode:
             json_output({"command": "init", "path": str(root), "created": False})
