@@ -1,37 +1,12 @@
 """Cross-platform discovery of installed Vulkan ICD manifests.
 
-The Vulkan loader scans platform-specific locations at every
-``vkCreateInstance`` to discover installable client drivers (ICDs).
-``disable_conflicting_vulkan_icds`` mirrors that walk so it can identify
-which vendors are installed *without* calling ``vkCreateInstance``
-itself. Doing the live probe pre-loads every vendor's ICD into the
-process before the disable env var arrives; at least one ICD on the b473
-QA box (AMDVLK on Windows) self-pins its DLL handle and survives the
-loader's ``FreeLibrary``, so the disable lands too late.
-
-The single public entry point is
-:func:`iter_vulkan_manifest_paths`, which dispatches by platform:
-
-* **Windows** scans the registry: legacy ``HKLM\\SOFTWARE\\Khronos\\Vulkan\\Drivers``
-  (plus the WOW6432Node mirror) and PnP driver-store keys under the
-  Display Adapter and Software Component device-class GUIDs. Manifest
-  paths live in the ``VulkanDriverName`` / ``VulkanDriverNameWow``
-  REG_SZ / REG_MULTI_SZ values.
-* **Linux** walks the XDG directory hierarchy documented at
-  https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md
-  ("Driver Discovery on Linux"): ``$XDG_CONFIG_HOME``, ``$XDG_CONFIG_DIRS``,
-  ``SYSCONFDIR``, ``EXTRASYSCONFDIR``, ``$XDG_DATA_HOME``, ``$XDG_DATA_DIRS``,
-  each with ``/vulkan/icd.d`` appended, plus the Flatpak export
-  directories that ship Vulkan ICDs into sandboxed runtimes. Each
-  directory is globbed for ``*.json`` manifests.
-* **macOS** yields nothing: lilbee's macOS wheel uses Metal directly
-  and skips the Vulkan loader.
-
-Manifest filenames are stable across platforms (``amd_icd64.json``,
-``nv-vk64.json``, ``radeon_icd.x86_64.json``, ``intel_icd.x86_64.json``,
-``nvidia_icd.json``, etc.), and ``VK_LOADER_DRIVERS_DISABLE`` matches
-on the *filename* not the library path, so callers only need the
-filename out of each yielded absolute path.
+Mirrors the Vulkan loader's own discovery so callers can identify which
+vendors are installed without calling ``vkCreateInstance`` (which would
+pre-load every vendor's ICD into the process before any disable env
+var can take effect). Windows reads the registry; Linux walks the XDG
+``vulkan/icd.d`` hierarchy; macOS yields nothing. See
+https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md
+for the loader-side spec.
 """
 
 from __future__ import annotations
@@ -49,62 +24,38 @@ log = logging.getLogger(__name__)
 
 
 def iter_vulkan_manifest_paths() -> Iterator[str]:
-    """Yield every Vulkan ICD manifest path the loader would discover here.
+    """Yield absolute ``.json`` manifest paths the Vulkan loader would discover.
 
-    Each yielded string is the absolute path to a ``.json`` manifest.
-    The bare filename is what ``VK_LOADER_DRIVERS_DISABLE`` matches
-    against, so callers pass it through their vendor classifier.
-
-    Returns an empty iterator on platforms with no Vulkan-loader
-    discovery (macOS) or where the platform's enumeration mechanism
-    isn't available.
+    Returns an empty iterator on macOS (Metal-only build, no Vulkan loader).
     """
     if sys.platform == "win32":
         yield from _iter_windows_vulkan_manifest_paths()
     elif sys.platform.startswith("linux"):
         yield from _iter_linux_vulkan_manifest_paths()
     else:
-        # darwin / unknown: the macOS wheel uses Metal directly so the
-        # Vulkan loader isn't present; the empty yield-from keeps the
-        # function a generator without yielding anything.
         yield from ()
 
 
-# Windows PnP device-class GUIDs that publish Vulkan ICD manifest paths.
-# These are stable Microsoft-defined class GUIDs that long predate Vulkan;
-# the Khronos loader spec names them as the authoritative locations.
-#
-# {4d36e968-e325-11ce-bfc1-08002be10318} = "Display adapters" device setup class.
-#   https://learn.microsoft.com/en-us/windows-hardware/drivers/install/system-defined-device-setup-classes-available-to-vendors
-# {5c4c3332-344d-483c-8739-259e934c9cc8} = "SoftwareComponent" device setup class.
-#   https://learn.microsoft.com/en-us/windows-hardware/drivers/install/system-defined-device-setup-classes-available-to-vendors
-# Both registry paths plus the Khronos software-driver key are listed in:
-#   https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#driver-discovery-on-windows
+# Microsoft-defined PnP device-setup class GUIDs that host Vulkan ICD manifests.
+# Both GUIDs and the Khronos software-driver key are documented in
+# https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#driver-discovery-on-windows
+# (the GUIDs themselves are the public Windows
+# https://learn.microsoft.com/en-us/windows-hardware/drivers/install/system-defined-device-setup-classes-available-to-vendors).
 _PNP_DISPLAY_ADAPTER_CLASS_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
 _PNP_SOFTWARE_COMPONENT_CLASS_GUID = "{5c4c3332-344d-483c-8739-259e934c9cc8}"
 
-# Legacy Khronos-managed registry locations. The WOW6432Node mirror is
-# scanned for 32-bit ICDs on 64-bit Windows, per the same Khronos spec.
-# Each value name is the absolute path to a ``.json`` manifest, and the
-# REG_DWORD value is the enabled flag (0 = enabled, non-zero = disabled).
+# Legacy software-driver paths (HKLM + WOW6432Node mirror for 32-bit ICDs).
+# Each value name is a manifest path; the DWORD value is 0=enabled.
 _KHRONOS_DRIVERS_KEYS = (
     r"SOFTWARE\Khronos\Vulkan\Drivers",
     r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers",
 )
 
-# Per-adapter REG_SZ / REG_MULTI_SZ value names the Khronos loader spec
-# reads off each device-class subkey:
-#   https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#driver-discovery-on-windows
 _PNP_VULKAN_VALUE_NAMES = ("VulkanDriverName", "VulkanDriverNameWow")
 
 
 def _iter_windows_vulkan_manifest_paths() -> Iterator[str]:
-    """Yield manifest paths the Windows Vulkan loader would discover.
-
-    Walks the four locations the LoaderDriverInterface spec mandates: legacy
-    Khronos software-driver path, its WOW6432Node mirror, and the PnP
-    display-adapter and software-component class GUID subkeys.
-    """
+    """Yield manifest paths from the four Windows ICD-discovery locations."""
     try:
         import winreg
     except ImportError:  # pragma: no cover - winreg ships with CPython on Windows
@@ -115,12 +66,7 @@ def _iter_windows_vulkan_manifest_paths() -> Iterator[str]:
 
 
 def _iter_khronos_software_manifests(winreg: Any) -> Iterator[str]:
-    """Yield manifest paths from the legacy ``Khronos\\Vulkan\\Drivers`` keys.
-
-    Each value name is the manifest path and the DWORD value is the
-    enabled flag (0 = enabled per the Khronos spec; any non-zero value
-    means the installer flagged it disabled, so skip it).
-    """
+    """Yield enabled-flag (DWORD=0) manifest paths from the Khronos software keys."""
     hklm = winreg.HKEY_LOCAL_MACHINE
     for sub_key in _KHRONOS_DRIVERS_KEYS:
         try:
@@ -176,12 +122,10 @@ def _iter_pnp_class_manifests(winreg: Any, class_guid: str) -> Iterator[str]:
 
 
 def _read_vulkan_driver_name_values(winreg: Any, subkey: Any) -> Iterator[str]:
-    """Yield manifest paths from one PnP subkey's ``VulkanDriverName*`` values.
+    """Yield non-empty paths from one PnP subkey's ``VulkanDriverName*`` values.
 
-    ``QueryValueEx`` returns a ``list[str]`` for ``REG_MULTI_SZ`` and a
-    bare ``str`` for ``REG_SZ``. We normalize to a stream of non-empty
-    strings; empty entries inside REG_MULTI_SZ lists are filtered out
-    because some installers pad the list.
+    Handles both REG_SZ (single string) and REG_MULTI_SZ (list of strings)
+    that the loader spec allows.
     """
     for value_name in _PNP_VULKAN_VALUE_NAMES:
         try:
@@ -197,29 +141,18 @@ def _read_vulkan_driver_name_values(winreg: Any, subkey: Any) -> Iterator[str]:
                     yield entry
 
 
-# Suffix appended to every XDG-derived path in the Khronos loader's Linux
-# discovery, per
-#   https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderDriverInterface.md#driver-discovery-on-linux
+# Linux ICD-discovery search-path config. Defaults follow the XDG basedir
+# spec (https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html);
+# SYSCONFDIR / EXTRASYSCONFDIR are loader build-time constants that expand
+# to /usr/local/etc and /etc on the distros lilbee ships against. The
+# Flatpak export trees aren't in the Khronos spec but the loader picks them
+# up via XDG_DATA_DIRS inside a Flatpak runtime; we walk them defensively
+# in case lilbee runs outside the sandbox.
 _VULKAN_ICD_SUBPATH = "vulkan/icd.d"
-
-# Fixed system paths the Khronos loader hard-codes alongside the XDG
-# variables. ``SYSCONFDIR`` / ``EXTRASYSCONFDIR`` are loader build-time
-# constants; on the distros lilbee ships against (Ubuntu, Fedora, Arch,
-# Debian) they expand to ``/usr/local/etc`` and ``/etc`` respectively
-# (see the same LoaderDriverInterface.md "Driver Discovery on Linux"
-# table). The XDG basedir defaults are pulled from
-#   https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
 _LINUX_FIXED_ETC_ICD_DIRS: tuple[str, ...] = (
     "/usr/local/etc/vulkan/icd.d",
     "/etc/vulkan/icd.d",
 )
-
-# Flatpak per-runtime Vulkan ICD trees. Inside a Flatpak sandbox the
-# loader picks these up via the runtime's XDG_DATA_DIRS, but a host-side
-# launch of lilbee may not inherit that env, so we walk the conventional
-# export paths defensively. The Flatpak Vulkan extension convention is
-# documented at
-#   https://docs.flatpak.org/en/latest/sandbox-permissions.html#device-access
 _LINUX_FLATPAK_ICD_DIRS: tuple[str, ...] = (
     "~/.local/share/flatpak/exports/share/vulkan/icd.d",
     "/var/lib/flatpak/exports/share/vulkan/icd.d",
@@ -227,25 +160,14 @@ _LINUX_FLATPAK_ICD_DIRS: tuple[str, ...] = (
 
 
 def _iter_linux_vulkan_manifest_paths() -> Iterator[str]:
-    """Yield manifest paths the Linux Vulkan loader would discover.
-
-    Walks the search path documented in the Khronos LoaderDriverInterface
-    spec (``$XDG_CONFIG_HOME``, ``$XDG_CONFIG_DIRS``, ``SYSCONFDIR``,
-    ``EXTRASYSCONFDIR``, ``$XDG_DATA_HOME``, ``$XDG_DATA_DIRS``) plus the
-    standard Flatpak export trees, each with ``vulkan/icd.d`` appended,
-    and globs ``*.json`` in every directory. Yields absolute paths;
-    duplicate directories (e.g. when ``XDG_DATA_DIRS`` contains a colon-
-    separated path that already matches a fallback) are de-duplicated so
-    a single manifest isn't yielded twice.
-    """
+    """Glob ``*.json`` across the Linux ICD-discovery directories, deduping."""
     seen_dirs: set[Path] = set()
     seen_files: set[Path] = set()
     for directory in _linux_vulkan_icd_directories():
         try:
             resolved = directory.expanduser()
         except RuntimeError:
-            # PosixPath.expanduser raises when HOME is unset; skip rather
-            # than abort the whole walk.
+            # PosixPath.expanduser raises when HOME is unset; skip.
             continue
         if resolved in seen_dirs:
             continue
@@ -265,17 +187,7 @@ def _iter_linux_vulkan_manifest_paths() -> Iterator[str]:
 
 
 def _linux_vulkan_icd_directories() -> Iterator[Path]:
-    """Yield each Linux ICD search directory in loader-spec order.
-
-    The XDG defaults follow basedir spec
-    (https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html):
-    ``$XDG_CONFIG_HOME`` -> ``~/.config``, ``$XDG_CONFIG_DIRS`` -> ``/etc/xdg``,
-    ``$XDG_DATA_HOME`` -> ``~/.local/share``,
-    ``$XDG_DATA_DIRS`` -> ``/usr/local/share:/usr/share``.
-    Empty path components in the colon-separated env vars are dropped
-    (matches the loader's own behaviour for the "extra slash" edge case
-    reported in Vulkan-Loader#2331).
-    """
+    """Yield each Linux ICD search directory in loader-spec order."""
     yield from _xdg_dirs("XDG_CONFIG_HOME", "~/.config", _VULKAN_ICD_SUBPATH)
     yield from _xdg_dirs("XDG_CONFIG_DIRS", "/etc/xdg", _VULKAN_ICD_SUBPATH)
     for fixed in _LINUX_FIXED_ETC_ICD_DIRS:
@@ -287,9 +199,9 @@ def _linux_vulkan_icd_directories() -> Iterator[Path]:
 
 
 def _xdg_dirs(env_var: str, default: str, subpath: str) -> Iterator[Path]:
-    """Expand a colon-separated XDG path env var into per-directory ``Path``s.
+    """Split *env_var* (or *default*) on ``:``, append *subpath* to each.
 
-    Drops empty components (the "extra slash in XDG_DATA_DIRS" loader
+    Empty components are dropped (the "extra slash in XDG_DATA_DIRS" loader
     quirk, Vulkan-Loader#2331) and appends *subpath* to each remaining
     entry. Falls back to *default* when the env var is unset.
     """

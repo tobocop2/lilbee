@@ -409,29 +409,19 @@ def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
     return best
 
 
+# Single-vendor boxes don't need a pin -- only that vendor's ICD loads,
+# no cross-vendor collision possible.
 _MIN_VENDORS_FOR_CONFLICT = 2
-"""Number of distinct GPU vendors that must be present before pinning kicks in.
 
-A single-vendor box (e.g., laptop with one AMD iGPU only) is not at risk:
-only that vendor's ICD is loaded, no cross-vendor heap collision is possible.
-"""
-
-
+# Pin priority on dual-vendor hosts. NVIDIA wins because the documented
+# crash signature is AMDVLK alongside NVIDIA (b473 QA, Khronos forum,
+# SHARK-Studio#1636) and NVIDIA is the more common dGPU on those boxes.
+# AMD-then-Intel covers AMD-discrete + Intel-iGPU laptops.
 _PREFERRED_VENDOR_ORDER: tuple[PCIVendorID, ...] = (
     PCIVendorID.NVIDIA,
     PCIVendorID.AMD,
     PCIVendorID.INTEL,
 )
-"""Vendor pin priority for dual-vendor Windows boxes.
-
-The documented heap-corruption signature is AMDVLK loaded alongside
-NVIDIA in the same process (lilbee QA b473, Khronos forum, SHARK
-Studio #1636). NVIDIA-first keeps the discrete card that's
-overwhelmingly the user-visible "main GPU" on these boxes and disables
-the AMD ICD that's behind the crashes. AMD-then-Intel is the natural
-fall-through for AMD-discrete + Intel-iGPU laptops; Intel-only never
-needs disabling.
-"""
 
 
 def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[str]:
@@ -445,12 +435,7 @@ def _icds_to_disable(best: PCIVendorID, all_vendors: set[PCIVendorID]) -> list[s
 
 
 def _classify_manifest_vendor(manifest_filename: str) -> PCIVendorID | None:
-    """Map a Vulkan ICD manifest filename to its GPU vendor.
-
-    Matches the bare filename (no directory) against ``_VENDOR_ICD_GLOBS``
-    using case-insensitive ``fnmatch``. Returns ``None`` for filenames
-    that don't match any vendor we know how to disable.
-    """
+    """Map a manifest filename to its GPU vendor via ``_VENDOR_ICD_GLOBS``."""
     name = manifest_filename.lower()
     for vendor, globs in _VENDOR_ICD_GLOBS.items():
         for glob in globs:
@@ -460,22 +445,11 @@ def _classify_manifest_vendor(manifest_filename: str) -> PCIVendorID | None:
 
 
 def _vulkan_vendors_present() -> set[PCIVendorID]:
-    """Set of GPU vendors with at least one installed Vulkan ICD on this host.
-
-    Pure manifest-path walk via :mod:`vulkan_icd_discovery` (Windows
-    registry / Linux XDG dirs), no Vulkan-loader involvement. The detection
-    runs before the disable env var is set, so any ``vkCreateInstance``
-    call we triggered here would defeat the fix's purpose by pre-loading
-    the very ICD we're trying to disable. Manifest filenames that don't
-    match a known vendor glob are dropped: we have no glob to disable
-    them with so listing them is moot.
-    """
+    """Vendors with at least one installed Vulkan ICD on this host."""
     vendors: set[PCIVendorID] = set()
     for manifest_path in iter_vulkan_manifest_paths():
-        # ``ntpath.basename`` always splits on '\\' even when the test
-        # process runs on POSIX, and it also handles '/' correctly, so it
-        # cleanly extracts the filename from both Windows-registry paths
-        # and Linux ``Path.__str__`` output without per-platform branching.
+        # ntpath.basename splits on both '\\' and '/', so it handles
+        # Windows-registry paths and Linux Path.__str__() output uniformly.
         filename = ntpath.basename(manifest_path)
         vendor = _classify_manifest_vendor(filename)
         if vendor is not None:
@@ -484,7 +458,7 @@ def _vulkan_vendors_present() -> set[PCIVendorID]:
 
 
 def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
-    """Pick the vendor to keep when several are present, by ``_PREFERRED_VENDOR_ORDER``."""
+    """First match against ``_PREFERRED_VENDOR_ORDER``, or ``None`` if empty."""
     for vendor in _PREFERRED_VENDOR_ORDER:
         if vendor in vendors:
             return vendor
@@ -492,15 +466,7 @@ def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
 
 
 def _platform_supports_icd_pin() -> bool:
-    """Whether the running platform has a documented dual-vendor crash class.
-
-    Windows: AMDVLK self-pinning + Radeon Software hook DLLs reliably
-    reproduce ``STATUS_HEAP_CORRUPTION``; mitigation is mandatory.
-    Linux: same loader architecture; Steam-overlay layer crashes with
-    multi-VkDevice apps and AMDVLK / RADV / NVIDIA dual-vendor setups
-    are documented to interact badly. macOS uses Metal directly so the
-    Vulkan loader isn't on the path at all.
-    """
+    """True on Windows + Linux, where dual-vendor ICD crashes are documented."""
     return sys.platform == "win32" or sys.platform.startswith("linux")
 
 
@@ -526,38 +492,18 @@ def _platform_supports_icd_pin() -> bool:
 #   - Blender Vulkan backend startup failure on dual-vendor hosts:
 #     https://projects.blender.org/blender/blender/issues/129917
 def disable_conflicting_vulkan_icds() -> str | None:
-    """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor hosts.
+    """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
 
-    Returns a comma-separated glob list naming the ICD manifest filenames
-    of every vendor *except* the preferred one (NVIDIA > AMD > Intel), or
-    ``None`` when:
+    Preferred-vendor order is NVIDIA > AMD > Intel. Returns ``None`` (defer
+    to the loader's default) when the platform has no documented dual-vendor
+    crash class, when the user has already chosen a GPU via any Vulkan ICD
+    env var or ``cfg.gpu_devices``, or when discovery finds at most one
+    known vendor.
 
-    * The platform has no documented dual-vendor crash class (macOS).
-    * The user has set any Vulkan ICD-selection env var
-      (``VK_DRIVER_FILES``, ``VK_ICD_FILENAMES``, ``VK_ADD_DRIVER_FILES``,
-      ``VK_LOADER_DRIVERS_DISABLE``, ``VK_LOADER_DRIVERS_SELECT``).
-    * The user has set ``cfg.gpu_devices`` -- the lilbee-level GPU pin.
-      That means they've already chosen a specific Vulkan device index,
-      so overriding their vendor selection on top of that would be
-      surprising. The vendor-preference heuristic is for the case
-      where lilbee has to choose; if the user has chosen, defer.
-    * Discovery finds at most one known vendor.
-
-    The caller writes the returned value to ``VK_LOADER_DRIVERS_DISABLE``
-    so the Vulkan loader skips those ICDs at the next ``vkCreateInstance``.
-
-    Discovery reads installed ICD manifest paths from the platform's
-    documented locations directly: Windows registry (legacy Khronos
-    software key plus per-adapter PnP keys) or Linux XDG directory
-    hierarchy. No Vulkan call runs while the disable env var is still
-    unset. The earlier ``vkCreateInstance``-based probe pre-loaded every
-    vendor's ICD into the process before the disable arrived, which
-    defeated the fix on hosts where AMDVLK self-pins its DLL handle and
-    survived ``FreeLibrary`` (lilbee QA b473 minidumps confirmed
-    ``amdvlk64.dll`` still resident in 5 of 9 crash dumps).
-
-    Active on Windows and Linux; macOS uses Metal directly so the
-    Vulkan loader isn't on the path.
+    Discovery reads installed manifests from the registry (Windows) or the
+    XDG hierarchy (Linux). Calling ``vkCreateInstance`` to enumerate would
+    pre-load every vendor's ICD before the disable arrives -- on the b473
+    QA box, AMDVLK self-pinned its DLL and the disable landed too late.
     """
     from lilbee.core.config import cfg
 
@@ -571,9 +517,6 @@ def disable_conflicting_vulkan_icds() -> str | None:
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
     best = _select_best_vendor(vendors)
-    if best is None:  # pragma: no cover
-        # ``_vulkan_vendors_present`` only yields recognised vendors and
-        # ``_PREFERRED_VENDOR_ORDER`` covers the same set, so a non-empty
-        # ``vendors`` always has a match. Guard kept for type narrowing.
+    if best is None:  # pragma: no cover - invariant: vendors is non-empty here
         return None
     return ",".join(_icds_to_disable(best, vendors))

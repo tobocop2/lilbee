@@ -2592,150 +2592,88 @@ class TestIterWindowsVulkanManifestPaths:
         assert vulkan_icd_discovery._PNP_SOFTWARE_COMPONENT_CLASS_GUID in pnp_calls
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Linux Vulkan-ICD walker is gated to sys.platform.startswith('linux')"
-        " in production; the XDG path-list split on ':' collides with the"
-        " 'C:' drive-letter colon when tests on Windows feed tmp_path"
-        " through XDG_* env vars. The function never runs on Windows."
-    ),
-)
 class TestIterLinuxVulkanManifestPaths:
-    """``_iter_linux_vulkan_manifest_paths`` walks the XDG-spec ICD directory hierarchy."""
+    """``_iter_linux_vulkan_manifest_paths`` walks the XDG ICD directory hierarchy.
 
-    def test_yields_json_files_from_real_directory(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """The walker globs ``*.json`` in each XDG-derived ICD directory."""
+    Tests monkeypatch ``_linux_vulkan_icd_directories`` directly so they run
+    on any OS; the XDG env-var parsing in ``_xdg_dirs`` is covered separately
+    by :class:`TestXdgDirs` with strings that don't collide with Windows
+    drive-letter colons.
+    """
+
+    def test_yields_json_files_from_real_directory(self, tmp_path: Path) -> None:
+        """Globs ``*.json`` in each yielded directory, skips non-json names."""
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
-        icd_dir = tmp_path / "usr_share" / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
         (icd_dir / "nvidia_icd.json").write_text("{}")
         (icd_dir / "radeon_icd.x86_64.json").write_text("{}")
         (icd_dir / "not_an_icd.txt").write_text("ignored")
 
-        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "usr_share"))
-        # Clear every other XDG var so nothing else contributes.
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        # Point HOME at an empty dir so ~/.config / ~/.local/share don't fire.
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
+        with mock.patch.object(
+            vulkan_icd_discovery, "_linux_vulkan_icd_directories", lambda: iter([icd_dir])
+        ):
+            result = sorted(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
 
-        result = sorted(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
         filenames = [os.path.basename(p) for p in result]
         assert "nvidia_icd.json" in filenames
         assert "radeon_icd.x86_64.json" in filenames
         assert "not_an_icd.txt" not in filenames
 
-    def test_xdg_data_dirs_extra_slash_is_tolerated(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Empty components from ``"foo::bar"`` (the Vulkan-Loader#2331 quirk) are dropped."""
+    def test_duplicate_directories_are_deduped(self, tmp_path: Path) -> None:
+        """A directory yielded twice must not produce duplicate manifest paths."""
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
-        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
-        (icd_dir / "nvidia_icd.json").write_text("{}")
-
-        monkeypatch.setenv("XDG_DATA_DIRS", f"::{tmp_path / 'share'}:")
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
-        assert any(p.endswith("nvidia_icd.json") for p in result)
-
-    def test_duplicate_directories_are_deduped(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Identical paths in XDG_DATA_DIRS must not yield each manifest twice."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
-
-        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
         (icd_dir / "intel_icd.x86_64.json").write_text("{}")
 
-        share = str(tmp_path / "share")
-        monkeypatch.setenv("XDG_DATA_DIRS", f"{share}:{share}")
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        with mock.patch.object(
+            vulkan_icd_discovery,
+            "_linux_vulkan_icd_directories",
+            lambda: iter([icd_dir, icd_dir]),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
         intel_hits = [p for p in result if p.endswith("intel_icd.x86_64.json")]
-        assert len(intel_hits) == 1, intel_hits
+        assert len(intel_hits) == 1
 
-    def test_xdg_data_home_overrides_default(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Setting XDG_DATA_HOME replaces the ~/.local/share fallback."""
+    def test_missing_directories_are_silently_skipped(self, tmp_path: Path) -> None:
+        """A nonexistent directory doesn't raise; the walk continues."""
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
-        custom = tmp_path / "custom_data"
-        icd_dir = custom / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
+        with mock.patch.object(
+            vulkan_icd_discovery,
+            "_linux_vulkan_icd_directories",
+            lambda: iter([tmp_path / "does_not_exist"]),
+        ):
+            assert list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths()) == []
+
+    def test_directory_with_dot_json_suffix_is_filtered_out(self, tmp_path: Path) -> None:
+        """``foo.json`` directories match the glob but ``is_file`` rejects them."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        icd_dir = tmp_path / "icd.d"
+        icd_dir.mkdir()
         (icd_dir / "nvidia_icd.json").write_text("{}")
+        (icd_dir / "stray_dir.json").mkdir()
 
-        monkeypatch.setenv("XDG_DATA_HOME", str(custom))
-        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "nowhere"))
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
-        assert any(p.endswith("nvidia_icd.json") for p in result)
-
-    def test_missing_directories_are_silently_skipped(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """A nonexistent XDG path doesn't raise; the walk just continues."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
-
-        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "does_not_exist"))
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        assert list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths()) == []
-
-    def test_directories_with_dot_json_suffix_are_filtered_out(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """A directory named ``foo.json`` inside ``icd.d`` must not be yielded.
-
-        A glob matches it because of the ``*.json`` pattern but
-        ``Path.is_file()`` rejects it; without that filter we'd hand a
-        directory path to the loader and confuse downstream classification.
-        """
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
-
-        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
-        (icd_dir / "nvidia_icd.json").write_text("{}")
-        (icd_dir / "stray_dir.json").mkdir()  # a *directory* with .json suffix
-
-        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "share"))
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        with mock.patch.object(
+            vulkan_icd_discovery, "_linux_vulkan_icd_directories", lambda: iter([icd_dir])
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
         assert any(p.endswith("nvidia_icd.json") for p in result)
         assert not any(p.endswith("stray_dir.json") for p in result)
 
-    def test_unreadable_directory_does_not_abort_walk(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """An OSError from ``Path.glob`` (e.g. EPERM) is logged and the walk continues."""
+    def test_unreadable_directory_does_not_abort_walk(self, tmp_path: Path) -> None:
+        """``Path.glob`` raising OSError logs and continues to the next directory."""
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
-        readable = tmp_path / "ok" / "vulkan" / "icd.d"
-        readable.mkdir(parents=True)
+        readable = tmp_path / "ok"
+        readable.mkdir()
         (readable / "nvidia_icd.json").write_text("{}")
-        unreadable = tmp_path / "bad" / "vulkan" / "icd.d"
-        unreadable.mkdir(parents=True)
+        unreadable = tmp_path / "bad"
+        unreadable.mkdir()
 
         real_glob = Path.glob
 
@@ -2744,50 +2682,101 @@ class TestIterLinuxVulkanManifestPaths:
                 raise OSError("simulated EACCES")
             return real_glob(self, pattern)
 
-        monkeypatch.setattr(Path, "glob", _fake_glob)
-        monkeypatch.setenv(
-            "XDG_DATA_DIRS",
-            f"{tmp_path / 'bad'}:{tmp_path / 'ok'}",
-        )
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
+        with (
+            mock.patch.object(Path, "glob", _fake_glob),
+            mock.patch.object(
+                vulkan_icd_discovery,
+                "_linux_vulkan_icd_directories",
+                lambda: iter([unreadable, readable]),
+            ),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
         assert any(p.endswith("nvidia_icd.json") for p in result)
 
-    def test_unexpandable_path_does_not_abort_walk(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """``Path.expanduser`` raises ``RuntimeError`` when HOME is unset; skip and continue.
-
-        Reproduces the case by patching ``expanduser`` directly: setting
-        ``HOME=""`` doesn't reliably trigger the raise on every platform.
-        """
+    def test_unexpandable_path_does_not_abort_walk(self, tmp_path: Path) -> None:
+        """``Path.expanduser`` raising ``RuntimeError`` (HOME unset) skips and continues."""
         from lilbee.providers.llama_cpp import vulkan_icd_discovery
 
-        icd_dir = tmp_path / "share" / "vulkan" / "icd.d"
-        icd_dir.mkdir(parents=True)
-        (icd_dir / "nvidia_icd.json").write_text("{}")
+        good_dir = tmp_path / "ok"
+        good_dir.mkdir()
+        (good_dir / "nvidia_icd.json").write_text("{}")
+        bad_path = Path("~/flatpak/vulkan/icd.d")
 
         real_expanduser = Path.expanduser
-        flatpak_marker = "flatpak"
 
         def _fake_expanduser(self: Path) -> Path:
-            # Flatpak XDG paths start with ``~``; raise on those, leave others alone.
-            if flatpak_marker in str(self) and str(self).startswith("~"):
+            if self == bad_path:
                 raise RuntimeError("HOME not set")
             return real_expanduser(self)
 
-        monkeypatch.setattr(Path, "expanduser", _fake_expanduser)
-        monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "share"))
-        for unset in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME"):
-            monkeypatch.delenv(unset, raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "home_empty"))
-
-        result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
-        # The Flatpak directory was skipped silently, but the regular path still yields.
+        with (
+            mock.patch.object(Path, "expanduser", _fake_expanduser),
+            mock.patch.object(
+                vulkan_icd_discovery,
+                "_linux_vulkan_icd_directories",
+                lambda: iter([bad_path, good_dir]),
+            ),
+        ):
+            result = list(vulkan_icd_discovery._iter_linux_vulkan_manifest_paths())
         assert any(p.endswith("nvidia_icd.json") for p in result)
+
+
+class TestLinuxVulkanIcdDirectories:
+    """``_linux_vulkan_icd_directories`` aggregates XDG + fixed-etc + Flatpak paths."""
+
+    def test_yields_expected_canonical_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """All XDG_* vars unset -> spec defaults plus fixed /etc and Flatpak trees."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"):
+            monkeypatch.delenv(var, raising=False)
+        out = [str(p) for p in vulkan_icd_discovery._linux_vulkan_icd_directories()]
+        # XDG_CONFIG_HOME default
+        assert any(p.endswith("/.config/vulkan/icd.d") for p in out)
+        # XDG_CONFIG_DIRS default
+        assert any("/etc/xdg/vulkan/icd.d" in p for p in out)
+        # Fixed SYSCONFDIR + EXTRASYSCONFDIR
+        assert "/usr/local/etc/vulkan/icd.d" in out
+        assert "/etc/vulkan/icd.d" in out
+        # XDG_DATA_HOME default
+        assert any(p.endswith("/.local/share/vulkan/icd.d") for p in out)
+        # XDG_DATA_DIRS default (both)
+        assert any("/usr/local/share/vulkan/icd.d" in p for p in out)
+        assert any("/usr/share/vulkan/icd.d" in p for p in out)
+        # Flatpak export trees
+        assert any("flatpak/exports/share/vulkan/icd.d" in p for p in out)
+
+
+class TestXdgDirs:
+    """``_xdg_dirs`` parses colon-separated XDG path lists.
+
+    Inputs use POSIX-style placeholders ("share", "etc") rather than
+    real ``tmp_path`` directories so the parser test is portable to
+    Windows (where a ``tmp_path`` would contain a drive-letter colon
+    and confuse the split).
+    """
+
+    def test_uses_default_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.delenv("X_UNSET_TEST", raising=False)
+        out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "default", "sub"))
+        assert out == [Path("default") / "sub"]
+
+    def test_splits_colon_delimited_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_LIST_TEST", "share:opt")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "default", "sub"))
+        assert out == [Path("share") / "sub", Path("opt") / "sub"]
+
+    def test_empty_components_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Vulkan-Loader#2331: ``"a::b"`` and trailing colons must not yield ``Path("")``."""
+        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+
+        monkeypatch.setenv("X_EXTRA_COLON_TEST", "::share:")
+        out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "default", "sub"))
+        assert out == [Path("share") / "sub"]
 
 
 class TestIterKhronosSoftwareManifests:

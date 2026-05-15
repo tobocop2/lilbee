@@ -210,57 +210,26 @@ _VULKAN_AUTODETECT_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES",)
 
 _VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
 
+# Layers with documented crashes against multi-VkDevice apps:
+#   https://github.com/ggml-org/llama.cpp/issues/18109 (RTSS / OBS / HudSight)
+#   https://github.com/ValveSoftware/steam-for-linux/issues/9120 (Steam overlay)
+#   https://alegruz.github.io/graphics/2025/03/22/galaxyoverlayvklayer-issue.html (Galaxy)
+# Vendor-dispatch layers (NV_optimus, AMD_switchable_graphics, MESA_device_select)
+# and user-opt-in overlays (MangoHud) are intentionally absent so GPU routing
+# stays identical to what every other Vulkan app on the host sees.
 _VK_LOADER_LAYERS_DISABLE_GLOBS: tuple[str, ...] = (
-    # Steam overlay: saves VkDevices in a global, crashes apps that
-    # present from multiple devices. lilbee runs chat + embed + rerank
-    # workers, each with its own VkDevice -- exact bug shape.
-    # https://github.com/ValveSoftware/steam-for-linux/issues/9120
     "VK_LAYER_VALVE_steam_overlay*",
-    # Steam shader-cache precompiler; segfaults on llama.cpp under load.
-    # Not strictly an overlay but ships in the same Steam bundle and is
-    # implicit-loaded into every Vulkan process.
     "VK_LAYER_VALVE_steam_fossilize*",
-    # RivaTuner Statistics Server; documented crash with llama.cpp:
-    # https://github.com/ggml-org/llama.cpp/issues/18109
     "VK_LAYER_RTSS*",
-    # OBS Studio capture; same upstream issue.
     "VK_LAYER_OBS_HOOK*",
-    # HudSight overlay; same upstream issue.
     "VK_LAYER_HudSight*",
-    # GOG Galaxy overlay; name-validation warning + general overlay risk.
-    # https://alegruz.github.io/graphics/2025/03/22/galaxyoverlayvklayer-issue.html
     "GalaxyOverlayVkLayer*",
     "VK_LAYER_GalaxyOverlay*",
-    # Discord overlay.
     "VK_LAYER_DISCORD_overlay*",
-    # Epic Online Services overlay.
     "VK_LAYER_EOS_Overlay*",
-    # ReShade / vkBasalt postprocessing injectors.
     "VK_LAYER_RESHADE*",
     "VK_LAYER_VKBASALT*",
 )
-"""Curated glob list of known-crashing third-party Vulkan overlay layers.
-
-Earlier we used the Khronos ``~implicit~`` token, which disables every
-implicit layer. That was too broad: it also nuked
-``VK_LAYER_MESA_device_select`` (Linux device-pin via
-``MESA_VK_DEVICE_SELECT``), ``VK_LAYER_NV_optimus`` (Optimus dGPU
-preference), ``VK_LAYER_AMD_switchable_graphics`` (AMD switchable
-laptop dispatch), and ``VK_LAYER_MANGOHUD_overlay`` (harmless and
-user-opt-in). This list targets only the layers with documented
-crashes against multi-VkDevice apps like llama.cpp:
-
-* Windows; RTSS / OBS / HudSight:
-  https://github.com/ggml-org/llama.cpp/issues/18109
-* Linux; Steam overlay multi-VkDevice:
-  https://github.com/ValveSoftware/steam-for-linux/issues/9120
-
-Vendor dispatch helpers and Mesa device-select are left alone so the
-loader's GPU-routing behaviour matches what every other Vulkan app on
-the host sees. lilbee never renders frames; the overlays we disable
-have no useful effect in our workers.
-"""
-
 _VK_LOADER_LAYERS_DISABLE_VALUE = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS)
 
 
