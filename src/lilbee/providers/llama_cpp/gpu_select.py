@@ -515,8 +515,9 @@ def disable_conflicting_vulkan_icds() -> str | None:
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
     best = _select_best_vendor(vendors)
-    if best is None:
+    if best is None:  # pragma: no cover
+        # ``_windows_vulkan_vendors_present`` only yields recognised vendors
+        # and ``_PREFERRED_VENDOR_ORDER`` covers the same set, so a non-empty
+        # ``vendors`` always has a match. Guard kept for type narrowing.
         return None
-    # ``vendors`` has >=2 members from the preferred set and ``best`` is one
-    # of them, so ``_icds_to_disable`` returns a non-empty list here.
     return ",".join(_icds_to_disable(best, vendors))

@@ -29,6 +29,7 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "example.com",
         "github.com",
         # Citations for the dual-vendor Vulkan ICD workaround in gpu_select.py.
+        "community.khronos.org",
         "nvidia.custhelp.com",
         "projects.blender.org",
     }
