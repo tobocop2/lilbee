@@ -1,6 +1,6 @@
 name: Pages
 
-# Marketing site at https://tobocop2.github.io/lilbee/ plus the per-backend
+# Marketing site at https://lilbee.sh/ plus the per-backend
 # PEP 503 wheel indexes under /<backend>/. Decoupled from package distribution:
 # it redeploys when site/ (or this workflow) changes on main, and after a
 # successful Release candidate run (which builds the full wheel-* set -- default
