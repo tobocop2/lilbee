@@ -898,9 +898,7 @@ def _build_cfg() -> tuple[Config, Exception | None]:
 
 cfg, config_load_error = _build_cfg()
 
-# Canonicalize LILBEE_DATA so worker subprocesses (multiprocessing.spawn
-# re-imports lilbee in a fresh process) inherit the same data root the
-# parent's cfg just resolved. ``setdefault`` preserves a user-set value
-# while filling in the no-flag path where the validator landed on
-# ``find_local_root()`` or ``default_data_dir()``.
+# Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so
+# spawn-context worker subprocesses inherit the same data root.
+# ``setdefault`` preserves a user-set value.
 os.environ.setdefault("LILBEE_DATA", str(cfg.data_root))

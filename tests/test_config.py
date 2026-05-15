@@ -86,6 +86,18 @@ class TestEnvVarOverrides:
             c = Config()
             assert str(c.data_root).endswith("lilbee")
 
+    def test_module_import_canonicalizes_lilbee_data_env(self):
+        """``lilbee.core.config`` exports ``LILBEE_DATA`` so spawned workers inherit it.
+
+        Spawn-context workers re-import lilbee in a fresh process. The
+        canonicalization at cfg construction means a worker spawned
+        after lilbee has been imported once always sees a populated
+        ``LILBEE_DATA`` and routes ``worker-*.log`` accordingly.
+        """
+        import lilbee.core.config  # noqa: F401  # ensure module-level side effect ran
+
+        assert os.environ.get("LILBEE_DATA")
+
     def test_chat_model_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "ollama/llama3:8b"}):
             c = Config()

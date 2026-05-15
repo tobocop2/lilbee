@@ -56,12 +56,9 @@ class WorkerError(RuntimeError):
 class WorkerCrashError(WorkerError):
     """Raised when a worker process dies mid-request (EOF on the pipe).
 
-    Carries an optional ``log_path`` so the surfaced message can point the
-    user at the worker log file that contains the underlying traceback or
-    signal info, plus a tail of that log inlined into the message so the
-    user does not have to hunt for the file (the Windows heap-corruption
-    path produces no Python-level exception to serialize, so the only
-    diagnostic trail lives in the worker's log file).
+    The error message embeds both ``log_path`` and the tail of that log so
+    a native-side crash (no Python exception to serialize) still surfaces
+    a diagnostic trail.
     """
 
     def __init__(self, role: WorkerRole, *, log_path: str | None = None) -> None:

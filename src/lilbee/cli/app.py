@@ -60,12 +60,10 @@ seed_option = typer.Option(None, "--seed", help="Random seed for reproducibility
 
 
 def _apply_data_root(root: Path) -> None:
-    """Point cfg paths at *root* and overlay its config.toml onto cfg.
+    """Point cfg paths at *root*, export ``LILBEE_DATA``, overlay config.toml.
 
-    Exports ``LILBEE_DATA`` to the process env as well, so spawned worker
-    subprocesses (which re-import lilbee with a fresh cfg) see the same
-    data root and route their log files into ``<root>/logs/worker-*.log``
-    instead of dropping them on the floor.
+    Exporting the env var keeps spawn-context worker subprocesses on the
+    same data root after their fresh ``import lilbee``.
     """
     cfg.data_root = root
     cfg.documents_dir = root / "documents"
