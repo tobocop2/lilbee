@@ -438,3 +438,29 @@ def make_test_catalog_model(
         downloads=100,
         task=task,
     )
+
+
+def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
+    """Install a tiny fake GGUF under ``cfg.models_dir`` and return its canonical ref."""
+    from lilbee.catalog.refs import format_native_gguf_ref
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    source = cfg.models_dir / f"_seed-{gguf_filename}"
+    source.write_bytes(b"GGUF\x00")
+    registry = ModelRegistry(cfg.models_dir)
+    registry.install(
+        hf_repo,
+        gguf_filename,
+        source,
+        ModelManifest(
+            hf_repo=hf_repo,
+            gguf_filename=gguf_filename,
+            size_bytes=source.stat().st_size,
+            task=task,
+            downloaded_at="2026-05-15T00:00:00+00:00",
+            blob="",
+        ),
+    )
+    return format_native_gguf_ref(hf_repo, gguf_filename)

@@ -5,6 +5,8 @@ from unittest import mock
 
 import pytest
 
+from tests.conftest import install_fake_model
+
 _DEFAULT_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
@@ -17,32 +19,6 @@ def _task_validation_enabled():
     finally:
         if prev is not None:
             os.environ["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = prev
-
-
-def _install_manifest(hf_repo: str, gguf_filename: str, task: str) -> str:
-    """Install a tiny fake GGUF under ``cfg.models_dir`` and return its canonical ref."""
-    from lilbee.catalog.refs import format_native_gguf_ref
-    from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
-
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    source = cfg.models_dir / f"_seed-{gguf_filename}"
-    source.write_bytes(b"GGUF\x00")
-    registry = ModelRegistry(cfg.models_dir)
-    registry.install(
-        hf_repo,
-        gguf_filename,
-        source,
-        ModelManifest(
-            hf_repo=hf_repo,
-            gguf_filename=gguf_filename,
-            size_bytes=source.stat().st_size,
-            task=task,
-            downloaded_at="2026-05-15T00:00:00+00:00",
-            blob="",
-        ),
-    )
-    return format_native_gguf_ref(hf_repo, gguf_filename)
 
 
 class TestValidateModelTaskAssignment:
@@ -163,7 +139,7 @@ class TestValidateModelTaskAssignment:
         """A non-featured chat model installed locally is a valid chat_model assignment."""
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
-        ref = _install_manifest(
+        ref = install_fake_model(
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
         assert validate_model_task_assignment("chat_model", ref) == ref
@@ -173,7 +149,7 @@ class TestValidateModelTaskAssignment:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.role_validator import TaskMismatchError, validate_model_task_assignment
 
-        ref = _install_manifest(
+        ref = install_fake_model(
             "MaziyarPanahi/Qwen3-1.7B-GGUF", "Qwen3-1.7B.Q4_K_M.gguf", task="chat"
         )
         with pytest.raises(TaskMismatchError) as exc_info:
