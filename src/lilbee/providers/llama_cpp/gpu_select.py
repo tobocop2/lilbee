@@ -38,14 +38,16 @@ from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
-from lilbee.providers.llama_cpp.vulkan_icd_registry import (
-    iter_windows_vulkan_manifest_paths,
+from lilbee.providers.llama_cpp.vulkan_icd_discovery import (
+    iter_vulkan_manifest_paths,
 )
 
 log = logging.getLogger(__name__)
 
 # vk.h constants. Mirrored here so we don't drag a vulkan-headers
-# dependency in for four magic numbers.
+# dependency in for four magic numbers. See the upstream definitions in
+# https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan_core.h
+# (VkStructureType enum and the VK_API_VERSION_1_0 / VK_SUCCESS macros).
 _VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
 _VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
 _VK_SUCCESS = 0
@@ -87,6 +89,9 @@ def _rank_for(device_type: int) -> int:
 
 
 # vk.h sizes for the inline char arrays inside VkPhysicalDeviceProperties.
+# Both constants are part of the Vulkan 1.0 ABI and frozen forever; see
+# VK_MAX_PHYSICAL_DEVICE_NAME_SIZE and VK_UUID_SIZE in
+# https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan_core.h
 _VK_MAX_PHYSICAL_DEVICE_NAME_SIZE = 256
 _VK_UUID_SIZE = 16
 
@@ -104,14 +109,18 @@ class VulkanDevice:
 class PCIVendorID(IntEnum):
     """PCI-SIG vendor IDs for the GPU vendors that ship Vulkan ICDs.
 
-    Values are the canonical PCI vendor IDs that ``VkPhysicalDeviceProperties.vendorID``
-    surfaces. Only the vendors we have explicit ICD-disable globs for are
-    enumerated; unknown vendors fall through the dispatch as no-op.
+    Values are the canonical PCI vendor IDs that
+    ``VkPhysicalDeviceProperties.vendorID`` surfaces. They are issued by
+    PCI-SIG and frozen per company; see the public PCI vendor-ID
+    registry at https://pcisig.com/membership/member-companies (also
+    mirrored at https://devicehunt.com/all-pci-vendors). Only the
+    vendors we have explicit ICD-disable globs for are enumerated;
+    unknown vendors fall through the dispatch as no-op.
     """
 
-    NVIDIA = 0x10DE
-    AMD = 0x1002
-    INTEL = 0x8086
+    NVIDIA = 0x10DE  # NVIDIA Corporation
+    AMD = 0x1002  # Advanced Micro Devices, Inc. [AMD/ATI]
+    INTEL = 0x8086  # Intel Corporation
 
 
 # Vulkan loader manifest filename globs, per vendor. The loader matches these
@@ -120,8 +129,14 @@ class PCIVendorID(IntEnum):
 # Each vendor ships under multiple names across drivers/OSes; list every form
 # we may encounter so disabling one vendor's drivers doesn't half-disable them.
 _VENDOR_ICD_GLOBS: dict[PCIVendorID, tuple[str, ...]] = {
+    # nv-vk*.json (Windows), nvidia_*.json (Linux). Both match nv*.
     PCIVendorID.NVIDIA: ("nv*",),
-    PCIVendorID.AMD: ("amdvlk*", "amd-vulkan*", "radeon*"),
+    # amdvlk64.json (Windows AMDVLK), amd_icd*.json (Linux AMDVLK),
+    # amd-vulkan*.json (legacy AMDVLK builds), radeon_icd.*.json
+    # (Mesa RADV on Linux). Adding amd_icd* explicitly because no
+    # other glob covers the Linux AMDVLK manifest.
+    PCIVendorID.AMD: ("amdvlk*", "amd_icd*", "amd-vulkan*", "radeon*"),
+    # intel_icd.*.json (Mesa Intel ANV on Linux), igvk*.json (Windows).
     PCIVendorID.INTEL: ("intel*", "igvk*"),
 }
 
@@ -176,12 +191,20 @@ class _VkInstanceCreateInfo(ctypes.Structure):
 
 
 class _VkPhysicalDeviceLimits(ctypes.Structure):
-    # Opaque to us; size pulled from vulkan_core.h so the parent struct
-    # layout matches the driver-populated bytes.
+    # Opaque to us; we only need the parent struct's *layout* to match
+    # the driver-populated bytes so the loader can write a vendorID and
+    # deviceType into the prefix fields we actually read.
+    #
+    # Size = sum of every field in VkPhysicalDeviceLimits in
+    # https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan_core.h
+    # (104 ULONG32s, plus alignment padding, totals 504 bytes for the
+    # Vulkan 1.0 ABI). The number is part of the frozen Vulkan 1.0 layout
+    # so it doesn't drift across driver versions.
     _fields_ = [("_opaque", c_uint8 * 504)]
 
 
 class _VkPhysicalDeviceSparseProperties(ctypes.Structure):
+    # 5 ULONG32 booleans, also part of the Vulkan 1.0 ABI; see same header.
     _fields_ = [("_opaque", c_uint32 * 5)]
 
 
@@ -436,21 +459,23 @@ def _classify_manifest_vendor(manifest_filename: str) -> PCIVendorID | None:
     return None
 
 
-def _windows_vulkan_vendors_present() -> set[PCIVendorID]:
+def _vulkan_vendors_present() -> set[PCIVendorID]:
     """Set of GPU vendors with at least one installed Vulkan ICD on this host.
 
-    Pure-registry walk via :mod:`vulkan_icd_registry`, no Vulkan-loader
-    involvement. The detection runs before the disable env var is set,
-    so any ``vkCreateInstance`` call we triggered here would defeat the
-    fix's purpose by pre-loading the very ICD we're trying to disable.
-    Manifest filenames that don't match a known vendor glob are dropped:
-    we have no glob to disable them with so listing them is moot.
+    Pure manifest-path walk via :mod:`vulkan_icd_discovery` (Windows
+    registry / Linux XDG dirs), no Vulkan-loader involvement. The detection
+    runs before the disable env var is set, so any ``vkCreateInstance``
+    call we triggered here would defeat the fix's purpose by pre-loading
+    the very ICD we're trying to disable. Manifest filenames that don't
+    match a known vendor glob are dropped: we have no glob to disable
+    them with so listing them is moot.
     """
     vendors: set[PCIVendorID] = set()
-    for manifest_path in iter_windows_vulkan_manifest_paths():
-        # ntpath.basename (rather than os.path.basename) splits on '\\'
-        # even when the test process runs on Linux/macOS; the registry
-        # always reports Windows-style paths.
+    for manifest_path in iter_vulkan_manifest_paths():
+        # ``ntpath.basename`` always splits on '\\' even when the test
+        # process runs on POSIX, and it also handles '/' correctly, so it
+        # cleanly extracts the filename from both Windows-registry paths
+        # and Linux ``Path.__str__`` output without per-platform branching.
         filename = ntpath.basename(manifest_path)
         vendor = _classify_manifest_vendor(filename)
         if vendor is not None:
@@ -466,6 +491,19 @@ def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
     return None
 
 
+def _platform_supports_icd_pin() -> bool:
+    """Whether the running platform has a documented dual-vendor crash class.
+
+    Windows: AMDVLK self-pinning + Radeon Software hook DLLs reliably
+    reproduce ``STATUS_HEAP_CORRUPTION``; mitigation is mandatory.
+    Linux: same loader architecture; Steam-overlay layer crashes with
+    multi-VkDevice apps and AMDVLK / RADV / NVIDIA dual-vendor setups
+    are documented to interact badly. macOS uses Metal directly so the
+    Vulkan loader isn't on the path at all.
+    """
+    return sys.platform == "win32" or sys.platform.startswith("linux")
+
+
 # References for the dual-vendor ICD mitigation below:
 #   - Khronos Vulkan-Loader env var spec (VK_LOADER_DRIVERS_DISABLE / VK_DRIVER_FILES):
 #     https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md
@@ -477,6 +515,10 @@ def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
 #     https://community.khronos.org/t/crash-in-amdvlk64-dll-during-vkcreateinstance/105022
 #   - SHARK-Studio #1636 (the same crash hits another Python ML inference tool):
 #     https://github.com/nod-ai/SHARK-Studio/issues/1636
+#   - Steam overlay multi-VkDevice crash on Linux (ValveSoftware/steam-for-linux#9120):
+#     https://github.com/ValveSoftware/steam-for-linux/issues/9120
+#   - Mesa RADV pipeline-creation heap corruption (ggml-org/llama.cpp#22128):
+#     https://github.com/ggml-org/llama.cpp/issues/22128
 #   - NVIDIA help article 5182, dual-vendor Vulkan apps on notebooks:
 #     https://nvidia.custhelp.com/app/answers/detail/a_id/5182/
 #   - Heroic Games Launcher ICD-selection issue (same mitigation pattern in prod):
@@ -484,40 +526,39 @@ def _select_best_vendor(vendors: set[PCIVendorID]) -> PCIVendorID | None:
 #   - Blender Vulkan backend startup failure on dual-vendor hosts:
 #     https://projects.blender.org/blender/blender/issues/129917
 def disable_conflicting_vulkan_icds() -> str | None:
-    """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor Windows boxes.
+    """Compute a ``VK_LOADER_DRIVERS_DISABLE`` value for dual-vendor hosts.
 
     Returns a comma-separated glob list naming the ICD manifest filenames
     of every vendor *except* the preferred one (NVIDIA > AMD > Intel), or
     ``None`` when there's no conflict, the user has set any Vulkan
-    ICD-selection env var, or registry enumeration finds at most one
-    known vendor. The caller writes the returned value to
-    ``VK_LOADER_DRIVERS_DISABLE`` so the Vulkan loader skips those ICDs
-    at the next ``vkCreateInstance``.
+    ICD-selection env var, or discovery finds at most one known vendor.
+    The caller writes the returned value to ``VK_LOADER_DRIVERS_DISABLE``
+    so the Vulkan loader skips those ICDs at the next ``vkCreateInstance``.
 
-    Detection reads installed ICD manifest paths from the Windows
-    registry directly (legacy Khronos software key plus per-adapter PnP
-    keys) so no Vulkan call runs while the disable env var is still
+    Discovery reads installed ICD manifest paths from the platform's
+    documented locations directly: Windows registry (legacy Khronos
+    software key plus per-adapter PnP keys) or Linux XDG directory
+    hierarchy. No Vulkan call runs while the disable env var is still
     unset. The earlier ``vkCreateInstance``-based probe pre-loaded every
     vendor's ICD into the process before the disable arrived, which
     defeated the fix on hosts where AMDVLK self-pins its DLL handle and
     survived ``FreeLibrary`` (lilbee QA b473 minidumps confirmed
     ``amdvlk64.dll`` still resident in 5 of 9 crash dumps).
 
-    Windows-only: macOS uses Metal; Linux has the same loader mechanism
-    but no reported crashes, so we don't pin there until a report drives
-    it.
+    Active on Windows and Linux; macOS uses Metal directly so the
+    Vulkan loader isn't on the path.
     """
-    if sys.platform != "win32":
+    if not _platform_supports_icd_pin():
         return None
     if any(os.environ.get(env_var) for env_var in VulkanIcdEnvVar):
         return None
-    vendors = _windows_vulkan_vendors_present()
+    vendors = _vulkan_vendors_present()
     if len(vendors) < _MIN_VENDORS_FOR_CONFLICT:
         return None
     best = _select_best_vendor(vendors)
     if best is None:  # pragma: no cover
-        # ``_windows_vulkan_vendors_present`` only yields recognised vendors
-        # and ``_PREFERRED_VENDOR_ORDER`` covers the same set, so a non-empty
+        # ``_vulkan_vendors_present`` only yields recognised vendors and
+        # ``_PREFERRED_VENDOR_ORDER`` covers the same set, so a non-empty
         # ``vendors`` always has a match. Guard kept for type narrowing.
         return None
     return ",".join(_icds_to_disable(best, vendors))

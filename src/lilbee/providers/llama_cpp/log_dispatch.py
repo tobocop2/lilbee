@@ -213,20 +213,28 @@ _VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
 _VK_LOADER_LAYERS_DISABLE_IMPLICIT = "~implicit~"
 """Khronos-blessed special token: disable every implicit (auto-loaded) layer.
 
-Implicit Vulkan layers are registered under
-``HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers`` and auto-load into
-every ``vkCreateInstance`` regardless of what the application asked
-for. The list on a typical Windows machine includes overlay /
-recording / streaming layers from RivaTuner, OBS, Steam, GOG Galaxy,
-Discord, and AMD Radeon Software's user-experience stack. Several
-have documented heap-corruption bugs that crash headless Vulkan
-consumers; see https://github.com/ggml-org/llama.cpp/issues/18109 for
-the precedent that maps exactly onto the lilbee b473 QA crashes.
-~implicit~ is the
+Implicit Vulkan layers auto-load into every ``vkCreateInstance``
+regardless of what the application asked for. On Windows they live under
+``HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers``; on Linux they live
+under the XDG ``vulkan/implicit_layer.d`` hierarchy. The list on a
+typical gamer/creator box includes overlay / recording / streaming
+layers from RivaTuner, OBS, Steam (``VK_LAYER_VALVE_steam_overlay``
+and ``VK_LAYER_VALVE_steam_fossilize``), MangoHud, GOG Galaxy, Discord,
+and the vendors' user-experience stacks (AMD Radeon Software, NVIDIA
+Optimus, AMD switchable graphics). Several have documented heap-
+corruption or device-loss bugs that crash multi-VkDevice consumers:
+
+* Windows; RTSS / OBS / HudSight:
+  https://github.com/ggml-org/llama.cpp/issues/18109
+* Linux; Steam overlay multi-VkDevice:
+  https://github.com/ValveSoftware/steam-for-linux/issues/9120
+* Linux; Mesa RADV pipeline-creation heap corruption:
+  https://github.com/ggml-org/llama.cpp/issues/22128
+
+lilbee is headless inference and never needs any of these layers.
+``~implicit~`` is the
 https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md
-recommended safe-mode default for diagnosing layer-induced crashes
-and is the right default for an inference workload that never needs
-an overlay.
+recommended safe-mode default and is the right pin for our workload.
 """
 
 
@@ -259,14 +267,14 @@ def _apply_gpu_device_env() -> None:
         disable_conflicting_vulkan_icds,
     )
 
-    # Suppress implicit Vulkan layers on Windows. Must precede every
-    # subsequent vkCreateInstance call (our own probe in autoselect plus
-    # llama.cpp's), otherwise overlay/recording/streaming layers piggy-
-    # back on the first instance and stay resident even if disabled
-    # later. setdefault preserves a user-set VK_LOADER_LAYERS_DISABLE,
-    # and the loader composes ~implicit~ with the user's own ENABLE
-    # token per its spec.
-    if sys.platform == "win32":
+    # Suppress implicit Vulkan layers on Windows + Linux. Must precede
+    # every subsequent vkCreateInstance call (our own probe in autoselect
+    # plus llama.cpp's), otherwise overlay/recording/streaming layers
+    # piggy-back on the first instance and stay resident even if disabled
+    # later. setdefault preserves a user-set VK_LOADER_LAYERS_DISABLE, and
+    # the loader composes ~implicit~ with the user's own ENABLE token per
+    # its spec.
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
         os.environ.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_IMPLICIT)
 
     # Dual-vendor Vulkan crash mitigation runs first and unconditionally:
@@ -276,7 +284,7 @@ def _apply_gpu_device_env() -> None:
     disable_glob = disable_conflicting_vulkan_icds()
     if disable_glob is not None:
         os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
-        log.info("Disabling conflicting Vulkan ICDs on Windows: %s", disable_glob)
+        log.info("Disabling conflicting Vulkan ICDs: %s", disable_glob)
 
     if cfg.gpu_devices:
         for name in _GPU_VISIBLE_ENV_VARS:
