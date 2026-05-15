@@ -140,19 +140,19 @@ check_status "$(api "/dns/deleteByNameType/$DOMAIN/ALIAS")" "delete ALIAS @ apex
 check_status "$(api "/dns/deleteByNameType/$DOMAIN/CNAME/obsidian")" "delete CNAME @ obsidian" || true
 
 log "==> Deleting existing wildcard CNAME (Porkbun parking default)"
-api "/dns/retrieve/$DOMAIN" | jq -r '.records[]? | select(.type == "CNAME" and (.name | startswith("*."))) | .id' | while IFS= read -r rid; do
-  [[ -z "$rid" ]] && continue
-  check_status "$(api "/dns/delete/$DOMAIN/$rid")" "delete wildcard CNAME id=$rid" || true
+api "/dns/retrieve/$DOMAIN" | jq -r '.records[]? | select(.type == "CNAME" and (.name | startswith("*."))) | .id' | while IFS= read -r record_id; do
+  [[ -z "$record_id" ]] && continue
+  check_status "$(api "/dns/delete/$DOMAIN/$record_id")" "delete wildcard CNAME id=$record_id" || true
 done
 
 log "==> Deleting existing wildcard URL forwards"
-api "/domain/getUrlForwarding/$DOMAIN" | jq -r '.forwards[]? | select(.wildcard == "yes") | .id' | while IFS= read -r fid; do
-  [[ -z "$fid" ]] && continue
-  check_status "$(api "/domain/deleteUrlForward/$DOMAIN/$fid")" "delete URL forward id=$fid" || true
+api "/domain/getUrlForwarding/$DOMAIN" | jq -r '.forwards[]? | select(.wildcard == "yes") | .id' | while IFS= read -r forward_id; do
+  [[ -z "$forward_id" ]] && continue
+  check_status "$(api "/domain/deleteUrlForward/$DOMAIN/$forward_id")" "delete URL forward id=$forward_id" || true
 done
 
 log
-log "==> Creating 4 A records on apex (GitHub Pages)"
+log "==> Creating ${#GH_PAGES_IPS[@]} A records on apex (GitHub Pages)"
 for ip in "${GH_PAGES_IPS[@]}"; do
   log "  $ip"
   create_record "" "A" "$ip"
