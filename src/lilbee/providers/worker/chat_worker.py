@@ -7,7 +7,14 @@ import threading
 import time
 from typing import Any
 
-from lilbee.providers.worker.transport import ChatRequest, RoleConfig
+from lilbee.providers.worker.transport import (
+    ChatRequest,
+    ChatResult,
+    FinishReason,
+    RoleConfig,
+    ToolCall,
+    ToolCallDelta,
+)
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
@@ -56,14 +63,20 @@ class _ChatSession:
     def chat(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         stream: bool,
         options: dict[str, Any] | None,
         model: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
         kwargs: dict[str, Any] = dict(options) if options else {}
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
@@ -95,16 +108,89 @@ class _ChatSession:
         self._close_model()
 
 
+_FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
+
+
+def _coerce_finish_reason(raw: str | None) -> FinishReason:
+    """Map a raw llama-cpp finish_reason to ``FinishReason`` (default ``STOP``)."""
+    if raw is None:
+        return FinishReason.STOP
+    return _FINISH_REASONS.get(raw, FinishReason.STOP)
+
+
 def _extract_stream_content(chunk: Any) -> str | None:
     """Pull the text content out of one llama-cpp streaming chunk."""
+    delta = _extract_delta(chunk)
+    if delta is None:
+        return None
+    content = delta.get("content")
+    return content if isinstance(content, str) and content else None
+
+
+def _extract_delta(chunk: Any) -> dict[str, Any] | None:
+    """Return the ``choices[0].delta`` dict from a llama-cpp streaming chunk."""
     choices = chunk.get("choices") if isinstance(chunk, dict) else None
     if not choices:
         return None
     delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-    if not isinstance(delta, dict):
-        return None
-    content = delta.get("content")
-    return content if isinstance(content, str) and content else None
+    return delta if isinstance(delta, dict) else None
+
+
+def _extract_tool_call_deltas(chunk: Any) -> list[ToolCallDelta]:
+    """Convert llama-cpp ``choices[0].delta.tool_calls`` into ``ToolCallDelta`` frames."""
+    delta = _extract_delta(chunk)
+    if delta is None:
+        return []
+    raw_calls = delta.get("tool_calls") or []
+    if not isinstance(raw_calls, list):
+        return []
+    out: list[ToolCallDelta] = []
+    for entry in raw_calls:
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function") or {}
+        if not isinstance(function, dict):
+            function = {}
+        arguments = function.get("arguments")
+        out.append(
+            ToolCallDelta(
+                index=int(entry.get("index", 0)),
+                id=entry.get("id"),
+                name=function.get("name"),
+                arguments_delta=arguments if isinstance(arguments, str) and arguments else None,
+            )
+        )
+    return out
+
+
+class _TextBatchBuffer:
+    """Accumulates text deltas and flushes them in batches over a Reply."""
+
+    def __init__(self, reply: Reply) -> None:
+        self._reply = reply
+        self._buffer: list[str] = []
+        self._last_flush = time.monotonic()
+        self._seen_first_token = False
+
+    def append(self, text: str) -> None:
+        """Buffer *text* and flush once the size or time threshold trips."""
+        self._buffer.append(text)
+        now = time.monotonic()
+        if (
+            not self._seen_first_token
+            or len(self._buffer) >= _STREAM_BATCH_MAX_CHUNKS
+            or (now - self._last_flush) >= _STREAM_BATCH_MAX_INTERVAL_S
+        ):
+            self.flush()
+
+    def flush(self) -> None:
+        """Emit any buffered text as one stream_chunk frame."""
+        if not self._buffer:
+            return
+        self._reply.send(WireKind.STREAM_CHUNK, "".join(self._buffer))
+        self._buffer.clear()
+        self._last_flush = time.monotonic()
+        self._seen_first_token = True
 
 
 def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopState) -> None:
@@ -112,19 +198,12 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
 
     Polls ``state.session._abort_flag`` between chunks so a cancel from the
     parent flushes a clean ``stream_end`` at the next token boundary.
-    Tokens are accumulated and flushed every ``_STREAM_BATCH_MAX_CHUNKS``
-    or ``_STREAM_BATCH_MAX_INTERVAL_S``, whichever comes first, so the
-    pipe sees ~one syscall per batch instead of one per token.
-
-    Cancel path: ``break`` exits the for loop normally, control falls
-    through to ``completed_cleanly = True``, the finally clause flushes
-    any buffered tail, and ``stream_end`` fires. The parent's
-    ``stream()`` reader then returns cleanly without a hang.
+    Text tokens batch through :class:`_TextBatchBuffer`; tool-call deltas
+    flush any pending text first and then ride the wire unbuffered so
+    framing stays in order.
     """
     abort_flag = state.session._abort_flag
-    buffer: list[str] = []
-    last_flush = time.monotonic()
-    seen_first_token = False
+    text = _TextBatchBuffer(reply)
     completed_cleanly = False
     try:
         for raw_chunk in response_iter:
@@ -132,36 +211,30 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
                 with contextlib.suppress(Exception):
                     response_iter.close()
                 break
-            content = _extract_stream_content(raw_chunk)
-            if content is None:
-                continue
-            buffer.append(content)
-            now = time.monotonic()
-            # Flush the very first token immediately so a generator that
-            # stalls after one token still surfaces something to the user.
-            should_flush = (
-                not seen_first_token
-                or len(buffer) >= _STREAM_BATCH_MAX_CHUNKS
-                or (now - last_flush) >= _STREAM_BATCH_MAX_INTERVAL_S
-            )
-            if should_flush:
-                reply.send(WireKind.STREAM_CHUNK, "".join(buffer))
-                buffer.clear()
-                last_flush = now
-                seen_first_token = True
+            _emit_stream_chunk(reply, raw_chunk, text)
         completed_cleanly = True
     finally:
-        # Flush any buffered tokens regardless of how the loop exited so
-        # the user sees partial output before the error frame the outer
-        # handler may emit.
-        if buffer:
-            reply.send(WireKind.STREAM_CHUNK, "".join(buffer))
+        text.flush()
     if completed_cleanly:
         reply.send(WireKind.STREAM_END, None)
 
 
-def _extract_non_streaming_content(response: Any) -> str:
-    """Pull the assistant text out of one llama-cpp non-streaming response."""
+def _emit_stream_chunk(reply: Reply, raw_chunk: Any, text: _TextBatchBuffer) -> None:
+    """Dispatch one streaming chunk into tool-call frames or buffered text."""
+    tool_deltas = _extract_tool_call_deltas(raw_chunk)
+    if tool_deltas:
+        text.flush()
+        for delta in tool_deltas:
+            reply.send(WireKind.STREAM_CHUNK, delta)
+        return
+    content = _extract_stream_content(raw_chunk)
+    if content is None:
+        return
+    text.append(content)
+
+
+def _extract_non_streaming_result(response: Any) -> ChatResult:
+    """Build a ``ChatResult`` from one llama-cpp non-streaming response."""
     if not isinstance(response, dict):
         raise TypeError(f"chat response must be dict, got {type(response).__name__}")
     choices = response.get("choices")
@@ -174,13 +247,43 @@ def _extract_non_streaming_content(response: Any) -> str:
     if not isinstance(message, dict):
         raise TypeError("chat choices[0].message missing or not dict")
     content = message.get("content")
-    return content if isinstance(content, str) else ""
+    text = content if isinstance(content, str) else ""
+    raw_calls = message.get("tool_calls") or []
+    tool_calls = _coerce_tool_calls(raw_calls)
+    finish_reason = _coerce_finish_reason(first.get("finish_reason"))
+    return ChatResult(text=text, tool_calls=tool_calls, finish_reason=finish_reason)
+
+
+def _coerce_tool_calls(raw_calls: Any) -> tuple[ToolCall, ...]:
+    """Convert a llama-cpp ``message.tool_calls`` list into ``ToolCall`` values."""
+    if not isinstance(raw_calls, list):
+        return ()
+    out: list[ToolCall] = []
+    for entry in raw_calls:
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function") or {}
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        arguments = function.get("arguments", "{}")
+        arguments_str = arguments if isinstance(arguments, str) else "{}"
+        out.append(
+            ToolCall(
+                id=str(entry.get("id") or ""),
+                name=name,
+                arguments=arguments_str,
+            )
+        )
+    return tuple(out)
 
 
 def _handle_chat_non_streaming(reply: Reply, response: Any) -> None:
-    """Emit one result frame with the full assistant message text."""
-    text = _extract_non_streaming_content(response)
-    reply.send(WireKind.RESULT, text)
+    """Emit one result frame carrying the full :class:`ChatResult`."""
+    result = _extract_non_streaming_result(response)
+    reply.send(WireKind.RESULT, result)
 
 
 class _AbortBridge:
@@ -250,6 +353,8 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
                 stream=payload.stream,
                 options=payload.options,
                 model=payload.model,
+                tools=payload.tools,
+                tool_choice=payload.tool_choice,
             )
         except Exception as exc:
             reply.send(WireKind.ERROR, _serialize_exception(exc))

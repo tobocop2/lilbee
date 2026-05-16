@@ -19,7 +19,12 @@ from lilbee.providers.worker.chat_worker import (
     _extract_stream_content,
     chat_worker_main,
 )
-from lilbee.providers.worker.transport import ChatRequest, RoleConfig
+from lilbee.providers.worker.transport import (
+    ChatRequest,
+    ChatResult,
+    FinishReason,
+    RoleConfig,
+)
 from lilbee.providers.worker.transport_pipe import (
     PipeSpawner,
     WorkerError,
@@ -169,7 +174,7 @@ async def test_chat_worker_streams_chunks(
 
 
 @pytest.mark.asyncio
-async def test_chat_worker_non_streaming_returns_joined_text(
+async def test_chat_worker_non_streaming_returns_chat_result(
     spawner: PipeSpawner,
     role_config: RoleConfig,
 ) -> None:
@@ -177,7 +182,10 @@ async def test_chat_worker_non_streaming_returns_joined_text(
     try:
         payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=False)
         result = await channel.call("chat", payload, timeout=_TEST_CALL_TIMEOUT_S)
-        assert result == "hello world"
+        assert isinstance(result, ChatResult)
+        assert result.text == "hello world"
+        assert result.tool_calls == ()
+        assert result.finish_reason == FinishReason.STOP
     finally:
         await channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
 
@@ -365,10 +373,12 @@ class _StubSession:
     def chat(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         stream: bool,
         options: dict[str, Any] | None,
         model: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> Any:
         if self._exc is not None:
             raise self._exc
@@ -506,10 +516,23 @@ def test_handle_chat_non_streaming() -> None:
     from lilbee.providers.worker.worker_runtime import WorkerLoopState
 
     reply, conn = _make_reply()
-    session = _StubSession(response={"choices": [{"message": {"content": "joined"}}]})
+    session = _StubSession(
+        response={
+            "choices": [
+                {"message": {"content": "joined"}, "finish_reason": "stop"},
+            ]
+        }
+    )
     payload = ChatRequest(messages=[], stream=False)
     _handle_chat(reply, payload, WorkerLoopState(session=session))
-    assert _kinds_payloads(conn) == [("result", "joined")]
+    frames = _kinds_payloads(conn)
+    assert len(frames) == 1
+    kind, value = frames[0]
+    assert kind == "result"
+    assert isinstance(value, ChatResult)
+    assert value.text == "joined"
+    assert value.tool_calls == ()
+    assert value.finish_reason == FinishReason.STOP
 
 
 def test_handle_chat_emits_error_on_setup_exception() -> None:
@@ -571,24 +594,32 @@ def test_handle_chat_rejects_dict_payload() -> None:
     assert frames[0][1].type_name == "TypeError"
 
 
-def test_extract_non_streaming_content_walks_defensively() -> None:
-    from lilbee.providers.worker.chat_worker import _extract_non_streaming_content
+def test_extract_non_streaming_result_walks_defensively() -> None:
+    from lilbee.providers.worker.chat_worker import _extract_non_streaming_result
 
     # Happy path.
-    assert _extract_non_streaming_content({"choices": [{"message": {"content": "hi"}}]}) == "hi"
+    happy = _extract_non_streaming_result(
+        {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+    )
+    assert happy.text == "hi"
+    assert happy.tool_calls == ()
+    assert happy.finish_reason == FinishReason.STOP
     # None content -> empty string.
-    assert _extract_non_streaming_content({"choices": [{"message": {"content": None}}]}) == ""
+    none_content = _extract_non_streaming_result(
+        {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+    )
+    assert none_content.text == ""
     # Malformed shapes raise typed errors.
     with pytest.raises(TypeError):
-        _extract_non_streaming_content("not a dict")
+        _extract_non_streaming_result("not a dict")
     with pytest.raises(TypeError):
-        _extract_non_streaming_content({})
+        _extract_non_streaming_result({})
     with pytest.raises(TypeError):
-        _extract_non_streaming_content({"choices": []})
+        _extract_non_streaming_result({"choices": []})
     with pytest.raises(TypeError):
-        _extract_non_streaming_content({"choices": ["not a dict"]})
+        _extract_non_streaming_result({"choices": ["not a dict"]})
     with pytest.raises(TypeError):
-        _extract_non_streaming_content({"choices": [{"message": "not a dict"}]})
+        _extract_non_streaming_result({"choices": [{"message": "not a dict"}]})
 
 
 def test_chat_session_close_idempotent_and_swallows() -> None:
@@ -657,6 +688,8 @@ def test_chat_session_chat_passes_options_to_llama(monkeypatch, tmp_path) -> Non
         stream=False,
         options={"temperature": 0.42, "max_tokens": 32},
         model=None,
+        tools=None,
+        tool_choice=None,
     )
     assert captured["temperature"] == 0.42
     assert captured["max_tokens"] == 32
