@@ -1,5 +1,5 @@
-name: Attach binaries to GH pre-release
-description: "Attach lilbee-* binary artifacts from this run to a pre-release at the given tag (caller needs contents:write)."
+name: Attach binaries and wheels to GH pre-release
+description: "Attach this run's standalone executables and per-backend wheel artifacts to a pre-release at the given tag. Caller needs contents:write."
 
 inputs:
   tag:
@@ -16,17 +16,38 @@ runs:
       uses: actions/download-artifact@v4
       with:
         pattern: lilbee-*
-        path: bins/
+        path: assets/
         merge-multiple: true
 
-    - name: List binary artifacts
-      shell: bash
-      run: ls -lh bins/
+    # Default-backend wheels (Linux/Win Vulkan, macOS Metal) ship to PyPI as
+    # well, but attaching them to the release keeps a single discoverable
+    # download surface and lets the PEP 503 index link to one place.
+    - name: Download default wheels
+      uses: actions/download-artifact@v4
+      with:
+        pattern: wheel-default-*
+        path: assets/
+        merge-multiple: true
 
-    - name: Create GH pre-release with binaries
+    # Extra-backend wheels (cu121/cu124/cu125, Intel-Mac CPU) only live here.
+    # GitHub Pages has a 1 GB per-deploy cap; GitHub releases do not, so
+    # the wheels themselves get hosted on the release and the PEP 503 index
+    # at lilbee.sh/<backend>/lilbee/ links to these URLs.
+    - name: Download extra wheels
+      uses: actions/download-artifact@v4
+      with:
+        pattern: wheel-extra-*
+        path: assets/
+        merge-multiple: true
+
+    - name: List release assets
+      shell: bash
+      run: ls -lh assets/
+
+    - name: Create GH pre-release with binaries and wheels
       uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ inputs.tag }}
-        files: bins/*
+        files: assets/*
         generate_release_notes: true
         prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}

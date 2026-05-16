@@ -98,12 +98,15 @@ jobs:
       skip_tests: ${{ inputs.skip_tests || false }}
     secrets: inherit
 
-  # Attach binaries to a GH pre-release as soon as they're built, before QA
-  # runs. A GH release is reversible (delete + retag) so this is safe to do
-  # eagerly; the irreversible step (PyPI) waits for a human to run
-  # publish.yml after reviewing QA.
-  attach-binaries-prerelease:
-    needs: [resolve, build-binaries]
+  # Attach this run's executables AND every wheel to a GH pre-release. The
+  # wheels live on the release page because GitHub Pages has a 1 GB per-deploy
+  # cap that the full default + extra wheel set (~6 GB) blows through; the
+  # PEP 503 index at lilbee.sh/<backend>/lilbee/ now links to these release
+  # asset URLs instead of trying to host the wheels itself. A GH release is
+  # reversible (delete + retag) so this is safe to do eagerly; the
+  # irreversible step (PyPI) waits for a human to run publish.yml.
+  attach-prerelease:
+    needs: [resolve, build-default-wheels, build-extra-wheels, build-binaries]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
