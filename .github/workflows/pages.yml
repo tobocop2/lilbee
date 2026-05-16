@@ -19,6 +19,11 @@ on:
     workflows: ["Release candidate"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      rc_run_id:
+        description: "Override: pull wheel artifacts from this Release-candidate run id instead of the most recent."
+        required: false
+        default: ""
 
 concurrency:
   group: pages
@@ -32,7 +37,10 @@ permissions:
 
 jobs:
   build-site:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Skip only on cancelled RCs. Success and failure both produce valid wheel
+    # artifacts (the build-default-wheels / build-extra-wheels legs run well
+    # before QA or attach), so a flaky QA shouldn't strand the wheel indexes.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -72,7 +80,7 @@ jobs:
           retention-days: 1
 
   build-wheel-indexes:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -81,24 +89,29 @@ jobs:
         id: wheels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERRIDE_RUN_ID: ${{ inputs.rc_run_id }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+          if [ -n "${OVERRIDE_RUN_ID}" ]; then
+            run_id="${OVERRIDE_RUN_ID}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
             run_id="${{ github.event.workflow_run.id }}"
           else
-            # Plain main pushes / manual runs: pull from the last successful
-            # Release candidate run -- the default + extra wheel builds run as
-            # reusable calls inside it, so that run holds the full wheel-* set.
+            # Plain main pushes / manual runs: pull from the most recent
+            # completed Release candidate run -- the default + extra wheel
+            # builds run as reusable calls inside it, so that run holds the
+            # full wheel-* set whether or not a downstream leg (e.g. QA)
+            # succeeded.
             run_id=$(gh run list \
               --workflow=release-candidate.yml \
-              --status=success \
+              --status=completed \
               --limit=1 \
               --json databaseId \
               -q '.[0].databaseId // ""')
           fi
           echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
           if [ -z "${run_id}" ]; then
-            echo "No prior successful Release candidate run found; deploying site without wheel indexes."
+            echo "No completed Release candidate run found; deploying site without wheel indexes."
           else
             echo "Pulling wheel artifacts from run ${run_id}."
           fi
