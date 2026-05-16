@@ -45,6 +45,23 @@ def clean_display_name(repo_id: str) -> str:
     return re.sub(r"\s+", " ", name)
 
 
+def download_task_name(ref: str) -> str:
+    """Catalog display label for *ref*, matching ``CatalogModel.display_name``.
+
+    Strips a trailing ``.gguf`` filename from native GGUF refs and runs
+    :func:`clean_display_name` on the repo portion so the result is the
+    exact string a queued or active DOWNLOAD task carries in
+    ``Task.name``. Returns ``""`` for refs without an ``<owner>/<repo>``
+    shape (empty, provider-prefixed without a slash, bare strings).
+    """
+    if not ref or "/" not in ref:
+        return ""
+    repo = hf_repo_from_ref(ref)
+    if "/" not in repo:
+        return ""
+    return clean_display_name(repo)
+
+
 def display_label_for_ref(ref: str) -> str:
     """Render any model ref as a short, human-friendly UI label.
 

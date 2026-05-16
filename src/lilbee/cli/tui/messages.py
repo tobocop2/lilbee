@@ -166,6 +166,10 @@ SCOPE_PILL_BOTH = "Both"
 SCOPE_PILL_WIKI = "Wiki"
 SCOPE_PILL_RAW = "Raw"
 CHAT_BUSY = "Already answering. Press Ctrl+C to cancel, then submit your next prompt."
+CHAT_MODEL_DOWNLOADING = "{name} is still downloading. Wait for it to finish, then submit."
+MODEL_BEING_DOWNLOADED = (
+    "{name} is still downloading. Wait for it to finish before setting it active."
+)
 CHAT_WELCOME_TITLE = "lilbee"
 CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."

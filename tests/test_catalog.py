@@ -1823,6 +1823,45 @@ class TestCleanDisplayName:
         )
 
 
+class TestDownloadTaskName:
+    """download_task_name yields the same string as ``CatalogModel.display_name``."""
+
+    def test_repo_ref_matches_catalog_display_name(self) -> None:
+        from lilbee.catalog import CatalogModel, download_task_name
+        from lilbee.catalog.types import ModelTask
+
+        model = CatalogModel(
+            hf_repo="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            gguf_filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            size_gb=0.4,
+            min_ram_gb=2.0,
+            description="",
+            featured=True,
+            downloads=0,
+            task=ModelTask.CHAT,
+        )
+        assert download_task_name(model.hf_repo) == model.display_name
+
+    def test_native_gguf_ref_strips_filename(self) -> None:
+        from lilbee.catalog import download_task_name
+
+        ref = "Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        assert download_task_name(ref) == "Qwen2.5 0.5B"
+
+    def test_empty_and_slashless_strings_return_empty(self) -> None:
+        from lilbee.catalog import download_task_name
+
+        assert download_task_name("") == ""
+        assert download_task_name("ollama") == ""
+        assert download_task_name("openai") == ""
+
+    def test_single_slash_gguf_ref_strips_to_empty(self) -> None:
+        """A malformed ``<file>.gguf`` ref with only one slash cleans to empty."""
+        from lilbee.catalog import download_task_name
+
+        assert download_task_name("foo/file.gguf") == ""
+
+
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
         from lilbee.catalog import display_label_for_ref
