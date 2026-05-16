@@ -586,6 +586,22 @@ async def test_settings_api_keys_group_shows_plaintext_warning():
         assert "sensitive" in rendered.lower()
 
 
+async def test_settings_hf_token_help_warns_plaintext():
+    """hf_token row in the System tab warns the user about plain-text storage."""
+    from textual.widgets import Static, TabbedContent
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 60)) as pilot:
+        tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        tabbed.active = "settings-tab-system"
+        await pilot.pause(0.2)
+        row = app.screen.query_one("#row-hf_token")
+        help_widget = row.query_one(".setting-help", Static)
+        rendered = str(help_widget.render())
+        assert "plain text" in rendered.lower()
+        assert "config.toml" in rendered.lower()
+
+
 async def test_settings_tab_activation_populates_pane():
     """Activating a settings tab mounts its rows.
 
