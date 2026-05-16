@@ -1,5 +1,5 @@
-name: Attach binaries to GH pre-release
-description: "Attach lilbee-* binary artifacts from this run to a pre-release at the given tag (caller needs contents:write)."
+name: Attach binaries and wheels to GH pre-release
+description: "Attach this run's standalone executables and per-backend wheel artifacts to a pre-release at the given tag. Caller needs contents:write."
 
 inputs:
   tag:
@@ -19,14 +19,44 @@ runs:
         path: bins/
         merge-multiple: true
 
-    - name: List binary artifacts
-      shell: bash
-      run: ls -lh bins/
+    # Default-backend wheels (Linux/Win Vulkan, macOS Metal) keep their
+    # original PyPI-published filenames -- they also ship to PyPI and a
+    # renamed copy here would diverge from the pinned canonical name.
+    - name: Download default wheels
+      uses: actions/download-artifact@v4
+      with:
+        pattern: wheel-default-*
+        path: default-wheels/
+        merge-multiple: true
 
-    - name: Create GH pre-release with binaries
+    # Extra-backend wheels (cu121/cu124/cu125, cpu) share PEP 427 filenames
+    # with each other and with the default wheels -- the backend lives
+    # inside the wheel, not in its filename. Stage them through
+    # tools/stage_release_assets.py which inserts a backend build tag
+    # (1.cu125 etc.) so all variants can coexist on a single GH release.
+    - name: Download extra wheels (staging tree)
+      uses: actions/download-artifact@v4
+      with:
+        pattern: wheel-extra-*
+        path: extra-wheels-staging/
+
+    - name: Stage extra wheels with backend build tag
+      shell: bash
+      run: |
+        python3 -m tools.stage_release_assets extra-wheels-staging/ extra-wheels/
+
+    - name: List release assets
+      shell: bash
+      run: |
+        ls -lh bins/ default-wheels/ extra-wheels/
+
+    - name: Create GH pre-release with binaries and wheels
       uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ inputs.tag }}
-        files: bins/*
+        files: |
+          bins/*
+          default-wheels/*
+          extra-wheels/*
         generate_release_notes: true
         prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
