@@ -42,9 +42,9 @@ Enter
 
 Sleep 4s
 Hide
-Sleep 110s
+Sleep 140s
 Show
-Sleep 5s
+Sleep 10s
 
 Screenshot demos/_out/tui-chat.png
 

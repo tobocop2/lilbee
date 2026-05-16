@@ -136,6 +136,10 @@ Either way your files and the index never leave the machine; only the queries an
 
 ![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
 
+`Ctrl+P` opens the Textual command palette, `?` toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
+
+![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
+
 The full demo reel (every screen and the MCP integration too) lives in [`docs/demos.md`](docs/demos.md). The tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## Hardware requirements
@@ -223,7 +227,11 @@ Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding su
 
 ![opencode + cloud frontier model indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
-The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md). For a side-by-side against a no-RAG baseline (4 hallucinated APIs without lilbee, 0 with), see [`docs/benchmarks/godot-level-generator.md`](docs/benchmarks/godot-level-generator.md).
+The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the agent can write a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
+
+![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
+
+The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md).
 
 ## HTTP Server
 
