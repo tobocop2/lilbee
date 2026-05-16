@@ -68,6 +68,54 @@ async def test_enter_on_non_installed_chat_card_submits_download() -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_installed_card_defers_apply_until_download_finishes() -> None:
+    """Picking a not-yet-downloaded card writes cfg only after on_success fires."""
+    from lilbee.core.config import cfg
+
+    app = LilbeeApp()
+    chat_default = cfg.chat_model
+    captured: dict[str, object] = {}
+    with _patch_setup_scan(), _patch_setup_ram():
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard):
+                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
+            first = chat_cards[0]
+            assert not first.row.installed
+            mock_grid = GridSelect()
+
+            def _capture(_pending, **kwargs):
+                captured["on_success"] = kwargs.get("on_success")
+                return "tid"
+
+            try:
+                with (
+                    patch.object(app.task_bar, "start_download", side_effect=_capture),
+                    patch("lilbee.core.settings.set_value"),
+                    patch.object(wizard, "_apply_selection") as mock_apply,
+                    patch(
+                        "lilbee.cli.tui.screens.setup.call_from_thread",
+                        side_effect=lambda _node, fn, *a, **kw: fn(*a, **kw),
+                    ),
+                ):
+                    wizard._on_grid_selected(
+                        GridSelect.Selected(grid_select=mock_grid, widget=first)
+                    )
+                    assert cfg.chat_model == chat_default
+                    mock_apply.assert_not_called()
+                    on_success = captured["on_success"]
+                    assert callable(on_success)
+                    on_success()  # simulate the worker firing the post-download hook
+                    mock_apply.assert_called_once()
+            finally:
+                cfg.chat_model = chat_default
+
+
+@pytest.mark.asyncio
 async def test_enter_on_installed_card_does_not_submit_download() -> None:
     """Installed cards save config but skip start_download (nothing to fetch)."""
     from lilbee.catalog import FEATURED_CHAT

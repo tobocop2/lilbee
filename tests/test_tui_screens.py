@@ -3443,6 +3443,47 @@ async def test_chat_send_message():
             assert app.screen._history[0]["role"] == "user"
 
 
+async def test_chat_submit_blocked_while_required_model_downloading():
+    """Submit toasts and bails when cfg.chat_model has an in-flight download."""
+    from lilbee.cli.tui.task_queue import TaskType
+
+    app = ChatTestApp()
+    chat_default = cfg.chat_model
+    cfg.chat_model = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    try:
+        async with app.run_test(size=(120, 40)) as _pilot:
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.DOWNLOAD.value)
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.value = "What is RAG?"
+            with (
+                patch.object(app.screen, "_send_message") as mock_send,
+                patch.object(app.screen, "notify") as mock_notify,
+            ):
+                await _pilot.press("enter")
+                mock_send.assert_not_called()
+                mock_notify.assert_called_once()
+                toast = mock_notify.call_args[0][0]
+                assert "Qwen2.5 0.5B" in toast
+                assert "downloading" in toast
+            assert inp.value == "What is RAG?"
+    finally:
+        cfg.chat_model = chat_default
+
+
+async def test_chat_submit_proceeds_when_download_is_unrelated():
+    """A download for some other model doesn't block chat submission."""
+    from lilbee.cli.tui.task_queue import TaskType
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.value = "What is RAG?"
+        with patch.object(app.screen, "_stream_response"):
+            await _pilot.press("enter")
+            assert len(app.screen._history) == 1
+
+
 async def test_chat_input_handler_uses_on_decorator():
     """Chat input handlers use @on decorator for ID filtering."""
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -9121,41 +9162,47 @@ async def test_setup_wizard_deselects_previous():
 
 
 async def test_setup_wizard_commit_chat_selection_writes_settings():
-    """_commit_selection saves chat_model synchronously."""
+    """An installed chat card applies synchronously (no download to defer behind)."""
+    from lilbee.catalog import FEATURED_CHAT
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
+    installed_ref = FEATURED_CHAT[0].ref
+    with _patch_setup_scan(chat=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            chat_cards = [c for c in screen.query(ModelCard) if c.row.task == "chat"]
-            assert chat_cards
+            installed_card = next(
+                c for c in screen.query(ModelCard) if c.row.installed and c.row.task == "chat"
+            )
             with patch("lilbee.core.settings.set_value") as mock_set:
-                screen._commit_selection(chat_cards[0], "chat")
+                screen._commit_selection(installed_card, "chat")
             assert mock_set.called
-            assert cfg.chat_model == (chat_cards[0].row.ref or chat_cards[0].row.name)
+            assert cfg.chat_model == (installed_card.row.ref or installed_card.row.name)
 
 
 async def test_setup_wizard_commit_embed_selection_writes_settings():
-    """_commit_selection saves embedding_model synchronously."""
+    """An installed embedding card applies synchronously (no download to defer behind)."""
+    from lilbee.catalog import FEATURED_EMBEDDING
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
+    installed_ref = FEATURED_EMBEDDING[0].ref
+    with _patch_setup_scan(embed=[installed_ref]), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            embed_cards = [c for c in screen.query(ModelCard) if c.row.task == "embedding"]
-            assert embed_cards
+            installed_card = next(
+                c for c in screen.query(ModelCard) if c.row.installed and c.row.task == "embedding"
+            )
             with patch("lilbee.core.settings.set_value") as mock_set:
-                screen._commit_selection(embed_cards[0], "embedding")
+                screen._commit_selection(installed_card, "embedding")
             assert mock_set.called
-            assert cfg.embedding_model == (embed_cards[0].row.ref or embed_cards[0].row.name)
+            assert cfg.embedding_model == (installed_card.row.ref or installed_card.row.name)
 
 
 async def test_setup_wizard_action_cancel():

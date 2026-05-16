@@ -2220,3 +2220,53 @@ class TestAppSetActiveModelTaskGuard:
             assert notify_kwargs[-1].get("severity") == "error"
         finally:
             cfg.embedding_model = embed_default
+
+
+class TestAppSetActiveModelDownloadGuard:
+    """`set_active_model` refuses a ref whose download is still queued or active."""
+
+    async def test_active_download_blocks_assignment(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.core.config import cfg
+
+        chat_default = cfg.chat_model
+        ref = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        app = LilbeeApp()
+        try:
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.DOWNLOAD.value)
+            with (
+                mock.patch.object(
+                    app,
+                    "notify",
+                    side_effect=lambda *a, **kw: notify_calls.append((a, kw)),
+                ),
+                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
+            ):
+                app.set_active_model("chat_model", ref)
+            assert cfg.chat_model == chat_default
+            mock_set_value.assert_not_called()
+            assert len(notify_calls) == 1
+            args, kwargs = notify_calls[0]
+            assert "Qwen2.5 0.5B" in args[0]
+            assert "downloading" in args[0]
+            assert kwargs.get("severity") == "warning"
+        finally:
+            cfg.chat_model = chat_default
+
+    async def test_unrelated_download_does_not_block_assignment(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.core.config import cfg
+
+        chat_default = cfg.chat_model
+        ref = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+        app = LilbeeApp()
+        try:
+            app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
+            with mock.patch("lilbee.cli.tui.app.settings.set_value"):
+                app.set_active_model("chat_model", ref)
+            assert cfg.chat_model == ref
+        finally:
+            cfg.chat_model = chat_default

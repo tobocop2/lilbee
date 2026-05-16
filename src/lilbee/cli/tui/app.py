@@ -294,10 +294,19 @@ class LilbeeApp(App[None]):
     def set_active_model(self, key: str, value: str) -> None:
         """Single write boundary for active model refs.
 
-        Validates the ref's catalog task matches the field, so a chat-only
-        model cannot land in the embedding slot (and equivalents for vision /
-        rerank). Provider-prefixed refs and the empty string pass through.
+        Refs whose download is still queued or active are refused; the
+        catalog task validator runs next so a chat-only model cannot
+        land in the embedding slot (and equivalents for vision /
+        rerank). Provider-prefixed refs and the empty string pass
+        through both checks.
         """
+        downloading = self.task_bar.downloading_label_for(value)
+        if downloading is not None:
+            self.notify(
+                msg.MODEL_BEING_DOWNLOADED.format(name=downloading),
+                severity="warning",
+            )
+            return
         try:
             canonical = validate_model_task_assignment(key, value)
         except ValueError as exc:
