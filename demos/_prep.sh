@@ -78,18 +78,12 @@ reset_clean_slate() {
     mkdir -p "$data"
 }
 
-seed_setup_models() {
-    # Pre-pull the chat + embedding models into the tui-setup tape's
-    # isolated LILBEE_MODELS_DIR so the wizard reliably shows "Your
-    # existing models are ready". Real cold-pull renders are too
-    # sensitive to bandwidth -- a slow connection leaves the wizard at
-    # <100% when the chat fires and the demo captures a "Model not
-    # found in registry" error.
-    local setup_models="$ROOT/setup-models"
-    mkdir -p "$setup_models"
-    log "pre-pulling models into setup-models"
-    LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$CHAT_MODEL" || true
-    LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$EMBED_MODEL" || true
+wipe_setup_models() {
+    # The tui-setup tape renders a REAL cold pull of Qwen3 0.6B + Nomic
+    # in its isolated LILBEE_MODELS_DIR. Wipe between renders so the
+    # wizard kicks off real downloads in the Task Center every time.
+    rm -rf "$ROOT/setup-models"
+    mkdir -p "$ROOT/setup-models"
 }
 
 page_cache_model() {
@@ -198,7 +192,7 @@ main() {
     # tui-setup's first chat is `/add ./README.md` against lilbee's own README,
     # so stage it in the demo's data dir after the clean-slate reset.
     cp "$REPO_DIR/README.md" "$ROOT/tui-setup/README.md"
-    seed_setup_models
+    wipe_setup_models
 
     for tape in "${OPENCODE_TAPES[@]}"; do
         setup_opencode_dir "$tape"
