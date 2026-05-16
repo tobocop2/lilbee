@@ -128,6 +128,28 @@ For a project where you want the agent to use lilbee reliably, copy three things
 }
 ```
 
+## API keys never come back over MCP
+
+lilbee tags every API-key field on its `Config` with a `write_only` flag
+(`llm_api_key`, `openrouter_api_key`, `gemini_api_key`,
+`anthropic_api_key`, `openai_api_key`, `mistral_api_key`,
+`deepseek_api_key`, `hf_token`). The MCP read tools refuse them:
+
+- `lilbee_settings_list` skips every write-only key, so secrets do not
+  appear in the catalog the agent enumerates.
+- `lilbee_settings_get("openai_api_key")` returns an error envelope
+  (`"Setting 'openai_api_key' is write-only and cannot be read back"`)
+  rather than the persisted value.
+- `lilbee_status` reads only the public catalog fields (`chat_model`,
+  `embedding_model`, retrieval knobs); API keys are excluded by the
+  same `write_only` filter.
+
+`lilbee_settings_set` still accepts writes to these fields so an agent
+can configure a key on the user's behalf, but the value never round-trips
+back. The flag is declared once on the pydantic Config and consumed by
+the boundary, so a future field becomes write-only with one extra
+`write_only=True` argument and no new code in the MCP layer.
+
 ## Fine-tuning lilbee from your agent
 
 Every writable lilbee setting is reachable from MCP, which means the

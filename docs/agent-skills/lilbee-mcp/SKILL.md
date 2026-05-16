@@ -101,6 +101,15 @@ strategy and reach for other tools; the search will work the moment the embedder
 Auto-generated concept and entity pages over the indexed sources. See lilbee's usage guide
 for the build / draft / prune cycle.
 
+## Secrets stay out of MCP reads
+
+API keys (`openai_api_key`, `anthropic_api_key`, `hf_token`, etc.) are
+marked write-only on the lilbee config. `lilbee_settings_list` will not
+include them. `lilbee_settings_get` on a write-only key returns an
+error envelope. You can still set them with `lilbee_settings_set` on
+the user's behalf, but you cannot read them back. Treat that as the
+contract: never assume you can fetch a previously-set key over MCP.
+
 ## Fine-tuning lilbee for the user's corpus
 
 The user may ask you to set lilbee up for a specific corpus and question

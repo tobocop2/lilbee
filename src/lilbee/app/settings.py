@@ -1,4 +1,11 @@
-"""Canonical write boundary for lilbee configuration."""
+"""Canonical write boundary for lilbee configuration.
+
+API-key fields declared with ``ConfigField(..., write_only=True)`` in
+``core.config.model`` (every ``*_api_key`` and ``hf_token``) are
+filtered out of ``list_settings`` and refused by ``get_setting``.
+``apply_settings_update`` still accepts writes so an agent can
+configure a key on the user's behalf; nothing reads it back.
+"""
 
 from __future__ import annotations
 
