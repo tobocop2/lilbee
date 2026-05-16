@@ -170,10 +170,6 @@ class ChatScreen(Screen[None]):
         # nothing is streaming.
         Binding("ctrl+c", "cancel_stream", "Cancel stream", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
-        # `m` is a NORMAL-mode shortcut to the model bar; in INSERT mode the
-        # focused chat input types the literal "m". `check_action` hides it
-        # from the footer there so the hint matches what the key does.
-        Binding("m", "focus_model_bar", "Models", show=True),
         Binding("s", "cycle_scope", "Scope", show=False),
         # F2 opens the searchable list of every slash command
         # (SlashCommandCatalog) -- not the model catalog, which is `/models`.
@@ -1143,14 +1139,9 @@ class ChatScreen(Screen[None]):
 
         - ``cancel_stream`` (Ctrl+C) only does something while streaming in
           INSERT mode; otherwise the App's Quit binding takes the slot.
-        - ``focus_model_bar`` (``m``) is a NORMAL-mode shortcut; in INSERT
-          mode the focused chat input types the literal character, so the
-          ``m Models`` hint would lie.
         """
         if action == "cancel_stream":
             return self.streaming and self._insert_mode
-        if action == "focus_model_bar":
-            return not self._insert_mode
         return super().check_action(action, parameters)
 
     def action_enter_normal_mode(self) -> None:
@@ -1271,13 +1262,6 @@ class ChatScreen(Screen[None]):
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()
-
-    def action_focus_model_bar(self) -> None:
-        """Focus the chat-model picker button in the model bar (normal mode only)."""
-        if self._insert_mode:
-            raise SkipAction()
-        with contextlib.suppress(NoMatches):
-            self.query_one("#chat-model-button", ModelPickerButton).focus()
 
     def action_toggle_chat_mode(self) -> None:
         """F3: flip between Search and Chat mode."""
