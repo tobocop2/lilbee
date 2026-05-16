@@ -16,7 +16,7 @@ The nine that match the site reel, in order:
 8. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
 9. [Agent: PDF](#agent-pdf)
 
-Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen against the full class reference](#agent-godot-codegen-against-the-full-class-reference), [command surface](#command-surface).
+Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen against the full class reference](#agent-godot-codegen-against-the-full-class-reference), [command surface](#command-surface), [CLI tour](#cli-tour).
 
 ## First run
 
@@ -114,6 +114,13 @@ lilbee, 0 with).
 sheet; `/help` opens the searchable slash-command catalog.
 
 ![command palette + help + slash catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
+
+### CLI tour
+
+What the Ollama CLI is good for: `init`, `model pull`, `model list`, `add`,
+`status`, `sync`, `search`. No JSON RAG.
+
+![CLI tour](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/cli.gif)
 
 ## Agent setup
 
