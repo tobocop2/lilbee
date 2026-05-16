@@ -573,12 +573,22 @@ class SettingsScreen(Screen[None]):
         )
 
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
-        """Reset every writable setting to its cfg default atomically."""
+        """Reset every writable setting to its cfg default atomically.
+
+        Skips fields the boundary refuses to reset (currently ``documents_dir``,
+        whose default is the unresolved ``Path()`` sentinel). The bulk-reset
+        gesture leaves those at their current values rather than failing
+        the whole batch.
+        """
         if not confirmed:
             return
-        from lilbee.app.settings import reset_settings
+        from lilbee.app.settings import _NO_RESET_FIELDS, reset_settings
 
-        writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
+        writable = [
+            (key, defn)
+            for key, defn in SETTINGS_MAP.items()
+            if defn.writable and key not in _NO_RESET_FIELDS
+        ]
         try:
             reset_settings([key for key, _ in writable])
         except (ValueError, OSError) as exc:

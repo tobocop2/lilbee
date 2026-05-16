@@ -1916,10 +1916,11 @@ async def test_reset_all_cancel_does_nothing():
 
 async def test_reset_all_confirm_batches_writes_atomically():
     """Confirming the dialog issues one batched update + one batched delete to the boundary."""
+    from lilbee.app.settings import _NO_RESET_FIELDS
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    writable_keys = {k for k, d in SETTINGS_MAP.items() if d.writable}
+    writable_keys = {k for k, d in SETTINGS_MAP.items() if d.writable and k not in _NO_RESET_FIELDS}
     readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
     assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
 
@@ -2023,10 +2024,13 @@ async def test_reset_all_publishes_signals_on_lilbee_app():
             patch.object(app.settings_changed_signal, "publish") as mock_pub,
         ):
             screen._on_reset_all_confirmed(True)
-        # One publish per writable setting.
+        # One publish per writable setting the boundary actually resets.
+        from lilbee.app.settings import _NO_RESET_FIELDS
         from lilbee.app.settings_map import SETTINGS_MAP
 
-        expected = sum(1 for d in SETTINGS_MAP.values() if d.writable)
+        expected = sum(
+            1 for k, d in SETTINGS_MAP.items() if d.writable and k not in _NO_RESET_FIELDS
+        )
         assert mock_pub.call_count == expected
 
 
