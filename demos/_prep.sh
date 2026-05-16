@@ -76,6 +76,12 @@ reset_clean_slate() {
     local data="$ROOT/$tape"
     rm -rf "$data"
     mkdir -p "$data"
+    # The setup tape pulls models cold so the rendered demo shows real
+    # download bars. It uses its own LILBEE_MODELS_DIR so a previous run's
+    # cache makes the pulls no-ops ("models already ready"). Always wipe.
+    if [[ "$tape" == "tui-setup" ]]; then
+        rm -rf "$ROOT/setup-models"
+    fi
 }
 
 page_cache_model() {
@@ -101,6 +107,10 @@ setup_opencode_dir() {
     cp "$DEMOS_DIR/.opencode/agents/lilbee-worker.md"             "$dir/.opencode/agents/lilbee-worker.md"
     cp "$REPO_DIR/docs/agent-skills/lilbee-mcp/SKILL.md"          "$dir/.opencode/skills/lilbee-mcp/SKILL.md"
     rm -rf "$dir/.lilbee"
+    # The agent writes .gd / .tscn / project.godot files during the godot
+    # demos. Wipe them so each re-render starts from "no pre-existing
+    # level generator" and the agent has to create from scratch.
+    find "$dir" -maxdepth 1 -type f \( -name "*.gd" -o -name "*.tscn" -o -name "project.godot" \) -delete
     ( cd "$dir" && "$LILBEE" init >/dev/null )
 }
 
