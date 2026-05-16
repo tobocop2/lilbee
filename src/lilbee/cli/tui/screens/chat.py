@@ -425,6 +425,18 @@ class ChatScreen(Screen[None]):
         text = event.value.strip()
         if not text:
             return
+        if not text.startswith("/"):
+            pending = self._pending_required_model_download()
+            if pending is not None:
+                # Keep the typed prompt in the input so the user can submit
+                # it again once the download finishes, instead of forcing
+                # them to retype.
+                self.notify(
+                    msg.CHAT_MODEL_DOWNLOADING.format(name=pending),
+                    severity="warning",
+                    timeout=5,
+                )
+                return
         event.chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
@@ -433,6 +445,20 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _pending_required_model_download(self) -> str | None:
+        """Return the in-flight download's name if it's for the configured chat or embedding model.
+
+        Covers the fresh-install case where the default ``cfg.chat_model``
+        points at a featured catalog ref whose file isn't on disk yet,
+        but a wizard-triggered download for it is queued or active.
+        """
+        task_bar = self.app.task_bar
+        for ref in (cfg.chat_model, cfg.embedding_model):
+            label = task_bar.downloading_label_for(ref)
+            if label is not None:
+                return label
+        return None
 
     def _accept_overlay_selection_on_enter(self) -> bool:
         """Accept the highlight as ``<selection> ``; True if Enter was consumed."""
