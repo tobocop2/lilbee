@@ -78,6 +78,10 @@ strategy and reach for other tools; the search will work the moment the embedder
 | `lilbee_crawl_status(task_id)` | Poll a running crawl: `status` is `"pending"`, `"running"`, `"done"`, or `"failed"`. |
 | `lilbee_model_list(source, task)` | Installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model. |
+| `lilbee_settings_list(group)` | Every writable lilbee setting with value, default, type, help text, and `reindex_required`. |
+| `lilbee_settings_get(key)` | Current value and metadata for one setting. |
+| `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, drops the in-process model + provider caches. |
+| `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
 
 ### Long (delegate to a subagent)
 
@@ -96,6 +100,40 @@ strategy and reach for other tools; the search will work the moment the embedder
 `lilbee_wiki_drafts_diff`, `lilbee_wiki_prune`, `lilbee_wiki_build`, `lilbee_wiki_update`.
 Auto-generated concept and entity pages over the indexed sources. See lilbee's usage guide
 for the build / draft / prune cycle.
+
+## Fine-tuning lilbee for the user's corpus
+
+The user may ask you to set lilbee up for a specific corpus and question
+style ("index this codebase, recommend models, tune for code Q&A"). You
+have everything you need over MCP:
+
+1. `lilbee_settings_list` enumerates every knob with help text and
+   defaults. `lilbee_settings_get(key)` reads one. Defaults are sane
+   for general prose; you usually only need to move a handful of knobs.
+2. `lilbee_model_list(source="native")` shows what's installed.
+   `lilbee_model_pull(model, source)` downloads more. Pulls are slow,
+   so dispatch them to the `lilbee-worker` subagent, not inline.
+3. `lilbee_settings_set({...})` writes a batch atomically. Hand it a
+   single dict per logical change ("switch to a code-tuned setup": set
+   `chat_model`, `embedding_model`, `reranker_model`, `chunk_size`,
+   `concept_graph`, `rerank_candidates` in one call).
+4. If `lilbee_settings_set` returns `reindex_required: true`, the
+   change invalidates the persisted vector store. Delegate
+   `lilbee_sync(force_rebuild=true)` to the worker subagent and wait
+   for it to finish before resuming search.
+5. Tell the user which knob you moved and why, in plain English. They
+   should be able to revert with `lilbee_settings_reset([...])`.
+
+Common adjustments by question style:
+
+- **Code Q&A / call graphs:** non-empty `reranker_model`, raise
+  `rerank_candidates` (24-48), enable `concept_graph`, lower
+  `chunk_size` (256-384).
+- **Long-document walkthroughs:** raise `top_k` (12-16) and
+  `max_context_sources`, drop `diversity_max_per_source` to 1 so
+  the answer spans multiple sources.
+- **Fact lookup over a large library:** raise `top_k`, raise
+  `candidate_multiplier`, keep `reranker_model` set.
 
 ## Citation rules
 

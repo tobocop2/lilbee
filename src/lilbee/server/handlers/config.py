@@ -27,12 +27,12 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
 
     Delegates validation, snapshot/rollback, persistence, and cache
     invalidation to ``app.settings.apply_settings_update`` so HTTP, MCP,
-    CLI, and the TUI share one write boundary.
+    CLI, and the TUI share one write boundary. Model role writes are
+    refused at this surface because PUT /api/models/<role> already
+    handles them with an install-availability check.
     """
-    result = apply_settings_update(updates)
-    return ConfigUpdateResponse(
-        updated=result.updated, reindex_required=result.reindex_required
-    )
+    result = apply_settings_update(updates, allow_model_roles=False)
+    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 
 
 async def get_config() -> ConfigResponse:

@@ -84,6 +84,10 @@ For a project where you want the agent to use lilbee reliably, copy three things
 | `model_show(model)` | Show catalog + installed metadata for a model ref | No |
 | `model_pull(model, source)` | Download a model, streaming progress via MCP notifications | Yes (download) |
 | `model_rm(model, source)` | Remove an installed model | No |
+| `settings_list(group)` | List every writable setting with value, default, type, help text, choices, and `reindex_required` | No |
+| `settings_get(key)` | Get one setting's current value and metadata | No |
+| `settings_set(updates)` | Atomically update a batch of writable settings; validates, persists, and invalidates the in-process model and provider caches | No |
+| `settings_reset(keys)` | Reset writable settings to their built-in defaults | No |
 | `wiki_list()` | List all wiki pages grouped by type | No |
 | `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
 | `wiki_status()` | Page counts, generator settings, last build timestamp | No |
@@ -123,6 +127,54 @@ For a project where you want the agent to use lilbee reliably, copy three things
   "drafts": [{"slug": "tire-pressure", "reason": "low_faithfulness"}]
 }
 ```
+
+## Fine-tuning lilbee from your agent
+
+Every writable lilbee setting is reachable from MCP, which means the
+agent can pick models for the user's hardware and dial in the retrieval
+pipeline for the kind of questions the user actually wants to ask.
+There is no separate setup flow; the same MCP server that answers
+queries also configures itself.
+
+Example prompt you can drop into Claude Code, opencode, or any other
+MCP-aware host:
+
+> I'm going to index `~/projects/my-stack/` with lilbee and then mostly
+> ask it questions about how the auth layer is wired and which functions
+> call which. Can you assess my hardware, recommend chat / embedding /
+> reranker models that will fit, pull them in the background, and then
+> walk the lilbee defaults and adapt them for this corpus and this
+> question style?
+
+A capable agent will:
+
+1. Call `lilbee_settings_list` to see the catalog and `lilbee_status` to
+   see what's already indexed and what models are wired up.
+2. Inspect the host (RAM, GPU, OS) with its native tools.
+3. Use `lilbee_model_list(source="native")` to see what's installed,
+   then suggest models from the curated catalog and pull each one with
+   `lilbee_model_pull` through the `lilbee-worker` subagent so the chat
+   thread stays responsive.
+4. Set the chat / embedding / reranker slots through
+   `lilbee_settings_set({"chat_model": "...", "embedding_model": "...",
+   "reranker_model": "..."})`.
+5. Tune retrieval for the question style with one batched
+   `lilbee_settings_set` call: more candidates and a higher
+   `rerank_candidates` plus a non-empty `reranker_model` for "which
+   functions call which"; a larger `top_k` and `max_context_sources`
+   for "walk me through this subsystem". For code-heavy corpora it
+   will usually also drop `chunk_size` and enable `concept_graph`.
+6. Run `lilbee_settings_get` on each key it changed to confirm the
+   value was accepted, and tell the user which knob it moved and why.
+
+All of these writes go through one canonical boundary inside lilbee, so
+the change persists to the per-vault `config.toml`, the in-process
+model architecture cache and provider load cache are dropped, and the
+next `lilbee_search` / `lilbee_sync` call sees the new configuration
+without a restart. If a `reindex_required` knob (chunk_size /
+chunk_overlap) changed, `lilbee_settings_set` returns
+`reindex_required: true`, the agent's cue to delegate
+`lilbee_sync(force_rebuild=true)` to the worker subagent.
 
 ## JSON CLI
 

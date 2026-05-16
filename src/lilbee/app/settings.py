@@ -10,8 +10,10 @@ without re-deriving metadata from pydantic.
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Union, get_args, get_origin
 
 from pydantic_core import PydanticUndefined
 
@@ -51,32 +53,29 @@ class SettingsUpdateResult:
     reindex_required: bool
 
 
+_SCALAR_TYPE_NAMES: dict[type, str] = {
+    bool: "bool",
+    int: "int",
+    float: "float",
+    str: "str",
+    Path: "str",
+    type(None): "null",
+}
+_COLLECTION_ORIGINS = (list, frozenset, set, tuple)
+_UNION_ORIGINS = (Union, types.UnionType)
+
+
 def _annotation_name(annotation: Any) -> str:
     """Render a pydantic field annotation as a short MCP-friendly type string."""
-    import types
-    from pathlib import Path
-    from typing import Union, get_args, get_origin
-
     origin = get_origin(annotation)
-    if origin in (Union, types.UnionType):
-        parts = [_annotation_name(a) for a in get_args(annotation)]
-        return "|".join(parts)
-    if annotation is type(None):
-        return "null"
-    if annotation is bool:
-        return "bool"
-    if annotation is int:
-        return "int"
-    if annotation is float:
-        return "float"
-    if annotation is str:
-        return "str"
-    if annotation is Path:
-        return "str"
-    if origin in (list, frozenset, set, tuple):
+    if origin in _UNION_ORIGINS:
+        return "|".join(_annotation_name(a) for a in get_args(annotation))
+    scalar = _SCALAR_TYPE_NAMES.get(annotation)
+    if scalar is not None:
+        return scalar
+    if origin in _COLLECTION_ORIGINS:
         return "list"
-    name = getattr(annotation, "__name__", None)
-    return name or str(annotation)
+    return getattr(annotation, "__name__", None) or str(annotation)
 
 
 def _setting_default(key: str) -> Any:
@@ -128,16 +127,41 @@ def get_setting(key: str) -> SettingInfo:
     return _setting_info(key, SETTINGS_MAP.get(key))
 
 
+def _is_settable(key: str) -> bool:
+    return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
+
+
+def _is_nullable(key: str) -> bool:
+    """Model role slots accept the empty string but not raw null."""
+    if key in WRITABLE_CONFIG_FIELDS:
+        return WRITABLE_CONFIG_FIELDS[key]
+    return False
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
-        if key not in WRITABLE_CONFIG_FIELDS:
+        if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
-        if value is None and not WRITABLE_CONFIG_FIELDS[key]:
+        if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
     chunk_val = updates.get("chunk_size")
     if isinstance(chunk_val, int) and chunk_val < _MIN_CHUNK_SIZE:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
+
+
+def _coerce_value(key: str, value: Any) -> Any:
+    """Apply field-specific canonicalization before cfg assignment.
+
+    Model role slots run through ``validate_model_task_assignment`` so a
+    chat-only ref cannot land in the embedding slot, matching what the
+    TUI does at its own write boundary.
+    """
+    if key in MODEL_ROLE_FIELDS and isinstance(value, str):
+        from lilbee.modelhub.role_validator import validate_model_task_assignment
+
+        return validate_model_task_assignment(key, value)
+    return value
 
 
 def _apply_with_rollback(
@@ -148,17 +172,17 @@ def _apply_with_rollback(
     to_persist: dict[str, str] = {}
     to_delete: list[str] = []
     try:
-        for key, value in updates.items():
-            if value is None:
+        for key, raw in updates.items():
+            if raw is None:
                 setattr(cfg, key, None)
                 to_delete.append(key)
+                continue
+            setattr(cfg, key, _coerce_value(key, raw))
+            normalized = getattr(cfg, key)
+            if isinstance(normalized, list):
+                to_persist[key] = "\n".join(str(x) for x in normalized)
             else:
-                setattr(cfg, key, value)
-                normalized = getattr(cfg, key)
-                if isinstance(normalized, list):
-                    to_persist[key] = "\n".join(str(x) for x in normalized)
-                else:
-                    to_persist[key] = str(normalized)
+                to_persist[key] = str(normalized)
     except Exception:
         for k, v in snapshot.items():
             setattr(cfg, k, v)
@@ -198,7 +222,11 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         inject_provider_keys()
 
 
-def apply_settings_update(updates: dict[str, Any]) -> SettingsUpdateResult:
+def apply_settings_update(
+    updates: dict[str, Any],
+    *,
+    allow_model_roles: bool = True,
+) -> SettingsUpdateResult:
     """Validate, apply, persist, and invalidate caches for a batch of updates.
 
     Atomicity contract: if any value fails pydantic validation, every
@@ -206,7 +234,20 @@ def apply_settings_update(updates: dict[str, Any]) -> SettingsUpdateResult:
     nothing is persisted to disk. Callers see either a ``ValueError``
     (no state changed) or a successful result (every key applied and
     flushed to ``config.toml``).
+
+    ``allow_model_roles`` is the surface-level switch for the model
+    slot fields (``chat_model`` / ``embedding_model`` / ``vision_model``
+    / ``reranker_model``). MCP and the TUI pass ``True`` so an agent
+    can wire a freshly-pulled model in one batched call. HTTP keeps
+    the historical contract: PATCH /api/config rejects role writes
+    because they have a dedicated PUT /api/models/<role> route with
+    install-availability checks.
     """
+    if not allow_model_roles:
+        rejected = MODEL_ROLE_FIELDS & set(updates)
+        if rejected:
+            offender = sorted(rejected)[0]
+            raise ValueError(f"Unknown or read-only setting: {offender}")
     _validate(updates)
     to_persist, to_delete = _apply_with_rollback(updates)
     if to_persist:
@@ -229,11 +270,11 @@ def reset_settings(keys: list[str]) -> SettingsUpdateResult:
     their canonical default value.
     """
     for key in keys:
-        if key not in WRITABLE_CONFIG_FIELDS:
+        if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
     updates: dict[str, Any] = {}
     for key in keys:
-        if WRITABLE_CONFIG_FIELDS[key]:
+        if _is_nullable(key):
             updates[key] = None
         else:
             updates[key] = _setting_default(key)

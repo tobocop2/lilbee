@@ -21,6 +21,10 @@ from lilbee.mcp_server import (
     remove,
     reset,
     search,
+    settings_get,
+    settings_list,
+    settings_reset,
+    settings_set,
     status,
     sync,
     wiki_build,
@@ -968,4 +972,96 @@ class TestWikiDraftsMcp:
         cfg.data_root = isolated_env
         cfg.wiki_dir = "wiki"
         result = wiki_drafts_diff("missing")
+        assert "error" in result
+
+
+class TestSettingsMcp:
+    """MCP settings_* tools read and write through the canonical write boundary."""
+
+    def test_settings_list_returns_metadata(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list()
+        assert result["command"] == "settings_list"
+        assert result["total"] > 0
+        keys = {entry["key"] for entry in result["settings"]}
+        assert {"top_k", "chunk_size", "max_distance"}.issubset(keys)
+        top_k = next(e for e in result["settings"] if e["key"] == "top_k")
+        assert top_k["type"] == "int"
+        assert top_k["group"] == "Retrieval"
+        assert top_k["help"]
+        assert top_k["reindex_required"] is False
+
+    def test_settings_list_filters_by_group(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list(group="Retrieval")
+        groups = {entry["group"] for entry in result["settings"]}
+        assert groups == {"Retrieval"}
+        assert any(entry["key"] == "top_k" for entry in result["settings"])
+
+    def test_settings_get_returns_value(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 7
+        result = settings_get("top_k")
+        assert result["command"] == "settings_get"
+        assert result["setting"]["key"] == "top_k"
+        assert result["setting"]["value"] == 7
+
+    def test_settings_get_unknown_key_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_get("bogus")
+        assert "error" in result
+
+    def test_settings_set_persists_and_normalizes(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"top_k": 11, "chunk_size": 256})
+        assert result["command"] == "settings_set"
+        assert set(result["updated"]) == {"top_k", "chunk_size"}
+        assert result["reindex_required"] is True
+        assert cfg.top_k == 11
+        assert cfg.chunk_size == 256
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "top_k" in persisted
+        assert "chunk_size" in persisted
+
+    def test_settings_set_rolls_back_on_validation_failure(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        result = settings_set({"top_k": 12, "chunk_size": 1})
+        assert "error" in result
+        assert cfg.top_k == 5
+
+    def test_settings_set_rejects_unknown_key(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"not_a_real_field": 1})
+        assert "error" in result
+
+    def test_settings_set_clears_nullable_field(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.max_tokens = 1024
+        settings_set({"max_tokens": None})
+        assert cfg.max_tokens is None
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "max_tokens" not in persisted
+
+    def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
+        cfg.data_root = isolated_env
+        from lilbee.modelhub import model_info
+
+        model_info._arch_cache[("a", "b", "c")] = model_info.ModelArchInfo()
+        settings_set({"chat_model": "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"})
+        assert model_info._arch_cache == {}
+
+    def test_settings_reset_restores_default(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+        result = settings_reset(["top_k"])
+        assert result["command"] == "settings_reset"
+        assert "top_k" in result["updated"]
+        from lilbee.app.settings import get_setting
+
+        assert cfg.top_k == get_setting("top_k").default
+
+    def test_settings_reset_unknown_key_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_reset(["nope"])
         assert "error" in result
