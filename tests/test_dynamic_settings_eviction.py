@@ -1,4 +1,4 @@
-"""Settings UI to model cache eviction wiring."""
+"""Settings write boundary to model cache eviction wiring."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from unittest import mock
 
 import pytest
 
-from lilbee.cli.tui.app import LilbeeApp, _on_settings_changed_evict_cache
+from lilbee.app.settings import apply_settings_update
+from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider
@@ -64,7 +65,7 @@ def test_load_affecting_key_evicts_cache():
     """num_ctx change triggers invalidate_load_cache on the active provider."""
     provider = _install_recording_provider()
     try:
-        _on_settings_changed_evict_cache(("num_ctx", 4096))
+        apply_settings_update({"num_ctx": 4096})
         assert provider.calls == [None]
     finally:
         _restore_services()
@@ -76,22 +77,22 @@ def test_non_reloadable_model_change_evicts_cache():
     per-call ``request.model`` override."""
     provider = _install_recording_provider()
     try:
-        _on_settings_changed_evict_cache(("embedding_model", "nomic-embed-text"))
-        _on_settings_changed_evict_cache(("reranker_model", "bge-reranker-v2"))
+        apply_settings_update({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
+        apply_settings_update({"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"})
         assert len(provider.calls) == 2
         assert all(c is None for c in provider.calls)
     finally:
         _restore_services()
 
 
-def test_per_call_reloadable_model_change_skips_eviction():
-    """Switching chat_model or vision_model does NOT evict the cache: the
-    chat/vision workers reload in place via ``_ensure_loaded`` on the next
-    request, saving the 1-3 s spawn cost."""
+def test_per_call_reloadable_model_change_skips_provider_eviction():
+    """Switching chat_model or vision_model does NOT touch the provider load
+    cache: the chat/vision workers reload in place via ``_ensure_loaded`` on
+    the next request, saving the 1-3 s spawn cost."""
     provider = _install_recording_provider()
     try:
-        _on_settings_changed_evict_cache(("chat_model", "qwen3:8b"))
-        _on_settings_changed_evict_cache(("vision_model", "llava:7b"))
+        apply_settings_update({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
+        apply_settings_update({"vision_model": ""})
         assert provider.calls == []
     finally:
         _restore_services()
@@ -101,24 +102,24 @@ def test_sampling_param_change_does_not_evict():
     """Temperature, top_p, etc. are read per-call; eviction would be wasted work."""
     provider = _install_recording_provider()
     try:
-        _on_settings_changed_evict_cache(("temperature", 0.7))
-        _on_settings_changed_evict_cache(("top_p", 0.9))
-        _on_settings_changed_evict_cache(("top_k_sampling", 40))
-        _on_settings_changed_evict_cache(("repeat_penalty", 1.2))
-        _on_settings_changed_evict_cache(("seed", 42))
-        _on_settings_changed_evict_cache(("max_tokens", 1024))
-        _on_settings_changed_evict_cache(("rag_system_prompt", "You are helpful"))
+        apply_settings_update({"temperature": 0.7})
+        apply_settings_update({"top_p": 0.9})
+        apply_settings_update({"top_k_sampling": 40})
+        apply_settings_update({"repeat_penalty": 1.2})
+        apply_settings_update({"seed": 42})
+        apply_settings_update({"max_tokens": 1024})
+        apply_settings_update({"rag_system_prompt": "You are helpful"})
         assert provider.calls == []
     finally:
         _restore_services()
 
 
 def test_unknown_key_does_not_evict():
-    """An unrelated setting change is a no-op."""
+    """An unrelated setting change is a no-op for the provider cache."""
     provider = _install_recording_provider()
     try:
-        _on_settings_changed_evict_cache(("theme", "dracula"))
-        _on_settings_changed_evict_cache(("wiki", True))
+        apply_settings_update({"theme": "dracula"})
+        apply_settings_update({"wiki": True})
         assert provider.calls == []
     finally:
         _restore_services()
@@ -136,11 +137,6 @@ def test_protocol_default_is_safe_for_litellm_provider():
     assert backend.invalidate_load_cache(Path("/tmp/whatever.gguf")) is None
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: boot LilbeeApp, fire signal, observe provider call.
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
 def _patch_chat_setup():
     with (
@@ -156,8 +152,8 @@ def _patch_chat_setup():
         yield
 
 
-async def test_app_subscription_evicts_when_signal_fires(_patch_chat_setup):
-    """End-to-end: LilbeeApp.on_mount subscribes; publishing the signal triggers eviction."""
+async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
+    """End-to-end: LilbeeApp.set_setting routes through the write boundary."""
     provider = _install_recording_provider()
     try:
         app = LilbeeApp()
@@ -165,13 +161,12 @@ async def test_app_subscription_evicts_when_signal_fires(_patch_chat_setup):
             await pilot.pause()
             assert isinstance(app.screen, ChatScreen)
 
-            app.settings_changed_signal.publish(("num_ctx", 16384))
+            app.set_setting("num_ctx", 16384)
             await pilot.pause()
-
             assert provider.calls == [None]
 
-            # Sampling param does not propagate
-            app.settings_changed_signal.publish(("temperature", 0.5))
+            # Sampling param does not touch the provider.
+            app.set_setting("temperature", 0.5)
             await pilot.pause()
             assert provider.calls == [None]
     finally:
@@ -179,11 +174,7 @@ async def test_app_subscription_evicts_when_signal_fires(_patch_chat_setup):
 
 
 async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup):
-    """Adding an API key republishes on provider_availability_changed_signal.
-
-    Subscribers (catalog, model picker) listen to the higher-level signal
-    instead of duplicating the PROVIDER_API_KEYS whitelist.
-    """
+    """Adding an API key republishes on provider_availability_changed_signal."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -194,7 +185,6 @@ async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup
         await pilot.pause()
         assert received == [("gemini_api_key", "sk-test")]
 
-        # Non-key changes do not propagate.
         app.settings_changed_signal.publish(("temperature", 0.5))
         await pilot.pause()
         assert received == [("gemini_api_key", "sk-test")]

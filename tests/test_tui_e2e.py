@@ -2045,7 +2045,7 @@ class TestSettingsInteractions:
             app.screen.populate_all_panes()
             await pilot.pause()
 
-            from lilbee.cli.settings_map import SETTINGS_MAP
+            from lilbee.app.settings_map import SETTINGS_MAP
 
             for key, defn in SETTINGS_MAP.items():
                 if not defn.writable:

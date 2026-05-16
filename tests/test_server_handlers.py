@@ -1606,19 +1606,19 @@ class TestUpdateConfig:
 
     async def test_update_config_rejects_chat_model(self):
         """Role fields only move via PUT /api/models/<role>; PATCH must 422."""
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
 
     async def test_update_config_rejects_embedding_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
 
     async def test_update_config_rejects_vision_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
 
     async def test_update_config_rejects_reranker_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config(
                 {"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"}
             )
@@ -1927,14 +1927,16 @@ class TestSetVisionModel:
         assert result.model == _VISION_REF
         assert cfg.vision_model == _VISION_REF
 
-    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+    async def test_empty_string_unsets(self, mock_svc, mock_update_values):
         cfg.vision_model = _VISION_REF
         result = await handlers.set_vision_model("")
         assert result.model == ""
         assert cfg.vision_model == ""
-        mock_set_value.assert_called_once_with(cfg.data_root, "vision_model", "")
+        mock_update_values.assert_called_once()
+        persisted = mock_update_values.call_args.args[1]
+        assert persisted.get("vision_model") == ""
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
@@ -1976,14 +1978,16 @@ class TestSetRerankerModel:
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 
-    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+    async def test_empty_string_unsets(self, mock_svc, mock_update_values):
         cfg.reranker_model = _RERANK_REF
         result = await handlers.set_reranker_model("")
         assert result.model == ""
         assert cfg.reranker_model == ""
-        mock_set_value.assert_called_once_with(cfg.data_root, "reranker_model", "")
+        mock_update_values.assert_called_once()
+        persisted = mock_update_values.call_args.args[1]
+        assert persisted.get("reranker_model") == ""
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):

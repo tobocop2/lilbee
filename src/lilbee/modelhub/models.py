@@ -13,7 +13,6 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from lilbee.catalog.types import ModelTask
-from lilbee.core import settings
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
 
@@ -196,8 +195,9 @@ def validate_disk_and_pull(
         )
 
     pull_with_progress(model_info.ref, console=console)
-    cfg.chat_model = model_info.ref
-    settings.set_value(cfg.data_root, "chat_model", model_info.ref)
+    from lilbee.app.settings import apply_settings_update
+
+    apply_settings_update({"chat_model": model_info.ref})
 
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:

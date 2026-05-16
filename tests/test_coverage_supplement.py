@@ -356,7 +356,7 @@ class TestSettingsFeatureGating:
     def test_hidden_setting_not_rendered_but_still_in_map(self) -> None:
         """`sse_heartbeat_interval` is a transport knob: hidden from the TUI
         settings screen, still reachable via `lilbee set` / the env var."""
-        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.cli.tui.screens.settings_widgets import group_settings
 
         assert SETTINGS_MAP["sse_heartbeat_interval"].hidden is True
@@ -367,7 +367,7 @@ class TestSettingsFeatureGating:
 
     def test_no_setting_help_text_mentions_obsidian(self) -> None:
         """Obsidian is one host of the HTTP API; it must not leak into setting labels."""
-        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         offenders = {
             key: defn.help_text
@@ -538,11 +538,16 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch.object(
                     app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
                 ),
-                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values"
+                ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
                 app._canonicalize_persisted_models()
-                mock_set_value.assert_any_call(cfg.data_root, "chat_model", "fallback/model")
+                mock_update_values.assert_called_once()
+                persisted_args = mock_update_values.call_args.args
+                assert persisted_args[0] == cfg.data_root
+                assert persisted_args[1].get("chat_model") == "fallback/model"
             assert cfg.chat_model == "fallback/model"
             assert not notifications, "fallback must not toast the user"
             assert any("fallback/model" in record.getMessage() for record in caplog.records), (
@@ -2211,11 +2216,13 @@ class TestAppSetActiveModelTaskGuard:
                         notify_kwargs.append(kw),
                     ),
                 ),
-                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values"
+                ) as mock_update_values,
             ):
                 app.set_active_model("embedding_model", chat_ref)
             assert cfg.embedding_model == embed_default, "rejected assignment must not mutate cfg"
-            mock_set_value.assert_not_called()
+            mock_update_values.assert_not_called()
             assert len(notifications) == 1
             assert notify_kwargs[-1].get("severity") == "error"
         finally:

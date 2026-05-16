@@ -5,8 +5,8 @@ from __future__ import annotations
 from textual.suggester import Suggester
 
 from lilbee.app.services import get_services
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
-from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.command_registry import completion_names
 
 _SLASH_COMMANDS = completion_names()

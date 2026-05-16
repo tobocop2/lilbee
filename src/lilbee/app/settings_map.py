@@ -25,9 +25,17 @@ class RenderStyle(StrEnum):
 class SettingDef:
     """Metadata for an interactive setting.
 
-    ``hidden`` keeps the setting out of the TUI settings screen while leaving
-    it reachable via ``lilbee set`` and the ``LILBEE_*`` env var: use it for
-    transport/server knobs that aren't relevant to a typical TUI session.
+    ``writable`` is a TUI rendering hint: fields marked ``writable=False``
+    (the model role slots) get a dedicated picker rather than an inline
+    editor, and the ``/set`` slash command refuses them. The actual
+    write contract for HTTP / MCP / programmatic surfaces lives in
+    ``config_meta.WRITABLE_CONFIG_FIELDS`` + ``MODEL_ROLE_FIELDS`` and
+    is enforced by ``app.settings.apply_settings_update``.
+
+    ``hidden`` keeps the setting out of the TUI settings screen while
+    leaving it reachable via ``lilbee set`` and the ``LILBEE_*`` env
+    var: use it for transport/server knobs that aren't relevant to a
+    typical TUI session.
     """
 
     type: type

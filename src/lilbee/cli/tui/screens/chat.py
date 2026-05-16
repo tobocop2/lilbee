@@ -30,9 +30,9 @@ from textual.widgets import Footer, Select, Static
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
-from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
@@ -52,7 +52,6 @@ from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -969,9 +968,9 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            setattr(cfg, key, parsed)
-            persisted = str(parsed) if parsed is not None else ""
-            settings.set_value(cfg.data_root, key, persisted)
+            from lilbee.app.settings import apply_settings_update
+
+            apply_settings_update({key: parsed})
             if key == "llm_provider":  # pragma: no cover
                 reset_services()
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))

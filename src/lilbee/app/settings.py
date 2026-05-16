@@ -1,23 +1,16 @@
-"""Canonical write boundary for lilbee configuration.
-
-Every entry point that writes settings (HTTP ``PATCH /api/config``, the
-TUI's ``set_setting`` action, the MCP ``settings_set`` tool) routes
-through ``apply_settings_update`` so the validation, persistence, and
-cache-invalidation policy lives in one place. Read-side surfaces use
-``list_settings`` / ``get_setting`` to introspect the writable schema
-without re-deriving metadata from pydantic.
-"""
+"""Canonical write boundary for lilbee configuration."""
 
 from __future__ import annotations
 
 import types
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     REINDEX_FIELDS,
@@ -28,6 +21,21 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.config.keys import PROVIDER_API_KEYS
 
 _MIN_CHUNK_SIZE = 64
+
+
+class SettingGroup(StrEnum):
+    """Logical bucket names rendered by ``/settings`` and ``settings_list``."""
+
+    MODELS = "Models"
+    GENERATION = "Generation"
+    RETRIEVAL = "Retrieval"
+    INGEST = "Ingest"
+    WIKI = "Wiki"
+    CRAWLING = "Crawling"
+    API_KEYS = "API-Keys"
+    SYSTEM = "System"
+    DISPLAY = "Display"
+    GENERAL = "General"
 
 
 @dataclass(frozen=True)
@@ -88,15 +96,24 @@ def _setting_default(key: str) -> Any:
     return info.default
 
 
-def _writable_keys() -> list[str]:
-    """Names of every writable config field, including model role slots."""
-    return sorted(set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS))
+def _is_write_only(key: str) -> bool:
+    """Return True for fields persisted but never read back (API keys, hf_token)."""
+    extra = Config.model_fields[key].json_schema_extra
+    if isinstance(extra, dict):
+        return bool(extra.get("write_only", False))
+    return False
+
+
+def _public_writable_keys() -> list[str]:
+    """Names of every writable config field minus write-only secrets."""
+    keys = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
+    return sorted(k for k in keys if not _is_write_only(k))
 
 
 def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     field_info = Config.model_fields[key]
     nullable = WRITABLE_CONFIG_FIELDS.get(key, False) or key in MODEL_ROLE_FIELDS
-    group = definition.group if definition else "Models"
+    group = definition.group if definition else SettingGroup.MODELS.value
     help_text = definition.help_text if definition else ""
     choices = definition.choices if definition else None
     return SettingInfo(
@@ -112,18 +129,21 @@ def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     )
 
 
-def list_settings(group: str | None = None) -> list[SettingInfo]:
-    """List every writable setting, optionally filtered by group."""
-    infos = [_setting_info(key, SETTINGS_MAP.get(key)) for key in _writable_keys()]
+def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
+    """List every writable non-secret setting, optionally filtered by group."""
+    infos = [_setting_info(key, SETTINGS_MAP.get(key)) for key in _public_writable_keys()]
     if group is not None:
-        infos = [info for info in infos if info.group.lower() == group.lower()]
+        wanted = SettingGroup(group) if isinstance(group, str) else group
+        infos = [info for info in infos if info.group == wanted.value]
     return sorted(infos, key=lambda info: (info.group, info.key))
 
 
 def get_setting(key: str) -> SettingInfo:
-    """Return the ``SettingInfo`` for one writable key. Raises ``KeyError`` if unknown."""
-    if key not in WRITABLE_CONFIG_FIELDS and key not in MODEL_ROLE_FIELDS:
+    """Return the ``SettingInfo`` for one writable non-secret key."""
+    if not _is_settable(key):
         raise KeyError(f"Unknown or read-only setting: {key}")
+    if _is_write_only(key):
+        raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
     return _setting_info(key, SETTINGS_MAP.get(key))
 
 
@@ -132,7 +152,7 @@ def _is_settable(key: str) -> bool:
 
 
 def _is_nullable(key: str) -> bool:
-    """Model role slots accept the empty string but not raw null."""
+    """Return True if ``key`` accepts ``None`` to clear the persisted entry."""
     if key in WRITABLE_CONFIG_FIELDS:
         return WRITABLE_CONFIG_FIELDS[key]
     return False
@@ -145,18 +165,19 @@ def _validate(updates: dict[str, Any]) -> None:
             raise ValueError(f"Unknown or read-only setting: {key}")
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
-    chunk_val = updates.get("chunk_size")
-    if isinstance(chunk_val, int) and chunk_val < _MIN_CHUNK_SIZE:
+    new_chunk_size = updates.get("chunk_size")
+    if isinstance(new_chunk_size, int) and new_chunk_size < _MIN_CHUNK_SIZE:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
+    effective_chunk_size = new_chunk_size if isinstance(new_chunk_size, int) else cfg.chunk_size
+    new_overlap = updates.get("chunk_overlap")
+    if isinstance(new_overlap, int) and new_overlap >= effective_chunk_size:
+        raise ValueError(
+            f"chunk_overlap ({new_overlap}) must be < chunk_size ({effective_chunk_size})"
+        )
 
 
 def _coerce_value(key: str, value: Any) -> Any:
-    """Apply field-specific canonicalization before cfg assignment.
-
-    Model role slots run through ``validate_model_task_assignment`` so a
-    chat-only ref cannot land in the embedding slot, matching what the
-    TUI does at its own write boundary.
-    """
+    """Canonicalize value before cfg assignment; model-role slots run task validation."""
     if key in MODEL_ROLE_FIELDS and isinstance(value, str):
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
@@ -166,8 +187,8 @@ def _coerce_value(key: str, value: Any) -> Any:
 
 def _apply_with_rollback(
     updates: dict[str, Any],
-) -> tuple[dict[str, str], list[str]]:
-    """Set each key on cfg with snapshot/rollback. Returns (persist, delete)."""
+) -> tuple[dict[str, str], list[str], dict[str, Any]]:
+    """Set each key on cfg with snapshot/rollback. Returns (persist, delete, snapshot)."""
     snapshot = {k: getattr(cfg, k) for k in updates}
     to_persist: dict[str, str] = {}
     to_delete: list[str] = []
@@ -184,32 +205,33 @@ def _apply_with_rollback(
             else:
                 to_persist[key] = str(normalized)
     except Exception:
-        for k, v in snapshot.items():
-            setattr(cfg, k, v)
+        _restore_snapshot(snapshot)
         raise
-    return to_persist, to_delete
+    return to_persist, to_delete, snapshot
+
+
+def _restore_snapshot(snapshot: dict[str, Any]) -> None:
+    for key, value in snapshot.items():
+        setattr(cfg, key, value)
+
+
+# Mirrors ``lilbee.providers.llama_cpp.provider.LOAD_AFFECTING_KEYS`` so the
+# write boundary doesn't pay the llama-cpp import cost on every settings_set.
+_LOAD_AFFECTING_KEYS = frozenset(
+    {"num_ctx", "chat_model", "embedding_model", "vision_model", "reranker_model"}
+)
+_PER_CALL_RELOADABLE_KEYS = frozenset({"chat_model", "vision_model"})
 
 
 def _invalidate_caches(changed_keys: set[str]) -> None:
-    """Drop every read-side cache that depends on a changed setting.
-
-    Mirrors the historical TUI ``settings_changed_signal`` subscribers but
-    runs unconditionally so non-TUI surfaces (HTTP, MCP, CLI) get the same
-    invalidation. Importing the heavy provider/modelhub modules lazily so
-    ``lilbee mcp`` boot stays fast.
-    """
+    """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    from lilbee.providers.llama_cpp.provider import (
-        LOAD_AFFECTING_KEYS,
-        PER_CALL_RELOADABLE_KEYS,
-    )
-
-    load_affecting = (changed_keys & LOAD_AFFECTING_KEYS) - PER_CALL_RELOADABLE_KEYS
+    load_affecting = (changed_keys & _LOAD_AFFECTING_KEYS) - _PER_CALL_RELOADABLE_KEYS
     if load_affecting:
         from lilbee.app.services import peek_services
 
@@ -229,31 +251,34 @@ def apply_settings_update(
 ) -> SettingsUpdateResult:
     """Validate, apply, persist, and invalidate caches for a batch of updates.
 
-    Atomicity contract: if any value fails pydantic validation, every
-    other field in this batch is rolled back to its prior value and
-    nothing is persisted to disk. Callers see either a ``ValueError``
-    (no state changed) or a successful result (every key applied and
-    flushed to ``config.toml``).
+    Atomic on validation: a rejection rolls every field back and writes
+    nothing. Atomic on disk failure: an ``OSError`` from the TOML write
+    also restores the in-memory snapshot before re-raising. Cache
+    invalidation runs only after a successful persist.
 
-    ``allow_model_roles`` is the surface-level switch for the model
-    slot fields (``chat_model`` / ``embedding_model`` / ``vision_model``
-    / ``reranker_model``). MCP and the TUI pass ``True`` so an agent
-    can wire a freshly-pulled model in one batched call. HTTP keeps
-    the historical contract: PATCH /api/config rejects role writes
-    because they have a dedicated PUT /api/models/<role> route with
-    install-availability checks.
+    Pass ``allow_model_roles=False`` to reject ``chat_model`` /
+    ``embedding_model`` / ``vision_model`` / ``reranker_model`` at the
+    boundary; the HTTP PATCH /api/config surface uses this to route role
+    writes through PUT /api/models/<role>.
     """
     if not allow_model_roles:
         rejected = MODEL_ROLE_FIELDS & set(updates)
         if rejected:
             offender = sorted(rejected)[0]
-            raise ValueError(f"Unknown or read-only setting: {offender}")
+            raise ValueError(
+                f"'{offender}' must be set through the dedicated model route, "
+                "not the general settings update."
+            )
     _validate(updates)
-    to_persist, to_delete = _apply_with_rollback(updates)
-    if to_persist:
-        persistent_settings.update_values(cfg.data_root, to_persist)
-    if to_delete:
-        persistent_settings.delete_values(cfg.data_root, to_delete)
+    to_persist, to_delete, snapshot = _apply_with_rollback(updates)
+    try:
+        if to_persist:
+            persistent_settings.update_values(cfg.data_root, to_persist)
+        if to_delete:
+            persistent_settings.delete_values(cfg.data_root, to_delete)
+    except OSError:
+        _restore_snapshot(snapshot)
+        raise
     _invalidate_caches(set(updates))
     reindex_required = bool(REINDEX_FIELDS & set(updates))
     return SettingsUpdateResult(
@@ -263,12 +288,7 @@ def apply_settings_update(
 
 
 def reset_settings(keys: list[str]) -> SettingsUpdateResult:
-    """Reset each key to its pydantic default and apply through the write boundary.
-
-    Nullable fields collapse to ``None`` so the next process load picks
-    up the field default; non-nullable fields are written to disk with
-    their canonical default value.
-    """
+    """Reset each key to its pydantic default and apply through the write boundary."""
     for key in keys:
         if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")

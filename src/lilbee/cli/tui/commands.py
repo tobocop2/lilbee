@@ -9,7 +9,6 @@ from textual.command import Hit, Hits, Provider
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
-from lilbee.core import settings
 from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
@@ -104,8 +103,9 @@ class LilbeeCommandProvider(Provider):
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:
-        setattr(cfg, attr, value)
-        settings.set_value(cfg.data_root, attr, value)
+        from lilbee.app.settings import apply_settings_update
+
+        apply_settings_update({attr: value})
         display = value or "off"
         self.screen.app.notify(f"{attr}: {display}")
         if attr == "chat_model":

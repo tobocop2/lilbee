@@ -201,7 +201,7 @@ class TestPromptModelChoice:
 
 
 class TestValidateDiskAndPull:
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
         ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
@@ -214,7 +214,9 @@ class TestValidateDiskAndPull:
         )
         models.validate_disk_and_pull(info, 50.0)
         mock_pull.assert_called_once_with(ref, console=None)
-        mock_save.assert_called_once_with(cfg.data_root, "chat_model", ref)
+        mock_save.assert_called_once()
+        persisted = mock_save.call_args.args[1]
+        assert persisted.get("chat_model") == ref
 
     def test_insufficient_disk_raises(self):
         info = ModelInfo(
@@ -273,7 +275,7 @@ class TestEnsureChatModel:
         with pytest.raises(RuntimeError, match="Cannot list models"):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
@@ -293,11 +295,13 @@ class TestEnsureChatModel:
                 models.ensure_chat_model()
             expected = models.pick_default_model(32.0)
             mock_pull.assert_called_once_with(expected.ref, console=None)
-            mock_save.assert_called_once_with(cfg.data_root, "chat_model", expected.ref)
+            mock_save.assert_called_once()
+            persisted = mock_save.call_args.args[1]
+            assert persisted.get("chat_model") == expected.ref
         finally:
             cfg.embedding_model = old_embed
 
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
@@ -313,7 +317,7 @@ class TestEnsureChatModel:
         expected = models.pick_default_model(8.0)
         mock_pull.assert_called_once_with(expected.ref, console=None)
 
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
@@ -346,7 +350,7 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch("lilbee.app.services.get_services")
     def test_empty_model_list_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()
@@ -360,7 +364,7 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.core.settings.set_value")
+    @mock.patch("lilbee.app.settings.persistent_settings.update_values")
     @mock.patch("lilbee.app.services.get_services")
     def test_only_embedding_model_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()

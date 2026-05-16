@@ -26,7 +26,7 @@ from textual.widgets import (
 )
 
 from lilbee.app.services import get_services
-from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef, get_default
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
@@ -51,7 +51,6 @@ from lilbee.cli.tui.screens.settings_widgets import (
     title_content,
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
-from lilbee.core import settings
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
 from lilbee.providers.worker.transport import WorkerRole
 
@@ -577,85 +576,19 @@ class SettingsScreen(Screen[None]):
         """Reset every writable setting to its cfg default atomically."""
         if not confirmed:
             return
+        from lilbee.app.settings import reset_settings
+
         writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
-        snapshot = {key: getattr(cfg, key) for key, _ in writable}
-        updates, signal_payload, skipped = self._apply_batch_defaults(writable)
-        if updates and not self._persist_batch(writable, snapshot, updates):
-            return
-        self._refresh_batch(writable, skipped)
-        self._publish_batch_signals(signal_payload)
-        self._notify_batch_result(skipped)
-
-    def _apply_batch_defaults(
-        self, writable: list[tuple[str, SettingDef]]
-    ) -> tuple[dict[str, str], list[tuple[str, object]], list[str]]:
-        """Mutate cfg in-memory for every writable key; track updates + skips."""
-        updates: dict[str, str] = {}
-        signal_payload: list[tuple[str, object]] = []
-        skipped: list[str] = []
-        for key, _defn in writable:
-            default = get_default(key)
-            try:
-                setattr(cfg, key, default)
-            except (ValueError, TypeError) as exc:
-                log.warning("Default for %s rejected by cfg (%s); skipping", key, exc)
-                skipped.append(key)
-                continue
-            updates[key] = stringify_default(default)
-            signal_payload.append((key, default))
-        return updates, signal_payload, skipped
-
-    def _persist_batch(
-        self,
-        writable: list[tuple[str, SettingDef]],
-        snapshot: dict[str, object],
-        updates: dict[str, str],
-    ) -> bool:
-        """Persist the batch; roll back cfg + UI on disk error. Returns True on success."""
         try:
-            settings.update_values(cfg.data_root, updates)
-        except OSError as exc:
-            self._rollback_batch(writable, snapshot)
+            reset_settings([key for key, _ in writable])
+        except (ValueError, OSError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
-            return False
-        return True
-
-    def _rollback_batch(
-        self, writable: list[tuple[str, SettingDef]], snapshot: dict[str, object]
-    ) -> None:
-        """Restore cfg and editor widgets from snapshot after a failed persist."""
-        for key, prev in snapshot.items():
-            try:
-                setattr(cfg, key, prev)
-            except (ValueError, TypeError):
-                log.exception("Failed to roll back cfg.%s", key)
+            return
         for key, defn in writable:
-            self._refresh_editor(key, defn, snapshot[key])
+            self._refresh_editor(key, defn, getattr(cfg, key))
             self._refresh_help(key, defn)
-
-    def _refresh_batch(self, writable: list[tuple[str, SettingDef]], skipped: list[str]) -> None:
-        """Refresh editor + help for each successfully-reset writable key."""
-        for key, defn in writable:
-            if key in skipped:
-                continue
-            default = get_default(key)
-            self._refresh_editor(key, defn, default)
-            self._refresh_help(key, defn)
-
-    def _publish_batch_signals(self, signal_payload: list[tuple[str, object]]) -> None:
-        """Fan out settings_changed signals for every successfully-reset key."""
-        for pub_key, pub_parsed in signal_payload:
-            self.app.settings_changed_signal.publish((pub_key, pub_parsed))
-
-    def _notify_batch_result(self, skipped: list[str]) -> None:
-        """Surface a single summary toast; warning severity when any key skipped."""
-        if skipped:
-            self.notify(
-                msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped=", ".join(skipped)),
-                severity="warning",
-            )
-        else:
-            self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
+            self.app.settings_changed_signal.publish((key, getattr(cfg, key)))
+        self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
 
     def action_reset_focused(self) -> None:
         """Reset the currently-focused setting row to its cfg default."""

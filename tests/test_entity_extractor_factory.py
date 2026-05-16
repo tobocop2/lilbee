@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.cli.settings_map import SETTINGS_MAP
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.core.config import WikiEntityMode, cfg
 from lilbee.wiki.entity_extractor import (
     ChunkRef,

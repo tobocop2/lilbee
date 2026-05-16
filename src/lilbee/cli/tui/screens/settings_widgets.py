@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
-from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef
+from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea

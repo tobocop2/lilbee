@@ -24,7 +24,6 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.catalog.types import ModelSource, ModelTask
-from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.model_ref import parse_model_ref
@@ -151,9 +150,10 @@ async def _set_model(
     field: Literal["chat_model", "embedding_model", "vision_model", "reranker_model"],
     model: str,
 ) -> SetModelResponse:
-    """Shared helper for switching a model field."""
-    setattr(cfg, field, model)
-    settings.set_value(cfg.data_root, field, model)
+    """Persist a model field through the shared write boundary."""
+    from lilbee.app.settings import apply_settings_update
+
+    apply_settings_update({field: model})
     return SetModelResponse(model=model)
 
 

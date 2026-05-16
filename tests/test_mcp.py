@@ -81,6 +81,7 @@ def _no_dns():
 
 
 _SYNC_NOOP = SyncResult()
+_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
 class TestSearch:
@@ -1011,7 +1012,7 @@ class TestSettingsMcp:
         result = settings_get("bogus")
         assert "error" in result
 
-    def test_settings_set_persists_and_normalizes(self, isolated_env):
+    def test_settings_set_persists_writable_ints(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_set({"top_k": 11, "chunk_size": 256})
         assert result["command"] == "settings_set"
@@ -1023,12 +1024,21 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
-    def test_settings_set_rolls_back_on_validation_failure(self, isolated_env):
+    def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.top_k = 5
         result = settings_set({"top_k": 12, "chunk_size": 1})
         assert "error" in result
         assert cfg.top_k == 5
+
+    def test_settings_set_rolls_back_when_pydantic_rejects_second_field(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        cfg.temperature = 0.6
+        result = settings_set({"top_k": 9, "temperature": -1.0})
+        assert "error" in result
+        assert cfg.top_k == 5, "first field must roll back when second fails pydantic"
+        assert cfg.temperature == 0.6
 
     def test_settings_set_rejects_unknown_key(self, isolated_env):
         cfg.data_root = isolated_env
@@ -1037,7 +1047,9 @@ class TestSettingsMcp:
 
     def test_settings_set_clears_nullable_field(self, isolated_env):
         cfg.data_root = isolated_env
-        cfg.max_tokens = 1024
+        settings_set({"max_tokens": 1024})
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "max_tokens" in persisted
         settings_set({"max_tokens": None})
         assert cfg.max_tokens is None
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
@@ -1045,11 +1057,9 @@ class TestSettingsMcp:
 
     def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
         cfg.data_root = isolated_env
-        from lilbee.modelhub import model_info
-
-        model_info._arch_cache[("a", "b", "c")] = model_info.ModelArchInfo()
-        settings_set({"chat_model": "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"})
-        assert model_info._arch_cache == {}
+        with mock.patch("lilbee.modelhub.model_info.invalidate_cache") as mock_invalidate:
+            settings_set({"chat_model": _CHAT_REF})
+        mock_invalidate.assert_called_once()
 
     def test_settings_reset_restores_default(self, isolated_env):
         cfg.data_root = isolated_env

@@ -325,7 +325,7 @@ class Config(BaseSettings):
     # Off by default; flip to True (or set LILBEE_WIKI=1) to enable. When off,
     # the Wiki view tab and the chat ModelBar's scope picker are both hidden.
     wiki: bool = ConfigField(default=False, writable=True)
-    wiki_dir: str = "wiki"
+    wiki_dir: str = ConfigField(default="wiki", writable=True)
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
 
     # Minimum cosine similarity between a page body and the mean of its
@@ -354,10 +354,10 @@ class Config(BaseSettings):
     wiki_temperature: float = ConfigField(default=0.1, ge=0.0, le=2.0, writable=True)
 
     # Fraction of citations that must be stale before a wiki page is flagged.
-    wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    wiki_stale_citation_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # Fraction of content changed that triggers human-review drift guard.
-    wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    wiki_drift_threshold: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
 
     # LLM prompt templates for wiki page generation. Writable so advanced
     # users can override them from /settings, config.toml, or
