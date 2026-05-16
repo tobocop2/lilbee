@@ -130,17 +130,38 @@ class TestHfToken:
         monkeypatch.setenv("HF_TOKEN", "hf-env-token")
         assert hf_token() == "hf-env-token"
 
-    def test_falls_back_to_huggingface_hub_get_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_falls_back_to_cfg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+
         monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
         monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr(cfg, "hf_token", "cfg-token")
+        assert hf_token() == "cfg-token"
+
+    def test_env_var_overrides_cfg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("LILBEE_HF_TOKEN", "env-token")
+        monkeypatch.setattr(cfg, "hf_token", "cfg-token")
+        assert hf_token() == "env-token"
+
+    def test_falls_back_to_huggingface_hub_get_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr(cfg, "hf_token", "")
         fake_hf_hub = MagicMock()
         fake_hf_hub.get_token.return_value = "cached-token"
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert hf_token() == "cached-token"
 
     def test_returns_none_when_all_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.core.config import cfg
+
         monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
         monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setattr(cfg, "hf_token", "")
         fake_hf_hub = MagicMock()
         fake_hf_hub.get_token.side_effect = Exception("no token")
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
