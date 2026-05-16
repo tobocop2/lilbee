@@ -2,39 +2,60 @@
 """Emit PEP 503 simple-repository indexes for lilbee per-backend wheels.
 
 Reads wheel artifacts produced by the build-default-wheels.yml /
-build-extra-wheels.yml reusable workflows, groups by backend tag, copies
-wheels into <site>/<backend>/lilbee/, and writes the per-directory index.html
-files pip's --extra-index-url expects.
+build-extra-wheels.yml reusable workflows, groups by backend tag, and
+writes per-directory ``index.html`` files. Each wheel link is rendered as
+an absolute URL into the wheel's GitHub release assets, so the static
+site itself doesn't need to host multi-gigabyte wheels. GitHub Pages has
+a 1 GB per-deployment cap, which makes self-hosting cu121/cu124/cu125 +
+cpu wheels (~6 GB total) infeasible; GitHub releases have no such cap.
 
-Input layout (artifact-dir mode, default):
+Backend disambiguation. The wheel files for cu121, cu124, cu125, and the
+Intel-Mac/Win cpu builds all share the same PEP 427 filename (project +
+version + python + abi + platform) as the default vulkan/metal wheels --
+the backend lives inside the wheel, not in its name. GitHub releases use
+a flat filename namespace, so each non-default wheel gets a PEP 427
+build-tag inserted (``1.cu125``, ``1.cu124``, ``1.cu121``, ``1.cpu``).
+Defaults stay unchanged because they also ship to PyPI, where build tags
+would break the existing pin.
+
+Input layout (artifact-dir mode):
 
     <input>/wheel-default-<os>-<backend>-py<ver>/lilbee-*.whl
     <input>/wheel-extra-<os>-<backend>-py<ver>/lilbee-*.whl
 
-The os segment may itself contain dashes (e.g. ubuntu-22.04, ubuntu-latest,
-windows-2022). Backend is parsed by stripping the wheel-{default,extra}-
-prefix and the trailing -py<ver> suffix, then taking the last remaining
-dash-segment.
+Backend is parsed by stripping the wheel-{default,extra}- prefix and the
+trailing -py<ver> suffix, then taking the last remaining dash-segment.
+The wheel's version is parsed from its filename so the release URL can
+be constructed without an extra CLI flag for the tag.
 
 Output layout:
 
-    <site>/<backend>/lilbee/<wheel>.whl
-    <site>/<backend>/lilbee/index.html      # links to each wheel
-    <site>/<backend>/index.html             # links to lilbee/
+    <site>/<backend>/lilbee/index.html      # absolute hrefs to <release>/<whl>
+    <site>/<backend>/index.html             # link to lilbee/
 
 Usage:
-    python tools/build_pep503_indexes.py <artifacts-dir> <site-dir>
+    python tools/build_pep503_indexes.py <artifacts-dir> <site-dir> \\
+        [--release-base-url https://github.com/owner/repo/releases/download]
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-import shutil
 import sys
 from pathlib import Path
 
 ARTIFACT_DIR_RE = re.compile(r"^wheel-(?:default|extra)-(?P<rest>.+)-py\d+\.\d+$")
+WHEEL_FILENAME_RE = re.compile(r"^lilbee-(?P<version>[^-]+)-")
+_DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
+
+# Backends whose wheels ship under the default filename (also on PyPI; renaming
+# would break the PyPI pin). Everything else gets a PEP 427 build tag inserted
+# so the GH release can hold every variant without filename collisions.
+_DEFAULT_BACKENDS: frozenset[str] = frozenset({"vulkan", "metal"})
+
+# Wheel filename layout (PEP 427): project-version[-buildtag]-python-abi-platform.whl
+_WHEEL_FILENAME_PARTS_NO_BUILDTAG = 5
 
 
 def backend_from_artifact_dir(name: str) -> str | None:
@@ -47,6 +68,38 @@ def backend_from_artifact_dir(name: str) -> str | None:
         return None
     rest = m.group("rest")
     return rest.rsplit("-", 1)[-1]
+
+
+def version_from_wheel_filename(name: str) -> str | None:
+    """Extract the lilbee version from ``lilbee-<version>-<rest>.whl``."""
+    m = WHEEL_FILENAME_RE.match(name)
+    return m.group("version") if m else None
+
+
+def build_tag_for_backend(backend: str) -> str | None:
+    """PEP 427 build tag used to disambiguate non-default backend variants."""
+    if backend in _DEFAULT_BACKENDS:
+        return None
+    return f"1.{backend}"
+
+
+def rename_for_release(wheel_name: str, backend: str) -> str:
+    """Return the wheel filename as published on the GH release.
+
+    Default backends (vulkan/metal) keep their original name. Extra backends
+    get a build tag inserted after the version per PEP 427.
+    """
+    build_tag = build_tag_for_backend(backend)
+    if build_tag is None:
+        return wheel_name
+    parts = wheel_name.removesuffix(".whl").split("-")
+    if len(parts) != _WHEEL_FILENAME_PARTS_NO_BUILDTAG:
+        raise ValueError(
+            f"wheel filename {wheel_name!r} does not match the no-buildtag layout "
+            f"(project-version-python-abi-platform.whl)"
+        )
+    project, version, python, abi, platform = parts
+    return f"{project}-{version}-{build_tag}-{python}-{abi}-{platform}.whl"
 
 
 def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
@@ -65,15 +118,30 @@ def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
     return by_backend
 
 
-def write_backend_indexes(site: Path, by_backend: dict[str, list[Path]]) -> None:
-    """Copy wheels and write PEP 503 index pages under site/<backend>/."""
+def _wheel_href(release_base_url: str, version: str, asset_name: str) -> str:
+    return f"{release_base_url.rstrip('/')}/v{version}/{asset_name}"
+
+
+def write_backend_indexes(
+    site: Path,
+    by_backend: dict[str, list[Path]],
+    release_base_url: str,
+) -> None:
+    """Write PEP 503 index pages under site/<backend>/, linking to release assets."""
     for backend, wheels in by_backend.items():
         pkg_dir = site / backend / "lilbee"
         pkg_dir.mkdir(parents=True, exist_ok=True)
-        for whl in wheels:
-            shutil.copy2(whl, pkg_dir / whl.name)
 
-        wheel_lines = [f'<a href="{whl.name}">{whl.name}</a><br>' for whl in wheels]
+        wheel_lines: list[str] = []
+        for whl in wheels:
+            version = version_from_wheel_filename(whl.name)
+            if version is None:
+                print(f"skipping unparseable wheel filename: {whl.name}", file=sys.stderr)
+                continue
+            asset_name = rename_for_release(whl.name, backend)
+            href = _wheel_href(release_base_url, version, asset_name)
+            wheel_lines.append(f'<a href="{href}">{asset_name}</a><br>')
+
         (pkg_dir / "index.html").write_text(
             "<!DOCTYPE html><html><body>\n" + "\n".join(wheel_lines) + "\n</body></html>\n"
         )
@@ -95,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "site", type=Path, help="Output site root; backend subdirs are written under here"
     )
+    parser.add_argument(
+        "--release-base-url",
+        default=_DEFAULT_RELEASE_BASE_URL,
+        help="GitHub release-asset base URL (default: lilbee's release-download root).",
+    )
     args = parser.parse_args(argv)
 
     if not args.input.is_dir():
@@ -106,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     if not by_backend:
         print("no wheel artifacts found; nothing to index", file=sys.stderr)
         return 0
-    write_backend_indexes(args.site, by_backend)
+    write_backend_indexes(args.site, by_backend, args.release_base_url)
     return 0
 
 
