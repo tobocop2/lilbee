@@ -198,7 +198,9 @@ main() {
     # tui-setup's first chat is `/add ./README.md` against lilbee's own README,
     # so stage it in the demo's data dir after the clean-slate reset.
     cp "$REPO_DIR/README.md" "$ROOT/tui-setup/README.md"
-    seed_setup_models
+    # Always wipe setup-models so tui-setup renders a real cold pull
+    # of Qwen3 0.6B + Nomic, visible in the Task Center.
+    rm -rf "$ROOT/setup-models"
 
     for tape in "${OPENCODE_TAPES[@]}"; do
         setup_opencode_dir "$tape"
