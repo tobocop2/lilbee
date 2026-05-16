@@ -46,10 +46,9 @@ Sleep 800ms
 Enter
 
 # Status check (~5s), search calls (~10s), cited code stream (~150-180s).
-Sleep 200s
+# Trimmed: no trailing dead frame after the cited answer.
+Sleep 180s
 
 Screenshot demos/_out/mcp-godot.png
-Sleep 3s
 
 Ctrl+C
-Sleep 1s

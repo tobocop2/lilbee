@@ -33,9 +33,8 @@ Sleep 8s
 Hide
 Sleep 65s
 Show
-Sleep 18s
+Sleep 14s
 
 Screenshot demos/_out/mcp-code.png
 
 Ctrl+C
-Sleep 1s
