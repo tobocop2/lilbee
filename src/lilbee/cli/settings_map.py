@@ -514,6 +514,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="API-Keys",
         help_text="DeepSeek API key (enables frontier models in chat picker)",
     ),
+    "hf_token": SettingDef(
+        str,
+        nullable=False,
+        group="System",
+        help_text=(
+            "HuggingFace access token. Avoids the unauthenticated download "
+            "rate limit and unlocks gated repos. Stored in plain text in "
+            "config.toml. Env vars (LILBEE_HF_TOKEN, HF_TOKEN) override."
+        ),
+    ),
     "chunk_size": SettingDef(
         int,
         nullable=False,

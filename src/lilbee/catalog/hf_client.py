@@ -13,6 +13,7 @@ from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
+from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -81,10 +82,12 @@ _BYTES_PER_GB = 1024**3
 
 
 def hf_token() -> str | None:
-    """Read HuggingFace token from env vars or huggingface_hub login cache."""
+    """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     if token:
         return token
+    if cfg.hf_token:
+        return cfg.hf_token
     try:
         from huggingface_hub import get_token
 
