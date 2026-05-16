@@ -1121,3 +1121,64 @@ class TestSettingsMcp:
         result = settings_get("openai_api_key")
         assert "error" in result
         assert "write-only" in result["error"].lower()
+
+    def test_settings_set_rejects_overlap_at_or_above_chunk_size(self, isolated_env):
+        """chunk_overlap must stay below chunk_size; the boundary catches the pair upfront."""
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": 1024})
+        assert "error" in result
+        assert "chunk_overlap" in result["error"]
+
+    def test_list_settings_accepts_settinggroup_enum(self, isolated_env):
+        """list_settings accepts a SettingGroup enum directly, not just a string."""
+        cfg.data_root = isolated_env
+        from lilbee.app.settings import list_settings
+        from lilbee.app.settings_map import SettingGroup
+
+        infos = list_settings(group=SettingGroup.RETRIEVAL)
+        assert infos
+        assert all(info.group == SettingGroup.RETRIEVAL for info in infos)
+
+    def test_setting_default_handles_pydantic_undefined(self, isolated_env):
+        """_setting_default returns None when the pydantic field has no default."""
+        cfg.data_root = isolated_env
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.app.settings import _setting_default
+        from pydantic_core import PydanticUndefined
+
+        field_info = MagicMock()
+        field_info.default_factory = None
+        field_info.default = PydanticUndefined
+        with patch("lilbee.app.settings.Config.model_fields", {"top_k": field_info}):
+            assert _setting_default("top_k") is None
+
+    def test_is_nullable_returns_false_for_model_role_field(self, isolated_env):
+        """Model role fields are not in WRITABLE_CONFIG_FIELDS; _is_nullable returns False."""
+        cfg.data_root = isolated_env
+        from lilbee.app.settings import _is_nullable
+
+        assert _is_nullable("chat_model") is False
+        assert _is_nullable("embedding_model") is False
+
+    def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
+        """OSError from the TOML write reverts cfg before re-raising."""
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        with mock.patch(
+            "lilbee.app.settings.persistent_settings.update_values",
+            side_effect=OSError("disk full"),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                from lilbee.app.settings import apply_settings_update
+
+                apply_settings_update({"top_k": 11})
+        assert cfg.top_k == 5
+
+    def test_settings_reset_clears_nullable_with_none_default(self, isolated_env):
+        """Resetting a nullable field whose pydantic default is None clears the entry."""
+        cfg.data_root = isolated_env
+        cfg.seed = 42
+        settings_reset(["seed"])
+        assert cfg.seed is None
