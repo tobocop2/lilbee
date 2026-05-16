@@ -146,9 +146,8 @@ class Searcher:
         response = self._provider.chat(
             messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
         )
-        if not isinstance(response, str):
-            return []
-        variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
+        text = response.text.strip()
+        variants = [line.strip() for line in text.split("\n") if line.strip()]
         return variants[:count]
 
     def _expand_query(
@@ -228,9 +227,10 @@ class Searcher:
                 stream=False,
                 options={"num_predict": EXPANSION_MAX_TOKENS},
             )
-            if not isinstance(response, str) or not response.strip():
+            text = response.text.strip()
+            if not text:
                 return []
-            hyde_vec = self._embedder.embed(response.strip())
+            hyde_vec = self._embedder.embed(text)
             return self._store.search(hyde_vec, top_k=top_k, query_text=None)
         except Exception:
             log.debug("HyDE search failed", exc_info=True)
@@ -444,7 +444,8 @@ class Searcher:
         messages = self._direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
+        result = self._provider.chat(provider_messages, options=opts or None)
+        raw = result.text
         return raw if self._config.show_reasoning else strip_reasoning(raw)
 
     def ask_raw(
@@ -469,7 +470,8 @@ class Searcher:
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
+        result = self._provider.chat(provider_messages, options=opts or None)
+        raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
         return AskResult(answer=clean, sources=results)
 

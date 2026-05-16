@@ -38,6 +38,8 @@ from lilbee.providers.worker.pool import PoolRuntime, RoleAccessor
 from lilbee.providers.worker.rerank_worker import rerank_worker_main
 from lilbee.providers.worker.transport import (
     ChatRequest,
+    ChatResult,
+    ChatStreamItem,
     OcrBackend,
     PdfOcrRequest,
     RerankPayload,
@@ -105,6 +107,11 @@ _CTX_FLOOR = 512
 
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
+
+# Tokens that appear in any GGUF chat template that knows how to render
+# OpenAI-style tool calls. Conservative: a hit is sufficient (not necessary)
+# evidence the model has been trained for tool use.
+_TOOL_TEMPLATE_TOKENS = ("tools", "tool_calls", "functions", "function_calls")
 
 
 # Settings baked into Llama() at load time, or whose change picks a
@@ -362,36 +369,43 @@ class LlamaCppProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult: ...
 
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[True],
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> ClosableIterator[str]: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | ClosableIterator[str]:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         """Chat completion via the persistent pool worker.
 
-        Streaming returns a :class:`ClosableIterator[str]` whose
-        ``close()`` flips the worker's abort flag so in-flight generation
-        drains cleanly. Non-streaming returns the assembled assistant text.
+        Streaming returns a :class:`ClosableIterator` whose ``close()``
+        flips the worker's abort flag so in-flight generation drains
+        cleanly. Non-streaming returns a :class:`ChatResult` carrying the
+        assistant text and any tool-call frames the model emitted.
         """
         accessor = self._get_pool_accessor(
             WorkerRole.CHAT, chat_worker_main, _make_role_config_factory(WorkerRole.CHAT)
@@ -403,6 +417,8 @@ class LlamaCppProvider(LLMProvider):
             stream=stream,
             options=self._chat_kwargs_from_options(options) or None,
             model=model,
+            tools=tools,
+            tool_choice=tool_choice,
         )
         if stream:
             return _PoolChatStreamIterator(
@@ -415,10 +431,10 @@ class LlamaCppProvider(LLMProvider):
                 accessor.call(WireKind.CHAT, request, timeout=cfg.worker_pool_call_timeout_s),
                 timeout=cfg.worker_pool_call_timeout_s,
             )
-            if not isinstance(result, str):
+            if not isinstance(result, ChatResult):
                 raise WorkerError(
                     "ProtocolError",
-                    f"Pool chat returned {type(result).__name__}, expected str.",
+                    f"Pool chat returned {type(result).__name__}, expected ChatResult.",
                     "",
                 )
         except WorkerError as exc:
@@ -432,6 +448,30 @@ class LlamaCppProvider(LLMProvider):
                 provider="llama-cpp",
             ) from exc
         return result
+
+    def supports_tools(self, model_ref: str) -> bool:
+        """True iff *model_ref*'s GGUF chat template references tool tokens.
+
+        Returns False conservatively when the path can't be resolved, the
+        GGUF metadata can't be read, or the template doesn't mention any
+        of the well-known tool tokens.
+        """
+        try:
+            path = resolve_model_path(model_ref)
+        except (ProviderError, OSError):
+            log.debug("supports_tools: resolve_model_path failed for %s", model_ref, exc_info=True)
+            return False
+        try:
+            meta = read_gguf_metadata(path)
+        except (OSError, ValueError):
+            log.debug("supports_tools: read_gguf_metadata failed for %s", path, exc_info=True)
+            return False
+        if not isinstance(meta, dict):
+            return False
+        template = meta.get("chat_template")
+        if not isinstance(template, str):
+            return False
+        return any(token in template for token in _TOOL_TEMPLATE_TOKENS)
 
     @staticmethod
     def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -571,11 +611,11 @@ class _PoolChatStreamIterator:
     def __iter__(self) -> _PoolChatStreamIterator:
         return self
 
-    def __next__(self) -> str:
+    def __next__(self) -> ChatStreamItem:
         if self._exhausted:
             raise StopIteration
         try:
-            chunk: str = self._runtime.run_sync(
+            chunk: ChatStreamItem = self._runtime.run_sync(
                 self._async_iter.__anext__(),
                 timeout=cfg.worker_pool_call_timeout_s,
             )

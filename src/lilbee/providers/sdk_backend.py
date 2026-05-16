@@ -252,3 +252,7 @@ class LlmSdkBackend(Protocol):
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Return model metadata dict or None if unsupported / not found."""
         ...
+
+    def supports_tools(self, model_ref: str) -> bool:
+        """Return True iff the backend can route tool calls for *model_ref*."""
+        ...

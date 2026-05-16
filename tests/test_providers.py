@@ -13,10 +13,17 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.worker.transport import ChatResult, FinishReason
 
 if TYPE_CHECKING:
     from lilbee.providers.routing_provider import RoutingProvider
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+
+def _routing_chat_result(text: str) -> ChatResult:
+    """Build a ``ChatResult`` for tests that mock ``RoutingProvider`` backends."""
+    return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1106,13 +1113,13 @@ class TestRoutingProvider:
     def test_routes_chat_to_litellm_for_api_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "hello"
+        mock_litellm.chat.return_value = _routing_chat_result("hello")
         rp._sdk_provider = mock_litellm
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
-        assert result == "hello"
+        assert result.text == "hello"
         mock_litellm.chat.assert_called_once()
-        # Default stream=False path resolves to the str overload in
+        # Default stream=False path resolves to the ChatResult overload in
         # RoutingProvider.chat; the call must reach the backend with stream=False.
         kwargs = mock_litellm.chat.call_args.kwargs
         assert kwargs["stream"] is False
@@ -1120,11 +1127,11 @@ class TestRoutingProvider:
     def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "hello"
+        mock_litellm.chat.return_value = _routing_chat_result("hello")
         rp._sdk_provider = mock_litellm
 
         result = rp.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:8b")
-        assert result == "hello"
+        assert result.text == "hello"
         mock_litellm.chat.assert_called_once()
 
     def test_routes_chat_with_stream_true_resolves_iterator_overload(self) -> None:
@@ -1191,12 +1198,12 @@ class TestRoutingProvider:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
-        mock_llama.chat.return_value = "local"
+        mock_llama.chat.return_value = _routing_chat_result("local")
         rp._llama_cpp = mock_llama
 
         cfg.chat_model = "org/Local-GGUF/local-model.gguf"
         result = rp.chat([{"role": "user", "content": "hi"}])
-        assert result == "local"
+        assert result.text == "local"
         mock_llama.chat.assert_called_once()
 
     def test_routes_embed_to_litellm_for_ollama_model(self) -> None:
@@ -1386,7 +1393,7 @@ class TestRoutingProvider:
     def test_chat_with_explicit_api_model_override(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.chat.return_value = "saw it"
+        mock_litellm.chat.return_value = _routing_chat_result("saw it")
         rp._sdk_provider = mock_litellm
 
         cfg.chat_model = "org/Local-GGUF/local.gguf"
@@ -1394,7 +1401,7 @@ class TestRoutingProvider:
             [{"role": "user", "content": "describe"}],
             model="openai/gpt-4o",
         )
-        assert result == "saw it"
+        assert result.text == "saw it"
         mock_litellm.chat.assert_called_once()
 
     def test_get_capabilities_delegates_by_prefix(self) -> None:
@@ -4125,9 +4132,17 @@ class TestSdkLLMProviderVisionOcr:
 
         return SdkLLMProvider(LitellmSdkBackend(), base_url="http://localhost:11434")
 
+    @staticmethod
+    def _chat_text(text: str) -> Any:
+        from lilbee.providers.worker.transport import ChatResult, FinishReason
+
+        return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
+
     def test_builds_multipart_message_and_routes_to_chat(self) -> None:
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="page text") as mock_chat:
+        with mock.patch.object(
+            provider, "chat", return_value=self._chat_text("page text")
+        ) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr please")
 
         assert result == "page text"
@@ -4146,7 +4161,7 @@ class TestSdkLLMProviderVisionOcr:
         from lilbee.vision import OCR_PROMPT
 
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        with mock.patch.object(provider, "chat", return_value=self._chat_text("ok")) as mock_chat:
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b")
 
         text_part = mock_chat.call_args[0][0][0]["content"][1]
@@ -4155,7 +4170,7 @@ class TestSdkLLMProviderVisionOcr:
     def test_positive_timeout_returns_chat_result(self) -> None:
         """A non-expiring positive timeout returns the chat response unchanged."""
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        with mock.patch.object(provider, "chat", return_value=self._chat_text("ok")) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=5.0)
 
         assert result == "ok"
@@ -4168,7 +4183,7 @@ class TestSdkLLMProviderVisionOcr:
 
         def slow_chat(*args, **kwargs):
             time.sleep(5)
-            return "too late"
+            return self._chat_text("too late")
 
         with (
             mock.patch.object(provider, "chat", side_effect=slow_chat),
@@ -4179,13 +4194,13 @@ class TestSdkLLMProviderVisionOcr:
     def test_zero_timeout_returns_chat_result(self) -> None:
         """``timeout=0`` skips the thread pool and returns chat's result."""
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        with mock.patch.object(provider, "chat", return_value=self._chat_text("ok")) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0)
 
         assert result == "ok"
         mock_chat.assert_called_once()
 
-    def test_non_string_response_raises_provider_error(self) -> None:
+    def test_non_chat_result_response_raises_provider_error(self) -> None:
         from lilbee.providers.base import ProviderError
 
         provider = self._make_provider()

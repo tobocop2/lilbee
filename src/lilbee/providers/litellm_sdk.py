@@ -235,6 +235,11 @@ class LitellmSdkBackend:
         """Return True if the underlying SDK is installed."""
         return litellm_available()
 
+    def supports_tools(self, model_ref: str) -> bool:
+        """Every litellm-routed chat model speaks OpenAI-shaped tool calls."""
+        del model_ref
+        return True
+
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Apply litellm's debug-info suppression toggle when requested."""
         if not suppress_debug:

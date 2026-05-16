@@ -206,7 +206,7 @@ def stream_chat_with_cap(
 
     first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
     yield from filter_reasoning(
-        first_stream,
+        _text_only(first_stream),
         show=show_reasoning,
         cap_chars=cap_chars,
         on_cap=_on_cap,
@@ -217,11 +217,24 @@ def stream_chat_with_cap(
     nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
     second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
     try:
-        for chunk in second_stream:
+        for chunk in _text_only(second_stream):
             if chunk:
                 yield StreamToken(content=chunk, is_reasoning=False)
     finally:
         _close_iterator(second_stream)
+
+
+def _text_only(stream: Iterator[Any]) -> Iterator[str]:
+    """Filter a chat stream down to its text deltas.
+
+    Tool-call deltas can flow on the same iterator when ``tools`` is
+    passed; the RAG / reasoning paths never request tools, so any non-str
+    frame here is an upstream contract violation worth swallowing rather
+    than crashing the user's chat.
+    """
+    for item in stream:
+        if isinstance(item, str):
+            yield item
 
 
 def cap_events_as_stream_tokens(

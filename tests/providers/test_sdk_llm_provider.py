@@ -120,6 +120,9 @@ class FakeBackend:
             raise NotImplementedError
         return self.show_model_result
 
+    def supports_tools(self, model_ref: str) -> bool:
+        return False
+
 
 @pytest.fixture(autouse=True)
 def _reset_chat_model() -> Iterator[None]:
@@ -152,10 +155,15 @@ class TestInjectProviderKeys:
 
 
 class TestChatNonStream:
-    def test_returns_content_string(self) -> None:
-        backend = FakeBackend(complete_result=CompletionResult(content="hi"))
+    def test_returns_chat_result(self) -> None:
+        from lilbee.providers.worker.transport import ChatResult, FinishReason
+
+        backend = FakeBackend(complete_result=CompletionResult(content="hi", finish_reason="stop"))
         provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
-        assert provider.chat([{"role": "user", "content": "hey"}]) == "hi"
+        result = provider.chat([{"role": "user", "content": "hey"}])
+        assert isinstance(result, ChatResult)
+        assert result.text == "hi"
+        assert result.finish_reason == FinishReason.STOP
 
     def test_builds_completion_request_with_parsed_ref(self) -> None:
         backend = FakeBackend()

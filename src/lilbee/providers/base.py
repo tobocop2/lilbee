@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from lilbee.providers.worker.transport import OcrBackend
+    from lilbee.providers.worker.transport import (
+        ChatResult,
+        ChatStreamItem,
+        OcrBackend,
+    )
     from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
@@ -60,7 +64,8 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
-ChatMessage = dict[str, str]
+ChatMessage = dict[str, Any]
+"""One chat message; ``content`` may be a string or a list of content blocks."""
 
 
 class LLMProvider(Protocol):
@@ -78,7 +83,9 @@ class LLMProvider(Protocol):
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult: ...
 
     @overload
     def chat(
@@ -88,7 +95,9 @@ class LLMProvider(Protocol):
         stream: Literal[True],
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> ClosableIterator[str]: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
         self,
@@ -97,8 +106,21 @@ class LLMProvider(Protocol):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | ClosableIterator[str]:
-        """Chat completion. Returns str for non-stream, ClosableIterator[str] for stream."""
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult | ClosableIterator[ChatStreamItem]:
+        """Chat completion.
+
+        Returns :class:`ChatResult` for non-streaming requests and a
+        :class:`ClosableIterator` of :data:`ChatStreamItem` for streaming
+        requests (text deltas plus tool-call deltas). Pass ``tools`` to
+        enable tool-calling on backends whose ``supports_tools(model)``
+        returns True.
+        """
+        ...
+
+    def supports_tools(self, model_ref: str) -> bool:
+        """Return True iff the backend can route tool calls for *model_ref*."""
         ...
 
     def vision_ocr(

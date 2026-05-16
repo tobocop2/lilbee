@@ -526,8 +526,11 @@ def chat_pool_provider(monkeypatch, tmp_path):
 
 
 def test_chat_routes_through_pool_non_streaming(chat_pool_provider) -> None:
+    from lilbee.providers.worker.transport import ChatResult
+
     result = chat_pool_provider.chat([{"role": "user", "content": "hi"}])
-    assert result == "hi there"
+    assert isinstance(result, ChatResult)
+    assert result.text == "hi there"
 
 
 def test_repeated_chat_calls_reuse_one_accessor(chat_pool_provider) -> None:

@@ -266,7 +266,7 @@ def generate_source_batch(
     )
     try:
         response = provider.chat(messages, stream=False, options=options)
-        text = strip_reasoning(response).strip()
+        text = strip_reasoning(response.text).strip()
     except Exception as exc:
         log.warning("Batched LLM call failed for source %s: %s", source, exc)
         return []

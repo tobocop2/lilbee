@@ -238,6 +238,23 @@ def _isolate_cfg(tmp_path, request):
     cfg.clear_model_defaults()
 
 
+def _default_provider_mock():
+    """Return a ``LLMProvider``-spec'd MagicMock whose ``chat`` yields a ``ChatResult``.
+
+    Without this default, ``MagicMock(spec=LLMProvider).chat(...)`` returns
+    another MagicMock and the searcher's ``result.text`` access then breaks
+    every downstream string consumer (regex, ``strip()``, etc.). Tests that
+    care about the chat output override the return value explicitly.
+    """
+    from lilbee.providers.base import LLMProvider
+    from lilbee.providers.worker.transport import ChatResult, FinishReason
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
+    provider.supports_tools.return_value = False
+    return provider
+
+
 def _default_store_mock():
     store = MagicMock()
     store.search.return_value = []
@@ -286,13 +303,12 @@ def make_mock_services(**overrides):
     """
     from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = overrides.pop("provider", None) or MagicMock(spec=LLMProvider)
+    provider = overrides.pop("provider", None) or _default_provider_mock()
     store = overrides.pop("store", None) or _default_store_mock()
     embedder = overrides.pop("embedder", None) or _default_embedder_mock()
     reranker = overrides.pop("reranker", None) or _default_reranker_mock()

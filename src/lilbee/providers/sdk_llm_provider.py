@@ -29,10 +29,25 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.providers.worker.transport import OcrBackend
+from lilbee.providers.worker.transport import (
+    ChatResult,
+    ChatStreamItem,
+    FinishReason,
+    OcrBackend,
+)
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
+
+
+_FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
+
+
+def _coerce_finish_reason(raw: str | None) -> FinishReason:
+    """Map a backend-supplied finish_reason to :class:`FinishReason`."""
+    if raw is None:
+        return FinishReason.STOP
+    return _FINISH_REASONS.get(raw, FinishReason.STOP)
 
 
 def inject_provider_keys() -> None:
@@ -107,35 +122,51 @@ class SdkLLMProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult: ...
 
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[True],
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> ClosableIterator[str]: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | ClosableIterator[str]:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         """Chat completion via the configured backend."""
         self._ensure_initialized()
         ref = parse_model_ref(model or cfg.chat_model)
+        if tools and not self.supports_tools(model or cfg.chat_model):
+            raise ProviderError(
+                f"Backend {self._backend.provider_name!r} does not support tool calls "
+                f"for model {model or cfg.chat_model!r}.",
+                provider=self._backend.provider_name,
+            )
         translated = translate_options(options, ref) if options else {}
+        if tools is not None:
+            translated["tools"] = tools
+        if tool_choice is not None:
+            translated["tool_choice"] = tool_choice
         request = CompletionRequest(
             ref=ref,
             messages=list(messages),
@@ -153,9 +184,17 @@ class SdkLLMProvider(LLMProvider):
             raise ProviderError(
                 f"Chat failed: {exc}", provider=self._backend.provider_name
             ) from exc
-        return result.content
+        return ChatResult(
+            text=result.content,
+            tool_calls=(),
+            finish_reason=_coerce_finish_reason(result.finish_reason),
+        )
 
-    def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[str]:
+    def supports_tools(self, model_ref: str) -> bool:
+        """Delegate to the backend's ``supports_tools`` probe."""
+        return self._backend.supports_tools(model_ref)
+
+    def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[ChatStreamItem]:
         """Yield content tokens from a streaming completion.
 
         Exceptions surfaced by the backend at either call time or during
@@ -194,12 +233,12 @@ class SdkLLMProvider(LLMProvider):
                 result = future.result(timeout=timeout)
         else:
             result = self.chat(messages, stream=False, model=model)
-        if not isinstance(result, str):
+        if not isinstance(result, ChatResult):
             raise ProviderError(
                 f"Vision OCR returned non-text response ({type(result).__name__}).",
                 provider=self._backend.provider_name,
             )
-        return result
+        return result.text
 
     def pdf_ocr(
         self,

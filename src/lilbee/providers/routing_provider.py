@@ -14,7 +14,7 @@ from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-from lilbee.providers.worker.transport import OcrBackend
+from lilbee.providers.worker.transport import ChatResult, ChatStreamItem, OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
@@ -66,39 +66,64 @@ class RoutingProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult: ...
 
     @overload
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: Literal[True],
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> ClosableIterator[str]: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | ClosableIterator[str]:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         ref = parse_model_ref(model or cfg.chat_model)
         backend = self._pick_backend(ref)
         # Split on stream so each call resolves to a specific overload; the
         # base impl signature accepts bool but the @overloads on the LLMProvider
         # Protocol require Literal narrowing at the boundary.
         if stream:
-            return backend.chat(messages, stream=True, options=options, model=model)
-        return backend.chat(messages, stream=False, options=options, model=model)
+            return backend.chat(
+                messages,
+                stream=True,
+                options=options,
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+        return backend.chat(
+            messages,
+            stream=False,
+            options=options,
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
+    def supports_tools(self, model_ref: str) -> bool:
+        """Delegate to the backend selected by *model_ref*'s prefix."""
+        ref = parse_model_ref(model_ref)
+        return self._pick_backend(ref).supports_tools(model_ref)
 
     def vision_ocr(
         self,
