@@ -42,29 +42,14 @@ crawl-setup:  ## Download Playwright Chromium for /crawl
 dns-setup:  ## One-time DNS setup for lilbee.sh at Porkbun (reads creds from pass)
 	bash scripts/porkbun-dns-setup.sh
 
-demo-prep:  ## Pre-stage models, data dirs, man pages, opencode demo dirs for `make demo`
-	bash demos/_prep.sh
+demo-prep:  ## Stage demo data dirs via the gh-pages worktree
+	bash scripts/demo.sh prep
 
-demo:  ## Record every demo GIF + still via VHS (run `make demo-prep` first)
-	mkdir -p demos/_out
-	vhs demos/tui-setup.tape
-	vhs demos/tui-chat.tape
-	vhs demos/tui-add.tape
-	vhs demos/tui-catalog.tape
-	vhs demos/tui-settings.tape
-	vhs demos/tui-palette.tape
-	vhs demos/tui-crawl.tape
-	vhs demos/tui-tour.tape
-	vhs demos/mcp-godot-search.tape
-	vhs demos/mcp-godot.tape
-	vhs demos/mcp-manual.tape
-	@command -v gifsicle >/dev/null 2>&1 && \
-		for f in demos/_out/*.gif; do gifsicle -O3 --lossy=80 -b "$$f"; done || \
-		echo "(install gifsicle to shrink GIFs further)"
+demo:  ## Render every demo GIF via the gh-pages worktree
+	bash scripts/demo.sh render
 
-demo-publish:  ## Push rendered GIFs / PNGs to the gh-pages branch (asset store, off main)
-	@test -d demos/_out || (echo "run \`make demo\` first" >&2; exit 1)
-	bash demos/_publish.sh
+demo-publish:  ## Commit + push refreshed renders on gh-pages
+	bash scripts/demo.sh publish
 
 build:
 	uv build

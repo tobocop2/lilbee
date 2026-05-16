@@ -117,8 +117,8 @@ sheet; `/help` opens the searchable slash-command catalog.
 
 ## Agent setup
 
-Each agent demo ships with a drop-in [`AGENTS.md`](../demos/AGENTS.md), a
-[`lilbee-worker` subagent](../demos/.opencode/agents/lilbee-worker.md) that
+Each agent demo ships with a drop-in [`AGENTS.md`](../examples/agent-integration/AGENTS.md), a
+[`lilbee-worker` subagent](../examples/agent-integration/.opencode/agents/lilbee-worker.md) that
 handles the long-running ops (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`,
 `lilbee_model_pull`), and the
 [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill
@@ -141,7 +141,9 @@ For longer side-by-side comparisons and benchmarks, see
 
 ---
 
-GIFs and stills live off `main` on the
-[`gh-pages` branch](https://github.com/tobocop2/lilbee/tree/gh-pages/demos),
-embedded here via `raw.githubusercontent.com` URLs. Tape sources are in
-[`demos/`](../demos); re-render with `make demo-prep && make demo`.
+GIFs, stills, and tape sources all live on the
+[`gh-pages` branch](https://github.com/tobocop2/lilbee/tree/gh-pages),
+embedded here via `raw.githubusercontent.com` URLs. Tape sources are at
+[`demos-src/`](https://github.com/tobocop2/lilbee/tree/gh-pages/demos-src);
+re-render with `make demo-prep && make demo` (the targets are a thin
+wrapper that runs the pipeline in a `gh-pages` worktree).
