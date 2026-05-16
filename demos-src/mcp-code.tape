@@ -1,0 +1,40 @@
+Source _shared.tape
+Output _out/mcp-code.gif
+
+# opencode driving lilbee over MCP, full TUI, on a focused slice of
+# lilbee's own source: src/lilbee/core/, src/lilbee/data/ingest/, and
+# src/lilbee/mcp_server.py.
+#
+# Demo dir prepped by demos/_prep.sh: shallow clone of lilbee with src/ at
+# the root, AGENTS.md, opencode.json, lilbee-worker subagent, lilbee-mcp
+# skill, and `lilbee init` already run. No pre-indexing -- the agent does
+# the add via the lilbee-worker subagent.
+Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
+
+Type "cd /tmp/lilbee-demo/opencode-code"
+Sleep 400ms
+Enter
+Sleep 600ms
+
+Type "opencode"
+Sleep 400ms
+Enter
+Sleep 8s
+
+# One turn: index the slice, then answer. The agent runs through:
+# (a) load lilbee-mcp skill, (b) delegate lilbee_add to lilbee-worker
+# (~25s), (c) run lilbee_search, (d) cite the answer. Hide the
+# subagent index + search + first-token wait so the on-camera time
+# is the visible streamed answer with citations.
+Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then show me the function that walks up from the current directory to find a project-local .lilbee/ directory. Quote the function body and cite the file and line range."
+Sleep 600ms
+Enter
+Sleep 8s
+Hide
+Sleep 65s
+Show
+Sleep 14s
+
+Screenshot _out/mcp-code.png
+
+Ctrl+C
