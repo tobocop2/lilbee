@@ -1075,3 +1075,49 @@ class TestSettingsMcp:
         cfg.data_root = isolated_env
         result = settings_reset(["nope"])
         assert "error" in result
+
+    def test_settings_reset_nullable_with_non_none_default_restores_value(self, isolated_env):
+        """A nullable field whose pydantic default is non-None resets to that value, not None."""
+        cfg.data_root = isolated_env
+        cfg.temperature = 0.9
+        result = settings_reset(["temperature"])
+        assert "error" not in result
+        from lilbee.app.settings import get_setting
+
+        assert cfg.temperature == get_setting("temperature").default
+
+    def test_settings_reset_refuses_path_sentinel_field(self, isolated_env):
+        """documents_dir has no resettable default; resetting must error instead of corrupting."""
+        cfg.data_root = isolated_env
+        result = settings_reset(["documents_dir"])
+        assert "error" in result
+        assert "documents_dir" in result["error"]
+
+    def test_settings_list_unknown_group_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list(group="not-a-group")
+        assert "error" in result
+
+    def test_settings_list_filter_is_case_insensitive(self, isolated_env):
+        cfg.data_root = isolated_env
+        lower = settings_list(group="retrieval")
+        upper = settings_list(group="Retrieval")
+        assert lower["total"] == upper["total"]
+        assert lower["total"] > 0
+
+    def test_settings_list_excludes_write_only_api_keys(self, isolated_env):
+        """API keys (write_only) must not appear in settings_list to avoid secret leak."""
+        cfg.data_root = isolated_env
+        cfg.openai_api_key = "sk-secret"
+        result = settings_list()
+        keys = {entry["key"] for entry in result["settings"]}
+        assert "openai_api_key" not in keys
+        assert "hf_token" not in keys
+
+    def test_settings_get_refuses_write_only_field(self, isolated_env):
+        """settings_get must refuse write_only fields so API keys cannot be read back."""
+        cfg.data_root = isolated_env
+        cfg.openai_api_key = "sk-secret"
+        result = settings_get("openai_api_key")
+        assert "error" in result
+        assert "write-only" in result["error"].lower()

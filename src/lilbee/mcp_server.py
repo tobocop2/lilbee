@@ -23,6 +23,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.settings import SettingInfo
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
@@ -480,26 +481,26 @@ def wiki_prune() -> dict[str, Any]:
     }
 
 
-def _setting_info_to_dict(info: Any) -> dict[str, Any]:
-    """Render a ``SettingInfo`` for the MCP wire format."""
-    value = info.value
-    default = info.default
-    # Path / frozenset / tuple stringify safely; the MCP transport is JSON.
-    if not isinstance(value, str | int | float | bool | list | type(None)):
-        value = str(value)
-    if not isinstance(default, str | int | float | bool | list | type(None)):
-        default = str(default)
+def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
+    """Render a SettingInfo as a JSON-safe dict for the MCP wire format."""
     return {
         "key": info.key,
-        "value": value,
-        "default": default,
+        "value": _json_safe(info.value),
+        "default": _json_safe(info.default),
         "type": info.type,
         "nullable": info.nullable,
-        "group": info.group,
+        "group": info.group.value,
         "help": info.help_text,
         "choices": list(info.choices) if info.choices else None,
         "reindex_required": info.reindex_required,
     }
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce Path / frozenset / tuple to JSON-friendly primitives."""
+    if isinstance(value, str | int | float | bool | list | type(None)):
+        return value
+    return str(value)
 
 
 @mcp.tool()
@@ -519,7 +520,10 @@ def settings_list(group: str = "") -> dict[str, Any]:
     """
     from lilbee.app.settings import list_settings
 
-    infos = list_settings(group or None)
+    try:
+        infos = list_settings(group or None)
+    except ValueError as exc:
+        return _error(str(exc))
     return {
         "command": "settings_list",
         "settings": [_setting_info_to_dict(info) for info in infos],

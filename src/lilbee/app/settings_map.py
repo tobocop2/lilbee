@@ -21,6 +21,21 @@ class RenderStyle(StrEnum):
     MULTILINE = "multiline"
 
 
+class SettingGroup(StrEnum):
+    """Logical bucket names rendered by ``/settings`` and ``settings_list``."""
+
+    MODELS = "Models"
+    GENERATION = "Generation"
+    RETRIEVAL = "Retrieval"
+    INGEST = "Ingest"
+    WIKI = "Wiki"
+    CRAWLING = "Crawling"
+    API_KEYS = "API-Keys"
+    SYSTEM = "System"
+    DISPLAY = "Display"
+    GENERAL = "General"
+
+
 @dataclass(frozen=True)
 class SettingDef:
     """Metadata for an interactive setting.
@@ -42,7 +57,7 @@ class SettingDef:
     nullable: bool
     writable: bool = True
     render: RenderStyle = field(default=RenderStyle.COMPACT)
-    group: str = "General"
+    group: SettingGroup = SettingGroup.GENERAL
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
@@ -63,32 +78,32 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         writable=False,
-        group="Models",
+        group=SettingGroup.MODELS,
         help_text="LLM used for chat generation (vision and reranking are separate slots)",
     ),
     "vision_model": SettingDef(
         str,
         nullable=True,
         writable=False,
-        group="Models",
+        group=SettingGroup.MODELS,
         help_text="Vision model for scanned PDF OCR (empty = disabled; Tesseract only)",
     ),
     "enable_ocr": SettingDef(
         bool,
         nullable=True,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Vision OCR for scanned PDFs (empty = auto-detect from vision_model)",
     ),
     "ocr_timeout": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
     ),
     "vision_load_budget_s": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text=(
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
@@ -97,57 +112,57 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Opt-in topic-aware chunker (default off; may fragment numbered procedures)",
     ),
     "topic_threshold": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
     ),
     "embedding_model": SettingDef(
         str,
         nullable=False,
         writable=False,
-        group="Models",
+        group=SettingGroup.MODELS,
         help_text="Model used to embed document chunks",
     ),
     "reranker_model": SettingDef(
         str,
         nullable=True,
         writable=False,
-        group="Models",
+        group=SettingGroup.MODELS,
         help_text="Cross-encoder model for result reranking",
     ),
     "temperature": SettingDef(
         float,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Sampling temperature (higher = more creative)",
     ),
     "top_p": SettingDef(
         float,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Nucleus sampling cutoff probability",
     ),
     "top_k_sampling": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Top-K sampling: number of tokens to consider",
     ),
     "repeat_penalty": SettingDef(
         float,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Penalty for repeating tokens",
     ),
     "num_ctx": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Context window size in tokens. Leave empty to size automatically "
             "to the host's available memory (capped at num_ctx_max)."
@@ -156,7 +171,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "num_ctx_max": SettingDef(
         int,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Upper bound for the dynamic context picker when num_ctx is unset. "
             "Higher allows more retrieval context on hosts with spare memory."
@@ -165,7 +180,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "flash_attention": SettingDef(
         bool,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Flash attention. Empty (auto) tries it on with a fallback for older "
             "llama-cpp-python builds; resolves the V-cache padding warning on "
@@ -175,7 +190,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "kv_cache_type": SettingDef(
         str,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "KV cache element type. q8_0 / q4_0 halve or quarter cache memory "
             "but require flash attention to be enabled."
@@ -185,7 +200,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "n_gpu_layers": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Layers to offload to GPU. Empty = all (recommended), 0 = CPU only, "
             "positive int = partial offload for tight VRAM."
@@ -194,7 +209,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "gpu_devices": SettingDef(
         str,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
@@ -204,7 +219,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "main_gpu": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Primary GPU index for llama.cpp when multiple devices are visible. "
             "Empty = let llama.cpp pick (index 0). Set this together with "
@@ -214,77 +229,77 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "seed": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Random seed for reproducible output",
     ),
     "rag_system_prompt": SettingDef(
         str,
         nullable=False,
         render=RenderStyle.MULTILINE,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="System prompt sent when answering with retrieved context",
     ),
     "general_system_prompt": SettingDef(
         str,
         nullable=False,
         render=RenderStyle.MULTILINE,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
     "chat_mode": SettingDef(
         str,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         choices=tuple(m.value for m in ChatMode),
         help_text="search runs every chat turn through document retrieval; chat skips it",
     ),
     "top_k": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Number of chunks returned by search",
     ),
     "rerank_candidates": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Candidate pool size for reranking",
     ),
     "show_reasoning": SettingDef(
         bool,
         nullable=False,
-        group="Display",
+        group=SettingGroup.DISPLAY,
         help_text="Show model reasoning/thinking tokens in output",
     ),
     "theme": SettingDef(
         str,
         nullable=False,
-        group="Display",
+        group=SettingGroup.DISPLAY,
         help_text="TUI color theme. Cycle with Ctrl+T; the active theme persists across sessions.",
         choices=tuple(DARK_THEMES),
     ),
     "wiki": SettingDef(
         bool,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Enable the wiki layer (synthesis pages with citations)",
     ),
     "wiki_dir": SettingDef(
         str,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Directory under data_root where wiki pages are stored",
     ),
     "wiki_prune_raw": SettingDef(
         bool,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Delete raw chunks after summarizing into the wiki",
     ),
     "wiki_embedding_faithfulness_threshold": SettingDef(
         float,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Minimum cosine similarity (0-1) between a generated page and "
             "the mean of its source chunk vectors before publishing. "
@@ -294,26 +309,26 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_stale_citation_threshold": SettingDef(
         float,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Fraction of stale citations that triggers page regeneration",
     ),
     "wiki_drift_threshold": SettingDef(
         float,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Max fraction of changed lines before regeneration requires review",
     ),
     "wiki_clusterer": SettingDef(
         str,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Synthesis clusterer backend (embedding or concepts)",
         choices=tuple(b.value for b in ClustererBackend),
     ),
     "wiki_entity_mode": SettingDef(
         str,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Entity extraction strategy "
             "(ner_entities = default, typed NER entities; "
@@ -325,25 +340,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_entity_min_mentions": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Minimum chunk mentions before an entity or concept gets its own page",
     ),
     "wiki_concept_max_chunks_per_page": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Maximum chunks passed into each concept or entity page generation call",
     ),
     "wiki_related_max": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Maximum related concepts listed in the `## Related` section of each page",
     ),
     "wiki_ingest_update_cap": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Touched-page cap for auto-update after sync. "
             "Beyond this count, run `lilbee wiki update` manually."
@@ -353,7 +368,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         render=RenderStyle.FULL,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Prompt for per-source summary pages. "
             "Must keep the {source_name} and {chunks_text} placeholders."
@@ -363,7 +378,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         render=RenderStyle.FULL,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Prompt for cross-source synthesis pages. "
             "Must keep {topic}, {source_list}, and {chunks_text}."
@@ -373,7 +388,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         render=RenderStyle.FULL,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Prompt for the per-source batched call. "
             "Must keep {source}, {entity_list}, {chunks_text}, and {concept_instruction}."
@@ -382,7 +397,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_extract_concepts": SettingDef(
         bool,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Whether the per-source batched call asks the LLM to curate concept pages "
             "alongside the pre-extracted entity list."
@@ -391,7 +406,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_batch_min_chunks": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text=(
             "Minimum chunks a source must contribute before its batched call includes "
             "concept curation. Sources below the floor skip the concept-curation "
@@ -401,85 +416,85 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_clusterer_k": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Mutual-kNN neighborhood size for the clusterer (0 = auto)",
     ),
     "crawl_max_depth": SettingDef(
         int,
         nullable=True,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Optional recursion-depth cap (blank = no cap; per-crawl values win)",
     ),
     "crawl_max_pages": SettingDef(
         int,
         nullable=True,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Optional global cap on total pages per crawl (blank = no cap).",
     ),
     "crawl_timeout": SettingDef(
         int,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Per-page fetch timeout in seconds",
     ),
     "crawl_sync_interval": SettingDef(
         int,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Seconds between periodic re-syncs during a crawl (0 = sync only at end)",
     ),
     "crawl_mean_delay": SettingDef(
         float,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Seconds between in-flight requests within a single crawl",
     ),
     "crawl_max_delay_range": SettingDef(
         float,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Random jitter (seconds) added on top of mean delay",
     ),
     "crawl_concurrent_requests": SettingDef(
         int,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Concurrent in-flight URLs within one crawl",
     ),
     "crawl_retry_on_rate_limit": SettingDef(
         bool,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Enable per-domain backoff and retries on HTTP 429/503",
     ),
     "crawl_retry_base_delay_min": SettingDef(
         float,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Minimum base-delay (seconds) on rate-limit responses",
     ),
     "crawl_retry_base_delay_max": SettingDef(
         float,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Maximum base-delay (seconds) on rate-limit responses",
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Upper bound on any single backoff wait (seconds)",
     ),
     "crawl_retry_max_attempts": SettingDef(
         int,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         help_text="Retry count per URL when a rate-limit code comes back",
     ),
     "crawl_exclude_patterns": SettingDef(
         list,
         nullable=False,
-        group="Crawling",
+        group=SettingGroup.CRAWLING,
         render=RenderStyle.LIST_COLLAPSED,
         help_text=(
             "Regex patterns that skip URLs at link-discovery time during "
@@ -489,43 +504,43 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "openrouter_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="OpenRouter API key (enables frontier models in chat picker)",
     ),
     "gemini_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="Google Gemini API key (enables frontier models in chat picker)",
     ),
     "anthropic_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="Anthropic API key (enables frontier models in chat picker)",
     ),
     "openai_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="OpenAI API key (enables frontier models in chat picker)",
     ),
     "mistral_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="Mistral API key (enables frontier models in chat picker)",
     ),
     "deepseek_api_key": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="DeepSeek API key (enables frontier models in chat picker)",
     ),
     "hf_token": SettingDef(
         str,
         nullable=False,
-        group="System",
+        group=SettingGroup.SYSTEM,
         help_text=(
             "HuggingFace access token. Avoids the unauthenticated download "
             "rate limit and unlocks gated repos. Stored in plain text in "
@@ -535,25 +550,25 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "chunk_size": SettingDef(
         int,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Document chunk size in tokens (changes invalidate the index)",
     ),
     "chunk_overlap": SettingDef(
         int,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Tokens of overlap between adjacent chunks (preserves context across boundaries)",
     ),
     "tesseract_timeout": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
     "worker_pool_call_timeout_s": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text=(
             "Per-call deadline for one worker-pool round-trip in seconds. "
             "Raise this for very large embed batches on slow machines"
@@ -562,7 +577,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text=(
             "Spawn every registered worker at TUI startup instead of on first use. "
             "Trades 1-3 seconds of cold-start per role for first-call latency"
@@ -571,7 +586,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "worker_pool_max_idle_s": SettingDef(
         float,
         nullable=False,
-        group="Ingest",
+        group=SettingGroup.INGEST,
         help_text=(
             "Shut a worker down after this many seconds idle to free RAM/VRAM. "
             "0 disables idle reaping"
@@ -580,13 +595,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "max_tokens": SettingDef(
         int,
         nullable=True,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Hard cap on generated tokens per response (blank = no cap)",
     ),
     "max_reasoning_chars": SettingDef(
         int,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text=(
             "Maximum reasoning characters before lilbee forces the model to answer "
             "(0 = unlimited; per-model overrides apply on top)"
@@ -595,49 +610,49 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "model_keep_alive": SettingDef(
         int,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Seconds the loaded model stays warm between calls (0 = unload immediately)",
     ),
     "gpu_memory_fraction": SettingDef(
         float,
         nullable=False,
-        group="Generation",
+        group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
     ),
     "candidate_multiplier": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
     "max_distance": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Maximum vector distance for retrieval matches (lower = stricter)",
     ),
     "min_relevance_score": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Minimum RRF relevance score for hybrid search results (0.0 = no filter)",
     ),
     "max_context_sources": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Maximum unique sources contributing chunks to a single answer",
     ),
     "diversity_max_per_source": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Maximum chunks accepted from any one source (caps source dominance)",
     ),
     "mmr_lambda": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text=(
             "MMR lambda balancing relevance vs diversity (0 = max diversity, 1 = max relevance)"
         ),
@@ -645,98 +660,98 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "temporal_filtering": SettingDef(
         bool,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Detect temporal queries and bias retrieval toward recent chunks",
     ),
     "hyde": SettingDef(
         bool,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Use HyDE (hypothetical answer expansion) to broaden retrieval",
     ),
     "hyde_weight": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Weight on the HyDE-generated query vector when blending with the original",
     ),
     "query_expansion_count": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Number of paraphrase expansions per query (0 disables expansion)",
     ),
     "expansion_similarity_threshold": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Minimum cosine similarity an expansion must keep with the original query",
     ),
     "expansion_short_query_tokens": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Queries at or below this token count skip expansion (saves a model call)",
     ),
     "expansion_guardrails": SettingDef(
         bool,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Drop expansions that diverge from the original intent",
     ),
     "adaptive_threshold_step": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Step size for adaptive relevance-score relaxation when initial recall is empty",
     ),
     "concept_graph": SettingDef(
         bool,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Boost retrieval scores for chunks that share concepts with the query",
     ),
     "concept_boost_weight": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Maximum boost (0-1) the concept graph can add to a chunk's relevance",
     ),
     "concept_boost_floor": SettingDef(
         float,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Minimum cosine similarity needed before the concept graph boosts a chunk",
     ),
     "concept_max_per_chunk": SettingDef(
         int,
         nullable=False,
-        group="Retrieval",
+        group=SettingGroup.RETRIEVAL,
         help_text="Maximum concept tags stored per chunk (caps graph density)",
     ),
     "documents_dir": SettingDef(
         str,
         nullable=False,
-        group="System",
+        group=SettingGroup.SYSTEM,
         help_text="Local documents root that lilbee sync ingests (blank = data_root/documents)",
     ),
     "vault_base": SettingDef(
         str,
         nullable=True,
-        group="System",
+        group=SettingGroup.SYSTEM,
         help_text="Markdown vault root; results carry a vault-relative path (blank = none)",
     ),
     "sse_heartbeat_interval": SettingDef(
         float,
         nullable=False,
-        group="System",
+        group=SettingGroup.SYSTEM,
         help_text="Seconds between SSE keep-alive frames sent to idle HTTP stream clients",
         hidden=True,
     ),
     "llm_provider": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         choices=("auto", "llama-cpp", "remote"),
         help_text=(
             "Provider routing: auto picks the first key present; force a specific one when set"
@@ -745,19 +760,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "remote_base_url": SettingDef(
         str,
         nullable=False,
-        group="API-Keys",
+        group=SettingGroup.API_KEYS,
         help_text="OpenAI-compatible base URL (Ollama default: http://localhost:11434)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Maximum tokens generated per wiki page",
     ),
     "wiki_temperature": SettingDef(
         float,
         nullable=False,
-        group="Wiki",
+        group=SettingGroup.WIKI,
         help_text="Temperature used for wiki page synthesis (low = stay close to sources)",
     ),
 }

@@ -2249,11 +2249,13 @@ class TestAppSetActiveModelDownloadGuard:
                     "notify",
                     side_effect=lambda *a, **kw: notify_calls.append((a, kw)),
                 ),
-                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set_value,
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values"
+                ) as mock_update_values,
             ):
                 app.set_active_model("chat_model", ref)
             assert cfg.chat_model == chat_default
-            mock_set_value.assert_not_called()
+            mock_update_values.assert_not_called()
             assert len(notify_calls) == 1
             args, kwargs = notify_calls[0]
             assert "Qwen2.5 0.5B" in args[0]
@@ -2272,7 +2274,7 @@ class TestAppSetActiveModelDownloadGuard:
         app = LilbeeApp()
         try:
             app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
-            with mock.patch("lilbee.cli.tui.app.settings.set_value"):
+            with mock.patch("lilbee.app.settings.persistent_settings.update_values"):
                 app.set_active_model("chat_model", ref)
             assert cfg.chat_model == ref
         finally:

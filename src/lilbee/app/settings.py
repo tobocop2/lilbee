@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     REINDEX_FIELDS,
@@ -22,20 +21,12 @@ from lilbee.core.config.keys import PROVIDER_API_KEYS
 
 _MIN_CHUNK_SIZE = 64
 
-
-class SettingGroup(StrEnum):
-    """Logical bucket names rendered by ``/settings`` and ``settings_list``."""
-
-    MODELS = "Models"
-    GENERATION = "Generation"
-    RETRIEVAL = "Retrieval"
-    INGEST = "Ingest"
-    WIKI = "Wiki"
-    CRAWLING = "Crawling"
-    API_KEYS = "API-Keys"
-    SYSTEM = "System"
-    DISPLAY = "Display"
-    GENERAL = "General"
+# Path-typed writable fields whose pydantic "default" is the unresolved
+# sentinel ``Path()`` (a literal "."). The actual default is computed by
+# the model_validator at process start (data_root/documents, vault_base
+# stays as None). Resetting these via the boundary would corrupt the
+# install, so they are refused at the reset gate.
+_NO_RESET_FIELDS: frozenset[str] = frozenset({"documents_dir"})
 
 
 @dataclass(frozen=True)
@@ -47,7 +38,7 @@ class SettingInfo:
     default: Any
     type: str
     nullable: bool
-    group: str
+    group: SettingGroup
     help_text: str
     choices: tuple[str, ...] | None
     reindex_required: bool
@@ -113,7 +104,7 @@ def _public_writable_keys() -> list[str]:
 def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     field_info = Config.model_fields[key]
     nullable = WRITABLE_CONFIG_FIELDS.get(key, False) or key in MODEL_ROLE_FIELDS
-    group = definition.group if definition else SettingGroup.MODELS.value
+    group = definition.group if definition else SettingGroup.MODELS
     help_text = definition.help_text if definition else ""
     choices = definition.choices if definition else None
     return SettingInfo(
@@ -129,13 +120,27 @@ def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     )
 
 
+def _parse_group(group: SettingGroup | str) -> SettingGroup:
+    """Resolve a group value or label to a ``SettingGroup``. Case-insensitive on the value."""
+    if isinstance(group, SettingGroup):
+        return group
+    normalized = group.strip().lower()
+    for candidate in SettingGroup:
+        if candidate.value.lower() == normalized:
+            return candidate
+    raise ValueError(
+        f"Unknown setting group: {group!r}. Valid groups: "
+        f"{', '.join(g.value for g in SettingGroup)}"
+    )
+
+
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
-    """List every writable non-secret setting, optionally filtered by group."""
+    """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
     infos = [_setting_info(key, SETTINGS_MAP.get(key)) for key in _public_writable_keys()]
     if group is not None:
-        wanted = SettingGroup(group) if isinstance(group, str) else group
-        infos = [info for info in infos if info.group == wanted.value]
-    return sorted(infos, key=lambda info: (info.group, info.key))
+        wanted = _parse_group(group)
+        infos = [info for info in infos if info.group == wanted]
+    return sorted(infos, key=lambda info: (info.group.value, info.key))
 
 
 def get_setting(key: str) -> SettingInfo:
@@ -288,14 +293,25 @@ def apply_settings_update(
 
 
 def reset_settings(keys: list[str]) -> SettingsUpdateResult:
-    """Reset each key to its pydantic default and apply through the write boundary."""
+    """Reset each key to its pydantic default and apply through the write boundary.
+
+    Fields whose default is a known sentinel (currently ``documents_dir``,
+    which resolves to ``data_root/documents`` at process start) are
+    refused so a reset doesn't write the literal sentinel back. The
+    caller should ``settings_set`` an explicit value instead.
+    """
     for key in keys:
         if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
+        if key in _NO_RESET_FIELDS:
+            raise ValueError(
+                f"'{key}' has no resettable default; pass an explicit value via settings_set."
+            )
     updates: dict[str, Any] = {}
     for key in keys:
-        if _is_nullable(key):
+        default = _setting_default(key)
+        if default is None and _is_nullable(key):
             updates[key] = None
         else:
-            updates[key] = _setting_default(key)
+            updates[key] = default
     return apply_settings_update(updates)
