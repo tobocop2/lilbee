@@ -1,12 +1,12 @@
 name: Fan out downstream packaging
-description: "Trigger publish-docker.yml and publish-packages.yml for a tag once its executables are attached to the GH release. Waits up to 5 hours for the executables to land before failing loudly. Caller needs actions:write."
+description: "Trigger publish-docker.yml and publish-packages.yml for a tag once the Linux + macOS-arm64 executables are attached to the GH release. Waits up to 5 hours for those to land before failing loudly. Caller needs actions:write."
 
 inputs:
   tag:
     description: "Tag whose executables are on the GH release (e.g. v0.6.66b469)."
     required: true
   wait_minutes:
-    description: "Max minutes to wait for all three executables to be attached before failing."
+    description: "Max minutes to wait for the downstream-consumed executables to be attached before failing."
     required: false
     default: "300"
 
@@ -14,9 +14,12 @@ runs:
   using: composite
   steps:
     # publish-docker.yml curls the GH-release Linux binary; publish-packages.yml
-    # pins all three by hash. Both consume the release, not PyPI, so this waits
-    # on the executables -- it does not wait on the wheels.
-    - name: Wait for the release to have the platform executables
+    # pins Linux and macOS-arm64 by hash. Nothing downstream consumes
+    # lilbee-windows-x86_64.exe, so it is not in the wait list -- waiting on
+    # the ~3h45m Windows nuitka build would block Homebrew / AUR / Nix / Docker
+    # for hours after their inputs are already on the release. Linux ~2h15m
+    # and macOS-arm64 ~1h25m are the real gate.
+    - name: Wait for the release to have the downstream-consumed executables
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -25,22 +28,15 @@ runs:
         WAIT_MINUTES: ${{ inputs.wait_minutes }}
       run: |
         set -uo pipefail
-        # Default wheels finish ~25 min into the RC run; the executables take
-        # the lion's share -- the Windows nuitka build alone has been observed
-        # at ~3h45m, Linux ~2h15m, macOS ~1h25m. 5 hours covers the worst
-        # observed plus headroom while staying inside GitHub Actions' 6-hour
-        # per-job ceiling. Past the deadline something is wrong with the RC
-        # build and we want a loud failure here rather than a silent skip
-        # that strands the fan-out until an operator notices.
         deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
         while true; do
           names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
           missing=""
-          for a in lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe; do
+          for a in lilbee-linux-x86_64 lilbee-macos-arm64; do
             case " ${names} " in *" ${a} "*) ;; *) missing="${missing} ${a}" ;; esac
           done
           if [ -z "${missing}" ]; then
-            echo "release ${TAG} has all executables; proceeding with fan-out"
+            echo "release ${TAG} has the downstream-consumed executables; proceeding with fan-out"
             break
           fi
           if [ "$(date +%s)" -ge "${deadline}" ]; then

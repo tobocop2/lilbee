@@ -1,12 +1,13 @@
 name: Release candidate
 
 # Tag push (v*): build every release artifact ONCE -- default wheels + sdist,
-# CUDA/Intel-Mac extra wheels, the standalone executables -- attach the
-# executables to a GH pre-release, run the QA matrix against the default wheels
-# + executables (the extra-wheels matrix runs in parallel and never delays QA).
-# Dispatch: same build + QA, no release attach. Publishing to PyPI is a
-# separate manual step that just downloads this run's artifacts -- see
-# publish.yml; nothing downstream rebuilds.
+# CUDA/Intel-Mac extra wheels, the standalone executables -- and attach the
+# executables to a GH pre-release. Dispatch: same build, no release attach.
+# The QA matrix runs on demand via qa-matrix.yml; it is no longer gated to
+# this workflow so a flaky TUI test on one platform can't strand the wheel
+# indexes or the downstream publish. Publishing to PyPI is a separate manual
+# step that just downloads this run's artifacts -- see publish.yml; nothing
+# downstream rebuilds.
 
 on:
   push:
@@ -116,16 +117,9 @@ jobs:
           tag: ${{ needs.resolve.outputs.tag }}
           version: ${{ needs.resolve.outputs.version }}
 
-  # QA consumes this run's default wheels + executables (by run id). It does NOT
-  # need build-extra-wheels, so the CUDA matrix can chug along without holding QA up.
-  qa:
-    needs: [resolve, build-default-wheels, build-binaries]
-    uses: ./.github/workflows/qa-matrix.yml
-    with:
-      wheel_run_id: ${{ github.run_id }}
-      binary_run_id: ${{ github.run_id }}
-      version: ${{ needs.resolve.outputs.version }}
-    secrets: inherit
+  # QA is decoupled from the RC. Run qa-matrix.yml on demand (workflow_dispatch
+  # with this run's id passed as wheel_run_id / binary_run_id) when you want
+  # to validate a candidate against the full QA grid.
 
   # PyPI publish is intentionally NOT here. Run publish.yml manually after
-  # reviewing the pre-release + QA -- it just downloads this run's artifacts.
+  # reviewing the pre-release -- it just downloads this run's artifacts.
