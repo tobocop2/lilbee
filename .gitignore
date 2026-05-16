@@ -47,6 +47,7 @@ PLAN.md
 scripts/*
 !scripts/check_style_rules.py
 !scripts/porkbun-dns-setup.sh
+!scripts/demo.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py
@@ -58,7 +59,8 @@ site/api/
 site/coverage/
 site.tar.gz
 
-# Rendered demo binaries land in demos/_out/ and ship from the gh-pages branch,
-# not main. The tape sources and prep scripts stay tracked.
+# Demo generation lives on the gh-pages branch. demos/_out/ on main
+# is only used by the thin scripts/demo.sh wrapper if anyone runs the
+# render from a main checkout.
 demos/_out/
 demos/_sandbox/
