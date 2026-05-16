@@ -4519,6 +4519,47 @@ class TestTaskBarAdditional:
             bar._refresh_display()
 
 
+class TestDownloadingLabelFor:
+    """``downloading_label_for(ref)`` matches the in-flight DOWNLOAD task by name."""
+
+    async def test_returns_label_when_ref_maps_to_active_download(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.DOWNLOAD.value)
+            assert (
+                app.task_bar.downloading_label_for("Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+                == "Qwen2.5 0.5B"
+            )
+
+    async def test_returns_none_when_no_download_matches(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.task_bar.queue.enqueue(lambda: None, "different model", TaskType.DOWNLOAD.value)
+            assert app.task_bar.downloading_label_for("Qwen/Qwen2.5-0.5B-Instruct-GGUF") is None
+
+    async def test_returns_none_for_non_hf_ref(self) -> None:
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.task_bar.downloading_label_for("") is None
+            assert app.task_bar.downloading_label_for("ollama-model") is None
+
+    async def test_ignores_non_download_tasks(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskType
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.SYNC.value)
+            assert app.task_bar.downloading_label_for("Qwen/Qwen2.5-0.5B-Instruct-GGUF") is None
+
+
 class TestPendingSyncHint:
     """Cover TaskBarController state for the pending-sync hint."""
 

@@ -45,6 +45,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     catalog_to_row,
     parse_param_label,
 )
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.core.config import cfg
@@ -123,8 +124,11 @@ class SetupWizard(Screen[str | None]):
          the card is already installed.
       3. Leaves the wizard open so you can pick the other task next.
 
-    Selections are persisted to settings eagerly (not at dismiss time),
-    so Esc-ing out mid-wizard keeps your picks.
+    The active-model write is chained to the download's on_success hook
+    so chat can never see an active-but-missing ref. Esc-ing the wizard
+    while a download is running is fine: the controller owns the task,
+    and the deferred apply runs against the live app when the file
+    lands on disk.
     """
 
     app: LilbeeApp  # type: ignore[assignment]
@@ -270,28 +274,34 @@ class SetupWizard(Screen[str | None]):
         self._selections[task] = (ref, card)
 
     def _commit_selection(self, card: ModelCard, task: str) -> None:
-        """Persist the selection to settings and submit a download if pending.
-
-        Called when the user presses Enter on a card. Saves the config
-        fragment eagerly so Esc mid-wizard doesn't lose the pick.
-        """
+        """Persist the selection: install if needed, set active once the file is on disk."""
         self._mark_selection(card, task)
         ref = self._selections[task][0]
         if ref is None:
             return
+        if task == ModelTask.EMBEDDING:
+            # Pin a legacy store's identity to the OLD model BEFORE any
+            # cfg mutation so the gate in store.search/add_chunks
+            # correctly detects drift on the next op. See bb-x1qa.
+            get_services().store.initialize_meta_if_legacy()
+        pending = _pending_download(card)
+        if pending is None:
+            self._apply_selection(task, ref)
+            return
+        if pending.ref in self._submitted:
+            return
+        self._submitted.add(pending.ref)
+        self.app.task_bar.start_download(
+            pending,
+            on_success=lambda: call_from_thread(self, self._apply_selection, task, ref),
+        )
+
+    def _apply_selection(self, task: str, ref: str) -> None:
+        """Write the pick into config. Runs on the UI thread after install."""
         if task == ModelTask.CHAT:
             apply_active_model(self.app, "chat_model", ref)
         elif task == ModelTask.EMBEDDING:
-            # Pin a legacy store's identity to the OLD model BEFORE the cfg
-            # mutation so the gate in store.search/add_chunks correctly detects
-            # drift on the next op. See bb-x1qa.
-            get_services().store.initialize_meta_if_legacy()
             apply_active_model(self.app, "embedding_model", ref)
-
-        pending = _pending_download(card)
-        if pending is not None and pending.ref not in self._submitted:
-            self._submitted.add(pending.ref)
-            self.app.task_bar.start_download(pending)
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
