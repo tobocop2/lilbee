@@ -556,7 +556,7 @@ pip install --pre 'lilbee[graph,crawler,litellm]'
 uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 ```
 
-For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/` (or `cu124/` for older drivers).
+For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/` (or `cu124/` / `cu121/` to match older drivers, picked from `nvidia-smi`).
 
 While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is required on every install.
 
