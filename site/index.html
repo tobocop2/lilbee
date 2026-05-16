@@ -90,6 +90,9 @@
           <button type="button" class="reeltab" role="tab" id="reel-tab-settings" aria-controls="reel-pane-settings" aria-selected="false" tabindex="-1">settings</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-agent"    aria-controls="reel-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-pdf"      aria-controls="reel-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-palette"  aria-controls="reel-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-index"    aria-controls="reel-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-godot"    aria-controls="reel-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
         </div>
 
         <div class="reelpane" role="tabpanel" id="reel-pane-setup" aria-labelledby="reel-tab-setup">
@@ -153,6 +156,27 @@
             <img alt="an agent reads a Crown Victoria owner's manual through lilbee's MCP server" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif">
           </div>
           <p class="reel-caption">Same setup, talking to a PDF: the agent asks lilbee to index <code>cv-manual.pdf</code>, then builds a fuse table with page citations.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-palette" aria-labelledby="reel-tab-palette" hidden>
+          <div class="reel-frame">
+            <img alt="lilbee command palette and slash-command catalog" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif">
+          </div>
+          <p class="reel-caption"><kbd>Ctrl+P</kbd> opens the command palette; <code>/help</code> opens the slash-command catalog. Every action is discoverable.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-index" aria-labelledby="reel-tab-index" hidden>
+          <div class="reel-frame">
+            <img alt="an agent indexes a Godot 4 pathfinding subset live, then cites methods" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif">
+          </div>
+          <p class="reel-caption">Agent indexes a small Godot 4 pathfinding subset live, then cites methods method-by-method against the local files.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-godot" aria-labelledby="reel-tab-godot" hidden>
+          <div class="reel-frame">
+            <img alt="cited codegen against the full Godot class reference" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif">
+          </div>
+          <p class="reel-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
         </div>
 
         <p class="reel-more"><kbd>&larr;</kbd>/<kbd>&rarr;</kbd> scrub. More on the recordings: <a href="https://github.com/tobocop2/lilbee/blob/main/docs/demos.md">the full reel &rarr;</a></p>
