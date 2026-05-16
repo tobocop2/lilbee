@@ -87,9 +87,12 @@ seed_setup_models() {
     # found in registry" error.
     local setup_models="$ROOT/setup-models"
     mkdir -p "$setup_models"
-    log "pre-pulling models into setup-models"
+    log "pre-caching chat + embedder in setup-models"
     LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$CHAT_MODEL" || true
     LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$EMBED_MODEL" || true
+    # Drop any prior SmolLM cache so the tape demonstrates a real pull
+    # of SmolLM2 135M live in the Task Center.
+    rm -rf "$setup_models/models--bartowski--SmolLM2-135M-Instruct-GGUF"
 }
 
 page_cache_model() {
