@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from textual.app import App
 
+from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -195,6 +196,23 @@ class TaskBarController:
             self.queue.advance(task_type)
         while self.queue.advance() is not None:
             pass
+
+    def downloading_label_for(self, ref: str) -> str | None:
+        """Return the task name if *ref*'s download is queued or active, else None.
+
+        ``ref`` is a model reference (catalog repo id or native GGUF
+        ref); the helper maps it to the canonical
+        :attr:`CatalogModel.display_name` and matches against
+        in-flight DOWNLOAD tasks. The returned label is suitable for
+        embedding in a user-facing toast.
+        """
+        label = download_task_name(ref)
+        if not label:
+            return None
+        for task in self.queue.active_tasks + self.queue.queued_tasks:
+            if task.task_type == TaskType.DOWNLOAD.value and task.name == label:
+                return task.name
+        return None
 
     def set_pending_sync(self, count: int) -> None:
         """Update the pending-sync count surfaced in the TaskBar hint."""
@@ -402,12 +420,15 @@ class TaskBarController:
                     log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
                 break
 
-    def start_download(self, model: CatalogModel) -> str:
-        """Enqueue a model download and spawn a background worker."""
+    def start_download(
+        self, model: CatalogModel, *, on_success: Callable[[], None] | None = None
+    ) -> str:
+        """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk."""
         return self.start_task(
             model.display_name,
             TaskType.DOWNLOAD,
             lambda reporter: _download_target(reporter, model),
+            on_success=on_success,
         )
 
 
