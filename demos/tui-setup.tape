@@ -66,24 +66,30 @@ Escape
 Sleep 2000ms
 
 # First chat: index lilbee's own README and ask a starter question.
-# Qwen3 4B returns a structured cited answer in ~35s. The post-/add
-# sleep is long because the embedder mmaps the GGUF and warms up on
-# first use; without that wait, the next sync starts on a not-ready
-# worker and the question loses its retrieval context.
+# Hide the embedder warmup and the cold first-token wait so the chat
+# prompt isn't on camera doing nothing.
 Type "/add ./README.md"
 Sleep 600ms
 Enter
-Sleep 25s
+Sleep 800ms
+Hide
+Sleep 22s
+Show
+Sleep 400ms
 
 Type "What is lilbee and how do I use it?"
 Sleep 1500ms
 Enter
-Sleep 55s
+Sleep 800ms
+Hide
+Sleep 28s
+Show
+Sleep 14s
 
 # Overwrite the wizard still with the cited-answer screen -- that's the
 # moment the demo lands on.
 Screenshot demos/_out/tui-setup.png
-Sleep 3s
+Sleep 500ms
 
 Type "/quit"
 Enter

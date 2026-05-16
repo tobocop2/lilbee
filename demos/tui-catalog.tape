@@ -28,47 +28,52 @@ Sleep 1500ms
 
 # Tour every inner tab: Discover / Chat / Embed / Vision / Rerank / Library.
 # Keys 1..6 are priority bindings -- they win over the search input.
-# Slower sleeps (3s per tab) give the viewer time to actually read each
-# pane before the next jump rather than feeling like a slot-machine.
 Type "1"
-Sleep 3s
+Sleep 1500ms
 Type "2"
-Sleep 3s
+Sleep 1500ms
 Type "3"
-Sleep 3s
+Sleep 1500ms
 Type "4"
-Sleep 3s
+Sleep 1500ms
 Type "5"
-Sleep 3s
+Sleep 1500ms
 Type "6"
-Sleep 3s
+Sleep 1500ms
 
 # Back to Discover for the rest of the tour.
 Type "1"
-Sleep 2s
+Sleep 1500ms
 
 # Grid <-> list toggle.
 Type "v"
-Sleep 2s
+Sleep 1500ms
 Type "v"
-Sleep 2s
+Sleep 1500ms
 
-# Infinite scroll: walk the grid down so the rows visibly shift, then
-# page down twice to trigger HF Hub fetch of more cards.
+# Infinite scroll: walk the grid down rapidly, then page down + load
+# multiple HF Hub pages so the grid visibly grows.
 Type "jjjjj"
-Sleep 1200ms
+Sleep 600ms
 Type "jjjjj"
-Sleep 1200ms
+Sleep 600ms
+Type "jjjjj"
+Sleep 600ms
+Type "jjjjj"
+Sleep 600ms
 Space
-Sleep 1500ms
+Sleep 800ms
 Space
-Sleep 1500ms
-# `n` explicitly loads the next page; with the cursor near the end it
-# visibly extends the grid.
+Sleep 800ms
+Space
+Sleep 800ms
+Space
+Sleep 800ms
+# `n` explicitly loads the next page; chain a couple so the grid extends.
 Type "n"
-Sleep 1500ms
-Space
-Sleep 1500ms
+Sleep 1200ms
+Type "n"
+Sleep 1200ms
 
 # Info modal on a local installed row. `i` notifies "frontier no info" on
 # HF Hub rows, so we trigger it from Library where Qwen3 0.6B lives.
@@ -105,10 +110,6 @@ Escape
 Sleep 800ms
 
 # Cycle back to Chat to close the demo.
-Type "]"
-Sleep 400ms
-Type "]"
-Sleep 400ms
 Type "]"
 Sleep 400ms
 Type "]"

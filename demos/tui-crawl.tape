@@ -99,11 +99,13 @@ Type "When was the 9C1 Caprice police package introduced?"
 Sleep 600ms
 Enter
 
-# Cold Qwen3 4B: ~134s loading bar before first token, ~5-8s for the
-# short 9C1 answer. Wait just long enough to capture the cited answer;
-# any extra trailing time becomes a static-frame pause at the end of
-# the GIF before it loops, which reads as the demo being stuck.
-Sleep 145s
+# Hide the cold first-token wait (~134s loading bar) so the prompt
+# isn't on camera doing nothing. Show again for the answer stream.
+Sleep 5s
+Hide
+Sleep 130s
+Show
+Sleep 12s
 
 # Capture the cited answer as the still, AFTER the stream has settled.
 Screenshot demos/_out/tui-crawl.png
