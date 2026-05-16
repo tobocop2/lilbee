@@ -9,6 +9,15 @@ site itself doesn't need to host multi-gigabyte wheels. GitHub Pages has
 a 1 GB per-deployment cap, which makes self-hosting cu121/cu124/cu125 +
 cpu wheels (~6 GB total) infeasible; GitHub releases have no such cap.
 
+Backend disambiguation. The wheel files for cu121, cu124, cu125, and the
+Intel-Mac/Win cpu builds all share the same PEP 427 filename (project +
+version + python + abi + platform) as the default vulkan/metal wheels --
+the backend lives inside the wheel, not in its name. GitHub releases use
+a flat filename namespace, so each non-default wheel gets a PEP 427
+build-tag inserted (``1.cu125``, ``1.cu124``, ``1.cu121``, ``1.cpu``).
+Defaults stay unchanged because they also ship to PyPI, where build tags
+would break the existing pin.
+
 Input layout (artifact-dir mode):
 
     <input>/wheel-default-<os>-<backend>-py<ver>/lilbee-*.whl
@@ -40,6 +49,14 @@ ARTIFACT_DIR_RE = re.compile(r"^wheel-(?:default|extra)-(?P<rest>.+)-py\d+\.\d+$
 WHEEL_FILENAME_RE = re.compile(r"^lilbee-(?P<version>[^-]+)-")
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
+# Backends whose wheels ship under the default filename (also on PyPI; renaming
+# would break the PyPI pin). Everything else gets a PEP 427 build tag inserted
+# so the GH release can hold every variant without filename collisions.
+_DEFAULT_BACKENDS: frozenset[str] = frozenset({"vulkan", "metal"})
+
+# Wheel filename layout (PEP 427): project-version[-buildtag]-python-abi-platform.whl
+_WHEEL_FILENAME_PARTS_NO_BUILDTAG = 5
+
 
 def backend_from_artifact_dir(name: str) -> str | None:
     """Extract backend tag from a wheel artifact directory name.
@@ -59,6 +76,32 @@ def version_from_wheel_filename(name: str) -> str | None:
     return m.group("version") if m else None
 
 
+def build_tag_for_backend(backend: str) -> str | None:
+    """PEP 427 build tag used to disambiguate non-default backend variants."""
+    if backend in _DEFAULT_BACKENDS:
+        return None
+    return f"1.{backend}"
+
+
+def rename_for_release(wheel_name: str, backend: str) -> str:
+    """Return the wheel filename as published on the GH release.
+
+    Default backends (vulkan/metal) keep their original name. Extra backends
+    get a build tag inserted after the version per PEP 427.
+    """
+    build_tag = build_tag_for_backend(backend)
+    if build_tag is None:
+        return wheel_name
+    parts = wheel_name.removesuffix(".whl").split("-")
+    if len(parts) != _WHEEL_FILENAME_PARTS_NO_BUILDTAG:
+        raise ValueError(
+            f"wheel filename {wheel_name!r} does not match the no-buildtag layout "
+            f"(project-version-python-abi-platform.whl)"
+        )
+    project, version, python, abi, platform = parts
+    return f"{project}-{version}-{build_tag}-{python}-{abi}-{platform}.whl"
+
+
 def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
     """Group wheel files by backend tag."""
     by_backend: dict[str, list[Path]] = {}
@@ -75,8 +118,8 @@ def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
     return by_backend
 
 
-def _wheel_href(release_base_url: str, version: str, wheel_name: str) -> str:
-    return f"{release_base_url.rstrip('/')}/v{version}/{wheel_name}"
+def _wheel_href(release_base_url: str, version: str, asset_name: str) -> str:
+    return f"{release_base_url.rstrip('/')}/v{version}/{asset_name}"
 
 
 def write_backend_indexes(
@@ -95,8 +138,9 @@ def write_backend_indexes(
             if version is None:
                 print(f"skipping unparseable wheel filename: {whl.name}", file=sys.stderr)
                 continue
-            href = _wheel_href(release_base_url, version, whl.name)
-            wheel_lines.append(f'<a href="{href}">{whl.name}</a><br>')
+            asset_name = rename_for_release(whl.name, backend)
+            href = _wheel_href(release_base_url, version, asset_name)
+            wheel_lines.append(f'<a href="{href}">{asset_name}</a><br>')
 
         (pkg_dir / "index.html").write_text(
             "<!DOCTYPE html><html><body>\n" + "\n".join(wheel_lines) + "\n</body></html>\n"
