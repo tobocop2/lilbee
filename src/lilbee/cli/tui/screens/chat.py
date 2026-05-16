@@ -30,10 +30,11 @@ from textual.widgets import Footer, Select, Static
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp, apply_active_model
+from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
     build_sync_progress_callback,

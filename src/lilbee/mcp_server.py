@@ -480,6 +480,128 @@ def wiki_prune() -> dict[str, Any]:
     }
 
 
+def _setting_info_to_dict(info: Any) -> dict[str, Any]:
+    """Render a ``SettingInfo`` for the MCP wire format."""
+    value = info.value
+    default = info.default
+    # Path / frozenset / tuple stringify safely; the MCP transport is JSON.
+    if not isinstance(value, str | int | float | bool | list | type(None)):
+        value = str(value)
+    if not isinstance(default, str | int | float | bool | list | type(None)):
+        default = str(default)
+    return {
+        "key": info.key,
+        "value": value,
+        "default": default,
+        "type": info.type,
+        "nullable": info.nullable,
+        "group": info.group,
+        "help": info.help_text,
+        "choices": list(info.choices) if info.choices else None,
+        "reindex_required": info.reindex_required,
+    }
+
+
+@mcp.tool()
+def settings_list(group: str = "") -> dict[str, Any]:
+    """List every writable lilbee setting with its current value and metadata.
+
+    Returns one row per setting with ``key``, ``value``, ``default``,
+    ``type`` (``int``, ``float``, ``bool``, ``str``, ``list``, or a
+    ``foo|null`` union), ``nullable``, ``group`` (Retrieval, Generation,
+    Models, Ingest, Wiki, Crawling, API-Keys, System, Display),
+    ``help`` text, ``choices`` (for enum-typed fields), and
+    ``reindex_required`` (whether changing the value invalidates the
+    persisted vector store).
+
+    Args:
+        group: Filter by group name (case-insensitive). Empty = all.
+    """
+    from lilbee.app.settings import list_settings
+
+    infos = list_settings(group or None)
+    return {
+        "command": "settings_list",
+        "settings": [_setting_info_to_dict(info) for info in infos],
+        "total": len(infos),
+    }
+
+
+@mcp.tool()
+def settings_get(key: str) -> dict[str, Any]:
+    """Get the current value and metadata for a single lilbee setting.
+
+    Args:
+        key: Setting name (e.g. ``"top_k"``, ``"chunk_size"``,
+            ``"chat_model"``). Use ``settings_list`` to discover keys.
+    """
+    from lilbee.app.settings import get_setting
+
+    try:
+        info = get_setting(key)
+    except KeyError as exc:
+        return _error(str(exc))
+    return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
+
+
+@mcp.tool()
+def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
+    """Update one or more writable lilbee settings atomically.
+
+    Validates every key and value upfront; if any value fails validation
+    the entire batch rolls back and nothing is persisted. Successful
+    writes flush to ``config.toml`` and invalidate the in-process model
+    architecture, provider load, and API-key caches so the next call
+    observes the new configuration.
+
+    Args:
+        updates: Map of setting key to new value. Pass ``null`` to clear
+            a nullable field (falls back to the pydantic default on next
+            process start). Numeric strings are coerced to int / float by
+            pydantic; booleans accept ``true`` / ``false`` / ``1`` / ``0``.
+
+    Returns ``updated`` (the keys persisted) and ``reindex_required``
+    (true when one of ``chunk_size`` / ``chunk_overlap`` changed; the
+    caller should run ``sync(force_rebuild=true)`` to refresh the index).
+    """
+    from lilbee.app.settings import apply_settings_update
+
+    try:
+        result = apply_settings_update(updates)
+    except (ValueError, TypeError) as exc:
+        return _error(str(exc))
+    return {
+        "command": "settings_set",
+        "updated": result.updated,
+        "reindex_required": result.reindex_required,
+    }
+
+
+@mcp.tool()
+def settings_reset(keys: list[str]) -> dict[str, Any]:
+    """Reset writable settings to their built-in defaults.
+
+    Nullable fields are cleared (the next process start falls back to
+    the pydantic default); non-nullable fields are written to disk with
+    their default value. Invalidates the same caches as ``settings_set``.
+
+    Args:
+        keys: Setting keys to reset. Use ``settings_list`` to discover
+            available keys.
+    """
+    from lilbee.app.settings import reset_settings
+
+    try:
+        result = reset_settings(keys)
+    except (ValueError, TypeError) as exc:
+        return _error(str(exc))
+    return {
+        "command": "settings_reset",
+        "updated": result.updated,
+        "reindex_required": result.reindex_required,
+    }
+
+
 @mcp.tool()
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     """List installed models across native and SDK-backend sources.

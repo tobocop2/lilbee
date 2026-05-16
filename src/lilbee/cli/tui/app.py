@@ -16,6 +16,7 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services
+from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
@@ -28,19 +29,6 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-DARK_THEMES = (
-    "monokai",
-    "dracula",
-    "tokyo-night",
-    "nord",
-    "gruvbox",
-    "catppuccin-mocha",
-    "catppuccin-frappe",
-    "atom-one-dark",
-    "rose-pine",
-    "solarized-dark",
-    "textual-dark",
-)
 
 
 def _view_screen_name(view_name: str) -> str:
@@ -318,21 +306,11 @@ class LilbeeApp(App[None]):
         self.settings_changed_signal.publish((key, normalized))
 
     def set_setting(self, key: str, value: object) -> None:
-        """Single write boundary for non-model settings."""
-        setattr(cfg, key, value)
+        """Apply a setting through the shared write boundary, then fan out to the UI."""
+        from lilbee.app.settings import apply_settings_update
+
+        apply_settings_update({key: value})
         normalized = getattr(cfg, key)
-        # settings.set_value persists into TOML, which only accepts strings.
-        # Persisting None as "" used to break pydantic-settings load (no
-        # coercion from "" to int|None), so drop the key on None and let
-        # the field default apply on next startup.
-        if normalized is None:
-            settings.delete_value(cfg.data_root, key)
-        else:
-            if isinstance(normalized, list):
-                persisted = "\n".join(str(x) for x in normalized)
-            else:
-                persisted = str(normalized)
-            settings.set_value(cfg.data_root, key, persisted)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
             self.theme = normalized
             self._sync_theme_index_to_current()

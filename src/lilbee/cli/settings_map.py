@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.cli.tui.app import DARK_THEMES
+from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
 
