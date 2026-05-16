@@ -19,7 +19,7 @@
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-blue.svg" alt="License: Elastic License 2.0"></a>
-  <a href="https://pepy.tech/project/lilbee"><img src="https://static.pepy.tech/badge/lilbee" alt="PyPI downloads"></a>
+  <a href="https://pepy.tech/project/lilbee"><img src="https://static.pepy.tech/badge/lilbee/month" alt="PyPI downloads / month"></a>
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total" alt="GitHub release downloads"></a>
 </p>
 
