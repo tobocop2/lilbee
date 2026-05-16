@@ -1,226 +1,80 @@
 # Usage Guide
 
-- [Getting started](#getting-started)
-- [Adding documents](#adding-documents)
-- [OCR](#ocr)
-- [Querying](#querying)
-- [Interactive chat](#interactive-chat)
-  - [Slash commands](#slash-commands)
-  - [Model bar](#model-bar)
+> **The TUI is the recommended way to use lilbee.** Run `lilbee` and the welcome
+> wizard walks you through picking a chat and embedding model; every screen,
+> command, and setting in the rest of this guide is reachable from inside the
+> app. You should not normally need to touch a CLI flag, an environment
+> variable, or `config.toml` by hand.
+>
+> Everything in [Reference for advanced users](#reference-for-advanced-users)
+> further down (CLI commands, the HTTP server, MCP integration, env vars, the
+> config file) is for users who need to drive lilbee from outside the TUI: CI,
+> scripts, agents, headless boxes. Skip past it unless that's you.
+
+- [The TUI](#the-tui)
+  - [First run](#first-run)
+  - [Adding documents](#adding-documents)
   - [Search vs Chat mode](#search-vs-chat-mode)
+  - [Model bar](#model-bar)
   - [Catalog screen](#catalog-screen)
   - [Settings screen](#settings-screen)
-- [Managing documents](#managing-documents)
-- [Wiki](#wiki)
-- [Agent integration](#agent-integration)
-- [HTTP Server](#http-server)
-- [Data locations](#data-locations)
-- [Environment variables](#environment-variables)
-- [Optional extras](#optional-extras)
-  - [Concept graph](#concept-graph)
-  - [Web crawling](#web-crawling)
-  - [Remote providers (SDK backend)](#remote-providers-sdk-backend)
-- [Cross-encoder reranking](#cross-encoder-reranking)
-- [Semantic chunking](#semantic-chunking)
+  - [Slash commands](#slash-commands)
+  - [Task Center](#task-center)
+  - [Wiki](#wiki)
+- [Per-project libraries](#per-project-libraries)
+- [Cloud models](#cloud-models)
+- [Reference for advanced users](#reference-for-advanced-users)
+  - [CLI commands](#cli-commands)
+  - [HTTP server](#http-server)
+  - [Agent integration (MCP)](#agent-integration)
+  - [Data locations](#data-locations)
+  - [Config file (config.toml)](#config-file)
+  - [Environment variables](#environment-variables)
+  - [Optional extras](#optional-extras)
+  - [Cross-encoder reranking](#cross-encoder-reranking)
+  - [Semantic chunking](#semantic-chunking)
+  - [OCR](#ocr)
 
 ---
 
-## Getting started
+## The TUI
 
-The easiest way in is the TUI. Run:
+`lilbee` (no args) launches the full Textual app: streaming chat with clickable
+citations, a model bar, a Task Center for background jobs, and screens for the
+catalog, settings, the setup wizard, and the auto-built wiki.
 
-```bash
-lilbee
-```
+Press `?` at any time for the keybinding cheat sheet, `Ctrl+P` for the Textual
+command palette, and `/help` for the slash-command catalog. Every action lilbee
+can take is reachable from one of those three.
 
-The welcome screen walks you through picking an **embedding model** (used to index
-your documents) and, optionally, a **chat model** (used for `/chat` and `lilbee
-ask`). From there you can add documents, search, and chat without leaving the TUI.
-See [Interactive chat](#interactive-chat) for a tour of the screens.
+### First run
 
-Prefer to drive it headless? Everything the TUI does is also a plain CLI command
-(`lilbee add`, `lilbee search`, `lilbee ask`, and so on), and lilbee runs as an
-[MCP server](#agent-integration) so editors and agents can search your documents
-directly. From the CLI you install an embedding model yourself before indexing
-anything (a chat model is only needed for `/chat` and `lilbee ask`, not for
-indexing or `lilbee search`):
+The welcome screen walks you through:
 
-```bash
-lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbee add`
-lilbee model browse                                     # pick a chat model interactively
-```
+1. Picking an **embedding model** (required for indexing your documents).
+2. Picking a **chat model** (optional; needed for grounded answers and the
+   conversational REPL).
 
-lilbee uses a git-like per-project model. Running `lilbee init` creates a `.lilbee/` directory in the current folder, just like `git init` creates `.git/`. Once initialized, every lilbee command you run from that directory (or any subdirectory) automatically uses the local database:
+Both pickers show every model the role can run: native GGUFs from the built-in
+catalog and, when an API key is configured, anything your provider exposes.
+Pulling a model installs it; selecting it assigns it to the matching role.
 
-```bash
-cd ~/projects/my-engine
-lilbee init                  # creates .lilbee/ here
-lilbee add docs/manual.pdf   # indexes into .lilbee/  (needs the embedding model above)
-lilbee search "oil change"   # searches .lilbee/
-```
+After that you're in chat. `/add` indexes documents, `/crawl` indexes a website
+(crawler extra required), `/settings` opens the settings tabs.
 
-If there's no `.lilbee/` in the current directory, lilbee walks up the directory tree looking for one (again, just like git). If none is found, it falls back to a global database at the platform default location (see [Data locations](#data-locations)).
+### Adding documents
 
-This means running `lilbee` without `init` still works; it just uses the global database. Use `lilbee status` to see which database is active:
+Press `/add` to add files, directories, or web pages. Paths tab-complete; the
+job runs in the Task Center, so you can keep chatting while indexing happens.
 
-```bash
-lilbee status
-```
-
-To explicitly skip any local `.lilbee/` and use the global database:
-
-```bash
-lilbee --global status
-```
-
-## Adding documents
-
-`add` extracts text from each file and embeds it, so an embedding model must be
-installed first (see [Getting started](#getting-started)). Without one, every
-file is reported as `failed` with `Model '…' not found in registry`.
-
-Add files, directories, or a mix:
-
-```bash
-lilbee add ~/Documents/manual.pdf
-lilbee add ~/notes/
-lilbee add ~/docs/*.md ~/data/report.pdf
-```
-
-If a file with the same name is already indexed, `add` skips it. Use `--force` to overwrite:
-
-```bash
-lilbee add manual.pdf --force
-```
-
-## OCR
-
-OCR is how lilbee gets text out of scanned PDFs and images. It's one step in
-indexing, not a substitute for it: however the text comes out (a native parser,
-Tesseract, or a vision model), it still gets embedded, so you still need an
-embedding model installed (see [Getting started](#getting-started)).
-
-For PDFs without embedded text, lilbee supports two OCR backends. When a vision model is configured, it takes precedence.
-
-| | Tesseract | Vision model |
-|---|---|---|
-| **Output** | Plain text | Structured markdown (tables, headings) |
-| **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
-| **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
-
-See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
-
-### Tesseract
-
-[Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically when no vision model is configured. No flags needed.
-
-```bash
-brew install tesseract          # macOS
-sudo apt install tesseract-ocr  # Ubuntu/Debian
-```
-
-### Vision models
-
-lilbee runs vision OCR in one of two ways:
-
-1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
-   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly. No Ollama, no extra services. This is the recommended path and
-   supports an SSE heartbeat for long scans.
-2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
-   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
-   model to any remote name your SDK backend understands (Ollama, OpenAI,
-   Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
-
-```bash
-lilbee add report.pdf --vision                # prompts for model if none set
-lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s, 0 = no limit)
-export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mtmd)
-```
-
-Pick or change a vision model interactively via `/settings` or `/setup` in the
-TUI; the selection is saved to `config.toml` and persists across sessions.
-
-## Querying
-
-Search returns relevant chunks from your indexed documents. No *chat* model is needed for `search`, only the embedding model (the same one indexing used; see [Getting started](#getting-started)):
-
-```bash
-lilbee search "oil change interval"
-lilbee search "oil change interval" --top-k 20   # more results
-```
-
-Ask a one-shot question. lilbee finds relevant chunks and passes them to the configured chat model:
-
-```bash
-lilbee ask "What is the recommended oil change interval?"
-lilbee ask "Explain this" --model qwen3           # different chat model
-```
-
-## Interactive chat
-
-Run `lilbee` or `lilbee chat` to enter an interactive REPL with conversation history, streaming responses, and slash commands:
-
-```bash
-lilbee
-```
-
-### Slash commands
-
-All slash commands available from the TUI:
-
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `/model [name]` | | Switch chat model. No args opens the catalog picker; with a name, switches directly or prompts to download |
-| `/models` | `/m`, `/catalog` | Browse the full model catalog |
-| `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
-| `/crawl [url]` | | Crawl a URL. No args opens a dialog |
-| `/delete <name>` | | Remove a document from the index |
-| `/remove <name>` | | Remove an installed model |
-| `/wiki` | | Open the auto-generated wiki |
-| `/setup` | | Run the first-time setup wizard |
-| `/settings` | | View or change settings |
-| `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
-| `/theme <name>` | | Switch theme |
-| `/status` | | Show indexed documents and config |
-| `/login <token>` | | Log in to HuggingFace |
-| `/clear` | | Clear chat history |
-| `/cancel` | | Cancel active operations |
-| `/reset` | | Factory reset (asks for confirmation) |
-| `/version` | | Show lilbee version |
-| `/help` | `/h` | Show available commands |
-| `/quit` | `/q`, `/exit` | Exit |
-
-Slash commands and paths tab-complete. A spinner shows while waiting for the
-first token from the LLM. Background jobs (sync, crawl, wiki build, model pull)
-appear in the Task Center and are cancellable with `/cancel`.
-
-### Model bar
-
-The bar above the prompt shows what's active for chat and embedding, plus the
-mode toggle:
-
-```
-Chat [Qwen3 0.6B]   Embed [Nomic v1.5]   [Search | Chat]
-```
-
-The chat and embedding labels are searchable pickers. Click one (or focus it
-with Tab and press Enter) to open a modal with a search input above a
-virtualized list of every model that role can use. Type to filter; Enter
-picks the highlighted row; Escape cancels. The active model's display label
-sits on the button at all times so you can see what's loaded without opening
-the picker.
-
-The pickers list everything the role can run: native GGUFs you already have
-installed plus, when the `litellm` extra is installed and an API key is set,
-whatever the SDK backend exposes for that provider. There is no separate
-"local-only" picker; routing happens automatically once the model is selected.
+If a file with the same name is already indexed, `add` skips it. To re-index in
+place, remove the document first with `/delete name`, or pass `--force` from
+the CLI.
 
 ### Search vs Chat mode
 
-Next to the pickers is a two-state pill that toggles between Search and Chat.
-F3 flips it.
+The bar above the prompt has a two-state pill that toggles between **Search**
+and **Chat**. F3 flips it.
 
 - **Search** (default). Every prompt goes through document retrieval first.
   Relevant chunks are passed to the chat model as grounding context, and the
@@ -233,12 +87,28 @@ F3 flips it.
   anything yet.
 
 The toggle is disabled and forced to Chat when no embedding model is
-configured (Search has nothing to search against). Configure an embedding
-model and the toggle becomes available again.
+configured (Search has nothing to search against).
 
-The mode is also exposed as the `chat_mode` setting (`search` or `chat`),
-so `/set chat_mode chat` from the prompt or a `chat_mode = "chat"` line in
-`config.toml` work the same as flicking the toggle.
+### Model bar
+
+The bar above the prompt shows what's active for chat and embedding, plus the
+mode toggle:
+
+```
+Chat [Qwen3 0.6B]   Embed [Nomic v1.5]   [Search | Chat]
+```
+
+The chat and embedding labels are searchable pickers. Click one (or focus it
+with Tab and press Enter) to open a modal with a search input above a
+virtualized list of every model that role can use. Type to filter; Enter picks
+the highlighted row; Escape cancels. The active model's display label sits on
+the button at all times so you can see what's loaded without opening the
+picker.
+
+The pickers list everything the role can run: native GGUFs you already have
+installed plus, when the `litellm` extra is installed and an API key is set,
+whatever the SDK backend exposes for that provider. There is no separate
+"local-only" picker; routing happens automatically once the model is selected.
 
 ### Catalog screen
 
@@ -263,8 +133,11 @@ two sub-tabs:
 
 ### Settings screen
 
-`/settings` opens a tabbed settings editor. Tabs for features that aren't
-installed are hidden, not greyed out:
+`/settings` opens a tabbed settings editor. Every value persists to
+`config.toml` (see [Config file](#config-file)); the equivalent env vars
+override individual values at runtime without touching the file.
+
+Tabs for features that aren't installed are hidden, not greyed out:
 
 - **API-Keys** appears only when the `litellm` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
@@ -274,18 +147,43 @@ installed are hidden, not greyed out:
 Install the relevant extra (or flip the wiki flag) and the tab shows up on
 the next visit.
 
-## Managing documents
+### Slash commands
 
-| Command | Description |
-|---------|-------------|
-| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
-| `lilbee remove manual.pdf --delete` | Remove and delete the source file |
-| `lilbee chunks manual.pdf` | Inspect how a document was chunked |
-| `lilbee sync` | Re-index changed files |
-| `lilbee rebuild` | Nuke the database and re-ingest everything |
-| `lilbee reset` | Factory reset. Deletes all documents and data |
+All slash commands available from the TUI. Slash commands and paths
+tab-complete; `/help` opens the same catalog live.
 
-## Wiki
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/model [name]` | | Switch chat model. No args opens the catalog picker; with a name, switches directly or prompts to download |
+| `/models` | `/m`, `/catalog` | Browse the full model catalog |
+| `/add <path>` | | Add a file or directory to the index (tab-completes paths) |
+| `/crawl [url]` | | Crawl a URL. No args opens a dialog |
+| `/delete <name>` | | Remove a document from the index |
+| `/remove <name>` | | Remove an installed model |
+| `/wiki` | | Open the auto-generated wiki |
+| `/setup` | | Run the first-time setup wizard |
+| `/settings` | | View or change settings |
+| `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
+| `/theme <name>` | | Switch theme |
+| `/status` | | Show indexed documents and config |
+| `/login <token>` | | Log in to HuggingFace |
+| `/clear` | | Clear chat history |
+| `/cancel` | | Cancel active operations |
+| `/reset` | | Factory reset (asks for confirmation) |
+| `/version` | | Show lilbee version |
+| `/help` | `/h` | Show available commands |
+| `/quit` | `/q`, `/exit` | Exit |
+
+A spinner shows while waiting for the first token from the LLM.
+
+### Task Center
+
+Background jobs (sync, crawl, wiki build, model pull) appear in the Task
+Center with live progress. `/cancel` cancels the active operation. The TUI
+stays responsive throughout; each inference role (chat, embed, rerank,
+vision) runs in its own subprocess so a stuck model doesn't lock the chat.
+
+### Wiki
 
 lilbee analyzes the documents you've indexed and writes a wiki about them,
 inspired by Andrej Karpathy's [LLM Wiki](https://karpathy.ai/llmwiki/). Pages
@@ -293,7 +191,7 @@ compound across sources instead of being one-per-document, so concepts and
 entities that show up repeatedly in your corpus get their own page with
 citations from every source that mentions them.
 
-**Layout** (under `$LILBEE_DATA/wiki/` by default):
+Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
 
 | Directory | Contents |
 |-----------|----------|
@@ -305,32 +203,156 @@ citations from every source that mentions them.
 | `index.md` | Auto-generated table of contents, grouped by page type |
 | `log.md` | Append-only audit trail of every build, ingest, lint, and prune |
 
-**Commands:**
-
-```bash
-lilbee wiki build         # build the wiki from the current index
-lilbee wiki lint          # find orphan pages, stale links, pending drafts
-lilbee wiki synthesize    # generate cross-source synthesis pages
-lilbee wiki drafts list   # list pending drafts
-lilbee wiki drafts accept <slug>   # promote a draft to concepts/ or entities/
-lilbee wiki drafts reject <slug>   # discard a draft
-lilbee wiki prune         # move stale pages to archive/
-```
-
 Every section is citation-verified against the source chunks and scored for
 embedding faithfulness; low-confidence output routes to `drafts/`. Plain-text
 concept slugs inside page bodies are rewritten to Obsidian `[[wiki links]]` so
 the graph view shows how ideas connect. The directory is Obsidian-compatible
 out of the box.
 
-The wiki is built incrementally during `lilbee sync` (with a cap of
-`LILBEE_WIKI_INGEST_UPDATE_CAP` changed sources per sync, default 20) so
-day-to-day re-ingest never churns existing concept slugs. Run
-`lilbee wiki build` explicitly to rebuild from scratch.
+The wiki is built incrementally during sync (default cap of 20 changed sources
+per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
+from scratch, lint, drafts review, and prune are also available as CLI
+commands (see [Wiki commands](#wiki-1)) and as MCP tools.
+
+## Per-project libraries
+
+lilbee uses a git-like per-project model. Running `lilbee init` from a project
+directory creates a `.lilbee/` folder there, just like `git init` creates
+`.git/`. Once initialized, every lilbee invocation from that directory (or any
+subdirectory) automatically uses the local database, both in the TUI and from
+the CLI:
+
+```bash
+cd ~/projects/my-engine
+lilbee init                  # creates .lilbee/ here
+lilbee                       # launches the TUI scoped to this library
+```
+
+If there's no `.lilbee/` in the current directory, lilbee walks up the tree
+looking for one; if none is found, it falls back to the global database at the
+platform default location (see [Data locations](#data-locations)). `/status`
+in the TUI (or `lilbee status` from the shell) shows which database is active.
+
+## Cloud models
+
+lilbee runs entirely on your machine by default. There are two ways to use
+cloud models when you want to:
+
+- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add
+  an API key in `/settings` → API-Keys, then pick a cloud model from the model
+  bar picker or the Frontier tab in `/catalog`. The TUI shows a persistent
+  warning whenever a cloud role is active.
+- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part:
+  your files, the embeddings, the search index. The agent (Claude Code,
+  opencode, anything that speaks MCP) calls `lilbee_search` / `lilbee_add` and
+  gets back cited snippets. See [Agent integration](#agent-integration).
+
+Either way your files and the index never leave the machine; only the queries
+and the snippets the model needs to answer cross the wire when you opt in.
+
+---
+
+## Reference for advanced users
+
+Everything from here on is for users who want to script lilbee, run it
+headless, integrate it with an agent over MCP, or override individual settings
+without opening the TUI. None of it is required for everyday use; the TUI
+exposes all of these through pickers, `/settings`, and slash commands.
+
+## CLI commands
+
+Every TUI action is also a CLI command. Indexing and search need an embedding
+model installed first (the default Nomic v1.5 GGUF is fine):
+
+```bash
+lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF   # required before `lilbee add`
+lilbee model browse                                     # pick a chat model interactively
+```
+
+Without an embedding model installed, every `lilbee add` call reports the file
+as `failed` with `Model '…' not found in registry`.
+
+### Index and search
+
+```bash
+lilbee add ~/Documents/manual.pdf       # add a file
+lilbee add ~/notes/                     # add a directory
+lilbee add ~/docs/*.md ~/data/report.pdf
+lilbee add manual.pdf --force           # re-index in place (default is skip-if-present)
+
+lilbee search "oil change interval"
+lilbee search "oil change interval" --top-k 20
+
+lilbee ask "What is the recommended oil change interval?"
+lilbee ask "Explain this" --model qwen3
+```
+
+`search` only needs the embedding model; `ask` also needs a chat model.
+
+### Manage documents
+
+| Command | Description |
+|---------|-------------|
+| `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
+| `lilbee remove manual.pdf --delete` | Remove and delete the source file |
+| `lilbee chunks manual.pdf` | Inspect how a document was chunked |
+| `lilbee sync` | Re-index changed files |
+| `lilbee rebuild` | Nuke the database and re-ingest everything |
+| `lilbee reset` | Factory reset. Deletes all documents and data |
+
+### Wiki
+
+```bash
+lilbee wiki build                      # build the wiki from the current index
+lilbee wiki lint                       # find orphan pages, stale links, pending drafts
+lilbee wiki synthesize                 # generate cross-source synthesis pages
+lilbee wiki drafts list                # list pending drafts
+lilbee wiki drafts accept <slug>       # promote a draft to concepts/ or entities/
+lilbee wiki drafts reject <slug>       # discard a draft
+lilbee wiki prune                      # move stale pages to archive/
+```
 
 MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_synthesize`,
 `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`,
-`wiki_prune`. See [Agent integration](#agent-integration).
+`wiki_prune`.
+
+### Vault and status
+
+```bash
+lilbee init                            # create .lilbee/ in cwd
+lilbee status                          # show active data dir, models, document count
+lilbee --global status                 # skip any .lilbee/ and use the platform default
+lilbee --data-dir ~/kb status          # use an explicit data dir
+```
+
+### Top-level flags
+
+`--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`,
+`--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
+
+## HTTP server
+
+`lilbee serve` starts a REST API that any tool or GUI can hit. By default it
+picks a random port and writes it to `<data_dir>/server.port` so callers on
+the same machine can discover it:
+
+```bash
+lilbee serve                           # random port
+lilbee serve --port 8080               # fixed port
+lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1)
+```
+
+The surface covers search (with SSE streaming variants for `ask` and `chat`),
+document lifecycle, crawling, model management, configuration (including a
+defaults endpoint that powers per-setting reset), and status/health. The
+Obsidian plugin uses the `/api/source` endpoint for vault-aware source
+retrieval. Interactive REST API docs live at `/schema/redoc` when the server
+is running, and the full OpenAPI schema is published at the
+[REST API reference](https://lilbee.sh/api/). (Note: this is the HTTP server
+reference. A Python-library API reference is still being written; for now,
+the source under `src/lilbee/` is the canonical reference.)
+
+Server-specific env vars live in the [Server table](#server) below.
 
 ## Agent integration
 
@@ -354,35 +376,6 @@ See [agent-integration.md](agent-integration.md) for setup.
 >    (native GGUF via llama-cpp or a local SDK backend) if your documents must
 >    stay private.
 
-## HTTP Server
-
-`lilbee serve` starts a REST API that any tool or GUI can hit. By default it
-picks a random port and writes it to `<data_dir>/server.port` so callers on the
-same machine can discover it:
-
-```bash
-lilbee serve                      # random port
-lilbee serve --port 8080          # fixed port
-lilbee serve --host 0.0.0.0       # bind all interfaces (default: 127.0.0.1)
-```
-
-The surface covers search (with SSE streaming variants for `ask` and `chat`),
-document lifecycle, crawling, model management, configuration (including a
-defaults endpoint that powers per-setting reset), and status/health. The
-Obsidian plugin uses the `/api/source` endpoint for vault-aware source
-retrieval. Interactive API docs live at `/schema/redoc` when the server is
-running, and the full OpenAPI schema is published at the
-[API reference](https://lilbee.sh/api/).
-
-**Configuration via env vars:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
-| `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Extra allowed CORS origins (comma-separated) |
-| `LILBEE_CORS_ORIGIN_REGEX` | *(see [Environment variables](#environment-variables))* | Regex for allowed origins |
-
 ## Data locations
 
 lilbee resolves the data directory in this order (highest priority first):
@@ -402,13 +395,21 @@ lilbee resolves the data directory in this order (highest priority first):
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
-Run `lilbee init` to create a `.lilbee/` directory in your project. It contains `documents/` (your indexed files), `data/` (the search index), and a `.gitignore` that excludes derived data.
+Run `lilbee init` to create a `.lilbee/` directory in your project. It
+contains `documents/` (your indexed files), `data/` (the search index), and a
+`.gitignore` that excludes derived data.
 
-### The config file
+## Config file
 
-Every persisted lilbee setting lives in a single TOML file at **`<data-dir>/config.toml`**. For the platform default that's `~/.local/share/lilbee/config.toml`; for a project, it's `.lilbee/config.toml` next to your code. Same file, same shape, regardless of which data dir you're on; the path just follows wherever the data dir is resolved to.
+Every persisted lilbee setting lives in a single TOML file at
+**`<data-dir>/config.toml`**. For the platform default that's
+`~/.local/share/lilbee/config.toml`; for a project, it's `.lilbee/config.toml`
+next to your code. Same file, same shape, regardless of which data dir you're
+on; the path just follows wherever the data dir is resolved to.
 
-Sections mirror the settings categories in the [Environment variables](#environment-variables) tables below: `[general]`, `[retrieval]`, `[chunking]`, `[generation]`, `[server]`, etc. Example:
+Sections mirror the settings categories in
+[Environment variables](#environment-variables) below: `[general]`,
+`[retrieval]`, `[chunking]`, `[generation]`, `[server]`, etc. Example:
 
 ```toml
 # .lilbee/config.toml
@@ -427,11 +428,18 @@ temperature = 0.2
 num_ctx_max = 32768
 ```
 
-You don't have to write the file by hand: the TUI's `/settings` screen and the `/set <key> <value>` slash command both persist to it, and the equivalent `LILBEE_<KEY>=...` env vars override individual values at runtime without touching the file.
+You don't have to write the file by hand: the TUI's `/settings` screen and the
+`/set <key> <value>` slash command both persist to it, and the equivalent
+`LILBEE_<KEY>=...` env vars override individual values at runtime without
+touching the file.
 
 ## Environment variables
 
-Every setting has a default that works out of the box. The tables below are grouped from most-commonly-touched to rarely-touched, so you can skim the top and skip the bottom unless you have a specific reason.
+Every setting has a default that works out of the box, and every value below is
+also editable from `/settings` in the TUI. The tables exist for scripted
+overrides, headless deployments, and CI; you should not normally need to touch
+them by hand. Tables are grouped from most-commonly-touched to rarely-touched,
+so you can skim the top and skip the bottom unless you have a specific reason.
 
 ### Common settings
 
@@ -451,7 +459,8 @@ The ones most users set at least once.
 
 ### Retrieval tuning
 
-Reach for these when search quality matters. Defaults are solid; tune only if something feels off.
+Reach for these when search quality matters. Defaults are solid; tune only if
+something feels off.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -471,7 +480,8 @@ Reach for these when search quality matters. Defaults are solid; tune only if so
 
 ### Ingestion and chunking
 
-How documents become chunks. Changes here require `lilbee rebuild` to take effect on already-indexed material.
+How documents become chunks. Changes here require `lilbee rebuild` to take
+effect on already-indexed material.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -484,7 +494,8 @@ How documents become chunks. Changes here require `lilbee rebuild` to take effec
 
 ### Generation
 
-LLM output shape. lilbee sets conservative defaults below; the model's own defaults apply only when a value is explicitly unset in code or config.
+LLM output shape. lilbee sets conservative defaults below; the model's own
+defaults apply only when a value is explicitly unset in code or config.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -521,7 +532,8 @@ Only relevant if you run `lilbee wiki build`.
 
 ### Advanced
 
-Rarely touched. Defaults derived from published IR research; there's usually a reason the defaults are the defaults.
+Rarely touched. Defaults derived from published IR research; there's usually a
+reason the defaults are the defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -531,11 +543,10 @@ Rarely touched. Defaults derived from published IR research; there's usually a r
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Extra candidates to retrieve before MMR reranking |
 
-CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
-
 ## Optional extras
 
-lilbee works out of the box with llama-cpp for local inference. These optional extras add capabilities that require heavier dependencies:
+lilbee works out of the box with llama-cpp for local inference. These optional
+extras add capabilities that require heavier dependencies:
 
 ```bash
 # pip
@@ -556,9 +567,12 @@ pip install --pre 'lilbee[graph,crawler,litellm]'
 uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 ```
 
-For NVIDIA users wanting CUDA-native acceleration (default install already covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/` (or `cu124/` / `cu121/` to match older drivers, picked from `nvidia-smi`).
+For NVIDIA users wanting CUDA-native acceleration (default install already
+covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/`
+(or `cu124/` / `cu121/` to match older drivers, picked from `nvidia-smi`).
 
-While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is required on every install.
+While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is
+required on every install.
 
 Cross-encoder reranking is built in (no extra required); see
 [Cross-encoder reranking](#cross-encoder-reranking) below.
@@ -567,13 +581,22 @@ Cross-encoder reranking is built in (no extra required); see
 
 ### Concept graph
 
-Builds a topic map of your documents at index time. Related concepts are linked in a co-occurrence graph, which is used to boost search results and expand queries with related terms, all without extra LLM calls.
+Builds a topic map of your documents at index time. Related concepts are linked
+in a co-occurrence graph, which is used to boost search results and expand
+queries with related terms, all without extra LLM calls.
 
-**What it does:** Extracts noun phrases from every chunk using spaCy, computes PMI co-occurrence weights between concepts, and clusters them with the Leiden algorithm. At search time, queries are expanded with graph neighbors and results overlapping query concepts get a relevance boost.
+**What it does:** Extracts noun phrases from every chunk using spaCy, computes
+PMI co-occurrence weights between concepts, and clusters them with the Leiden
+algorithm. At search time, queries are expanded with graph neighbors and
+results overlapping query concepts get a relevance boost.
 
-**When to use it:** Large corpora (100+ documents) where the same topics appear across multiple files. The graph helps surface connections that pure vector similarity misses. For example, finding "deployment" documents when searching for "CI/CD" because those concepts co-occur frequently.
+**When to use it:** Large corpora (100+ documents) where the same topics
+appear across multiple files. The graph helps surface connections that pure
+vector similarity misses. For example, finding "deployment" documents when
+searching for "CI/CD" because those concepts co-occur frequently.
 
-**Install:** `pip install --pre 'lilbee[graph]'` or `uv tool install --prerelease=allow 'lilbee[graph]'`
+**Install:** `pip install --pre 'lilbee[graph]'` or
+`uv tool install --prerelease=allow 'lilbee[graph]'`
 
 **Configuration:**
 
@@ -583,21 +606,31 @@ export LILBEE_CONCEPT_BOOST_WEIGHT=0.3        # how much concept overlap matters
 export LILBEE_CONCEPT_MAX_PER_CHUNK=10        # max concepts extracted per chunk
 ```
 
-The graph is built automatically during `lilbee sync`. No extra commands needed; search results are boosted transparently.
+The graph is built automatically during `lilbee sync`. No extra commands
+needed; search results are boosted transparently.
 
-Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990 (PMI), Traag et al. 2019 (Leiden).
+Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
+(PMI), Traag et al. 2019 (Leiden).
 
 ---
 
 ### Web crawling
 
-Index web pages alongside your local documents. Crawl single pages or follow links recursively.
+Index web pages alongside your local documents. Crawl single pages or follow
+links recursively.
 
-**What it does:** Fetches web pages using a headless browser (Playwright), extracts markdown content, and indexes it. Supports recursive crawling with configurable depth, concurrent fetching, live progress, cancel, per-domain rate-limit + retries on HTTP 429/503, and SSRF protection against internal network access.
+**What it does:** Fetches web pages using a headless browser (Playwright),
+extracts markdown content, and indexes it. Supports recursive crawling with
+configurable depth, concurrent fetching, live progress, cancel, per-domain
+rate-limit + retries on HTTP 429/503, and SSRF protection against internal
+network access.
 
-**When to use it:** When your corpus spans both local files and web content such as documentation sites, wikis, or internal tools. Crawled content is hash-tracked so re-crawling only re-indexes changed pages.
+**When to use it:** When your corpus spans both local files and web content
+such as documentation sites, wikis, or internal tools. Crawled content is
+hash-tracked so re-crawling only re-indexes changed pages.
 
-**Install:** `pip install --pre 'lilbee[crawler]'` or `uv tool install --prerelease=allow 'lilbee[crawler]'`
+**Install:** `pip install --pre 'lilbee[crawler]'` or
+`uv tool install --prerelease=allow 'lilbee[crawler]'`
 
 **Usage:**
 
@@ -615,7 +648,8 @@ lilbee add https://docs.example.com --crawl --depth 2 --max-pages 200
 lilbee add https://docs.example.com https://wiki.example.com
 ```
 
-Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI (`/crawl`).
+Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI
+(`/crawl`).
 
 **Configuration (all optional):**
 
@@ -646,13 +680,21 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 
 ### Remote providers (SDK backend)
 
-Connect to hosted LLM providers instead of (or alongside) local llama-cpp inference.
+Connect to hosted LLM providers instead of (or alongside) local llama-cpp
+inference.
 
-**What it does:** Routes chat and embedding calls to any provider reachable via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The routing provider automatically detects which models are available locally vs. remotely and routes each call to the right backend.
+**What it does:** Routes chat and embedding calls to any provider reachable
+via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The
+routing provider automatically detects which models are available locally vs.
+remotely and routes each call to the right backend.
 
-**When to use it:** When you want to use your favorite frontier model for chat while keeping embeddings local for privacy, or when you're already running Ollama and want to use its models.
+**When to use it:** When you want to use your favorite frontier model for chat
+while keeping embeddings local for privacy, or when you're already running
+Ollama and want to use its models.
 
-**Install:** `pip install --pre 'lilbee[litellm]'` or `uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the adapter library name).
+**Install:** `pip install --pre 'lilbee[litellm]'` or
+`uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
+adapter library name).
 
 **Configuration:**
 
@@ -663,17 +705,26 @@ export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
-Provider options: `auto` (default, routes intelligently), `llama-cpp` (local only), `remote` (hosted only).
+Provider options: `auto` (default, routes intelligently), `llama-cpp` (local
+only), `remote` (hosted only).
 
 ---
 
 ## Cross-encoder reranking
 
-Built-in. Re-scores retrieval candidates with a cross-encoder for precision on the top results. Unlike the extras above, no extra install is required; reranking is off by default and turns on as soon as you set `LILBEE_RERANKER_MODEL`.
+Built-in. Re-scores retrieval candidates with a cross-encoder for precision on
+the top results. Unlike the extras above, no extra install is required;
+reranking is off by default and turns on as soon as you set
+`LILBEE_RERANKER_MODEL` (or pick a reranker from `/settings`).
 
-**What it does:** After the hybrid search pipeline (BM25 + vector + RRF) returns candidates, a GGUF cross-encoder scores each `(query, chunk)` pair and results are blended with position-aware weights. Top-ranked candidates keep more of the original ranking; lower-ranked candidates trust the reranker more.
+**What it does:** After the hybrid search pipeline (BM25 + vector + RRF)
+returns candidates, a GGUF cross-encoder scores each `(query, chunk)` pair and
+results are blended with position-aware weights. Top-ranked candidates keep
+more of the original ranking; lower-ranked candidates trust the reranker more.
 
-**When to use it:** When you need high-precision answers and are willing to trade roughly 200 to 500 ms per query. Most useful with large candidate sets where top-5 ordering matters.
+**When to use it:** When you need high-precision answers and are willing to
+trade roughly 200 to 500 ms per query. Most useful with large candidate sets
+where top-5 ordering matters.
 
 **Configuration:**
 
@@ -682,21 +733,38 @@ export LILBEE_RERANKER_MODEL="bge-reranker-v2-m3"   # any GGUF reranker
 export LILBEE_RERANK_CANDIDATES=20                  # how many candidates to rerank
 ```
 
-Without a reranker set, hybrid search + MMR already provides good results for most use cases.
+Without a reranker set, hybrid search + MMR already provides good results for
+most use cases.
 
-Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al. 2005 (Learning to Rank).
+Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al.
+2005 (Learning to Rank).
 
 ---
 
 ## Semantic chunking
 
-Experimental. Off by default. lilbee ships with two chunking strategies; which one serves you depends on what you're indexing.
+Experimental. Off by default. lilbee ships with two chunking strategies; which
+one serves you depends on what you're indexing.
 
-**Fixed-size (default).** Breaks documents into roughly equal token windows with overlap. Fast, deterministic, works well on code, reference manuals, user guides, API specs, and anything with clear structural boundaries. The assumption is that each chunk only needs to be coherent enough for retrieval, and the model will handle the rest from a small window of context.
+**Fixed-size (default).** Breaks documents into roughly equal token windows
+with overlap. Fast, deterministic, works well on code, reference manuals, user
+guides, API specs, and anything with clear structural boundaries. The
+assumption is that each chunk only needs to be coherent enough for retrieval,
+and the model will handle the rest from a small window of context.
 
-**Semantic (experimental).** Uses embedding similarity to detect topic boundaries and splits there instead of at fixed sizes. Each chunk tends to represent one coherent thought rather than an arbitrary slice through one. The benefit shows up on prose-heavy material: novels, essays, long-form research papers, interview transcripts, qualitative research notes, anything where an argument develops across paragraphs. When you ask a question, the retrieved chunk is more likely to contain the full passage that matches rather than the first half of it plus unrelated setup.
+**Semantic (experimental).** Uses embedding similarity to detect topic
+boundaries and splits there instead of at fixed sizes. Each chunk tends to
+represent one coherent thought rather than an arbitrary slice through one. The
+benefit shows up on prose-heavy material: novels, essays, long-form research
+papers, interview transcripts, qualitative research notes, anything where an
+argument develops across paragraphs. When you ask a question, the retrieved
+chunk is more likely to contain the full passage that matches rather than the
+first half of it plus unrelated setup.
 
-**Trade-off:** Enabling semantic chunking triggers a one-time download of kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder) and runs roughly 9x more downstream embedding calls during indexing. Indexing takes longer; retrieval latency is unchanged.
+**Trade-off:** Enabling semantic chunking triggers a one-time download of
+kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder)
+and runs roughly 9x more downstream embedding calls during indexing. Indexing
+takes longer; retrieval latency is unchanged.
 
 ### How to enable it
 
@@ -714,7 +782,9 @@ export LILBEE_SEMANTIC_CHUNKING=true
 semantic_chunking = true
 ```
 
-After enabling, run `lilbee rebuild` so existing documents are re-chunked under the new strategy. New documents added from that point use semantic chunking automatically.
+After enabling, run `lilbee rebuild` so existing documents are re-chunked
+under the new strategy. New documents added from that point use semantic
+chunking automatically.
 
 ### Tuning
 
@@ -722,4 +792,55 @@ After enabling, run `lilbee rebuild` so existing documents are re-chunked under 
 export LILBEE_TOPIC_THRESHOLD=0.75   # cosine threshold for topic boundaries (0.0-1.0)
 ```
 
-Lower values produce more, smaller chunks (more splits). Higher values produce fewer, larger chunks (the chunker holds related content together until similarity drops sharply).
+---
+
+## OCR
+
+OCR is how lilbee gets text out of scanned PDFs and images. It's one step in
+indexing, not a substitute for it: however the text comes out (a native parser,
+Tesseract, or a vision model), it still gets embedded, so you still need an
+embedding model installed.
+
+For PDFs without embedded text, lilbee supports two OCR backends. When a
+vision model is configured, it takes precedence.
+
+| | Tesseract | Vision model |
+|---|---|---|
+| **Output** | Plain text | Structured markdown (tables, headings) |
+| **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
+| **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
+
+See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
+
+### Tesseract
+
+[Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically
+when no vision model is configured. No flags needed.
+
+```bash
+brew install tesseract          # macOS
+sudo apt install tesseract-ocr  # Ubuntu/Debian
+```
+
+### Vision models
+
+lilbee runs vision OCR in one of two ways:
+
+1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
+   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
+   directly. No Ollama, no extra services. This is the recommended path and
+   supports an SSE heartbeat for long scans.
+2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
+   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
+   model to any remote name your SDK backend understands (Ollama, OpenAI,
+   Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
+
+```bash
+lilbee add report.pdf --vision                # prompts for model if none set
+lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s, 0 = no limit)
+export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mtmd)
+```
+
+Pick or change a vision model interactively via `/settings` or `/setup` in the
+TUI; the selection is saved to `config.toml` and persists across sessions.

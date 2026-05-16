@@ -7,7 +7,7 @@
 
 <p align="center"><strong>A batteries-included local search engine for your data and code that you can talk to.</strong></p>
 
-<p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">API docs</a></p>
+<p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a></p>
 
 <p align="center">
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
@@ -45,7 +45,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
 - [Agent integration](#agent-integration)
-- [HTTP Server](#http-server) · [API reference](https://lilbee.sh/api/)
+- [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
 - [Experimental](#experimental)
 
@@ -53,11 +53,13 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 
 ## Quick start
 
+Install, then run `lilbee`. That launches the full-screen terminal app, which is the recommended way to use it: a welcome wizard picks a chat and embedding model, and from there you index files, search, and chat without leaving the TUI. CLI commands, environment variables, the HTTP API, and MCP integration are all there too, but you should not need them for everyday use; they're documented in the [usage guide](docs/usage.md) as reference for scripting, headless runs, and agent integration.
+
 All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR, Docker, Nix, a standalone binary (no Python), CUDA wheels, or from source. Optional extras (`[crawler]`, `[litellm]`, `[graph]`) are there too.
 
 ## Highlights
 
-- **One program, one install.** A model catalog, a search over your own files and code, and a chat. The same executable is also a CLI, a Textual TUI, an MCP server, a REST API, and a Python library. No background daemon, no separate inference server, no vector database to stand up.
+- **One program, one install.** A model catalog, a search over your own files and code, and a chat. The same executable is also a CLI, a Textual TUI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library (Python library reference is coming; for now the source under `src/lilbee/` is the canonical reference). No background daemon, no separate inference server, no vector database to stand up.
 - **Answers cite the source line.** Ask a question; get a reply with clickable citations pointing back to the exact line they came from.
 - **Bring your own files.** PDFs, Office files, ebooks, code in 150+ languages, scanned pages and photos (OCR), and crawled docs sites turned into searchable markdown.
 - **A built-in model catalog.** Browse and pull models straight from Hugging Face Hub, from inside the app. lilbee is the model runtime; no hunting for files yourself.
@@ -193,7 +195,7 @@ lilbee self-check    # ~90 MB download; runs an inference + an embedding; "SELF-
 lilbee               # launch the terminal app; pick a chat + embedding model on the welcome screen
 ```
 
-Everything past that (commands, slash commands, settings, the API) lives in the [usage guide](docs/usage.md).
+Everything past that lives in the [usage guide](docs/usage.md): the TUI tour at the top (welcome wizard, search/chat toggle, model bar, catalog, settings, slash commands, wiki), then a reference section for users driving lilbee from outside the TUI (CLI commands, HTTP server, MCP integration, env vars, `config.toml`, optional extras).
 
 ### Linux runtime requirements
 
@@ -235,7 +237,7 @@ The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](doc
 
 ## HTTP Server
 
-`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md) for options.
+`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md#http-server) for invocation options. (These are HTTP server / REST docs; a Python-library reference is still in progress.)
 
 The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 

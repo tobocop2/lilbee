@@ -159,7 +159,7 @@ Every command returns a single JSON object on stdout. Errors return non-zero exi
 
 ## REST API
 
-The built-in HTTP server (`lilbee serve`) exposes a full REST API. Streaming endpoints use Server-Sent Events (SSE). See the [API reference](https://lilbee.sh/api/) for the complete OpenAPI schema and [the usage guide](usage.md#http-server) for invocation options.
+The built-in HTTP server (`lilbee serve`) exposes a full REST API. Streaming endpoints use Server-Sent Events (SSE). See the [REST API reference](https://lilbee.sh/api/) for the complete OpenAPI schema and [the usage guide](usage.md#http-server) for invocation options.
 
 ### Crawl endpoint
 
