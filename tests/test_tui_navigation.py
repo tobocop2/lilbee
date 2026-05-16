@@ -315,12 +315,7 @@ async def test_catalog_nav_noop_when_search_focused():
 
 
 async def test_chat_tab_outside_input_advances_focus():
-    """Tab from outside the chat input advances the focus chain.
-
-    The dedicated jump-to-model-bar shortcut is ``m`` (see
-    ``Binding("m", "focus_model_bar", ...)``); Tab is the universal
-    walk-the-chain key, not a shortcut to the model dropdown.
-    """
+    """Tab from outside the chat input advances the focus chain."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -345,7 +340,7 @@ async def test_chat_escape_from_model_picker_button():
 
         await pilot.press("escape")
         await pilot.pause()
-        screen.action_focus_model_bar()
+        screen.query_one("#chat-model-button", ModelPickerButton).focus()
         await pilot.pause()
 
         assert isinstance(screen.focused, ModelPickerButton)
@@ -354,39 +349,6 @@ async def test_chat_escape_from_model_picker_button():
         await pilot.pause()
         assert screen.focused is not None
         assert screen.focused.id == "chat-input"
-
-
-async def test_chat_m_key_skips_in_insert_mode():
-    """m key raises SkipAction in insert mode."""
-    from textual.actions import SkipAction
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert screen._insert_mode is True
-
-        try:
-            screen.action_focus_model_bar()
-            raised = False
-        except SkipAction:
-            raised = True
-        assert raised
-
-
-async def test_chat_footer_hides_models_hint_in_insert_mode():
-    """`m Models` is shown only in NORMAL mode -- in INSERT mode `m` types
-    a literal character, so the footer hint must disappear there."""
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert screen._insert_mode is True
-        assert screen.check_action("focus_model_bar", ()) is False
-        await pilot.press("escape")
-        await pilot.pause()
-        assert screen._insert_mode is False
-        assert screen.check_action("focus_model_bar", ()) is True
 
 
 async def test_app_footer_hides_tasks_hint_when_text_input_focused():
