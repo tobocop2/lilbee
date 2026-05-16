@@ -1145,8 +1145,9 @@ class TestSettingsMcp:
         cfg.data_root = isolated_env
         from unittest.mock import MagicMock, patch
 
-        from lilbee.app.settings import _setting_default
         from pydantic_core import PydanticUndefined
+
+        from lilbee.app.settings import _setting_default
 
         field_info = MagicMock()
         field_info.default_factory = None
@@ -1164,16 +1165,18 @@ class TestSettingsMcp:
 
     def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
         """OSError from the TOML write reverts cfg before re-raising."""
+        from lilbee.app.settings import apply_settings_update
+
         cfg.data_root = isolated_env
         cfg.top_k = 5
-        with mock.patch(
-            "lilbee.app.settings.persistent_settings.update_values",
-            side_effect=OSError("disk full"),
+        with (
+            mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
         ):
-            with pytest.raises(OSError, match="disk full"):
-                from lilbee.app.settings import apply_settings_update
-
-                apply_settings_update({"top_k": 11})
+            apply_settings_update({"top_k": 11})
         assert cfg.top_k == 5
 
     def test_settings_reset_clears_nullable_with_none_default(self, isolated_env):
