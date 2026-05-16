@@ -23,23 +23,26 @@ Sleep 2500ms
 Escape
 Sleep 1s
 
-# Submit the path. Autocomplete dropdown will be visible but Enter still
-# fires the slash command (the dropdown only intercepts when an arg-hint is
-# focused, not when we've typed a full path).
+# Submit the path. Deliberate typing speed so the command is readable;
+# a 2s pause after lets the viewer see what was typed before submit.
+Set TypingSpeed 55ms
 Type "/add ~/projects/lilbee-demos/demos/sample-corpus/cv-manual.pdf"
-Sleep 600ms
+Set TypingSpeed 35ms
+Sleep 2s
 Enter
-Sleep 1s
+Sleep 1500ms
 
 # Drop into NORMAL mode FIRST: while the chat input is focused (the
 # default after a slash submission) every printable character including
 # `]` and `t` types as a literal into the prompt. Escape sets the chat
 # input unfocusable and moves focus to the chat log; `t` then opens
-# the Task Center via the priority binding.
+# the Task Center via the priority binding. Empirical: cv-manual.pdf
+# cold add takes ~21s, so no Hide needed; the bar visibly fills and
+# completes inside one Sleep.
 Escape
 Sleep 400ms
 Type "t"
-Sleep 38s
+Sleep 22s
 
 Screenshot demos/_out/tui-add.png
 

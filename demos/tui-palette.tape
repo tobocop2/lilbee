@@ -25,73 +25,64 @@ Sleep 500ms
 
 # Open palette. Default view shows every registered action.
 Ctrl+P
-Sleep 3s
-
-# 1. Filter "theme" -> Cycle Theme. Watch the chrome shift.
-Type "theme"
-Sleep 2s
-Enter
 Sleep 2s
 
-# 2. Open palette again, filter "task" -> Open Tasks (jumps to Tasks screen).
-Ctrl+P
-Sleep 1s
+# 1. Filter "task" -> Open Tasks (stays in rose-pine).
 Type "task"
-Sleep 2s
+Sleep 1500ms
 Enter
-Sleep 2s
+Sleep 1500ms
 
 # Back to Chat so the next palette action makes sense.
 Type "["
-Sleep 800ms
+Sleep 500ms
 Type "["
-Sleep 800ms
+Sleep 500ms
 Type "["
-Sleep 800ms
+Sleep 500ms
 Type "["
 Sleep 800ms
 
-# 3. Filter "model" -> Models bar (jumps focus to the model picker bar).
+# 2. Filter "model" -> Models bar focus (stays in rose-pine).
 Ctrl+P
-Sleep 1s
-Type "model"
-Sleep 2s
-Escape
 Sleep 800ms
+Type "model"
+Sleep 1500ms
+Escape
+Sleep 600ms
 
-# 4. Slash-command catalog: same modal F2 opens, reachable via /help.
+# 3. Slash-command catalog (stays in rose-pine).
 Type "i"
 Sleep 300ms
 Type "/help"
 Sleep 400ms
 Enter
-Sleep 3s
-
-Sleep 1s
+Sleep 2500ms
 Escape
-Sleep 800ms
+Sleep 600ms
 
-# Restore rose-pine explicitly so the GIF starts AND ends in the same
-# theme. Without this, "Cycle theme" leaves the demo on whatever the
-# next theme in the cycle happens to be (usually a light theme), which
-# clashes with the rose-pine palette of every other tape.
-#
-# Two Escapes here are defensive: closing the /help modal returns chat
-# to INSERT in some Textual states, so the leading `i` of "i/theme..."
-# would land as content (the chat would send "i/theme rose-pine" as a
-# user message). A second Escape forces NORMAL; THEN the explicit `i`
-# enters INSERT and `/theme rose-pine` types into the cleared input.
+# 4. Brief theme cycle, then restore rose-pine so the screenshot lands
+# on the canonical theme. The cycle is the last palette demo so the
+# alternate-theme frames are minimal.
 Escape
-Sleep 400ms
+Sleep 300ms
+Ctrl+P
+Sleep 600ms
+Type "theme"
+Sleep 1200ms
+Enter
+Sleep 1500ms
+
+# Restore rose-pine inline.
 Type "i"
 Sleep 300ms
 Type "/theme rose-pine"
-Sleep 800ms
+Sleep 600ms
 Enter
-Sleep 2500ms
+Sleep 2s
 
 Screenshot demos/_out/tui-palette.png
-Sleep 1s
+Sleep 500ms
 
 Type "/quit"
 Sleep 400ms
