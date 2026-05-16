@@ -25,20 +25,26 @@ Sleep 300ms
 Enter
 Sleep 2500ms
 
-# Centerpiece: a single-fact question whose answer is a clean cited
-# paragraph with a quoted passage and a single page reference. Tmux
-# tested: 20s end-to-end, deterministic answer (oil capacity 6.0
-# quarts, page 264). Hide covers the first-token wait so the visible
-# stream lands quickly on the cited answer.
-Type "What's my oil capacity?"
+# Centerpiece: a structured-extraction prompt that turns the instrument
+# cluster warning-lights section into a markdown table. The cluster
+# section is self-contained (one page block, no cross-refs to other
+# fuse boxes), so retrieval anchors cleanly and Qwen3 4B can produce a
+# full-coverage table with one Sources line.
+#
+# We DON'T do a warm-up sandwich here -- the warm-up `ping` + `/clear`
+# was reducing answer quality (the kv reset seems to leave the model
+# more conservative). Cold first turn is slower but produces the
+# comprehensive 5-row table the manual tmux test verified. Hide elides
+# the cold load + streaming so the GIF stays short.
+Type "Provide a markdown table of the instrument cluster warning indicator lights from the Crown Victoria manual, with columns Symbol, Color, and Meaning. Include every warning light documented."
 Sleep 600ms
 Enter
 
-Sleep 3s
+Sleep 4s
 Hide
-Sleep 12s
+Sleep 110s
 Show
-Sleep 10s
+Sleep 5s
 
 Screenshot demos/_out/tui-chat.png
 

@@ -67,27 +67,9 @@ Sleep 1500ms
 Type ">"
 Sleep 1500ms
 
-# Status screen: open each of the 4 Collapsibles in turn (Configuration,
-# Documents, Model Architecture, Storage). `Enter` toggles the focused
-# title; `Tab` moves to the next collapsible. Documents and Model
-# Architecture load via async workers; give each ~2.5-3s to populate
-# and be readable before Tab moves on.
+# Status screen.
 Type "]"
-Sleep 1500ms
-Enter
-Sleep 1500ms
-Tab
-Sleep 500ms
-Enter
 Sleep 2500ms
-Tab
-Sleep 500ms
-Enter
-Sleep 3000ms
-Tab
-Sleep 500ms
-Enter
-Sleep 2000ms
 
 # Settings: 8 sub-tabs (Models / Ingest / Generation / Retrieval / Display /
 # Crawling / API-Keys / System).

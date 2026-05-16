@@ -23,19 +23,15 @@ Sleep 8s
 
 # One turn: index the slice, then answer. The agent runs through:
 # (a) load lilbee-mcp skill, (b) delegate lilbee_add to lilbee-worker
-# (~25s), (c) run lilbee_search, (d) cite the answer. Hide the
-# subagent index + search + first-token wait so the on-camera time
-# is the visible streamed answer with citations.
+# (~25s), (c) run lilbee_search, (d) cite the answer. Sleep covers the
+# whole sequence with margin.
 Type "Index ./src/lilbee/core, ./src/lilbee/data/ingest, and ./src/lilbee/mcp_server.py, then show me the function that walks up from the current directory to find a project-local .lilbee/ directory. Quote the function body and cite the file and line range."
 Sleep 600ms
 Enter
-Sleep 8s
-Hide
-Sleep 65s
-Show
-Sleep 18s
+Sleep 90s
 
 Screenshot demos/_out/mcp-code.png
+Sleep 3s
 
 Ctrl+C
 Sleep 1s

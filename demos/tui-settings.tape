@@ -60,7 +60,7 @@ Sleep 800ms
 Type "j"
 Sleep 800ms
 
-# Retrieval pane: 20 fields. Scroll the full pane.
+# Retrieval pane: 20 fields. Scroll too.
 Type ">"
 Sleep 2s
 
@@ -74,24 +74,12 @@ Type "j"
 Sleep 800ms
 Type "j"
 Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
 
-# Display pane: short, but still scroll a bit so the panel isn't static.
+# Display pane.
 Type ">"
 Sleep 2s
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
 
-# Crawling pane (13 fields). Scroll the full pane.
+# Crawling pane (13 fields). Scroll.
 Type ">"
 Sleep 2s
 Type "j"
@@ -100,30 +88,14 @@ Type "j"
 Sleep 800ms
 Type "j"
 Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
 
-# API-Keys pane: a couple of scrolls.
+# API-Keys pane.
 Type ">"
 Sleep 2s
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
 
-# System pane: scroll through diagnostics.
+# System pane.
 Type ">"
 Sleep 2s
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
-Type "j"
-Sleep 800ms
 
 # Back to Chat via `q`. No fields are focused (we never Tabbed in),
 # so `q` fires the Settings screen's go_back binding cleanly.
