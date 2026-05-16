@@ -55,25 +55,82 @@ class RoleConfig:
     extras: dict[str, Any] | None = None
 
 
+class FinishReason(StrEnum):
+    """Why a chat completion stopped, mirroring OpenAI's vocabulary."""
+
+    STOP = "stop"
+    LENGTH = "length"
+    TOOL_CALLS = "tool_calls"
+    CONTENT_FILTER = "content_filter"
+
+
 @dataclass(frozen=True)
 class ChatRequest:
     """Pickle-friendly chat request that crosses the parent->worker pipe.
 
-    Replaces the inline ``{"messages": ..., "stream": ..., ...}`` dict
-    so a typo on either side surfaces as a type error (or attribute
-    miss) instead of a silent ``payload.get("missing", default)`` that
-    masks the bug. ``messages`` is the standard llama-cpp message list;
-    ``stream`` decides between single-result and chunked replies;
-    ``options`` is the post-``filter_options`` kwarg dict the worker
-    forwards to ``create_chat_completion``; ``model`` triggers a
-    transparent reload inside the worker if it differs from the
-    role-config model.
+    ``messages`` is the standard chat message list (content may be a string
+    or a list of content blocks for multimodal / tool-use turns). ``stream``
+    decides between single-result and chunked replies. ``options`` is the
+    post-``filter_options`` kwarg dict the worker forwards to
+    ``create_chat_completion``. ``model`` triggers a transparent reload
+    inside the worker if it differs from the role-config model. ``tools``
+    and ``tool_choice`` carry OpenAI-shaped tool definitions when the
+    caller wants the model to be able to emit tool calls.
     """
 
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     stream: bool = False
     options: dict[str, Any] | None = None
     model: str | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool-call emitted by the model.
+
+    ``arguments`` is the raw JSON string the model produced; validation
+    against the tool's schema is the caller's job.
+    """
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    """Structured result from a non-streaming chat call.
+
+    ``text`` is the assistant's textual reply (possibly empty when the
+    turn was a pure tool-call). ``tool_calls`` is an immutable tuple so
+    the result is hashable and pickle-friendly. ``finish_reason`` is the
+    OpenAI-shaped completion reason.
+    """
+
+    text: str
+    tool_calls: tuple[ToolCall, ...]
+    finish_reason: FinishReason
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    """Partial tool-call delta in a streaming response.
+
+    Multiple deltas for the same ``index`` accumulate into one final
+    tool call: ``id`` and ``name`` arrive on the first delta for an
+    index; ``arguments_delta`` is the per-frame JSON fragment.
+    """
+
+    index: int
+    id: str | None
+    name: str | None
+    arguments_delta: str | None
+
+
+ChatStreamItem = str | ToolCallDelta
+"""One frame yielded by a streaming chat call: a text token or a tool-call delta."""
 
 
 @dataclass(frozen=True)
@@ -239,10 +296,15 @@ def default_spawner() -> WorkerSpawner:
 
 __all__ = [
     "ChatRequest",
+    "ChatResult",
+    "ChatStreamItem",
+    "FinishReason",
     "OcrBackend",
     "PdfOcrRequest",
     "RerankPayload",
     "RoleConfig",
+    "ToolCall",
+    "ToolCallDelta",
     "VisionRequest",
     "WorkerChannel",
     "WorkerEntrypoint",
