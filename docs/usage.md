@@ -1,15 +1,15 @@
 # Usage Guide
 
-> **The TUI is the recommended way to use lilbee.** Run `lilbee` and the welcome
-> wizard walks you through picking a chat and embedding model; every screen,
-> command, and setting in the rest of this guide is reachable from inside the
-> app. You should not normally need to touch a CLI flag, an environment
-> variable, or `config.toml` by hand.
+> **There are two recommended ways to use lilbee.** Run `lilbee` for the TUI if
+> you're the one driving; wire it into your agent over MCP if an AI agent is.
+> Both cover the everyday workflow: pick models, index files, search, chat,
+> manage the wiki. You should not normally need to touch a CLI flag, an
+> environment variable, or `config.toml` by hand for either path.
 >
 > Everything in [Reference for advanced users](#reference-for-advanced-users)
-> further down (CLI commands, the HTTP server, MCP integration, env vars, the
-> config file) is for users who need to drive lilbee from outside the TUI: CI,
-> scripts, agents, headless boxes. Skip past it unless that's you.
+> further down (CLI commands, the HTTP server, env vars, the config file) is
+> for users who need to drive lilbee from outside those two paths: CI, scripts,
+> headless boxes, custom integrations. Skip past it unless that's you.
 
 - [The TUI](#the-tui)
   - [First run](#first-run)
@@ -21,12 +21,12 @@
   - [Slash commands](#slash-commands)
   - [Task Center](#task-center)
   - [Wiki](#wiki)
+- [Agent integration (MCP)](#agent-integration)
 - [Per-project libraries](#per-project-libraries)
 - [Cloud models](#cloud-models)
 - [Reference for advanced users](#reference-for-advanced-users)
   - [CLI commands](#cli-commands)
   - [HTTP server](#http-server)
-  - [Agent integration (MCP)](#agent-integration)
   - [Data locations](#data-locations)
   - [Config file (config.toml)](#config-file)
   - [Environment variables](#environment-variables)
@@ -214,6 +214,32 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
+## Agent integration
+
+lilbee is also the retrieval backend for AI coding agents. Wire it into any
+agent that speaks MCP (Claude Code, opencode, Cursor, anything else) and the
+agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can
+quote back. lilbee stays the local part: your files, the embeddings, the
+search index. See [agent-integration.md](agent-integration.md) for setup,
+example configs, and the full tool list.
+
+> [!CAUTION]
+> **Private data and cloud agents**
+>
+> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the
+> agent uses, including cloud-hosted models. If your index contains private,
+> confidential, or sensitive documents, verify two things before connecting an
+> agent:
+>
+> 1. **Check which database is active.** Run `lilbee status` and confirm the
+>    data directory is the one you intend the agent to access. lilbee walks up
+>    the directory tree to find `.lilbee/`, so you may be exposing a different
+>    project's data than you expect.
+> 2. **Know where your agent sends data.** If the agent uses a cloud-hosted
+>    model, your document chunks will leave your machine. Use a local model
+>    (native GGUF via llama-cpp or a local SDK backend) if your documents must
+>    stay private.
+
 ## Per-project libraries
 
 lilbee uses a git-like per-project model. Running `lilbee init` from a project
@@ -353,28 +379,6 @@ reference. A Python-library API reference is still being written; for now,
 the source under `src/lilbee/` is the canonical reference.)
 
 Server-specific env vars live in the [Server table](#server) below.
-
-## Agent integration
-
-lilbee works as a retrieval backend for AI coding agents via MCP or JSON CLI.
-See [agent-integration.md](agent-integration.md) for setup.
-
-> [!CAUTION]
-> **Private data and cloud agents**
->
-> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the
-> agent uses, including cloud-hosted models. If your index contains private,
-> confidential, or sensitive documents, verify two things before connecting an
-> agent:
->
-> 1. **Check which database is active.** Run `lilbee status` and confirm the
->    data directory is the one you intend the agent to access. lilbee walks up
->    the directory tree to find `.lilbee/`, so you may be exposing a different
->    project's data than you expect.
-> 2. **Know where your agent sends data.** If the agent uses a cloud-hosted
->    model, your document chunks will leave your machine. Use a local model
->    (native GGUF via llama-cpp or a local SDK backend) if your documents must
->    stay private.
 
 ## Data locations
 

@@ -53,7 +53,12 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 
 ## Quick start
 
-Install, then run `lilbee`. That launches the full-screen terminal app, which is the recommended way to use it: a welcome wizard picks a chat and embedding model, and from there you index files, search, and chat without leaving the TUI. CLI commands, environment variables, the HTTP API, and MCP integration are all there too, but you should not need them for everyday use; they're documented in the [usage guide](docs/usage.md) as reference for scripting, headless runs, and agent integration.
+Two recommended ways to use lilbee, depending on whether you're the one driving:
+
+- **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI.
+- **Wire it into your agent over MCP.** A coding agent (Claude Code, opencode, anything that speaks MCP) calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. See [Agent integration](#agent-integration).
+
+CLI commands, the HTTP API, environment variables, and `config.toml` are also there as reference for scripting, headless runs, and custom integrations; you should not need them for everyday use. See the [usage guide](docs/usage.md).
 
 All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR, Docker, Nix, a standalone binary (no Python), CUDA wheels, or from source. Optional extras (`[crawler]`, `[litellm]`, `[graph]`) are there too.
 
@@ -72,7 +77,7 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
+> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
 
 ## What you can do with it
 
