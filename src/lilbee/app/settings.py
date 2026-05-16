@@ -24,7 +24,11 @@ from lilbee.config_meta import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import Config, cfg
-from lilbee.core.config.keys import PROVIDER_API_KEYS
+from lilbee.core.config.keys import (
+    LOAD_AFFECTING_KEYS,
+    PER_CALL_RELOADABLE_KEYS,
+    PROVIDER_API_KEYS,
+)
 
 _MIN_CHUNK_SIZE = 64
 
@@ -227,14 +231,6 @@ def _restore_snapshot(snapshot: dict[str, Any]) -> None:
         setattr(cfg, key, value)
 
 
-# Mirrors ``lilbee.providers.llama_cpp.provider.LOAD_AFFECTING_KEYS`` so the
-# write boundary doesn't pay the llama-cpp import cost on every settings_set.
-_LOAD_AFFECTING_KEYS = frozenset(
-    {"num_ctx", "chat_model", "embedding_model", "vision_model", "reranker_model"}
-)
-_PER_CALL_RELOADABLE_KEYS = frozenset({"chat_model", "vision_model"})
-
-
 def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
@@ -243,7 +239,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    load_affecting = (changed_keys & _LOAD_AFFECTING_KEYS) - _PER_CALL_RELOADABLE_KEYS
+    load_affecting = (changed_keys & LOAD_AFFECTING_KEYS) - PER_CALL_RELOADABLE_KEYS
     if load_affecting:
         from lilbee.app.services import peek_services
 
@@ -299,23 +295,26 @@ def apply_settings_update(
     )
 
 
-def reset_settings(keys: list[str]) -> SettingsUpdateResult:
+def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> SettingsUpdateResult:
     """Reset each key to its pydantic default and apply through the write boundary.
 
     Fields whose default is a known sentinel (currently ``documents_dir``,
     which resolves to ``data_root/documents`` at process start) are
-    refused so a reset doesn't write the literal sentinel back. The
-    caller should ``settings_set`` an explicit value instead.
+    refused so a reset doesn't write the literal sentinel back. Pass
+    ``skip_unresettable=True`` for bulk-reset gestures that should drop
+    those fields rather than failing the whole batch.
     """
     for key in keys:
         if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
-        if key in _NO_RESET_FIELDS:
+        if key in _NO_RESET_FIELDS and not skip_unresettable:
             raise ValueError(
                 f"'{key}' has no resettable default; pass an explicit value via settings_set."
             )
     updates: dict[str, Any] = {}
     for key in keys:
+        if key in _NO_RESET_FIELDS:
+            continue
         default = _setting_default(key)
         if default is None and _is_nullable(key):
             updates[key] = None

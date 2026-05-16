@@ -1,14 +1,4 @@
-"""MCP server exposing lilbee as tools for AI agents.
-
-Tool handler bodies use function-local ``from lilbee.X import ...`` to keep
-``lilbee mcp`` boot fast (the same startup discipline AGENTS.md mandates for
-Typer command bodies). Heavy chains pulled in lazily here:
-``data.ingest`` / ``wiki.*`` / ``wiki.drafts`` (spaCy via the wiki ingest
-pipeline), ``crawler`` (crawl4ai + Playwright), ``app.models`` /
-``modelhub.model_manager`` / ``catalog`` (HF discovery + `huggingface_hub`).
-``app.ingest`` / ``app.reset`` are individually light but transitively reach
-``data.ingest`` via the runtime sync handlers, so they share the policy.
-"""
+"""MCP server exposing lilbee as tools for AI agents."""
 
 from __future__ import annotations
 

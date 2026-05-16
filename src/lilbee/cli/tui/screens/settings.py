@@ -337,21 +337,12 @@ class SettingsScreen(Screen[None]):
             return
         self._persist_value(name, defn, value)
 
-    def _persist_value(self, key: str, defn: SettingDef, raw: str, *, quiet: bool = False) -> None:
-        """Parse, apply, and persist a setting value.
-
-        No success toast: the editor already shows the new value and the
-        write is silently persisted. Tab-cycling between sub-tabs blurs
-        the focused input, which fires Input.Blurred -> _on_input_save
-        en masse; one toast per blur is just noise. Errors still toast
-        so the user sees why a value didn't take.
-        """
+    def _persist_value(self, key: str, defn: SettingDef, raw: str) -> None:
+        """Parse, apply, and persist a setting value. Success is silent; errors toast."""
         try:
             parsed = self._parse_value(defn, raw)
-            # set_setting handles theme live-apply, signal publish, etc.
             self.app.set_setting(key, parsed)
             self._refresh_help(key, defn)
-            _ = quiet  # accepted for API compatibility; success path is now always silent
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
 
@@ -573,28 +564,21 @@ class SettingsScreen(Screen[None]):
         )
 
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
-        """Reset every writable setting to its cfg default atomically.
-
-        Skips fields the boundary refuses to reset (currently ``documents_dir``,
-        whose default is the unresolved ``Path()`` sentinel). The bulk-reset
-        gesture leaves those at their current values rather than failing
-        the whole batch.
-        """
+        """Reset every writable setting to its cfg default atomically."""
         if not confirmed:
             return
-        from lilbee.app.settings import _NO_RESET_FIELDS, reset_settings
+        from lilbee.app.settings import reset_settings
 
-        writable = [
-            (key, defn)
-            for key, defn in SETTINGS_MAP.items()
-            if defn.writable and key not in _NO_RESET_FIELDS
-        ]
+        writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
         try:
-            reset_settings([key for key, _ in writable])
+            result = reset_settings([key for key, _ in writable], skip_unresettable=True)
         except (ValueError, OSError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
             return
+        resettable = set(result.updated)
         for key, defn in writable:
+            if key not in resettable:
+                continue
             self._refresh_editor(key, defn, getattr(cfg, key))
             self._refresh_help(key, defn)
             self.app.settings_changed_signal.publish((key, getattr(cfg, key)))
