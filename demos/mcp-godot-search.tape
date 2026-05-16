@@ -40,12 +40,9 @@ Sleep 600ms
 Enter
 
 # Indexing + search + cited answer. The cited method list streams for
-# ~90s on MiniMax M2.7; bump the wait so the screenshot lands AFTER the
-# answer has fully rendered.
-Sleep 120s
+# ~90s on MiniMax M2.7. Trimmed: no trailing dead frame.
+Sleep 105s
 
 Screenshot demos/_out/mcp-godot-search.png
-Sleep 2s
 
 Ctrl+C
-Sleep 1s

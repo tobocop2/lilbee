@@ -38,10 +38,9 @@ Sleep 8s
 Type "Index cv-manual.pdf and then make me a table of the fuses in the engine compartment with their amp ratings and the circuits they protect. Cite the page."
 Sleep 600ms
 Enter
-Sleep 130s
+# Measured 1m 2s final-token render; trimmed to no trailing dead frame.
+Sleep 105s
 
 Screenshot demos/_out/mcp-manual.png
-Sleep 2s
 
 Ctrl+C
-Sleep 1s

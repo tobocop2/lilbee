@@ -28,7 +28,7 @@ readonly EMBED_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF"
 # Tapes that record against a pre-indexed copy of the Crown Vic manual.
 readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 # Tapes that start from a clean slate (the recording does its own ingest).
-readonly FRESH_TAPES=(tui-setup tui-add tui-crawl cli)
+readonly FRESH_TAPES=(tui-setup tui-add tui-crawl)
 # opencode demo dirs.
 readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual)
 # Subset of godot-classes used by the small live-indexing demo. Six
@@ -42,9 +42,6 @@ readonly GODOT_SEARCH_FILES=(
     Vector2i.xml
     Rect2i.xml
 )
-# Man pages indexed for the CLI tape.
-readonly MAN_PAGES=(find awk grep xargs sed)
-
 log() { printf '==> %s\n' "$*"; }
 
 require_manual() {
@@ -79,19 +76,20 @@ reset_clean_slate() {
     local data="$ROOT/$tape"
     rm -rf "$data"
     mkdir -p "$data"
-    # The CLI tape pulls SmolLM2 cold so the rendered demo shows a real
-    # download bar. It uses its own LILBEE_MODELS_DIR so a previous run's
-    # cache makes the pull a no-op ("already installed"). Always wipe.
-    if [[ "$tape" == "cli" ]]; then
-        rm -rf "$ROOT/cli-models"
-    fi
 }
 
-render_man_page() {
-    local page="$1" out_dir="$2"
-    local out="$out_dir/$page.txt"
-    [[ -f "$out" ]] && return 0
-    man "$page" 2>/dev/null | col -bx > "$out" || true
+seed_setup_models() {
+    # Pre-pull the chat + embedding models into the tui-setup tape's
+    # isolated LILBEE_MODELS_DIR so the wizard reliably shows "Your
+    # existing models are ready". Real cold-pull renders are too
+    # sensitive to bandwidth -- a slow connection leaves the wizard at
+    # <100% when the chat fires and the demo captures a "Model not
+    # found in registry" error.
+    local setup_models="$ROOT/setup-models"
+    mkdir -p "$setup_models"
+    log "pre-pulling models into setup-models"
+    LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$CHAT_MODEL" || true
+    LILBEE_MODELS_DIR="$setup_models" "$LILBEE" model pull "$EMBED_MODEL" || true
 }
 
 page_cache_model() {
@@ -117,6 +115,10 @@ setup_opencode_dir() {
     cp "$DEMOS_DIR/.opencode/agents/lilbee-worker.md"             "$dir/.opencode/agents/lilbee-worker.md"
     cp "$REPO_DIR/docs/agent-skills/lilbee-mcp/SKILL.md"          "$dir/.opencode/skills/lilbee-mcp/SKILL.md"
     rm -rf "$dir/.lilbee"
+    # The agent writes .gd / .tscn / project.godot files during the godot
+    # demos. Wipe them so each re-render starts from "no pre-existing
+    # level generator" and the agent has to create from scratch.
+    find "$dir" -maxdepth 1 -type f \( -name "*.gd" -o -name "*.tscn" -o -name "project.godot" \) -delete
     ( cd "$dir" && "$LILBEE" init >/dev/null )
 }
 
@@ -196,12 +198,7 @@ main() {
     # tui-setup's first chat is `/add ./README.md` against lilbee's own README,
     # so stage it in the demo's data dir after the clean-slate reset.
     cp "$REPO_DIR/README.md" "$ROOT/tui-setup/README.md"
-
-    local man_dir="$ROOT/cli/man-pages"
-    mkdir -p "$man_dir"
-    for page in "${MAN_PAGES[@]}"; do
-        render_man_page "$page" "$man_dir"
-    done
+    seed_setup_models
 
     for tape in "${OPENCODE_TAPES[@]}"; do
         setup_opencode_dir "$tape"
