@@ -447,6 +447,7 @@ The ones most users set at least once.
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
 | `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
+| `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
 
 ### Retrieval tuning
 

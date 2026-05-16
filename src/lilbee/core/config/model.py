@@ -129,6 +129,7 @@ class Config(BaseSettings):
     openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
     mistral_api_key: str = ConfigField(default="", writable=True, write_only=True)
     deepseek_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    hf_token: str = ConfigField(default="", writable=True, write_only=True)
 
     # Retrieval quality knobs.
 
