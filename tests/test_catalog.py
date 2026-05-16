@@ -1855,6 +1855,12 @@ class TestDownloadTaskName:
         assert download_task_name("ollama") == ""
         assert download_task_name("openai") == ""
 
+    def test_single_slash_gguf_ref_strips_to_empty(self) -> None:
+        """A malformed ``<file>.gguf`` ref with only one slash cleans to empty."""
+        from lilbee.catalog import download_task_name
+
+        assert download_task_name("foo/file.gguf") == ""
+
 
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
