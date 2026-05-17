@@ -11,14 +11,27 @@ from typing import TYPE_CHECKING, Any, cast
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
 from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
     CapNotice,
     effective_reasoning_cap,
     stream_chat_with_cap,
+    strip_reasoning,
 )
 from lilbee.runtime.progress import SseEvent
+from lilbee.server.chat_dispatch.canonical import (
+    CanonicalChatRequest,
+    CanonicalMessage,
+    ContentBlockDelta,
+    TextBlock,
+    TextDelta,
+)
+from lilbee.server.chat_dispatch.dispatch import (
+    dispatch_chat,
+    dispatch_chat_stream,
+)
 from lilbee.server.handlers.sse import (
     SseStream,
     _resolve_generation_options,
@@ -30,6 +43,7 @@ from lilbee.server.handlers.sse import (
 from lilbee.server.models import AskResponse, CleanedChunk
 
 if TYPE_CHECKING:
+    from lilbee.core.results import SearchChunk
     from lilbee.retrieval.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -162,14 +176,15 @@ async def chat(
     options: dict[str, Any] | None = None,
     chunk_type: str | None = None,
 ) -> AskResponse:
-    """Chat with history. Returns answer and sources."""
-    opts = _resolve_generation_options(options)
-    result = get_services().searcher.ask_raw(
-        question, top_k=top_k, history=history, options=opts, chunk_type=chunk_type
-    )
+    """Chat with history. Returns answer and sources via canonical dispatch."""
+    sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
+    req = _build_canonical_request(messages, options)
+    response = await asyncio.to_thread(dispatch_chat, req)
+    text = _join_text_blocks(response.content)
+    answer = text if cfg.show_reasoning else strip_reasoning(text)
     return AskResponse(
-        answer=result.answer,
-        sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
+        answer=answer,
+        sources=[CleanedChunk(**clean_result(s)) for s in sources],
     )
 
 
@@ -180,7 +195,123 @@ def chat_stream(
     options: dict[str, Any] | None = None,
     chunk_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield SSE events with chat history support."""
-    return _stream_rag_response(
+    """Stream RAG chat tokens through canonical dispatch as token/sources/done events."""
+    return _stream_chat_response(
         question, history=history, top_k=top_k, options=options, chunk_type=chunk_type
     )
+
+
+async def _stream_chat_response(
+    question: str,
+    history: list[ChatMessage],
+    top_k: int,
+    options: dict[str, Any] | None,
+    chunk_type: str | None,
+) -> AsyncGenerator[str, None]:
+    """Drive ``dispatch_chat_stream`` and emit token/sources/done SSE events."""
+    rag = get_services().searcher.build_rag_context(
+        question, top_k=top_k, history=history, chunk_type=chunk_type
+    )
+    if rag is None:
+        yield sse_error("No relevant documents found.")
+        return
+    sources, messages = rag
+
+    req = _build_canonical_request(messages, options)
+    canonical_stream = dispatch_chat_stream(req)
+    try:
+        async for event in canonical_stream:
+            text = _text_from_event(event)
+            if text:
+                yield sse_event(SseEvent.TOKEN, {"token": text})
+    except Exception as exc:
+        raw = str(exc)
+        code, user_message = classify_load_error(raw)
+        log.warning("Stream error: %s", raw)
+        yield sse_error(user_message, code=code, detail=raw if code else None)
+        return
+
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in sources])
+    yield sse_done({})
+
+
+def _text_from_event(event: Any) -> str:
+    """Return the text payload of a canonical event, or '' if not a text delta."""
+    if isinstance(event, ContentBlockDelta) and isinstance(event.delta, TextDelta):
+        return event.delta.text
+    return ""
+
+
+def _retrieval_skipped(question: str) -> bool:
+    """Re-derive whether retrieval would have run; mirrors ``Searcher.ask_raw`` branches."""
+    services = get_services()
+    if cfg.chat_mode == ChatMode.CHAT.value:
+        return True
+    return not services.embedder.embedding_available()
+
+
+def _build_chat_messages(
+    question: str,
+    history: list[ChatMessage],
+    top_k: int,
+    chunk_type: str | None,
+) -> tuple[list[SearchChunk], list[ChatMessage]]:
+    """Run retrieval and return (sources, message_list).
+
+    Empty ``sources`` plus a direct-chat message list when retrieval is
+    disabled or returns nothing; otherwise the augmented prompt from
+    ``Searcher.build_rag_context``.
+    """
+    services = get_services()
+    if _retrieval_skipped(question):
+        return [], _direct_messages(question, history)
+    rag = services.searcher.build_rag_context(
+        question, top_k=top_k, history=history, chunk_type=chunk_type
+    )
+    if rag is None:
+        return [], _direct_messages(question, history)
+    return rag
+
+
+def _direct_messages(question: str, history: list[ChatMessage]) -> list[ChatMessage]:
+    """Direct-chat messages: general system prompt + history + user question."""
+    msgs: list[ChatMessage] = [{"role": "system", "content": cfg.general_system_prompt}]
+    if history:
+        msgs.extend(history)
+    msgs.append({"role": "user", "content": question})
+    return msgs
+
+
+def _build_canonical_request(
+    messages: list[ChatMessage], options: dict[str, Any] | None
+) -> CanonicalChatRequest:
+    """Convert a wire-shaped message list to a no-tools ``CanonicalChatRequest``."""
+    opts = _resolve_generation_options(options) or cfg.generation_options() or {}
+    system, chat_msgs = _split_system(messages)
+    return CanonicalChatRequest(
+        model=cfg.chat_model,
+        messages=[
+            CanonicalMessage.from_string(role=cast("Any", m["role"]), text=m["content"])
+            for m in chat_msgs
+        ],
+        system=system,
+        temperature=opts.get("temperature"),
+        top_p=opts.get("top_p"),
+        top_k=opts.get("top_k"),
+        max_tokens=opts.get("num_predict"),
+        stop=opts.get("stop"),
+    )
+
+
+def _split_system(
+    messages: list[ChatMessage],
+) -> tuple[str | None, list[ChatMessage]]:
+    """Pull the leading system message out, returning (system, rest)."""
+    if messages and messages[0]["role"] == "system":
+        return messages[0]["content"], messages[1:]
+    return None, list(messages)
+
+
+def _join_text_blocks(content: list[Any]) -> str:
+    """Concatenate the text from every ``TextBlock`` in a canonical content list."""
+    return "".join(block.text for block in content if isinstance(block, TextBlock))

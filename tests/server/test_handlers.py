@@ -46,6 +46,13 @@ def mock_svc():
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = None
     services = make_mock_services(embedder=embedder)
+    # /api/chat now goes through chat_dispatch, which validates the requested
+    # model against the registry. The handler always requests cfg.chat_model,
+    # so register a manifest for it.
+    chat_manifest = mock.MagicMock()
+    chat_manifest.ref = cfg.chat_model
+    chat_manifest.task = "chat"
+    services.registry.list_installed = mock.MagicMock(return_value=[chat_manifest])
     set_services(services)
     yield services
     set_services(None)

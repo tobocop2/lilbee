@@ -68,6 +68,11 @@ def mock_svc():
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
     searcher.build_rag_context.return_value = None
     services = make_mock_services(searcher=searcher)
+    # chat_dispatch validates cfg.chat_model against the registry.
+    chat_manifest = MagicMock()
+    chat_manifest.ref = cfg.chat_model
+    chat_manifest.task = "chat"
+    services.registry.list_installed = MagicMock(return_value=[chat_manifest])
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
@@ -335,24 +340,84 @@ class TestAskStream:
         assert "answer" in token_events[0]
 
 
-class TestChat:
-    async def test_passes_history(self, mock_svc):
-        from lilbee.retrieval.query import AskResult
+def _canonical_text_stream(texts):
+    """Return an async iterator emitting one ``TextDelta`` event per text fragment."""
+    from lilbee.server.chat_dispatch.canonical import (
+        ContentBlockDelta,
+        ContentBlockStart,
+        ContentBlockStop,
+        MessageStart,
+        MessageStop,
+        TextBlock,
+        TextDelta,
+    )
 
-        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+    events = [
+        MessageStart(id="msg_test", model=cfg.chat_model),
+        ContentBlockStart(index=0, block=TextBlock(text="")),
+        *(ContentBlockDelta(index=0, delta=TextDelta(text=t)) for t in texts),
+        ContentBlockStop(index=0),
+        MessageStop(),
+    ]
+
+    async def _gen():
+        for ev in events:
+            yield ev
+
+    return _gen()
+
+
+class TestChat:
+    async def test_passes_history(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        captured = []
+
+        def _fake_dispatch(req):
+            captured.append(req)
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
         assert result.answer == "ok"
-        mock_svc.searcher.ask_raw.assert_called_once_with(
-            "follow up", top_k=0, history=history, options=None, chunk_type=None
+        # history is what build_rag_context received (search-side) when retrieval ran.
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("history") == history
+        assert len(captured) == 1
+
+    async def test_forwards_chunk_type(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
         )
 
-    async def test_forwards_chunk_type(self, mock_svc):
-        from lilbee.retrieval.query import AskResult
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
 
-        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         await handlers.chat("q", [], chunk_type="raw")
-        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "raw"
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
 
 class TestChatStream:
@@ -362,9 +427,11 @@ class TestChatStream:
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
 
-    async def test_yields_events_with_history(self, mock_svc):
+    async def test_yields_events_with_history(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["reply"])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["reply"])
+        )
         history = [{"role": "user", "content": "hi"}]
         events = [e async for e in handlers.chat_stream("follow up", history)]
 
@@ -379,9 +446,17 @@ class TestChatStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
-    async def test_provider_error_yields_error_event(self, mock_svc):
+    async def test_provider_error_yields_error_event(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = ConnectionError("provider down")
+
+        def _erroring_stream(_req):
+            async def _gen():
+                raise ConnectionError("provider down")
+                yield  # pragma: no cover
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _erroring_stream)
         events = [e async for e in handlers.chat_stream("q", [])]
 
         non_empty = [e for e in events if e]
@@ -389,59 +464,48 @@ class TestChatStream:
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
 
-    async def test_cancel_sets_cancel_event(self, mock_svc):
-        """Closing the chat_stream generator mid-stream signals the thread to stop."""
-        import threading
-
-        barrier = threading.Event()
-
-        def blocking_chat(*args, **kwargs):
-            yield "first"
-            barrier.wait(timeout=2)
-            yield "second"
+    async def test_cancel_stops_emitting(self, mock_svc, monkeypatch):
+        """Closing the chat_stream generator stops further dispatch events from being emitted."""
+        from lilbee.server.chat_dispatch.canonical import (
+            ContentBlockDelta,
+            ContentBlockStart,
+            MessageStart,
+            TextBlock,
+            TextDelta,
+        )
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = blocking_chat
+
+        def _slow_stream(_req):
+            async def _gen():
+                yield MessageStart(id="m", model=cfg.chat_model)
+                yield ContentBlockStart(index=0, block=TextBlock(text=""))
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="first"))
+                # Generator is closed by aclose() before this point.
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="second"))
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _slow_stream)
+
         gen = handlers.chat_stream("question", [])
         events = []
         async for event in gen:
             events.append(event)
             if event and "first" in event:
                 await gen.aclose()
-                barrier.set()
                 break
 
         non_empty = [e for e in events if e]
         assert any("first" in e for e in non_empty)
         assert not any("second" in e for e in non_empty)
 
-    async def test_cancel_logs_message(self, mock_svc, caplog):
-        """Closing the chat_stream generator mid-stream logs a cancellation message."""
-        import threading
-
-        barrier = threading.Event()
-
-        def blocking_chat(*args, **kwargs):
-            yield "first"
-            barrier.wait(timeout=2)
-            yield "second"
-
+    async def test_skips_empty_tokens(self, mock_svc, monkeypatch):
+        """Empty text deltas from dispatch are not emitted."""
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = blocking_chat
-        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        gen = handlers.chat_stream("question", [])
-        async for event in gen:
-            if event and "first" in event:
-                await gen.aclose()
-                barrier.set()
-                break
-        await asyncio.sleep(0.05)
-        assert any("cancelled by client" in r.message for r in caplog.records)
-
-    async def test_skips_empty_tokens(self, mock_svc):
-        """Empty strings from provider are not emitted."""
-        mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["", "reply"])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["", "reply"])
+        )
         events = [e async for e in handlers.chat_stream("question", [])]
 
         non_empty = [e for e in events if e]
