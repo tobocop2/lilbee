@@ -1,0 +1,56 @@
+name: Publish AUR package
+description: "Render the PKGBUILD, regenerate .SRCINFO in an Arch container, and push to AUR. Used by publish-packages and publish-cuda-packages."
+
+inputs:
+  pkgname:
+    description: "AUR package name (e.g. lilbee, lilbee-cuda)."
+    required: true
+  pkgbuild-dir:
+    description: "Directory in this repo containing the PKGBUILD (e.g. packaging/aur/lilbee)."
+    required: true
+  version:
+    description: "Release version (without leading 'v')."
+    required: true
+  sha-linux:
+    description: "sha256 of the Linux x86_64 binary asset."
+    required: true
+  aur-ssh-key:
+    description: "AUR SSH private key."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Render PKGBUILD
+      shell: bash
+      env:
+        PKGBUILD_DIR: ${{ inputs.pkgbuild-dir }}
+        VERSION: ${{ inputs.version }}
+        SHA_LINUX: ${{ inputs.sha-linux }}
+      run: |
+        bash packaging/tools/render_pkgbuild.sh \
+          "${PKGBUILD_DIR}/PKGBUILD" \
+          "${VERSION}" \
+          "${SHA_LINUX}"
+
+    - name: Regenerate .SRCINFO
+      shell: bash
+      env:
+        PKGBUILD_DIR: ${{ inputs.pkgbuild-dir }}
+      run: |
+        docker run --rm -v "$PWD/${PKGBUILD_DIR}:/pkg" -w /pkg archlinux:latest \
+          bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
+                   useradd -m b && chown -R b /pkg && \
+                   su b -c "makepkg --printsrcinfo" > .SRCINFO'
+
+    - name: Deploy to AUR
+      uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+      with:
+        pkgname: ${{ inputs.pkgname }}
+        pkgbuild: ${{ inputs.pkgbuild-dir }}/PKGBUILD
+        assets: ${{ inputs.pkgbuild-dir }}/.SRCINFO
+        commit_username: tobocop
+        commit_email: tobias.perelstein@gmail.com
+        ssh_private_key: ${{ inputs.aur-ssh-key }}
+        commit_message: "${{ inputs.pkgname }} ${{ inputs.version }}"
+        force_push: false
