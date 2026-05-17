@@ -118,14 +118,20 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Update sources.json cuda entry
+      - name: Update sources-cuda.json
         env:
           SHA_LINUX_CUDA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          jq --arg asset "lilbee-linux-x86_64-cu125" --arg sha "$SHA_LINUX_CUDA" \
-            '.cuda = { systems: { "x86_64-linux": { asset: $asset, sha256: $sha } } }' \
-            sources.json > sources.json.new
-          mv sources.json.new sources.json
+          jq -n --arg version "$VERSION" \
+            --arg asset "lilbee-linux-x86_64-cu125" \
+            --arg sha "$SHA_LINUX_CUDA" \
+            '{
+              version: $version,
+              systems: {
+                "x86_64-linux": { asset: $asset, sha256: $sha }
+              }
+            }' > sources-cuda.json
       - name: Validate flake against new sources
         run: nix flake check --all-systems
       - name: Commit and push
@@ -133,7 +139,7 @@ jobs:
           set -euo pipefail
           git config user.name "lilbee-bot"
           git config user.email "lilbee-bot@users.noreply.github.com"
-          git add sources.json
+          git add sources-cuda.json
           if git diff --cached --quiet; then
             echo "no source changes; skipping push"
             exit 0

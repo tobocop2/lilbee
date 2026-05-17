@@ -84,10 +84,11 @@
         in
         if isLinux then mkLinuxFHS pkgs system else mkBin pkgs system;
 
-      # CUDA variant: optional, only present on x86_64-linux and only when
-      # sources.cuda.systems.${system} is populated. The publish-cuda-packages
-      # workflow fills in sources.json after build-cuda-executables runs.
-      cudaSources = sources.cuda or { systems = { }; };
+      # CUDA variant: lives in sources-cuda.json so the standard publish path
+      # (which overwrites sources.json) cannot wipe it. Only present on
+      # x86_64-linux and only when sources-cuda.systems.${system} is populated;
+      # publish-cuda-packages fills it in after build-cuda-executables runs.
+      cudaSources = builtins.fromJSON (builtins.readFile ./sources-cuda.json);
       cudaSystems = builtins.attrNames cudaSources.systems;
       hasCuda = system: builtins.elem system cudaSystems;
 
