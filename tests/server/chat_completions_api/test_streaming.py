@@ -3,12 +3,40 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
 
+from lilbee.server.chat_completions_api.models import (
+    CompletionsStreamChoice,
+    CompletionsStreamChunk,
+    CompletionsStreamDelta,
+)
 from lilbee.server.chat_completions_api.streaming import encode_completions_sse
 
 
-async def _async_chunks(items: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+def _chunk(
+    *,
+    id: str = "x",
+    model: str = "m",
+    created: int = 0,
+    delta: CompletionsStreamDelta | None = None,
+    finish_reason: str | None = None,
+) -> CompletionsStreamChunk:
+    return CompletionsStreamChunk(
+        id=id,
+        created=created,
+        model=model,
+        choices=[
+            CompletionsStreamChoice(
+                index=0,
+                delta=delta if delta is not None else CompletionsStreamDelta(),
+                finish_reason=finish_reason,
+            )
+        ],
+    )
+
+
+async def _async_chunks(
+    items: list[CompletionsStreamChunk],
+) -> AsyncIterator[CompletionsStreamChunk]:
     for item in items:
         yield item
 
@@ -22,13 +50,7 @@ class TestEncodeCompletionsSse:
         body = await _drain(
             encode_completions_sse(
                 _async_chunks(
-                    [
-                        {
-                            "id": "x",
-                            "object": "chat.completion.chunk",
-                            "choices": [{"index": 0, "delta": {"content": "hi"}}],
-                        }
-                    ]
+                    [_chunk(delta=CompletionsStreamDelta(content="hi"))],
                 )
             )
         )
@@ -44,29 +66,57 @@ class TestEncodeCompletionsSse:
             encode_completions_sse(
                 _async_chunks(
                     [
-                        {"i": 0},
-                        {"i": 1},
-                        {"i": 2},
+                        _chunk(id="a", delta=CompletionsStreamDelta(content="0")),
+                        _chunk(id="b", delta=CompletionsStreamDelta(content="1")),
+                        _chunk(id="c", delta=CompletionsStreamDelta(content="2")),
                     ]
                 )
             )
         )
         frames = body.decode().split("\n\n")
-        # Three data frames + done frame + trailing empty (from final \n\n split)
-        assert frames[0] == 'data: {"i":0}'
-        assert frames[1] == 'data: {"i":1}'
-        assert frames[2] == 'data: {"i":2}'
+        for index, ident in enumerate(("a", "b", "c")):
+            payload = frames[index].removeprefix("data: ")
+            assert f'"id":"{ident}"' in payload
+            assert f'"content":"{index}"' in payload
         assert frames[3] == "data: [DONE]"
 
     async def test_empty_stream_still_emits_done_terminator(self) -> None:
         body = await _drain(encode_completions_sse(_async_chunks([])))
         assert body == b"data: [DONE]\n\n"
 
-    async def test_chunks_serialize_with_compact_separators(self) -> None:
-        body = await _drain(encode_completions_sse(_async_chunks([{"a": 1, "b": [2, 3]}])))
-        # No spaces between keys/values: separators=(",", ":") in encoder.
-        assert b'data: {"a":1,"b":[2,3]}\n\n' in body
+    async def test_chunks_omit_none_fields(self) -> None:
+        # ``encode_completions_sse`` uses ``model_dump_json(exclude_none=True)``;
+        # role-less, finish-less content frames must not leak ``"role":null`` etc.
+        body = await _drain(
+            encode_completions_sse(
+                _async_chunks([_chunk(delta=CompletionsStreamDelta(content="hi"))])
+            )
+        )
+        first_frame = body.decode().split("\n\n")[0]
+        payload = first_frame.removeprefix("data: ")
+        assert "null" not in payload
+        assert '"role":' not in payload
+        assert '"finish_reason":' not in payload
+        assert '"tool_calls":' not in payload
 
     async def test_output_is_bytes_not_str(self) -> None:
-        async for chunk in encode_completions_sse(_async_chunks([{"x": 1}])):
+        async for chunk in encode_completions_sse(
+            _async_chunks([_chunk(delta=CompletionsStreamDelta(content="hi"))])
+        ):
             assert isinstance(chunk, bytes)
+
+    async def test_finish_chunk_includes_finish_reason(self) -> None:
+        body = await _drain(
+            encode_completions_sse(
+                _async_chunks(
+                    [
+                        _chunk(
+                            delta=CompletionsStreamDelta(),
+                            finish_reason="stop",
+                        )
+                    ]
+                )
+            )
+        )
+        first_frame = body.decode().split("\n\n")[0]
+        assert '"finish_reason":"stop"' in first_frame

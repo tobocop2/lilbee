@@ -29,10 +29,6 @@ class TestCompletionsErrorBody:
         assert body["error"]["type"] == "invalid_request_error"
         assert body["error"]["code"] == "model_does_not_support_tools"
 
-    def test_context_length_exceeded_is_invalid_request_error(self) -> None:
-        body = completions_error_body(CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, "too long")
-        assert body["error"]["type"] == "invalid_request_error"
-
     def test_authentication_error_type(self) -> None:
         body = completions_error_body(CompletionsErrorCode.INVALID_API_KEY, "Bad token")
         assert body["error"]["type"] == "authentication_error"

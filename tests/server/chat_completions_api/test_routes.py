@@ -284,6 +284,100 @@ class TestNonStreamingCompletion:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["type"] == "invalid_request_error"
+        # The translator's ``ValidationError`` message lists the missing field.
+        assert "model" in body["error"]["message"]
+
+    async def test_wrong_type_payload_returns_400_with_openai_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        # ``temperature`` must be a float; passing a string trips
+        # pydantic ``ValidationError`` inside the handler and surfaces
+        # the same OpenAI envelope as a missing-field error.
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "temperature": "hot",
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "temperature" in body["error"]["message"]
+
+    async def test_unknown_role_payload_returns_400(self, services_with_chat_model, _auth_token):
+        # ``role`` is a Literal of four OpenAI roles; ``developer`` is rejected.
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "developer", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+
+    async def test_unknown_extra_fields_are_tolerated(self, services_with_chat_model, _auth_token):
+        # Pydantic's default ``extra="ignore"`` lets unknown top-level
+        # fields through so older OpenAI clients keep working.
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "frequency_penalty": 0.3,
+                    "user": "tobias",
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "hello"
+
+    async def test_unknown_tool_choice_mode_returns_400_invalid_request(
+        self, services_with_chat_model, _auth_token
+    ):
+        # ``tool_choice: "bogus"`` parses (it is a string) but fails in
+        # the translator with ``ValueError``; the route maps it to a
+        # 400 invalid-request envelope.
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": "bogus",
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["code"] == "invalid_request"
+        assert "bogus" in body["error"]["message"]
+
+    async def test_non_dict_body_returns_400_via_validation_handler(
+        self, services_with_chat_model, _auth_token
+    ):
+        # Litestar parses the body as ``dict[str, Any]`` and raises
+        # ``ValidationException`` for non-dict JSON; the custom handler
+        # wraps it in the OpenAI 400 envelope.
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json=["not", "a", "dict"],
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["code"] == "invalid_request"
 
     async def test_provider_exception_returns_500_envelope_and_releases_lock(
         self, services_with_chat_model, _auth_token
