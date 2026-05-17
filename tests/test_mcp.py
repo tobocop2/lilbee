@@ -1218,3 +1218,11 @@ class TestCatalogBrowseMcp:
         """task=embedding never returns chat models even with no other filters."""
         result = catalog_browse(task="embedding", featured=True)
         assert all(m["task"] == "embedding" for m in result["models"])
+
+    def test_browse_forwards_get_catalog_value_error(self, isolated_env, mock_svc):
+        """A ValueError from get_catalog surfaces as the uniform error envelope."""
+        with mock.patch(
+            "lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")
+        ):
+            result = catalog_browse(task="embedding", featured=True)
+        assert result == {"error": "bad filter"}
