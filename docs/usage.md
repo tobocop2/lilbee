@@ -573,17 +573,14 @@ uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
 faster and dodges the Vulkan-loader crash that affects NVIDIA-on-Windows
-setups. The pip route is live today:
+setups. Same `lilbee` command, links straight against your NVIDIA driver:
 
 ```bash
 pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/
+brew install tobocop2/lilbee/lilbee-cuda
+paru -S lilbee-cuda
+nix run github:tobocop2/lilbee#lilbee-cuda
 ```
-
-Standalone CUDA binaries via Homebrew (`brew install
-tobocop2/lilbee/lilbee-cuda`), AUR (`paru -S lilbee-cuda`), Nix (`nix run
-github:tobocop2/lilbee#lilbee-cuda`), and direct download
-(`lilbee-{linux,windows}-x86_64-cu125`) are **coming soon**; they go live
-with the first CUDA-build dispatch.
 
 The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
 `paru -S lilbee-cuda` swaps automatically. On Homebrew, run `brew
