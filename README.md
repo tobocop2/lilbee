@@ -91,7 +91,9 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 The fastest path to a useful lilbee install is to hand it to an MCP-aware agent and let it do the setup. `lilbee_catalog_browse` lets the agent see what's available, `lilbee_model_pull` installs picks, and `lilbee_settings_set` wires them into the embedding / reranker / vision roles and tunes the retrieval knobs for the library and question style you actually care about. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
 
-![an opencode agent tunes lilbee for breadth via lilbee_settings_set before answering, then walks through every A-star pathfinding class in Godot 4 with file:line citations and resets the settings on the way out](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.png" controls width="800"></video>
+
+(Same agent, same MCP server, same query, two takes: turn 1 at default settings returns AStar3D only and the agent flags that AStar2D is missing; turn 2 the agent batches one `lilbee_settings_set` widening `top_k`, runs the same search, and the answer now covers AStar3D + AStar2D + AStarGrid2D with citations. Reset on the way out.)
 
 ### Grounding for AI agents
 

@@ -70,16 +70,18 @@ Crawling, API-Keys, System.
 
 ## Agent: self-tune (a better answer via lilbee_settings_set)
 
-A developer asks lilbee to tune retrieval for breadth before answering
-a broad Godot 4 pathfinding question against the godot class
-reference. The agent runs `lilbee_status` and `lilbee_settings_list`
-to see baseline, batches one `lilbee_settings_set` widening `top_k`
-for the dense XML files, runs three searches to drill into the A*
-variants, writes a comprehensive walkthrough citing every class, and
-resets settings on the way out. Same agent, same MCP server, one
-visible tuning step.
+Two-turn natural conversation against the godot 4 class reference.
+**Turn 1**: user asks the agent to call `lilbee_search` once at
+defaults and answer only from those results. The agent returns
+AStar3D and explicitly notes that AStar2D might exist but didn't
+appear. **Turn 2**: user reacts to the gap and asks the agent to tune
+lilbee and retry. The agent batches one `lilbee_settings_set` widening
+`top_k`, runs the same query, now returns AStar3D + AStar2D +
+AStarGrid2D with citations, and resets settings on the way out. Same
+agent, same MCP server, same query; the tuning step is the only
+variable.
 
-![an opencode agent tunes lilbee for breadth via lilbee_settings_set before answering, then walks through every A-star pathfinding class in Godot 4 with file:line citations and resets the settings on the way out](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+<video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.mp4" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.png" controls width="900"></video>
 
 ## Agent: code (lilbee talking to lilbee)
 
