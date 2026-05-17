@@ -57,55 +57,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Clone tap, render lilbee-cuda formula in place, push
-        env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          git config --global user.name "lilbee-bot"
-          git config --global user.email "lilbee-bot@users.noreply.github.com"
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
-          python3 packaging/tools/render_formula.py /tmp/tap/Formula/lilbee-cuda.rb \
-            --cuda \
-            --version "${{ needs.resolve.outputs.version }}" \
-            --sha-linux-cu125 "${{ needs.resolve.outputs.sha_linux_cuda }}"
-          cd /tmp/tap
-          git add Formula/lilbee-cuda.rb
-          if git diff --cached --quiet; then
-            echo "no formula changes; skipping push"
-            exit 0
-          fi
-          git commit -m "lilbee-cuda ${{ needs.resolve.outputs.version }}"
-          git push
+      - uses: ./.github/actions/publish-homebrew-formula
+        with:
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula-path: Formula/lilbee-cuda.rb
+          render-args: --cuda --version ${{ needs.resolve.outputs.version }} --sha-linux-cu125 ${{ needs.resolve.outputs.sha_linux_cuda }}
+          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }}"
 
   aur:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Render lilbee-cuda PKGBUILD
-        run: |
-          bash packaging/tools/render_pkgbuild.sh \
-            packaging/aur/lilbee-cuda/PKGBUILD \
-            "${{ needs.resolve.outputs.version }}" \
-            "${{ needs.resolve.outputs.sha_linux_cuda }}"
-      - name: Regenerate .SRCINFO
-        run: |
-          docker run --rm -v "$PWD/packaging/aur/lilbee-cuda:/pkg" -w /pkg archlinux:latest \
-            bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
-                     useradd -m b && chown -R b /pkg && \
-                     su b -c "makepkg --printsrcinfo" > .SRCINFO'
-      - name: Deploy to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+      - uses: ./.github/actions/publish-aur-package
         with:
           pkgname: lilbee-cuda
-          pkgbuild: packaging/aur/lilbee-cuda/PKGBUILD
-          assets: packaging/aur/lilbee-cuda/.SRCINFO
-          commit_username: tobocop
-          commit_email: tobias.perelstein@gmail.com
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "lilbee-cuda ${{ needs.resolve.outputs.version }}"
-          force_push: false
+          pkgbuild-dir: packaging/aur/lilbee-cuda
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   nix-flake:
     needs: resolve
@@ -117,32 +87,18 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/nix-installer-action@main
-      - name: Update sources-cuda.json
+      - name: Build systems JSON
+        id: sys
         env:
           SHA_LINUX_CUDA: ${{ needs.resolve.outputs.sha_linux_cuda }}
-          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          jq -n --arg version "$VERSION" \
-            --arg asset "lilbee-linux-x86_64-cu125" \
+          systems=$(jq -nc \
             --arg sha "$SHA_LINUX_CUDA" \
-            '{
-              version: $version,
-              systems: {
-                "x86_64-linux": { asset: $asset, sha256: $sha }
-              }
-            }' > sources-cuda.json
-      - name: Validate flake against new sources
-        run: nix flake check --all-systems
-      - name: Commit and push
-        run: |
-          set -euo pipefail
-          git config user.name "lilbee-bot"
-          git config user.email "lilbee-bot@users.noreply.github.com"
-          git add sources-cuda.json
-          if git diff --cached --quiet; then
-            echo "no source changes; skipping push"
-            exit 0
-          fi
-          git commit -m "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"
-          git push origin main
+            '{ "x86_64-linux": { asset: "lilbee-linux-x86_64-cu125", sha256: $sha } }')
+          echo "value=${systems}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-flake-sources
+        with:
+          target-file: sources-cuda.json
+          version: ${{ needs.resolve.outputs.version }}
+          systems-json: ${{ steps.sys.outputs.value }}
+          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"
