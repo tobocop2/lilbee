@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
 
 from litestar import get, post
@@ -15,31 +14,26 @@ from lilbee.data.store import scope_to_chunk_type
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
+from lilbee.server.chat_dispatch.concurrency import (
+    ChatBusyError,
+    acquire_or_raise_busy,
+    chat_lock,
+)
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
 )
 
-# Process-wide lock that gates the two streaming chat endpoints to one
-# in-flight request at a time. The llama-cpp provider already serializes
-# concurrent chat() calls under a thread lock, so a second concurrent
-# stream blocks the client for many seconds with no feedback. Returning
-# 429 + Retry-After fast lets clients surface a real error and decide.
-# The lock binds to the worker's running event loop on first acquire.
-_chat_inflight_lock = asyncio.Lock()
+_chat_inflight_lock = chat_lock()
 
 
 def _acquire_chat_lock_or_raise() -> None:
-    """Non-blocking acquire on the running loop thread; raise 429 on contention.
-
-    Race-free because route handlers run on a single event loop thread and
-    ``Lock.acquire()`` on a free lock returns synchronously without yielding.
-    The check + acquire is atomic from the loop's perspective, no ``await``
-    can intervene between the two calls.
-    """
-    if _chat_inflight_lock.locked():
-        raise HTTPException(status_code=429, headers={"Retry-After": "1"})
+    """Translate the canonical busy signal into Litestar's HTTP 429 envelope."""
+    try:
+        acquire_or_raise_busy()
+    except ChatBusyError as exc:
+        raise HTTPException(status_code=429, headers={"Retry-After": "1"}) from exc
 
 
 async def _gated_stream(
