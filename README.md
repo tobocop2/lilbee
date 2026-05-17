@@ -240,21 +240,17 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md).
 
-### Opencode with lilbee, one command
+### Use opencode with lilbee models
+
+opencode is the supported agent integration today. Pull a chat model first via the TUI: run `lilbee` and use the catalog screen (`/models`) to browse what's available, then pick something tool-capable. You can also let an agent discover and pull models for you via MCP if you prefer, but the TUI's catalog is built for interactive browsing.
+
+Then, one command:
 
 ```bash
 lilbee launch opencode
 ```
 
-That single command starts a lilbee server in the background, hands opencode an inline config pointing at your local models, installs the `lilbee-mcp` skill into opencode's global skills directory so the agent knows how to use lilbee out of the box, and pre-populates the model picker. When opencode exits the spawned server shuts down. Nothing to paste, nothing to edit. This is the fastest way to go from `pip install lilbee` to coding against local models.
-
-### Lilbee as a local model server for any OpenAI-compatible client
-
-`lilbee serve` exposes `/v1/models` and `/v1/chat/completions`, so any client that takes a custom base URL works (aider, continue.dev, cursor's custom-model mode, LiteLLM proxy, etc.). Run `lilbee serve` in a terminal and either point the client at `http://127.0.0.1:<port>/v1` directly, or paste the output of `lilbee agent-config opencode` / `lilbee agent-config litellm` into the client's config.
-
-### Other frontier agents (Claude Code, Cursor, etc.)
-
-If you're already using Claude Code, Cursor, or another agent that runs against a hosted frontier model, you don't need lilbee's models. Use lilbee for retrieval instead. The `lilbee-mcp` skill at [`src/lilbee/skills/lilbee_mcp/SKILL.md`](src/lilbee/skills/lilbee_mcp/SKILL.md) tells your agent how to call `lilbee_search`, `lilbee_add`, etc. Copy it into the host's skills directory (`.claude/skills/lilbee-mcp/`, `.opencode/skills/lilbee-mcp/`, or the global equivalents) and add the MCP block from the skill's "Install" section to your host config. After that, your frontier agent grounds its answers in your indexed library while continuing to use its own cloud model.
+That starts a lilbee server in the background, hands opencode an inline config pointing at your local models, installs the bundled `lilbee-mcp` skill into opencode's global skills directory so the agent knows how to use lilbee out of the box, and pre-populates the model picker. When opencode exits the spawned server shuts down. Nothing to paste, nothing to edit.
 
 ## HTTP Server
 

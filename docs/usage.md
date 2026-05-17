@@ -225,7 +225,14 @@ example configs, and the full tool list.
 
 ### Use lilbee as a local model server
 
-**`lilbee launch opencode` is the fast path.** One command:
+opencode is the supported agent integration today.
+
+Pull a chat model first via the TUI: run `lilbee`, open the catalog
+(`/models`), and pick something tool-capable. You can also let an agent
+discover and pull models for you via MCP if you prefer; the TUI's catalog
+screen is built for browsing interactively.
+
+Then, one command:
 
 ```bash
 lilbee launch opencode
@@ -234,35 +241,16 @@ lilbee launch opencode
 starts a lilbee server in the background, passes opencode an inline config via
 `OPENCODE_CONFIG_CONTENT`, installs the bundled `lilbee-mcp` skill into
 opencode's global skills directory (`~/.config/opencode/skills/lilbee-mcp/`)
-so opencode sessions know how to use lilbee from turn one, and pre-populates
-opencode's model picker with your installed lilbee models. The skill is
-copied once and skipped on subsequent runs so any edits you make are
-preserved. When opencode exits, the spawned server is stopped (`--keep-serving`
-keeps it up).
+so the agent knows how to use lilbee from turn one, and pre-populates
+opencode's model picker. The skill is copied once and skipped on subsequent
+runs so any edits you make are preserved. When opencode exits, the spawned
+server is stopped (`--keep-serving` keeps it up).
 
-**For other OpenAI-compatible clients** (aider, continue.dev, cursor's
-custom-model mode, Zed, LiteLLM proxy, and so on), `lilbee serve` exposes
-`GET /v1/models` and `POST /v1/chat/completions`. Run it in a terminal and
-either point the client at `http://127.0.0.1:<port>/v1` directly, or paste a
-ready-made config block:
-
-```bash
-lilbee agent-config opencode > opencode.json     # opencode wired up by hand
-lilbee agent-config litellm > litellm.yaml       # litellm fronting other clients
-```
-
-See [HTTP server](#http-server) for the flags that control the bind address,
-port, and token storage.
-
-**For frontier agents that already use a hosted model** (Claude Code, Cursor,
-Aider against GPT-4, etc.), you don't need lilbee for the LLM. Use lilbee for
-retrieval. Copy the
-[`lilbee-mcp`](../src/lilbee/skills/lilbee_mcp/SKILL.md) skill into your
-host's skills directory (`.claude/skills/lilbee-mcp/` for Claude Code project
-scope, `~/.claude/skills/lilbee-mcp/` for global; same `.opencode/skills/`
-shape for opencode) and add the MCP block from the skill's "Install" section
-to the host's config. The agent stays on its own cloud model and gets
-`lilbee_search` / `lilbee_add` as extra tools.
+If you'd rather wire opencode up yourself, `lilbee agent-config opencode`
+prints the same config block. For fanning lilbee out to a stack you already
+front with a LiteLLM proxy, `lilbee agent-config litellm` prints a proxy
+config you can drop in. See [HTTP server](#http-server) for the flags that
+control the bind address, port, and token storage.
 
 > [!CAUTION]
 > **Private data and cloud agents**

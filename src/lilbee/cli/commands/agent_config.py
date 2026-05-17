@@ -28,9 +28,9 @@ def running_server_session() -> tuple[str, int] | None:
     if not session_path.exists() or not port_path.exists():
         return None
     try:
-        data = json.loads(session_path.read_text())
+        data = json.loads(session_path.read_text(encoding="utf-8"))
         token = data.get("token")
-        port = int(port_path.read_text().strip())
+        port = int(port_path.read_text(encoding="utf-8").strip())
     except (json.JSONDecodeError, OSError, ValueError):
         return None
     if not isinstance(token, str) or not token:

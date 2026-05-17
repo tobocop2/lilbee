@@ -76,10 +76,19 @@ def _wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> bo
 
 
 def _spawn_server(port: int) -> subprocess.Popen[bytes]:
-    # Command line built from sys.executable plus literal flags; only caller-
-    # controlled value is the integer port. No untrusted input.
+    # Prefer the lilbee binary on PATH (the same one the user just invoked)
+    # so frozen/standalone builds spawn the binary directly. Fall back to
+    # ``sys.executable -m lilbee`` for the pip / editable install case where
+    # ``lilbee`` resolves to a console_scripts shim that already wraps that
+    # form. Only caller-controlled value is the integer port.
+    lilbee_bin = shutil.which("lilbee")
+    cmd = (
+        [lilbee_bin, "serve", "--port", str(port)]
+        if lilbee_bin is not None
+        else [sys.executable, "-m", "lilbee", "serve", "--port", str(port)]
+    )
     return subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "lilbee", "serve", "--port", str(port)],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -136,7 +145,7 @@ def _read_opencode_state(path: Path) -> dict:
     if not path.exists():
         return fallback
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return fallback
     return loaded if isinstance(loaded, dict) else fallback
@@ -161,7 +170,7 @@ def _merge_recent(existing: object, model_refs: list[str]) -> list[dict]:
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
 
