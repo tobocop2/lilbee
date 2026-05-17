@@ -15,6 +15,7 @@ from typing import Any
 class CompletionsErrorCode(StrEnum):
     """Stable error-code vocabulary for the chat-completions surface."""
 
+    INVALID_REQUEST = "invalid_request"
     MODEL_NOT_FOUND = "model_not_found"
     MODEL_DOES_NOT_SUPPORT_TOOLS = "model_does_not_support_tools"
     CONTEXT_LENGTH_EXCEEDED = "context_length_exceeded"
@@ -24,6 +25,7 @@ class CompletionsErrorCode(StrEnum):
 
 
 COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
+    CompletionsErrorCode.INVALID_REQUEST: "invalid_request_error",
     CompletionsErrorCode.MODEL_NOT_FOUND: "invalid_request_error",
     CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS: "invalid_request_error",
     CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED: "invalid_request_error",
