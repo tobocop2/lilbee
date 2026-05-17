@@ -1,18 +1,10 @@
-"""Names of the per-provider API key fields on the Config model.
-
-Anything that wants to react to provider availability (e.g. the catalog
-and model picker refreshing their API-model rows after a key is added)
-keys off this set so the list does not drift from the canonical Config
-declaration.
-
-Layering note: ``core`` cannot import from ``providers``; that is why
-the provider-specific entries are listed here rather than derived from
-``providers.sdk_backend.API_KEY_FIELDS``. Keep both in sync when adding
-a new provider.
-"""
+"""Config-field key sets shared by the settings boundary and worker pool."""
 
 from __future__ import annotations
 
+# Keep in sync with ``providers.sdk_backend.API_KEY_FIELDS`` when adding a
+# new provider; core cannot import from providers so the two sets live in
+# parallel.
 PROVIDER_API_KEYS: frozenset[str] = frozenset(
     {
         "llm_api_key",

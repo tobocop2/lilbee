@@ -2435,7 +2435,8 @@ async def test_app_title_has_model():
 
 
 async def test_app_cycle_theme():
-    from lilbee.app.themes import DARK_THEMES, LilbeeApp
+    from lilbee.app.themes import DARK_THEMES
+    from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
