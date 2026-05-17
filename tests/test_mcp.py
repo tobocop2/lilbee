@@ -40,6 +40,7 @@ from lilbee.mcp_server import (
     wiki_synthesize,
     wiki_update,
 )
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 
 
 @pytest.fixture(autouse=True)
@@ -794,7 +795,7 @@ class TestWikiStatus:
 class TestWikiBuildTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_build() == {"error": "wiki not enabled"}
+        assert wiki_build() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -809,7 +810,7 @@ class TestWikiBuildTool:
 class TestWikiUpdateTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_update() == {"error": "wiki not enabled"}
+        assert wiki_update() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -823,7 +824,7 @@ class TestWikiUpdateTool:
 class TestWikiSynthesizeTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_synthesize() == {"error": "wiki not enabled"}
+        assert wiki_synthesize() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_synthesis_paths(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -860,7 +861,7 @@ class TestWikiList:
         cfg.wiki = False
         result = wiki_list()
         assert "error" in result
-        assert result["error"] == "wiki not enabled"
+        assert result["error"] == WIKI_DISABLED_ERROR
 
     def test_empty_wiki(self, isolated_env):
         cfg.wiki = True
@@ -896,7 +897,7 @@ class TestWikiRead:
         cfg.wiki = False
         result = wiki_read("summaries/test")
         assert "error" in result
-        assert result["error"] == "wiki not enabled"
+        assert result["error"] == WIKI_DISABLED_ERROR
 
     def test_existing_page(self, isolated_env):
         cfg.wiki = True
@@ -1186,6 +1187,13 @@ class TestSettingsMcp:
 
         assert _is_nullable("chat_model") is False
         assert _is_nullable("embedding_model") is False
+
+    def test_settings_get_wire_format_nullable_matches_boundary(self, isolated_env):
+        """settings_get's MCP wire format reports nullable=False for model role fields."""
+        cfg.data_root = isolated_env
+        for role in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
+            result = settings_get(role)
+            assert result["setting"]["nullable"] is False, role
 
     def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
         """OSError from the TOML write reverts cfg before re-raising."""

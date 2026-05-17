@@ -996,12 +996,17 @@ class TestModelPickerButton:
             new_ref = "ollama/new-embed:latest"
             store_mock = mock.MagicMock()
             store_mock.has_chunks.return_value = False
+            services_mock = mock.MagicMock(store=store_mock)
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
-                    return_value=mock.MagicMock(store=store_mock),
+                    return_value=services_mock,
+                ),
+                mock.patch(
+                    "lilbee.app.services.get_services",
+                    return_value=services_mock,
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)

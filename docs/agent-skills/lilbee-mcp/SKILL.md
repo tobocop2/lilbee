@@ -270,7 +270,7 @@ opt-in, not part of normal answer flow. Skip everything here unless the user
 explicitly asks about wiki / synthesis pages, or `lilbee_status` already shows a
 wiki built. The build / read tools (`lilbee_wiki_list`, `lilbee_wiki_read`,
 `lilbee_wiki_build`, `lilbee_wiki_update`, `lilbee_wiki_synthesize`) return
-`{"error": "wiki disabled"}` until the user enables it with
+`{"error": "wiki not enabled"}` until the user enables it with
 `lilbee_settings_set({"wiki": true})`. The remaining wiki tools operate on
 the on-disk wiki directory regardless of the flag and will report empty
 results when there's nothing to read.

@@ -325,17 +325,20 @@ async def models_catalog(
     offset: int = 0,
 ) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
-    # task arrives as a raw query-string; validate against the closed enum
-    # at the HTTP boundary instead of letting an unknown value silently
-    # short-circuit the catalog filter inside.
+    # Validate every closed-set param at the HTTP boundary instead of
+    # letting unknown values silently short-circuit the filter inside.
+    from lilbee.catalog.types import CatalogSize, CatalogSort
+
     parsed_task = ModelTask(task) if task else None
+    parsed_size = CatalogSize(size) if size else None
+    parsed_sort = CatalogSort(sort)
     result = get_catalog(
         task=parsed_task,
         search=search,
-        size=size,
+        size=parsed_size.value if parsed_size else None,
         installed=installed,
         featured=featured,
-        sort=sort,
+        sort=parsed_sort.value,
         limit=limit,
         offset=offset,
     )

@@ -21,6 +21,7 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PER_CALL_RELOADABLE_KEYS,
     PROVIDER_API_KEYS,
+    PROVIDER_SWITCHING_KEYS,
 )
 
 _MIN_CHUNK_SIZE = 64
@@ -250,7 +251,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         inject_provider_keys()
-    if "llm_provider" in changed_keys:
+    if changed_keys & PROVIDER_SWITCHING_KEYS:
         # Swap requires reconstructing the provider singleton via
         # providers.factory.create_provider, only called at services init.
         from lilbee.app.services import reset_services

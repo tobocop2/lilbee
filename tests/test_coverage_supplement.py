@@ -501,9 +501,9 @@ class TestAppCanonicalizeFallbackNotice:
     ) -> None:
         """Fallback writes cfg, persists via settings, logs WARNING, does not toast.
 
-        Persisting (the ``settings.set_value`` call) is what makes this a
-        one-time notice. Without it the warning fires every restart for as
-        long as the stale ref sits in config.toml.
+        Persisting through the settings boundary is what makes this a
+        one-time notice. Without it the warning fires every restart for
+        as long as the stale ref sits in config.toml.
         """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg

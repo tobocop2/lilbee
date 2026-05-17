@@ -20,6 +20,7 @@ from lilbee.app.settings import (
     list_settings,
     reset_settings,
 )
+from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
@@ -535,6 +536,11 @@ def settings_list(group: str = "") -> dict[str, Any]:
 def settings_get(key: str) -> dict[str, Any]:
     """Get the current value and metadata for a single lilbee setting.
 
+    The ``nullable`` field on the returned setting means the writer
+    accepts ``None`` to delete the persisted entry; ``vision_model`` /
+    ``reranker_model`` report ``nullable=false`` even though an empty
+    string clears them.
+
     Args:
         key: Setting name (e.g. ``"top_k"``, ``"chunk_size"``,
             ``"chat_model"``). Use ``settings_list`` to discover keys.
@@ -732,7 +738,7 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
 @mcp.tool()
 async def model_pull(
     model: str,
-    source: str = "native",
+    source: str = ModelSource.NATIVE.value,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Download a model, streaming progress via MCP notifications.

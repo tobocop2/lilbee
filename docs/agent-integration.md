@@ -210,7 +210,7 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 
 The wiki layer is opt-in and still rough. The build / read tools
 (`wiki_list`, `wiki_read`, `wiki_build`, `wiki_update`, `wiki_synthesize`)
-return `{"error": "wiki disabled"}` until the user runs
+return `{"error": "wiki not enabled"}` until the user runs
 `settings_set({"wiki": true})`. The remaining wiki tools work against
 the on-disk wiki directory regardless of the flag and report empty
 results when there's nothing to read. Skip everything here unless the

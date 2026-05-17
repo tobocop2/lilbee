@@ -37,3 +37,7 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
 # need to drop the role; the next call swaps the model inside the live
 # worker, saving the 1-3 s spawn cost.
 PER_CALL_RELOADABLE_KEYS: frozenset[str] = frozenset({"chat_model", "vision_model"})
+
+# Keys whose write requires reconstructing the services singleton because
+# the provider class itself changes (not just the loaded model).
+PROVIDER_SWITCHING_KEYS: frozenset[str] = frozenset({"llm_provider"})

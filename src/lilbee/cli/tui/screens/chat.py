@@ -30,7 +30,6 @@ from textual.widgets import Footer, Select, Static
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_services, reset_store
-from lilbee.app.settings import apply_settings_update
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -969,9 +968,10 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            apply_settings_update({key: parsed})
-            if key == "llm_provider":  # pragma: no cover
-                reset_services()
+            # Route through set_setting so settings_changed_signal subscribers
+            # (model bar, scope chip, status bar) refresh. The boundary's
+            # _invalidate_caches now handles llm_provider service reset.
+            self.app.set_setting(key, parsed)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
