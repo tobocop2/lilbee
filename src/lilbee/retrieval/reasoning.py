@@ -256,7 +256,7 @@ def cap_events_as_stream_tokens(
             yield event
 
 
-def _close_iterator(tokens: Iterator[str]) -> None:
+def _close_iterator(tokens: Iterator[Any]) -> None:
     """Close *tokens* if it satisfies the ClosableIterator protocol."""
     if isinstance(tokens, ClosableIterator):
         with contextlib.suppress(Exception):

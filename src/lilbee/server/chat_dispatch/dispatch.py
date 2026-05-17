@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, cast
 
 from lilbee.app.services import get_services
 from lilbee.providers.worker.transport import (
@@ -130,10 +130,15 @@ async def dispatch_chat_stream(
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
 
+    # Provider streaming iterators implement both sync (Iterator) and async
+    # (AsyncIterator) protocols; the Protocol type captures only the sync side
+    # for back-compat with reasoning.py's existing sync iteration. Dispatch
+    # uses async iteration to avoid blocking the event loop on each token.
+    async_stream = cast(AsyncIterator[str | ToolCallDelta], stream)
     try:
         yield MessageStart(id=_new_message_id(), model=req.model)
         state = _StreamState()
-        async for frame in stream:
+        async for frame in async_stream:
             for event in state.feed(frame):
                 yield event
         for event in state.finish():
@@ -156,19 +161,19 @@ class _StreamState:
         self._tool_index: int | None = None
         self._stop_reason: StopReason = StopReason.END_TURN
 
-    def feed(self, frame: str | ToolCallDelta):
+    def feed(self, frame: str | ToolCallDelta) -> Iterator[CanonicalStreamEvent]:
         if isinstance(frame, str):
             yield from self._feed_text(frame)
         else:
             yield from self._feed_tool(frame)
 
-    def finish(self):
+    def finish(self) -> Iterator[CanonicalStreamEvent]:
         if self._open != self._NO_BLOCK:
             yield ContentBlockStop(index=self._index)
             self._open = self._NO_BLOCK
         yield MessageDelta(stop_reason=self._stop_reason)
 
-    def _feed_text(self, text: str):
+    def _feed_text(self, text: str) -> Iterator[CanonicalStreamEvent]:
         if self._open != self._TEXT_BLOCK:
             yield from self._close_current()
             self._index += 1
@@ -176,7 +181,7 @@ class _StreamState:
             yield ContentBlockStart(index=self._index, block=TextBlock(text=""))
         yield ContentBlockDelta(index=self._index, delta=TextDelta(text=text))
 
-    def _feed_tool(self, frame: ToolCallDelta):
+    def _feed_tool(self, frame: ToolCallDelta) -> Iterator[CanonicalStreamEvent]:
         self._stop_reason = StopReason.TOOL_USE
         is_new_call = self._open != self._TOOL_BLOCK or frame.index != self._tool_index
         if is_new_call:
@@ -198,7 +203,7 @@ class _StreamState:
                 delta=ToolUseDelta(partial_json=frame.arguments_delta),
             )
 
-    def _close_current(self):
+    def _close_current(self) -> Iterator[CanonicalStreamEvent]:
         if self._open != self._NO_BLOCK:
             yield ContentBlockStop(index=self._index)
             self._open = self._NO_BLOCK
@@ -226,7 +231,7 @@ def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
     return out
 
 
-def _translate_message(msg) -> list[dict[str, Any]]:
+def _translate_message(msg: Any) -> list[dict[str, Any]]:
     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
     tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
     tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]

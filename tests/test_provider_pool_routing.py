@@ -670,6 +670,59 @@ def test_chat_streaming_mid_stream_timeout_raises_provider_error(
         next(iter(iterator))
 
 
+@pytest.mark.asyncio
+async def test_chat_streaming_supports_async_iteration(chat_pool_provider) -> None:
+    """``async for`` over the streaming iterator yields the same chunks as sync iteration.
+
+    The dispatch layer (`server/chat_dispatch/dispatch.py`) iterates this
+    iterator with ``async for`` to avoid blocking the event loop on each
+    token; this test guards the async path against silent regression.
+    """
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    chunks = [chunk async for chunk in iterator]
+    assert "".join(chunks) == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_anext_after_exhaustion_raises_stop_async(
+    chat_pool_provider,
+) -> None:
+    """After exhaustion, ``__anext__`` must raise ``StopAsyncIteration`` cleanly."""
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    [chunk async for chunk in iterator]
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_anext_worker_error_raises_provider_error(
+    chat_pool_provider,
+) -> None:
+    """``async for`` paths propagate WorkerError as ProviderError, matching sync."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    class _AnextWorkerError:
+        async def __anext__(self):
+            raise WorkerError("RuntimeError", "worker died mid-stream", "")
+
+    iterator._async_iter = _AnextWorkerError()
+    with pytest.raises(ProviderError, match=r"Chat worker (exited|reported)"):
+        await iterator.__anext__()
+    assert iterator._exhausted is True
+
+
 def test_chat_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool worker errors must propagate as ProviderError."""
     from lilbee.providers.base import ProviderError

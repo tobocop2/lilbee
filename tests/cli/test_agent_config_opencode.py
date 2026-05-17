@@ -110,3 +110,12 @@ def test_opencode_config_with_corrupt_server_json_exits_1():
     result = runner.invoke(app, ["agent-config", "opencode"])
     assert result.exit_code == 1
     assert "lilbee serve" in result.stderr
+
+
+def test_opencode_config_with_non_string_token_exits_1():
+    """server.json present but ``token`` field is not a string."""
+    server_json_path().write_text(json.dumps({"token": 12345}))
+    (cfg.data_dir / "server.port").write_text("8765")
+    result = runner.invoke(app, ["agent-config", "opencode"])
+    assert result.exit_code == 1
+    assert "lilbee serve" in result.stderr

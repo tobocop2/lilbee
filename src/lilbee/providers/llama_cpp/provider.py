@@ -611,6 +611,25 @@ class _PoolChatStreamIterator:
     def __iter__(self) -> _PoolChatStreamIterator:
         return self
 
+    def __aiter__(self) -> _PoolChatStreamIterator:
+        return self
+
+    async def __anext__(self) -> ChatStreamItem:
+        if self._exhausted:
+            raise StopAsyncIteration
+        try:
+            chunk: ChatStreamItem = await self._async_iter.__anext__()
+            return chunk
+        except StopAsyncIteration:
+            self._exhausted = True
+            raise
+        except WorkerError as exc:
+            self._exhausted = True
+            raise ProviderError(
+                LlamaCppProvider._worker_error_message("Chat", exc),
+                provider="llama-cpp",
+            ) from exc
+
     def __next__(self) -> ChatStreamItem:
         if self._exhausted:
             raise StopIteration
