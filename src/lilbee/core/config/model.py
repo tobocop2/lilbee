@@ -56,6 +56,13 @@ class Config(BaseSettings):
     # ``vault_path`` so a host UI can deep-link into the vault.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
+    # Human-readable label for the active lilbee. Empty falls back to the
+    # data_root basename (or "global" for the platform default dir).
+    lilbee_name: str = ConfigField(default="", writable=True)
+    # If True, the status bar shows the full data_root path instead of
+    # the friendly name; useful when juggling several project-local libs.
+    show_lilbee_path: bool = ConfigField(default=False, writable=True)
+
     chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)
     embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",

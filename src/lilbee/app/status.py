@@ -6,6 +6,23 @@ from pydantic import BaseModel
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.system import default_data_dir
+
+
+def lilbee_label() -> str:
+    """Human label for the active lilbee, used in the TUI status bar.
+
+    Precedence: cfg.show_lilbee_path -> full ``data_root`` string;
+    cfg.lilbee_name -> the user-set alias; data_root at the platform
+    default -> "global"; otherwise the data_root directory name.
+    """
+    if cfg.show_lilbee_path:
+        return str(cfg.data_root)
+    if cfg.lilbee_name:
+        return cfg.lilbee_name
+    if cfg.data_root == default_data_dir():
+        return "global"
+    return cfg.data_root.name
 
 
 class StatusConfig(BaseModel):

@@ -585,10 +585,9 @@ class TestGetCatalog:
         for m in result.models:
             assert m.size_gb >= 10.0
 
-    def test_filter_size_invalid_ignored(self) -> None:
-        result_all = get_catalog()
-        result_bad = get_catalog(size="gigantic")
-        assert result_all.total == result_bad.total
+    def test_filter_size_invalid_rejected(self) -> None:
+        with pytest.raises((KeyError, ValueError)):
+            get_catalog(size="gigantic")
 
     def test_filter_featured_true(self) -> None:
         result = get_catalog(featured=True)

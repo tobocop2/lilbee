@@ -51,7 +51,7 @@ class CatalogSize(StrEnum):
 
 
 class CatalogSort(StrEnum):
-    """Sort key for catalog browse results. Mirrors ``_SORT_KEYS`` in catalog.query."""
+    """Sort key for catalog browse results."""
 
     FEATURED = "featured"
     DOWNLOADS = "downloads"

@@ -915,6 +915,19 @@ class ChatScreen(Screen[None]):
                 self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
 
+    def _cmd_rebuild(self, _args: str) -> None:
+        from lilbee.data.ingest import sync as run_sync
+
+        async def _run() -> None:
+            try:
+                result = await run_sync(quiet=True, force_rebuild=True)
+            except Exception as exc:
+                self.notify(f"Rebuild failed: {exc}", severity="error")
+                return
+            self.notify(f"Rebuild complete: {len(result.added)} files re-indexed")
+
+        self.run_worker(_run(), exclusive=False)
+
     def _cmd_reset(self, args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 

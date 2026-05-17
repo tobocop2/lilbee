@@ -523,6 +523,16 @@ class TestModelsCatalogRoute:
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
 
+    def test_invalid_sort_returns_422(self, client):
+        """An unknown sort value must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?sort=random&featured=true")
+        assert resp.status_code == 422
+
+    def test_invalid_size_returns_422(self, client):
+        """An unknown size bucket must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?size=huge&featured=true")
+        assert resp.status_code == 422
+
 
 class TestModelsInstalledRoute:
     @mock.patch(

@@ -271,6 +271,21 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.DISPLAY,
         help_text="Show model reasoning/thinking tokens in output",
     ),
+    "lilbee_name": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.DISPLAY,
+        help_text=(
+            "Human-readable label for this lilbee, shown in the status bar. "
+            "Empty falls back to the data-root directory name (or 'global')."
+        ),
+    ),
+    "show_lilbee_path": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.DISPLAY,
+        help_text="Show the full data-root path in the status bar instead of the friendly name.",
+    ),
     "theme": SettingDef(
         str,
         nullable=False,

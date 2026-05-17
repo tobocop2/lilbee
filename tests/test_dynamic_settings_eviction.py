@@ -206,3 +206,17 @@ async def test_provider_availability_signal_fires_for_each_provider_key(_patch_c
             await pilot.pause()
 
         assert {payload[0] for payload in received} == set(PROVIDER_API_KEYS)
+
+
+def test_llm_provider_write_resets_services():
+    """Writing llm_provider through the boundary tears down the services singleton."""
+    with mock.patch("lilbee.app.services.reset_services") as mock_reset:
+        apply_settings_update({"llm_provider": "remote"})
+    mock_reset.assert_called_once()
+
+
+def test_unrelated_write_does_not_reset_services():
+    """A write that isn't in PROVIDER_SWITCHING_KEYS leaves services alone."""
+    with mock.patch("lilbee.app.services.reset_services") as mock_reset:
+        apply_settings_update({"top_k": 12})
+    mock_reset.assert_not_called()

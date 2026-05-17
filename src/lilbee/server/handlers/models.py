@@ -24,7 +24,7 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.catalog.refs import hf_repo_from_ref
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.model_ref import parse_model_ref
@@ -327,18 +327,16 @@ async def models_catalog(
     """Return paginated model catalog with installed status."""
     # Validate every closed-set param at the HTTP boundary instead of
     # letting unknown values silently short-circuit the filter inside.
-    from lilbee.catalog.types import CatalogSize, CatalogSort
-
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
     result = get_catalog(
         task=parsed_task,
         search=search,
-        size=parsed_size.value if parsed_size else None,
+        size=parsed_size,
         installed=installed,
         featured=featured,
-        sort=parsed_sort.value,
+        sort=parsed_sort,
         limit=limit,
         offset=offset,
     )

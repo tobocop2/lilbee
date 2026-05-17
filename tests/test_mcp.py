@@ -1195,6 +1195,43 @@ class TestSettingsMcp:
             result = settings_get(role)
             assert result["setting"]["nullable"] is False, role
 
+
+class TestLilbeeLabel:
+    """app.status.lilbee_label is the friendly name the TUI status bar shows."""
+
+    def test_user_alias_wins_over_directory_name(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = "my-project"
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "my-project"
+
+    def test_path_toggle_overrides_alias(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = "my-project"
+        cfg.show_lilbee_path = True
+        assert lilbee_label() == str(isolated_env)
+
+    def test_default_falls_back_to_directory_name(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == isolated_env.name
+
+    def test_global_data_dir_label(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = default_data_dir()
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "global"
+
     def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
         """OSError from the TOML write reverts cfg before re-raising."""
         from lilbee.app.settings import apply_settings_update

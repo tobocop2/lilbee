@@ -618,7 +618,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.app.models import list_models_data
-    from lilbee.catalog.types import ModelSource, ModelTask
+    from lilbee.catalog.types import ModelTask
 
     try:
         src = ModelSource.parse(source)
@@ -658,7 +658,8 @@ def catalog_browse(
             uninstalled, ``null`` shows both.
         featured: ``true`` restricts to the curated featured list,
             ``false`` skips it (HF results only), ``null`` includes both.
-        sort: ``"featured"``, ``"downloads"``, or ``"name"``.
+        sort: ``"featured"``, ``"downloads"``, ``"name"``,
+            ``"size_asc"``, or ``"size_desc"``.
         limit: Page size (default 20).
         offset: Page offset for pagination.
 
@@ -679,10 +680,10 @@ def catalog_browse(
         result = get_catalog(
             task=parsed_task,
             search=search,
-            size=parsed_size.value if parsed_size else None,
+            size=parsed_size,
             installed=installed,
             featured=featured,
-            sort=parsed_sort.value,
+            sort=parsed_sort,
             limit=limit,
             offset=offset,
             model_manager=get_services().model_manager,
@@ -750,7 +751,6 @@ async def model_pull(
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
