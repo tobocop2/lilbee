@@ -70,6 +70,7 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 - **A built-in model catalog.** Browse and pull models straight from Hugging Face Hub, from inside the app. lilbee is the model runtime; no hunting for files yourself.
 - **Runs on your computer.** Models, index, and files all stay local. lilbee uses a cloud model only when you pick one, and flags it when it does.
 - **Per-project libraries.** Run globally, or drop a `.lilbee/` next to `.git/` the way git does; each domain stays its own clean library.
+- **Agents can tune lilbee themselves.** Every writable setting is exposed over MCP, so a coding agent can pick models, pull them, wire them into the embedding / reranker / vision roles, and widen retrieval for the shape of what's indexed without you leaving the chat. [See the agent: self-tune demo](#let-the-agent-set-up-lilbee-for-you).
 
 ## Why lilbee
 
