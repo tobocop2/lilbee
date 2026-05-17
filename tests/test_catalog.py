@@ -767,8 +767,6 @@ class TestFindCatalogEntry:
 
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
-        from lilbee.catalog.types import ModelTask
-
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
         assert entry.gguf_filename == "*.gguf"
@@ -777,15 +775,11 @@ class TestBuildAdhocEntry:
         assert entry.task == ModelTask.CHAT
 
     def test_respects_task_override(self) -> None:
-        from lilbee.catalog.types import ModelTask
-
         entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
         assert entry.task == ModelTask.EMBEDDING
 
     def test_rerank_task_accepted(self) -> None:
         """Ad-hoc reranker entries preserve the RERANK task tag."""
-        from lilbee.catalog.types import ModelTask
-
         entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
         assert entry.task == ModelTask.RERANK
         assert entry.gguf_filename == "*.gguf"
@@ -1828,8 +1822,6 @@ class TestDownloadTaskName:
 
     def test_repo_ref_matches_catalog_display_name(self) -> None:
         from lilbee.catalog import CatalogModel, download_task_name
-        from lilbee.catalog.types import ModelTask
-
         model = CatalogModel(
             hf_repo="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             gguf_filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
