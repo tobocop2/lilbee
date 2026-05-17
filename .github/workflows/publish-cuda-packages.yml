@@ -1,0 +1,142 @@
+name: Publish CUDA Packages
+
+# Updates the Homebrew lilbee-cuda formula, AUR lilbee-cuda PKGBUILD, and the
+# Nix flake CUDA entry to pin a tag's GH-release CUDA Linux binary. Runs
+# manually after build-cuda-executables.yml has attached the CUDA exe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose CUDA executables are on the GH release (e.g. v0.6.66b476)."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-cuda-packages-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      version: ${{ steps.info.outputs.version }}
+      sha_linux_cuda: ${{ steps.info.outputs.sha_linux_cuda }}
+    steps:
+      - name: Resolve tag and CUDA asset digest
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          version="${tag#v}"
+          gh api "/repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+
+          get_sha() {
+            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
+          }
+          sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
+
+          [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-cuda-executables.yml first"; exit 1; }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha_linux_cuda=$sha_linux_cuda"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Clone tap, render lilbee-cuda formula in place, push
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "lilbee-bot"
+          git config --global user.email "lilbee-bot@users.noreply.github.com"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
+          python3 packaging/tools/render_formula.py /tmp/tap/Formula/lilbee-cuda.rb \
+            --cuda \
+            --version "${{ needs.resolve.outputs.version }}" \
+            --sha-linux-cu125 "${{ needs.resolve.outputs.sha_linux_cuda }}"
+          cd /tmp/tap
+          git add Formula/lilbee-cuda.rb
+          if git diff --cached --quiet; then
+            echo "no formula changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee-cuda ${{ needs.resolve.outputs.version }}"
+          git push
+
+  aur:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Render lilbee-cuda PKGBUILD
+        run: |
+          bash packaging/tools/render_pkgbuild.sh \
+            packaging/aur/lilbee-cuda/PKGBUILD \
+            "${{ needs.resolve.outputs.version }}" \
+            "${{ needs.resolve.outputs.sha_linux_cuda }}"
+      - name: Regenerate .SRCINFO
+        run: |
+          docker run --rm -v "$PWD/packaging/aur/lilbee-cuda:/pkg" -w /pkg archlinux:latest \
+            bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
+                     useradd -m b && chown -R b /pkg && \
+                     su b -c "makepkg --printsrcinfo" > .SRCINFO'
+      - name: Deploy to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        with:
+          pkgname: lilbee-cuda
+          pkgbuild: packaging/aur/lilbee-cuda/PKGBUILD
+          assets: packaging/aur/lilbee-cuda/.SRCINFO
+          commit_username: tobocop
+          commit_email: tobias.perelstein@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "lilbee-cuda ${{ needs.resolve.outputs.version }}"
+          force_push: false
+
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Update sources.json cuda entry
+        env:
+          SHA_LINUX_CUDA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+        run: |
+          jq --arg asset "lilbee-linux-x86_64-cu125" --arg sha "$SHA_LINUX_CUDA" \
+            '.cuda = { systems: { "x86_64-linux": { asset: $asset, sha256: $sha } } }' \
+            sources.json > sources.json.new
+          mv sources.json.new sources.json
+      - name: Validate flake against new sources
+        run: nix flake check --all-systems
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "lilbee-bot"
+          git config user.email "lilbee-bot@users.noreply.github.com"
+          git add sources.json
+          if git diff --cached --quiet; then
+            echo "no source changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"
+          git push origin main
