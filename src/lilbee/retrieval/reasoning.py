@@ -59,7 +59,7 @@ class CapNotice:
 
 
 @dataclass
-class _TagParser:
+class TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 
     show: bool
@@ -140,7 +140,7 @@ def filter_reasoning(
     the running reasoning-chars count each time it grows by at least 256
     characters. A non-positive *cap_chars* disables the cap.
     """
-    parser = _TagParser(show=show)
+    parser = TagParser(show=show)
     last_progress_tick = 0
     try:
         for token in tokens:

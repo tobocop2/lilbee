@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import dataclasses
 import logging
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
 from lilbee.app.search import clean_result
@@ -14,8 +16,11 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
 from lilbee.retrieval.reasoning import (
+    CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
     CapNotice,
+    StreamToken,
+    TagParser,
     effective_reasoning_cap,
     stream_chat_with_cap,
     strip_reasoning,
@@ -208,7 +213,7 @@ async def _stream_chat_response(
     options: dict[str, Any] | None,
     chunk_type: str | None,
 ) -> AsyncGenerator[str, None]:
-    """Drive ``dispatch_chat_stream`` and emit token/sources/done SSE events."""
+    """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
     rag = get_services().searcher.build_rag_context(
         question, top_k=top_k, history=history, chunk_type=chunk_type
     )
@@ -218,12 +223,9 @@ async def _stream_chat_response(
     sources, messages = rag
 
     req = _build_canonical_request(messages, options)
-    canonical_stream = dispatch_chat_stream(req)
     try:
-        async for event in canonical_stream:
-            text = _text_from_event(event)
-            if text:
-                yield sse_event(SseEvent.TOKEN, {"token": text})
+        async for event in _cap_aware_chat_events(req):
+            yield _sse_for_chat_event(event)
     except Exception as exc:
         raw = str(exc)
         code, user_message = classify_load_error(raw)
@@ -233,6 +235,90 @@ async def _stream_chat_response(
 
     yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in sources])
     yield sse_done({})
+
+
+async def _cap_aware_chat_events(
+    req: CanonicalChatRequest,
+) -> AsyncIterator[StreamToken | CapNotice]:
+    """Run ``dispatch_chat_stream``, split reasoning, and re-issue on cap-fire.
+
+    Mirrors :func:`stream_chat_with_cap` but consumes the canonical async
+    stream. ``CapNotice`` is yielded once between the truncated reasoning
+    and the continuation answer; ``StreamToken`` carries the
+    reasoning-vs-response split for downstream SSE shaping.
+    """
+    cap_chars = effective_reasoning_cap()
+    show = cfg.show_reasoning
+
+    first_parser = TagParser(show=show)
+    async for tok in _drive_stream(dispatch_chat_stream(req), first_parser, cap_chars):
+        yield tok
+    if not (cap_chars > 0 and first_parser.reasoning_chars > cap_chars):
+        return
+
+    yield CapNotice(cap_chars=cap_chars)
+    nudged = _nudged_request(req)
+    cont_parser = TagParser(show=show)
+    async for tok in _drive_stream(dispatch_chat_stream(nudged), cont_parser, cap_chars=0):
+        # Continuation tokens are always treated as final-answer text.
+        yield StreamToken(content=tok.content, is_reasoning=False)
+
+
+async def _drive_stream(
+    stream: AsyncIterator[Any],
+    parser: TagParser,
+    cap_chars: int,
+) -> AsyncIterator[StreamToken]:
+    """Feed *stream* through *parser*; yield ``StreamToken``s; stop on cap-fire."""
+    cap_fired = False
+    try:
+        async for event in stream:
+            text = _text_from_event(event)
+            if not text:
+                continue
+            for tok in parser.feed(text):
+                if tok.content:
+                    yield tok
+            if cap_chars > 0 and parser.reasoning_chars > cap_chars:
+                cap_fired = True
+                break
+    finally:
+        if cap_fired:
+            await _aclose(stream)
+    tail = parser.flush()
+    if tail is not None and tail.content:
+        yield tail
+
+
+def _nudged_request(req: CanonicalChatRequest) -> CanonicalChatRequest:
+    """Append the cap-continuation user prompt to *req*'s messages."""
+    return dataclasses.replace(
+        req,
+        messages=[
+            *req.messages,
+            CanonicalMessage.from_string(role="user", text=CAP_CONTINUATION_PROMPT),
+        ],
+    )
+
+
+async def _aclose(stream: AsyncIterator[Any]) -> None:
+    """Best-effort close for async-generator-shaped streams."""
+    closer = getattr(stream, "aclose", None)
+    if closer is None:
+        return
+    with contextlib.suppress(Exception):
+        await closer()
+
+
+def _sse_for_chat_event(event: StreamToken | CapNotice) -> str:
+    """Render one orchestrator event as an SSE frame with the right channel."""
+    if isinstance(event, CapNotice):
+        return sse_event(
+            SseEvent.REASONING,
+            {"token": CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
+        )
+    kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
+    return sse_event(kind, {"token": event.content})
 
 
 def _text_from_event(event: Any) -> str:
