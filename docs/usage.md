@@ -574,6 +574,10 @@ uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 For NVIDIA users wanting CUDA-native acceleration (default install already
 covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/`
 (or `cu124/` / `cu121/` to match older drivers, picked from `nvidia-smi`).
+A standalone binary build is also available: `brew install
+tobocop2/lilbee/lilbee-cuda`, `paru -S lilbee-cuda`, `nix run
+github:tobocop2/lilbee#lilbee-cuda`, or download the
+`lilbee-{linux,windows}-x86_64-cu125` asset from the release page.
 
 While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is
 required on every install.
