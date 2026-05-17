@@ -242,34 +242,19 @@ The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](doc
 
 ### Use lilbee as a local model server
 
-`lilbee serve` also speaks the OpenAI Chat Completions and Anthropic Messages protocols, so any client that lets you set a custom base URL can drive a lilbee model the same way it would drive a hosted one. The chat catalog you've installed via lilbee shows up at `/v1/models`; cancellation, streaming, and tool calls work end-to-end. `lilbee agent-config <client>` prints a paste-ready block for each client, using the running server's port and token.
+`lilbee serve` speaks the OpenAI Chat Completions protocol, so any client that lets you set a custom base URL can drive a lilbee model the same way it would drive a hosted one. Streaming, tool calls, and cancellation work end-to-end. The chat catalog you've installed via lilbee shows up at `/v1/models`.
 
-Start the server once, then pick whichever recipe matches your client:
-
-**opencode** (gets the OpenAI-compatible provider and lilbee's MCP tools in one config):
+**Opencode** is the easy path. One command starts a server, generates a config, and launches opencode pointed at your local models:
 
 ```bash
-lilbee serve --port 8080
-lilbee agent-config opencode > opencode.json
-opencode
+lilbee launch opencode
 ```
 
-**Cline** (VS Code / Cursor extension, Anthropic-compatible):
+The opencode session gets both the chat API and the lilbee MCP tools (search, add, status) in one config, so the model can ground answers in your library while it codes.
 
-```bash
-lilbee serve --port 8080
-lilbee agent-config cline    # paste into Cline's settings
-```
+**Any other OpenAI-compatible client** (aider, continue.dev, cursor's custom-model mode, LiteLLM proxy, etc.): run `lilbee serve` in one terminal, then point the client at `http://127.0.0.1:<port>/v1` with the token from `lilbee token`. `lilbee agent-config opencode` and `lilbee agent-config litellm` print paste-ready config blocks for those two; the LiteLLM block fronts any further client that already speaks OpenAI.
 
-**LiteLLM proxy** (front any other client that already speaks OpenAI):
-
-```bash
-lilbee serve --port 8080
-lilbee agent-config litellm > config.yaml
-litellm --config config.yaml
-```
-
-The catalog of model refs in each block is read from the running server, so it stays in sync with whatever you've pulled. Run `lilbee serve --help` for host / port / token options; `/v1/*` shares the same bearer token as the rest of the REST API.
+The model list in each block is read from the running server, so it stays in sync with whatever you've pulled. `/v1/*` shares the same bearer token as the rest of the REST API.
 
 ## HTTP Server
 

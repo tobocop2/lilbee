@@ -170,4 +170,4 @@ def auth_headers(qa_data_dir: Path, lilbee_serve: str) -> dict[str, str]:
     """Bearer headers built from the token the spawned server wrote out."""
     session_path = qa_data_dir / "data" / "server.json"
     token = json.loads(session_path.read_text())["token"]
-    return {"Authorization": f"Bearer {token}", "x-api-key": token}
+    return {"Authorization": f"Bearer {token}"}

@@ -9,7 +9,15 @@ above the ``setup`` and ``wiki`` sub-typers (attached at the bottom).
 from __future__ import annotations
 
 from lilbee.cli.app import app
-from lilbee.cli.commands import agent_config, ingest_sync, meta, search_chat, servers, wiki
+from lilbee.cli.commands import (
+    agent_config,
+    ingest_sync,
+    launch,
+    meta,
+    search_chat,
+    servers,
+    wiki,
+)
 from lilbee.cli.commands import setup as setup_module
 
 # Top-level commands listed first so `lilbee --help` shows them before the
@@ -39,5 +47,6 @@ app.command(name="mcp")(servers.mcp_cmd)
 app.add_typer(setup_module.setup_app, name="setup")
 app.add_typer(wiki.wiki_app, name="wiki")
 app.add_typer(agent_config.agent_config_app, name="agent-config")
+app.add_typer(launch.launch_app, name="launch")
 
 __all__ = ["app"]

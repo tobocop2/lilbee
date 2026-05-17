@@ -1,4 +1,4 @@
-"""Verify ``create_app`` mounts the v1 chat-completions and messages routers."""
+"""Verify ``create_app`` mounts the v1 chat-completions router."""
 
 from __future__ import annotations
 
@@ -15,6 +15,3 @@ class TestV1RouterRegistration:
 
     def test_lists_v1_chat_completions(self) -> None:
         assert "/v1/chat/completions" in _route_paths()
-
-    def test_lists_v1_messages(self) -> None:
-        assert "/v1/messages" in _route_paths()

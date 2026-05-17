@@ -1,14 +1,8 @@
 """Default-CI smoke checks for the ``/v1/*`` response envelopes.
 
 No ``opencode`` binary, no model download. The Litestar app is driven
-in-process via ``AsyncTestClient`` (httpx-over-ASGI) so the suite is
-fast enough to run on every push while still catching wire-shape
-regressions in the OpenAI and Anthropic protocol bindings.
-
-A real installed tool-capable model is not required: the provider is
-mocked. The optional ``test_protocol_smoke_uses_installed_chat_model``
-test detects an installed model (if any) and reports it; it skips when
-no chat model is installed.
+in-process via ``AsyncTestClient`` so the suite is fast enough to run
+on every push while still catching wire-shape regressions.
 """
 
 from __future__ import annotations
@@ -24,9 +18,10 @@ from lilbee.providers.worker.transport import ChatResult, FinishReason
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.concurrency import chat_lock
-from lilbee.server.messages_api.routes import messages_router
 
 _MOCK_MODEL_REF = "vendor/Model-GGUF/model-Q4.gguf"
+_HTTP_OK = 200
+_HTTP_UNAUTHORIZED = 401
 
 
 def _installed_chat_model(ref: str = _MOCK_MODEL_REF) -> MagicMock:
@@ -73,15 +68,11 @@ def reset_chat_lock():
 
 @pytest.fixture
 def app() -> Litestar:
-    return Litestar(route_handlers=[completions_router, messages_router])
+    return Litestar(route_handlers=[completions_router])
 
 
-def _openai_headers(token: str) -> dict[str, str]:
+def _bearer_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
-
-
-def _anthropic_headers(token: str) -> dict[str, str]:
-    return {"x-api-key": token}
 
 
 async def test_chat_completions_response_matches_openai_envelope(
@@ -95,9 +86,9 @@ async def test_chat_completions_response_matches_openai_envelope(
                 "model": _MOCK_MODEL_REF,
                 "messages": [{"role": "user", "content": "hi"}],
             },
-            headers=_openai_headers(auth_token),
+            headers=_bearer_headers(auth_token),
         )
-    assert response.status_code == 200
+    assert response.status_code == _HTTP_OK
     body = response.json()
     assert body["object"] == "chat.completion"
     assert body["model"] == _MOCK_MODEL_REF
@@ -116,8 +107,8 @@ async def test_v1_models_returns_openai_list_envelope(
 ) -> None:
     """``GET /v1/models`` returns the canonical OpenAI list envelope."""
     async with AsyncTestClient(app) as client:
-        response = await client.get("/v1/models", headers=_openai_headers(auth_token))
-    assert response.status_code == 200
+        response = await client.get("/v1/models", headers=_bearer_headers(auth_token))
+    assert response.status_code == _HTTP_OK
     body = response.json()
     assert body["object"] == "list"
     refs = [entry["id"] for entry in body["data"]]
@@ -126,31 +117,6 @@ async def test_v1_models_returns_openai_list_envelope(
         assert entry["object"] == "model"
         assert entry["owned_by"] == "lilbee"
         assert isinstance(entry["created"], int)
-
-
-async def test_messages_response_matches_anthropic_envelope(
-    app: Litestar, services_with_chat_model, auth_token: str
-) -> None:
-    """``POST /v1/messages`` returns the canonical Anthropic message envelope."""
-    async with AsyncTestClient(app) as client:
-        response = await client.post(
-            "/v1/messages",
-            json={
-                "model": _MOCK_MODEL_REF,
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 16,
-            },
-            headers=_anthropic_headers(auth_token),
-        )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["type"] == "message"
-    assert body["role"] == "assistant"
-    assert body["model"] == _MOCK_MODEL_REF
-    assert body["id"].startswith("msg_")
-    assert body["content"] == [{"type": "text", "text": "hello"}]
-    assert body["stop_reason"] == "end_turn"
-    assert body["usage"] == {"input_tokens": 0, "output_tokens": 0}
 
 
 async def test_chat_completions_rejects_missing_auth(
@@ -162,39 +128,19 @@ async def test_chat_completions_rejects_missing_auth(
             "/v1/chat/completions",
             json={"model": _MOCK_MODEL_REF, "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert response.status_code == 401
+    assert response.status_code == _HTTP_UNAUTHORIZED
     body = response.json()
     assert body["error"]["code"] == "invalid_api_key"
     assert "type" in body["error"]
 
 
-async def test_messages_rejects_missing_auth(
-    app: Litestar, services_with_chat_model, auth_token: str
-) -> None:
-    """No api-key header surfaces the Anthropic 401 error envelope."""
-    async with AsyncTestClient(app) as client:
-        response = await client.post(
-            "/v1/messages",
-            json={
-                "model": _MOCK_MODEL_REF,
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 16,
-            },
-        )
-    assert response.status_code == 401
-    body = response.json()
-    assert body["type"] == "error"
-    assert body["error"]["type"] == "authentication_error"
-
-
 def test_protocol_smoke_uses_installed_chat_model_if_present(
     services_with_chat_model,
 ) -> None:
-    """When a chat model is installed the registry surfaces it under its real ref.
+    """The fixture surfaces the mock chat model under its real ref.
 
-    The mocked services container always installs ``_MOCK_MODEL_REF``;
-    this test guards against future fixture changes that would silently
-    drop chat models from the smoke suite.
+    Guards against future fixture changes that would silently drop chat
+    models from the smoke suite.
     """
     registry = get_services().registry
     chat_refs = [m.ref for m in registry.list_installed() if m.task == "chat"]

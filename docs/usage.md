@@ -225,44 +225,33 @@ example configs, and the full tool list.
 
 ### Use lilbee as a local model server
 
-`lilbee serve` also speaks the OpenAI Chat Completions and Anthropic Messages
-protocols. Anything that lets you set a custom base URL (opencode, Cline,
-Continue, Zed, the `llm` CLI, LiteLLM, and so on) can drive a lilbee model the
-same way it would drive a hosted one. Whatever chat models you've installed
-through lilbee show up at `GET /v1/models`; streaming, cancellation, and
-tool-calling round-trip through both protocols.
+`lilbee serve` speaks the OpenAI Chat Completions protocol, so any client that
+lets you set a custom base URL (opencode, aider, continue.dev, cursor's
+custom-model mode, Zed, the `llm` CLI, LiteLLM, and so on) can drive a lilbee
+model the same way it would drive a hosted one. Whatever chat models you've
+installed through lilbee show up at `GET /v1/models`; streaming, cancellation,
+and tool-calling all round-trip.
 
-`lilbee agent-config <client>` prints a paste-ready config block for `opencode`,
-`cline`, or `litellm`, pulling the running server's port and token. Start the
-server once, then pick the recipe that matches your client.
-
-**opencode.** Emits both an OpenAI-compatible provider block (one entry per
-installed chat model) and an `mcp.lilbee` block invoking `lilbee mcp`, so the
-agent gets the model and the `lilbee_search` / `lilbee_add` tools in the same
-config:
+**Opencode** is the easy path. `lilbee launch opencode` starts a server, generates a
+config, and launches opencode pointed at your local models, all in one
+command:
 
 ```bash
-lilbee serve --port 8080
-lilbee agent-config opencode > opencode.json
-opencode
+lilbee launch opencode
 ```
 
-**Cline.** Cline's native path is Anthropic-flavored; the block points its
-Anthropic provider at lilbee. Paste it into Cline's settings UI:
+The opencode session gets both the chat API and the lilbee MCP tools
+(`lilbee_search`, `lilbee_add`, status) in one config, so the model can
+ground answers in your library while it codes.
+
+For any other OpenAI-compatible client, run `lilbee serve` in one terminal and
+point the client at `http://127.0.0.1:<port>/v1` with the token from
+`lilbee token`. Two helpers print paste-ready config blocks for the common
+cases:
 
 ```bash
-lilbee serve --port 8080
-lilbee agent-config cline
-```
-
-**LiteLLM proxy.** Emits a `config.yaml` snippet routing every installed model
-name through lilbee's `/v1` base URL. Useful for fanning lilbee out to clients
-that only speak OpenAI but want to call it through a proxy:
-
-```bash
-lilbee serve --port 8080
-lilbee agent-config litellm > config.yaml
-litellm --config config.yaml
+lilbee agent-config opencode > opencode.json     # if you'd rather wire it up yourself
+lilbee agent-config litellm > litellm.yaml       # fronts any OpenAI-compatible client via a proxy
 ```
 
 The block lists whatever you've pulled at the moment the command runs, so

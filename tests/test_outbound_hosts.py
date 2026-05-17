@@ -30,7 +30,6 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "example.com",
         "github.com",
         # Agent-client documentation links cited from agent_configs/ module docstrings.
-        "docs.cline.bot",
         "docs.litellm.ai",
         "opencode.ai",
         # Citations for the dual-vendor Vulkan ICD workaround in

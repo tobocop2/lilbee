@@ -10,7 +10,7 @@ import typer
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
-from lilbee.cli.agent_configs import cline, litellm, opencode
+from lilbee.cli.agent_configs import litellm, opencode
 from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
@@ -71,12 +71,6 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
 def _opencode_cmd() -> None:
     """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
     _emit_block(opencode.opencode_config, mcp_command=_MCP_COMMAND)
-
-
-@agent_config_app.command("cline")
-def _cline_cmd() -> None:
-    """Print a Cline settings block (Anthropic-compatible provider)."""
-    _emit_block(cline.cline_config)
 
 
 @agent_config_app.command("litellm")
