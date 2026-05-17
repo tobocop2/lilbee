@@ -16,6 +16,8 @@ from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.chat_completions_api.routes import completions_router
+from lilbee.server.messages_api.routes import messages_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -120,6 +122,8 @@ def create_app() -> Litestar:
             ask_stream_route,
             chat_route,
             chat_stream_route,
+            completions_router,
+            messages_router,
             sync_route,
             add_route,
             models_list_route,
