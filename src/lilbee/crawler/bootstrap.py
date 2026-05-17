@@ -63,12 +63,51 @@ def _browsers_cache_path() -> Path:
     return Path.home() / ".cache" / "ms-playwright"
 
 
+def _read_chromium_revision(browsers_json: Path) -> str | None:
+    """Pull the ``chromium`` revision out of a Playwright ``browsers.json``."""
+    import json
+
+    try:
+        data = json.loads(browsers_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for browser in data.get("browsers", []):
+        if browser.get("name") == _CHROMIUM_COMPONENT:
+            revision = browser.get("revision")
+            return str(revision) if revision is not None else None
+    return None
+
+
+def _expected_chromium_revision() -> str | None:
+    """Revision string Playwright was built against (e.g. ``"1217"``).
+
+    ``None`` means "unknown" -- treat as "do install" so a missing
+    browsers.json never short-circuits the bootstrap path.
+    """
+    try:
+        import playwright as _pw
+    except ImportError:
+        return None
+    for path in Path(_pw.__file__).parent.rglob("browsers.json"):
+        return _read_chromium_revision(path)
+    return None
+
+
 def chromium_installed() -> bool:
-    """Return True if at least one chromium-* install directory exists."""
+    """Return True if the Chromium revision Playwright expects is on disk.
+
+    Matching by any ``chromium-*`` directory isn't enough: when the
+    system has chromium-1217 but the bundled Playwright driver expects
+    chromium-1208, launch fails with ``Executable doesn't exist`` even
+    though the bootstrap check thought everything was ready.
+    """
     root = _browsers_cache_path()
     if not root.exists():
         return False
-    return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
+    expected = _expected_chromium_revision()
+    if expected is None:
+        return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
+    return (root / f"{_CHROMIUM_COMPONENT}-{expected}").is_dir()
 
 
 def crawler_browsers_path() -> Path:
