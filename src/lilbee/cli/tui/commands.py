@@ -105,11 +105,12 @@ class LilbeeCommandProvider(Provider):
     def _set_model(self, attr: str, value: str) -> None:
         # Route through LilbeeApp.set_active_model so model-bar / scope chip
         # / status bar subscribers (settings_changed_signal) refresh.
-        self.screen.app.set_active_model(attr, value)
+        app = self._app
+        app.set_active_model(attr, value)
         display = value or "off"
-        self.screen.app.notify(f"{attr}: {display}")
+        app.notify(f"{attr}: {display}")
         if attr == "chat_model":
-            self.screen.app.title = f"lilbee: {value}"
+            app.title = f"lilbee: {value}"
 
     def _delete_doc(self, name: str) -> None:
         store = get_services().store
