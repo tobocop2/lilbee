@@ -1080,12 +1080,11 @@ async def test_settings_wiki_pane_scroll_clamps_past_top():
 
 
 async def test_settings_exposes_wiki_fields():
-    """Settings screen renders an editor for every wiki config field."""
+    """Settings screen renders an editor for every writable wiki config field."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        wiki_keys = [
+        writable_wiki_keys = [
             "wiki",
-            "wiki_dir",
             "wiki_prune_raw",
             "wiki_embedding_faithfulness_threshold",
             "wiki_stale_citation_threshold",
@@ -1093,8 +1092,11 @@ async def test_settings_exposes_wiki_fields():
             "wiki_clusterer",
             "wiki_clusterer_k",
         ]
-        for key in wiki_keys:
+        for key in writable_wiki_keys:
             assert app.screen.query_one(f"#ed-{key}") is not None
+        # wiki_dir is read-only (writing it silently strands existing wiki
+        # content), so the row exists but no editor is rendered.
+        assert app.screen.query_one("#row-wiki_dir") is not None
 
 
 async def test_settings_wiki_clusterer_k_persists():
