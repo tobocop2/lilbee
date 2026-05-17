@@ -68,10 +68,20 @@ Crawling, API-Keys, System.
 
 ![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
+## Agent: self-tune (the setup, done by the agent)
+
+The fastest path from "fresh install" to "useful lilbee" is to let the
+agent do the setup. It reads the retrieval catalog, batches one
+`lilbee_settings_set` to tune for a code-heavy single-source question,
+re-answers with citations, then resets to defaults. Same agent, same
+MCP server, two answers; the second is the one you want.
+
+![an opencode agent reads the lilbee retrieval catalog, batches one `lilbee_settings_set` to tune for a code-heavy single-source question, re-answers with citations, then resets to defaults](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+
 ## Agent: code (lilbee talking to lilbee)
 
-The headline agent demo. An agent indexes lilbee's own source through lilbee's MCP
-server, then answers questions about how lilbee works, citing
+The headline grounding demo. An agent indexes lilbee's own source through lilbee's
+MCP server, then answers questions about how lilbee works, citing
 `src/lilbee/.../file.py:LINE` for every claim.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
@@ -89,11 +99,11 @@ These don't have a tab on the site, but they're part of the same reel.
 
 ### Agent: live indexing
 
-The smaller agent-over-MCP demo. opencode on MiniMax M2.7 indexes a Godot 4
+The smaller agent-over-MCP demo. An MCP-aware coding agent indexes a Godot 4
 pathfinding subset in a few seconds, then `lilbee_search`-es for `AStarGrid2D` and
 answers method-by-method against the local files.
 
-![opencode + cloud frontier model indexes a small local godot subset](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 ### Agent: Godot codegen against the full class reference
 

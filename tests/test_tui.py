@@ -559,7 +559,7 @@ class TestCLIIntegration:
 
 class TestThemes:
     def test_dark_themes_available(self) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES
+        from lilbee.app.themes import DARK_THEMES
 
         assert "monokai" in DARK_THEMES
         assert "dracula" in DARK_THEMES

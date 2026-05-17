@@ -87,19 +87,19 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
-### Grounding for AI agents
+### Let the agent set up lilbee for you
 
-lilbee plugs into whatever AI agent you already use, over MCP. Feed it your project's docs, your dependency source, your API documentation, your design notes, and the agent stops making up function names: it reads the actual code it's about to call, cites the file and line, and says it doesn't know when the answer isn't in your library, instead of guessing.
-
-The agent can be a local model or a cloud one. lilbee is the local part: your files, the search index, and the embeddings all stay on your machine. The agent calls `lilbee_search` over MCP and gets back a list of cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations.
-
-![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
-
-### Let the agent tune lilbee for you
-
-Every writable lilbee setting is reachable from the same MCP server: `lilbee_settings_list` enumerates the catalog with current values, types, defaults, and help text; `lilbee_settings_set` writes them atomically; `lilbee_settings_reset` puts them back. The agent can also browse the model catalog (`lilbee_catalog_browse`) and pull entries (`lilbee_model_pull`). It already knows what chunk size, retrieval breadth, MMR weight, and reranker depth do, so you can have it assess your hardware, recommend embedding / vision / reranker models, pull them, and dial the retrieval pipeline in for your corpus, all without opening the TUI. The agent configures lilbee end-to-end from MCP. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for an example prompt.
+The fastest path to a useful lilbee install is to hand it to an MCP-aware agent and let it do the setup. `lilbee_catalog_browse` lets the agent see what's available, `lilbee_model_pull` installs picks, and `lilbee_settings_set` wires them into the embedding / reranker / vision roles and tunes the retrieval knobs for the corpus and question style you actually care about. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
 
 ![an opencode agent reads the lilbee retrieval catalog, batches one `lilbee_settings_set` to tune for a code-heavy single-source question, re-answers with citations, then resets to defaults](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+
+### Grounding for AI agents
+
+Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library.
+
+lilbee stays the local part: your files, the search index, and the embeddings never leave your machine. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
+
+![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
 ### Offline copies of websites
 

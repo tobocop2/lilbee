@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -151,8 +152,6 @@ async def _set_model(
     model: str,
 ) -> SetModelResponse:
     """Persist a model field through the shared write boundary."""
-    from lilbee.app.settings import apply_settings_update
-
     apply_settings_update({field: model})
     return SetModelResponse(model=model)
 

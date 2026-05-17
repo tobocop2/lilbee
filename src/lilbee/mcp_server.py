@@ -7,16 +7,20 @@ import concurrent.futures
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.settings import (
+    SettingInfo,
+    apply_settings_update,
+    get_setting,
+    list_settings,
+    reset_settings,
+)
 from lilbee.core.config import cfg
-
-if TYPE_CHECKING:
-    from lilbee.app.settings import SettingInfo
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import is_url, require_valid_crawl_url
@@ -510,7 +514,6 @@ def settings_list(group: str = "") -> dict[str, Any]:
     Args:
         group: Filter by group name (case-insensitive). Empty = all.
     """
-    from lilbee.app.settings import list_settings
 
     try:
         infos = list_settings(group or None)
@@ -531,7 +534,6 @@ def settings_get(key: str) -> dict[str, Any]:
         key: Setting name (e.g. ``"top_k"``, ``"chunk_size"``,
             ``"chat_model"``). Use ``settings_list`` to discover keys.
     """
-    from lilbee.app.settings import get_setting
 
     try:
         info = get_setting(key)
@@ -560,7 +562,6 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     (true when one of ``chunk_size`` / ``chunk_overlap`` changed; the
     caller should run ``sync(force_rebuild=true)`` to refresh the index).
     """
-    from lilbee.app.settings import apply_settings_update
 
     try:
         result = apply_settings_update(updates)
@@ -585,7 +586,6 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
         keys: Setting keys to reset. Use ``settings_list`` to discover
             available keys.
     """
-    from lilbee.app.settings import reset_settings
 
     try:
         result = reset_settings(keys)

@@ -290,8 +290,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         writable=False,
         group=SettingGroup.WIKI,
         help_text=(
-            "Directory under data_root where wiki pages live "
-            "(set via env / config.toml only)"
+            "Directory under data_root where wiki pages live (set via env / config.toml only)"
         ),
     ),
     "wiki_prune_raw": SettingDef(

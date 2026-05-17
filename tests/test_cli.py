@@ -35,7 +35,7 @@ def _mock_stream(*texts: str):
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
     """CLI tests never need real model validation or chat model checks."""
-    with mock.patch("lilbee.modelhub.models.ensure_chat_model"):
+    with mock.patch("lilbee.modelhub.models.ensure_chat_model", return_value=None):
         yield
 
 

@@ -721,7 +721,7 @@ class TestScreenTransitions:
 
     async def test_theme_cycling(self, _mock_resolve):
         """Ctrl+T cycles through themes without crashing."""
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
+        from lilbee.app.themes import DARK_THEMES, LilbeeApp
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:

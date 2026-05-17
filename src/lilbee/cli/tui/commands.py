@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from textual.command import Hit, Hits, Provider
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 
@@ -103,7 +104,6 @@ class LilbeeCommandProvider(Provider):
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:
-        from lilbee.app.settings import apply_settings_update
 
         apply_settings_update({attr: value})
         display = value or "off"

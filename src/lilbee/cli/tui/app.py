@@ -16,6 +16,7 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
@@ -212,7 +213,6 @@ class LilbeeApp(App[None]):
         ):
             if canon.status == ValidationResult.OK or canon.original == canon.effective:
                 continue
-            from lilbee.app.settings import apply_settings_update
 
             apply_settings_update({field: canon.effective})
             log.warning(
@@ -243,7 +243,6 @@ class LilbeeApp(App[None]):
 
     def _apply_and_persist_theme(self, name: str) -> None:
         """Apply *name* live and write it to config.toml."""
-        from lilbee.app.settings import apply_settings_update
 
         self.theme = name
         apply_settings_update({"theme": name})
@@ -254,7 +253,6 @@ class LilbeeApp(App[None]):
         Refs whose download is still queued or active are refused before the
         boundary runs, so a half-pulled file cannot land in a model slot.
         """
-        from lilbee.app.settings import apply_settings_update
 
         downloading = self.task_bar.downloading_label_for(value)
         if downloading is not None:
@@ -277,7 +275,6 @@ class LilbeeApp(App[None]):
         or values rejected by pydantic validation. Callers either catch and toast or let it
         propagate.
         """
-        from lilbee.app.settings import apply_settings_update
 
         apply_settings_update({key: value})
         normalized = getattr(cfg, key)

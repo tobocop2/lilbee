@@ -3,6 +3,15 @@
 lilbee serves as a local retrieval backend for AI coding agents. Two entry
 points are available: MCP (recommended) and JSON CLI.
 
+## Fastest start: have the agent configure lilbee for you
+
+The shortest path from "fresh install" to "useful lilbee" is to hand the
+setup to an MCP-aware agent. It can pick models for your hardware, pull
+them, wire them into the embedding / reranker / vision roles, and tune
+retrieval for the kind of questions you actually want to ask. See
+[Fine-tuning lilbee from your agent](#fine-tuning-lilbee-from-your-agent)
+below for the canonical example prompt.
+
 ## MCP Server (recommended)
 
 `lilbee mcp` launches an MCP server that agents call directly as tools. No

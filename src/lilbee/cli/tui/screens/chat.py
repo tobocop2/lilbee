@@ -30,6 +30,7 @@ from textual.widgets import Footer, Select, Static
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.settings import apply_settings_update
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -968,8 +969,6 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            from lilbee.app.settings import apply_settings_update
-
             apply_settings_update({key: parsed})
             if key == "llm_provider":  # pragma: no cover
                 reset_services()

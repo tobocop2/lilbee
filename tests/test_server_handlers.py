@@ -1599,12 +1599,6 @@ class TestUpdateConfig:
         assert stored["top_k"] == "5"
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
-        # Patch target is the module where inject_provider_keys is defined.
-        # app.settings._invalidate_caches imports it lazily inside the function
-        # body, so `from X import Y` resolves at call time and reads the
-        # patched module attribute. If a future refactor hoists the import to
-        # the top of app/settings.py, switch this patch to
-        # `lilbee.app.settings.inject_provider_keys`.
         with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
             result = await handlers.update_config({"openai_api_key": "sk-new"})
         assert result.updated == ["openai_api_key"]

@@ -26,6 +26,7 @@ from textual.widgets import (
 )
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.settings_widgets import (
@@ -567,7 +568,6 @@ class SettingsScreen(Screen[None]):
         """Reset every writable setting to its cfg default atomically."""
         if not confirmed:
             return
-        from lilbee.app.settings import reset_settings
 
         writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
         try:
