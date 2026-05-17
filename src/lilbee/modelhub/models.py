@@ -184,8 +184,8 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
 
 def validate_disk_and_pull(
     model_info: ModelInfo, free_gb: float, *, console: Console | None = None
-) -> None:
-    """Check disk space, pull the model, and persist the choice."""
+) -> str:
+    """Check disk space and pull the model. Returns the pulled ref; persist via the caller."""
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -195,9 +195,7 @@ def validate_disk_and_pull(
         )
 
     pull_with_progress(model_info.ref, console=console)
-    from lilbee.app.settings import apply_settings_update
-
-    apply_settings_update({"chat_model": model_info.ref})
+    return model_info.ref
 
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
@@ -228,11 +226,13 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     console.print(f"Model '{model}' ready.")
 
 
-def ensure_chat_model() -> None:
-    """If no chat models are installed, pick and pull one.
+def ensure_chat_model() -> str | None:
+    """If no chat models are installed, pick and pull one. Returns the pulled ref or None.
+
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): auto-pick recommended model silently.
-    Persists the chosen model in config.toml so it becomes the default.
+    The caller is responsible for persisting the returned ref via the
+    settings boundary; this function only handles the pull side.
     """
     from lilbee.app.services import get_services
 
@@ -248,7 +248,7 @@ def ensure_chat_model() -> None:
     embed_ref = cfg.embedding_model
     chat_models = [m for m in installed if m != embed_ref]
     if chat_models:
-        return
+        return None
 
     ram_gb = get_system_ram_gb()
     free_gb = get_free_disk_gb(cfg.data_dir)
@@ -262,7 +262,7 @@ def ensure_chat_model() -> None:
             f"(detected {ram_gb:.0f} GB RAM)...\n"
         )
 
-    validate_disk_and_pull(model_info, free_gb)
+    return validate_disk_and_pull(model_info, free_gb)
 
 
 def list_installed_models() -> list[str]:

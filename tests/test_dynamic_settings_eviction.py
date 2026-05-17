@@ -85,14 +85,15 @@ def test_non_reloadable_model_change_evicts_cache():
         _restore_services()
 
 
-def test_per_call_reloadable_model_change_skips_provider_eviction():
-    """Switching chat_model or vision_model does NOT touch the provider load
-    cache: the chat/vision workers reload in place via ``_ensure_loaded`` on
-    the next request, saving the 1-3 s spawn cost."""
+def test_per_call_reloadable_model_swap_skips_provider_eviction():
+    """Swapping chat_model or vision_model to a different ref does NOT touch
+    the provider load cache: the chat / vision workers reload in place via
+    ``_ensure_loaded`` on the next request, saving the 1-3 s spawn cost.
+    Both calls exercise a real ref-to-ref swap, not the disable path."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
-        apply_settings_update({"vision_model": ""})
+        apply_settings_update({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
         assert provider.calls == []
     finally:
         _restore_services()

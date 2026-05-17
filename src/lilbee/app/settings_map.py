@@ -287,8 +287,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "wiki_dir": SettingDef(
         str,
         nullable=False,
+        writable=False,
         group=SettingGroup.WIKI,
-        help_text="Directory under data_root where wiki pages are stored",
+        help_text=(
+            "Directory under data_root where wiki pages live "
+            "(set via env / config.toml only)"
+        ),
     ),
     "wiki_prune_raw": SettingDef(
         bool,

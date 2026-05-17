@@ -271,7 +271,12 @@ class LilbeeApp(App[None]):
         self.settings_changed_signal.publish((key, getattr(cfg, key)))
 
     def set_setting(self, key: str, value: object) -> None:
-        """Apply a setting through the shared write boundary, then fan out to the UI."""
+        """Apply a writable / model-role setting through the boundary, then fan out to the UI.
+
+        Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
+        or values rejected by pydantic validation. Callers either catch and toast or let it
+        propagate.
+        """
         from lilbee.app.settings import apply_settings_update
 
         apply_settings_update({key: value})

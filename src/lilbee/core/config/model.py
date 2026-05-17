@@ -325,7 +325,10 @@ class Config(BaseSettings):
     # Off by default; flip to True (or set LILBEE_WIKI=1) to enable. When off,
     # the Wiki view tab and the chat ModelBar's scope picker are both hidden.
     wiki: bool = ConfigField(default=False, writable=True)
-    wiki_dir: str = ConfigField(default="wiki", writable=True)
+    # Read-only: changing the directory at runtime strands prior wiki pages
+    # under the old path. Users who want a different location set it via
+    # LILBEE_WIKI_DIR / config.toml before the first wiki_build.
+    wiki_dir: str = "wiki"
     wiki_prune_raw: bool = ConfigField(default=False, writable=True)
 
     # Minimum cosine similarity between a page body and the mean of its

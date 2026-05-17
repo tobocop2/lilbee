@@ -128,9 +128,12 @@ def ask(
     )
 
     try:
+        from lilbee.app.settings import apply_settings_update
         from lilbee.modelhub.models import ensure_chat_model
 
-        ensure_chat_model()
+        pulled = ensure_chat_model()
+        if pulled is not None:
+            apply_settings_update({"chat_model": pulled})
         get_services().embedder.validate_model()
         if cfg.json_mode:
             from rich.console import Console as _QuietConsole

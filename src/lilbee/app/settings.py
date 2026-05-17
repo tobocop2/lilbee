@@ -195,6 +195,7 @@ def _validate(updates: dict[str, Any]) -> None:
 def _coerce_value(key: str, value: Any) -> Any:
     """Canonicalize value before cfg assignment; model-role slots run task validation."""
     if key in MODEL_ROLE_FIELDS and isinstance(value, str):
+        # heavy: role_validator pulls catalog + modelhub transitively (~300 ms)
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         return validate_model_task_assignment(key, value)
@@ -236,17 +237,23 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
+        # heavy: model_info reads GGUF headers via llama-cpp (~130 ms)
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
     load_affecting = (changed_keys & LOAD_AFFECTING_KEYS) - PER_CALL_RELOADABLE_KEYS
     if load_affecting:
+        # heavy: app.services pulls llama_cpp + lancedb (~70 ms)
         from lilbee.app.services import peek_services
 
         services = peek_services()
         if services is not None:
+            # model_path=None drops every loaded role; the changed key may be
+            # role-agnostic (num_ctx) or role-specific, and per-role granularity
+            # would force a key->role map that adds nothing over a full drop.
             services.provider.invalidate_load_cache()
     if changed_keys & PROVIDER_API_KEYS:
+        # heavy: sdk_llm_provider pulls litellm fanout (~145 ms)
         from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         inject_provider_keys()

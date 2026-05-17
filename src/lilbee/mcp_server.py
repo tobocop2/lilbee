@@ -7,14 +7,16 @@ import concurrent.futures
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
-from lilbee.app.settings import SettingInfo
 from lilbee.core.config import cfg
+
+if TYPE_CHECKING:
+    from lilbee.app.settings import SettingInfo
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import is_url, require_valid_crawl_url

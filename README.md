@@ -238,7 +238,7 @@ lilbee plugs into any agent over MCP or a JSON CLI. The repo ships a drop-in [`A
 
 Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
-![opencode driving a cloud coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the agent can write a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
 
