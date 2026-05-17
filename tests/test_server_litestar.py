@@ -241,35 +241,35 @@ class TestChatStreamRoute:
 
 
 class TestStreamSingleFlightGate:
-    """The chat-streaming endpoints serialize to one in-flight request via _chat_inflight_lock."""
+    """The chat-streaming endpoints serialize to one in-flight request via chat_lock()."""
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_concurrent_ask_stream_returns_429(self, mock_stream, client):
         """A second /api/ask/stream while the first holds the lock returns 429 + Retry-After."""
-        from lilbee.server.routes import search as search_routes
+        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            loop.run_until_complete(chat_lock().acquire())
             try:
                 resp = client.post("/api/ask/stream", json={"question": "hi"})
                 assert resp.status_code == 429
                 assert resp.headers.get("retry-after") == "1"
             finally:
-                search_routes._chat_inflight_lock.release()
+                chat_lock().release()
         finally:
             loop.close()
 
     @mock.patch("lilbee.server.handlers.chat_stream")
     def test_concurrent_chat_stream_returns_429(self, mock_stream, client):
         """A second /api/chat/stream while the first holds the lock returns 429."""
-        from lilbee.server.routes import search as search_routes
+        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
+            loop.run_until_complete(chat_lock().acquire())
             try:
                 resp = client.post(
                     "/api/chat/stream",
@@ -278,21 +278,21 @@ class TestStreamSingleFlightGate:
                 assert resp.status_code == 429
                 assert resp.headers.get("retry-after") == "1"
             finally:
-                search_routes._chat_inflight_lock.release()
+                chat_lock().release()
         finally:
             loop.close()
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_sequential_streams_succeed(self, mock_stream, client):
         """After the first stream completes, the second one is allowed."""
-        from lilbee.server.routes import search as search_routes
+        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp1 = client.post("/api/ask/stream", json={"question": "first"})
         assert resp1.status_code == 201
         assert b"event: token" in resp1.content
         # Lock must have been released by the gated_stream's finally.
-        assert search_routes._chat_inflight_lock.locked() is False
+        assert chat_lock().locked() is False
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp2 = client.post("/api/ask/stream", json={"question": "second"})
         assert resp2.status_code == 201
@@ -300,7 +300,7 @@ class TestStreamSingleFlightGate:
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_lock_released_on_provider_error(self, mock_stream, client):
         """When the SSE generator raises, the lock is still released for the next caller."""
-        from lilbee.server.routes import search as search_routes
+        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         async def _raising_gen():
             yield "event: token\ndata: {}\n\n"
@@ -313,7 +313,7 @@ class TestStreamSingleFlightGate:
         # block still runs and releases the lock.
         with contextlib.suppress(Exception):
             client.post("/api/ask/stream", json={"question": "boom"})
-        assert search_routes._chat_inflight_lock.locked() is False
+        assert chat_lock().locked() is False
 
 
 class TestSyncRoute:

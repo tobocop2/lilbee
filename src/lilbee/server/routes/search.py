@@ -25,8 +25,6 @@ from lilbee.server.models import (
     ChatRequest,
 )
 
-_chat_inflight_lock = chat_lock()
-
 
 def _acquire_chat_lock_or_raise() -> None:
     """Translate the canonical busy signal into Litestar's HTTP 429 envelope."""
@@ -49,7 +47,7 @@ async def _gated_stream(
         async for chunk in generator:
             yield chunk
     finally:
-        _chat_inflight_lock.release()
+        chat_lock().release()
 
 
 @get("/api/search")
@@ -92,7 +90,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
     _acquire_chat_lock_or_raise()
-    await _chat_inflight_lock.acquire()
+    await chat_lock().acquire()
     return Stream(
         _gated_stream(
             handlers.ask_stream(
@@ -125,7 +123,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
     _acquire_chat_lock_or_raise()
-    await _chat_inflight_lock.acquire()
+    await chat_lock().acquire()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
