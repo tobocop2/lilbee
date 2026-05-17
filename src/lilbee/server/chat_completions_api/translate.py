@@ -89,7 +89,9 @@ def completions_to_canonical_request(payload: dict[str, Any]) -> CanonicalChatRe
     )
 
 
-def canonical_to_completions_response(resp: CanonicalResponse) -> dict[str, Any]:
+def canonical_to_completions_response(
+    resp: CanonicalResponse, *, response_id: str | None = None
+) -> dict[str, Any]:
     """Translate a canonical chat response to an OpenAI ``chat.completion`` object."""
     message: dict[str, Any] = {"role": "assistant"}
     text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
@@ -102,7 +104,7 @@ def canonical_to_completions_response(resp: CanonicalResponse) -> dict[str, Any]
 
     total = resp.usage.input_tokens + resp.usage.output_tokens
     return {
-        "id": resp.id,
+        "id": response_id if response_id is not None else resp.id,
         "object": "chat.completion",
         "created": int(time.time()),
         "model": resp.model,

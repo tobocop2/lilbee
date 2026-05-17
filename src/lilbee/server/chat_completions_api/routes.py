@@ -117,7 +117,10 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
         return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, str(exc))
     finally:
         lock.release()
-    return Response(canonical_to_completions_response(resp), media_type="application/json")
+    return Response(
+        canonical_to_completions_response(resp, response_id=_response_id()),
+        media_type="application/json",
+    )
 
 
 async def _gated_completions_stream(

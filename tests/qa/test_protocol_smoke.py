@@ -101,10 +101,7 @@ async def test_chat_completions_response_matches_openai_envelope(
     body = response.json()
     assert body["object"] == "chat.completion"
     assert body["model"] == _MOCK_MODEL_REF
-    # The non-streaming path forwards the canonical ``msg_*`` id; the
-    # streaming path mints a ``chatcmpl-*`` id. The protocol envelope
-    # only requires ``id`` to be a non-empty string.
-    assert isinstance(body["id"], str) and body["id"]
+    assert body["id"].startswith("chatcmpl-")
     choice = body["choices"][0]
     assert choice["index"] == 0
     assert choice["message"]["role"] == "assistant"
