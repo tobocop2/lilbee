@@ -225,39 +225,32 @@ example configs, and the full tool list.
 
 ### Use lilbee as a local model server
 
-`lilbee serve` speaks the OpenAI Chat Completions protocol, so any client that
-lets you set a custom base URL (opencode, aider, continue.dev, cursor's
-custom-model mode, Zed, the `llm` CLI, LiteLLM, and so on) can drive a lilbee
-model the same way it would drive a hosted one. Whatever chat models you've
-installed through lilbee show up at `GET /v1/models`; streaming, cancellation,
-and tool-calling all round-trip.
+`lilbee serve` exposes `GET /v1/models` and `POST /v1/chat/completions`. Any
+client that takes a custom base URL (opencode, aider, continue.dev, cursor's
+custom-model mode, Zed, LiteLLM, and so on) can drive a lilbee-managed model
+the same way it would drive a hosted one.
 
-**Opencode** is the easy path. `lilbee launch opencode` starts a server, generates a
-config, and launches opencode pointed at your local models, all in one
-command:
+For opencode, one command does it all:
 
 ```bash
 lilbee launch opencode
 ```
 
-The opencode session gets both the chat API and the lilbee MCP tools
-(`lilbee_search`, `lilbee_add`, status) in one config, so the model can
-ground answers in your library while it codes.
+It starts a server if needed, points opencode at your local models, and wires
+the lilbee MCP tools (`lilbee_search`, `lilbee_add`, status) into the same
+session. The spawned server stops when opencode exits.
 
-For any other OpenAI-compatible client, run `lilbee serve` in one terminal and
-point the client at `http://127.0.0.1:<port>/v1` with the token from
-`lilbee token`. Two helpers print paste-ready config blocks for the common
-cases:
+For other clients, run `lilbee serve` and either point them at
+`http://127.0.0.1:<port>/v1` directly, or paste one of these into their
+config:
 
 ```bash
-lilbee agent-config opencode > opencode.json     # if you'd rather wire it up yourself
-lilbee agent-config litellm > litellm.yaml       # fronts any OpenAI-compatible client via a proxy
+lilbee agent-config opencode > opencode.json     # opencode users wiring it up by hand
+lilbee agent-config litellm > litellm.yaml       # litellm proxy fronting other clients
 ```
 
-The block lists whatever you've pulled at the moment the command runs, so
-re-run it after installing a new chat model. `/v1/*` shares the same bearer
-token as the rest of the REST API; see [HTTP server](#http-server) for the
-flags that control the bind address, port, and token storage.
+See [HTTP server](#http-server) for the flags that control the bind address,
+port, and token storage.
 
 > [!CAUTION]
 > **Private data and cloud agents**

@@ -1,9 +1,4 @@
-"""Protocol-neutral chat request, response, and stream-event types.
-
-These are lilbee's own names; the OpenAI and Anthropic translation
-layers convert to and from these shapes. Nothing else should reach
-into this module assuming one vendor's vocabulary.
-"""
+"""Protocol-neutral chat request, response, and stream-event types."""
 
 from __future__ import annotations
 

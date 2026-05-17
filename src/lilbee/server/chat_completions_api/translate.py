@@ -1,4 +1,4 @@
-"""Translation between OpenAI chat-completions wire shape and the canonical types.
+"""Translation between the chat-completions wire shape and the canonical types.
 
 Pure functions over plain dicts in, canonical dataclasses out (and vice
 versa). The route layer is the only consumer; it must never reach past
@@ -51,7 +51,7 @@ _VALID_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
 def completions_to_canonical_request(payload: dict[str, Any]) -> CanonicalChatRequest:
-    """Translate an OpenAI ``/v1/chat/completions`` JSON payload to a canonical request."""
+    """Translate a ``/v1/chat/completions`` JSON payload to a canonical request."""
     model = payload.get("model")
     if not isinstance(model, str) or not model:
         raise ValueError("Field 'model' is required.")

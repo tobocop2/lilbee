@@ -1,6 +1,6 @@
-"""OpenAI-compatible HTTP routes (``/v1/models`` and ``/v1/chat/completions``).
+"""HTTP routes for ``/v1/models`` and ``/v1/chat/completions``.
 
-Handles its own auth (so errors carry the OpenAI envelope rather than
+Handles its own auth (so errors carry the protocol envelope rather than
 Litestar's default) and routes everything else through
 :mod:`lilbee.server.chat_dispatch`. The router is exposed for
 ``server/app.py`` to register.
@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 @get("/v1/models")
 @read_only
 async def list_models_endpoint(request: Request) -> Response:
-    """Return all installed chat models in OpenAI ``/v1/models`` shape."""
+    """Return all installed chat models in the ``/v1/models`` shape."""
     auth_error = _auth_failure(request)
     if auth_error is not None:
         return auth_error
@@ -73,7 +73,7 @@ async def list_models_endpoint(request: Request) -> Response:
 @post("/v1/chat/completions", status_code=200)
 @read_only
 async def chat_completions_endpoint(request: Request, data: dict[str, Any]) -> Response | Stream:
-    """OpenAI ``/v1/chat/completions`` (stream + non-stream + tools)."""
+    """``/v1/chat/completions`` (stream + non-stream + tools)."""
     auth_error = _auth_failure(request)
     if auth_error is not None:
         return auth_error
@@ -105,7 +105,7 @@ async def chat_completions_endpoint(request: Request, data: dict[str, Any]) -> R
 
 
 async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Response:
-    """Dispatch a non-streaming chat call, translating errors to OpenAI envelopes."""
+    """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
         resp = dispatch_chat(req)
     except ModelNotFoundError as exc:
@@ -129,7 +129,7 @@ async def _gated_completions_stream(
     """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, releasing *lock* on exit.
 
     Pre-flight errors (unknown model, tools-against-non-tool-model) are
-    surfaced as a single SSE ``data:`` frame carrying the OpenAI error
+    surfaced as a single SSE ``data:`` frame carrying the error
     envelope, then ``[DONE]``. The lock is released in ``finally`` so
     natural completion, exception, and client disconnect (GeneratorExit)
     all unwind cleanly.
@@ -154,7 +154,7 @@ async def _gated_completions_stream(
 
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
-    """SSE frame carrying an OpenAI error body, followed by ``[DONE]``."""
+    """SSE frame carrying an error body, followed by ``[DONE]``."""
     body = completions_error_body(code, message)
     payload = json.dumps(body, separators=(",", ":"))
     return f"data: {payload}\n\ndata: [DONE]\n\n".encode()

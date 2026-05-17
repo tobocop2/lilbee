@@ -1,4 +1,4 @@
-"""OpenAI-shaped error envelope for the chat-completions surface.
+"""Error envelope for the chat-completions surface.
 
 OpenAI client SDKs branch on ``error.type`` and ``error.code``. Adding a
 new code means adding a :class:`CompletionsErrorCode` member and an entry
@@ -36,7 +36,7 @@ COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
 
 
 def completions_error_body(code: CompletionsErrorCode, message: str) -> dict[str, Any]:
-    """Build the JSON body for an OpenAI-shaped error response."""
+    """Build the JSON body for an error response."""
     return {
         "error": {
             "message": message,

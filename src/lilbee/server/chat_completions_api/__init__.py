@@ -1,1 +1,1 @@
-"""OpenAI-shaped HTTP surface backed by the canonical chat dispatcher."""
+"""Chat-completions HTTP surface backed by the canonical chat dispatcher."""

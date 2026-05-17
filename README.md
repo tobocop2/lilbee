@@ -242,19 +242,17 @@ The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](doc
 
 ### Use lilbee as a local model server
 
-`lilbee serve` speaks the OpenAI Chat Completions protocol, so any client that lets you set a custom base URL can drive a lilbee model the same way it would drive a hosted one. Streaming, tool calls, and cancellation work end-to-end. The chat catalog you've installed via lilbee shows up at `/v1/models`.
+`lilbee serve` exposes `/v1/models` and `/v1/chat/completions`, so any client that takes a custom base URL can drive a lilbee model.
 
-**Opencode** is the easy path. One command starts a server, generates a config, and launches opencode pointed at your local models:
+For opencode, one command does it all:
 
 ```bash
 lilbee launch opencode
 ```
 
-The opencode session gets both the chat API and the lilbee MCP tools (search, add, status) in one config, so the model can ground answers in your library while it codes.
+It starts a server if needed, points opencode at your local models, and wires the lilbee MCP tools (search, add, status) into the same session.
 
-**Any other OpenAI-compatible client** (aider, continue.dev, cursor's custom-model mode, LiteLLM proxy, etc.): run `lilbee serve` in one terminal, then point the client at `http://127.0.0.1:<port>/v1` with the token from `lilbee token`. `lilbee agent-config opencode` and `lilbee agent-config litellm` print paste-ready config blocks for those two; the LiteLLM block fronts any further client that already speaks OpenAI.
-
-The model list in each block is read from the running server, so it stays in sync with whatever you've pulled. `/v1/*` shares the same bearer token as the rest of the REST API.
+For other clients (aider, continue.dev, LiteLLM proxy, etc.): run `lilbee serve` and either point them at `http://127.0.0.1:<port>/v1` directly or paste `lilbee agent-config opencode` / `lilbee agent-config litellm` into their config.
 
 ## HTTP Server
 
