@@ -57,7 +57,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     # crawl_sync_interval to a non-zero value themselves.
     cfg.crawl_sync_interval = 0
     cls = request.cls.__name__ if request.cls else ""
-    if cls != "TestPlaywrightBrowserCheck":
+    if cls not in ("TestPlaywrightBrowserCheck", "TestChromiumInstalledMatching"):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     # Stub crawler_available so crawl_and_save's pre-flight backend check passes
     # in CI envs where the [crawler] extra isn't installed. Tests that exercise
@@ -434,6 +434,54 @@ class TestCrawlSingle:
         assert not result.success
         assert "timeout" in result.error
 
+    async def test_bootstraps_and_retries_when_chromium_missing(self, monkeypatch):
+        """Recover when Playwright launch fails because of a missing binary."""
+        success_result = _make_crawl4ai_result()
+        ok_instance = AsyncMock()
+        ok_instance.arun = AsyncMock(return_value=success_result)
+        ok_instance.__aenter__ = AsyncMock(return_value=ok_instance)
+        ok_instance.__aexit__ = AsyncMock(return_value=False)
+        fail_instance = AsyncMock()
+        fail_instance.__aenter__ = AsyncMock(
+            side_effect=RuntimeError("launch: Executable doesn't exist at chromium-1208/...")
+        )
+        fail_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls = MagicMock(side_effect=[fail_instance, ok_instance])
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        bootstrapped: list[bool] = []
+
+        async def fake_bootstrap(on_progress):
+            bootstrapped.append(True)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
+        assert result.success
+        assert result.markdown == "# Test"
+        assert bootstrapped == [True], "bootstrap_chromium should fire exactly once"
+
+    async def test_retry_failure_is_returned_as_error_result(self, monkeypatch):
+        """If the retry also fails, surface that error -- not the original."""
+        fail_instance = AsyncMock()
+        fail_instance.__aenter__ = AsyncMock(
+            side_effect=RuntimeError("launch: Executable doesn't exist at chromium-1208/...")
+        )
+        fail_instance.__aexit__ = AsyncMock(return_value=False)
+        retry_fail = AsyncMock()
+        retry_fail.__aenter__ = AsyncMock(side_effect=RuntimeError("still broken after bootstrap"))
+        retry_fail.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls = MagicMock(side_effect=[fail_instance, retry_fail])
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+
+        async def fake_bootstrap(on_progress):
+            pass
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
+        assert not result.success
+        assert "still broken after bootstrap" in result.error
+
     async def test_quiet_passes_verbose_false(self):
         """quiet=True passes verbose=False to AsyncWebCrawler."""
         mock_result = _make_crawl4ai_result()
@@ -483,6 +531,149 @@ class TestCrawlSingle:
         monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_single("https://example.com")
+
+
+class TestChromiumInstalledMatching:
+    """``chromium_installed`` must match the bundled Playwright's revision.
+
+    System Chromium directories like ``chromium-1217`` are useless if the
+    bundled Playwright driver was built against ``chromium-1208``; launch
+    fails with ``Executable doesn't exist`` even though the bootstrap
+    check returned True.
+    """
+
+    def test_matches_expected_revision_when_present(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        (tmp_path / "chromium-1208").mkdir()
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
+
+        assert bootstrap.chromium_installed() is True
+
+    def test_rejects_wrong_revision(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        (tmp_path / "chromium-1217").mkdir()
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
+
+        assert bootstrap.chromium_installed() is False
+
+    def test_falls_back_to_any_revision_when_expected_unknown(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        (tmp_path / "chromium-1217").mkdir()
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: None)
+
+        assert bootstrap.chromium_installed() is True
+
+    def test_returns_false_when_cache_root_missing(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        missing = tmp_path / "absent"
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: missing)
+        assert bootstrap.chromium_installed() is False
+
+    def test_returns_false_when_no_chromium_dir_anywhere(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        (tmp_path / "firefox-1234").mkdir()
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: None)
+        assert bootstrap.chromium_installed() is False
+
+
+class TestReadChromiumRevision:
+    """Pure-function helper that pulls the revision out of browsers.json."""
+
+    def test_extracts_chromium_revision(self, tmp_path):
+        from lilbee.crawler.bootstrap import _read_chromium_revision
+
+        payload = '{"browsers": [{"name": "chromium", "revision": 1208}]}'
+        path = tmp_path / "browsers.json"
+        path.write_text(payload, encoding="utf-8")
+        assert _read_chromium_revision(path) == "1208"
+
+    def test_returns_none_when_chromium_entry_missing(self, tmp_path):
+        from lilbee.crawler.bootstrap import _read_chromium_revision
+
+        path = tmp_path / "browsers.json"
+        path.write_text('{"browsers": [{"name": "firefox", "revision": 1}]}', encoding="utf-8")
+        assert _read_chromium_revision(path) is None
+
+    def test_returns_none_when_revision_is_missing(self, tmp_path):
+        from lilbee.crawler.bootstrap import _read_chromium_revision
+
+        path = tmp_path / "browsers.json"
+        path.write_text('{"browsers": [{"name": "chromium"}]}', encoding="utf-8")
+        assert _read_chromium_revision(path) is None
+
+    def test_returns_none_on_malformed_json(self, tmp_path):
+        from lilbee.crawler.bootstrap import _read_chromium_revision
+
+        path = tmp_path / "browsers.json"
+        path.write_text("not json", encoding="utf-8")
+        assert _read_chromium_revision(path) is None
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        from lilbee.crawler.bootstrap import _read_chromium_revision
+
+        assert _read_chromium_revision(tmp_path / "absent.json") is None
+
+
+class TestExpectedChromiumRevision:
+    """Walks the bundled Playwright install to find browsers.json."""
+
+    def test_returns_revision_from_real_playwright(self):
+        from lilbee.crawler.bootstrap import _expected_chromium_revision
+
+        # In the dev/test env Playwright is installed via the extras;
+        # the returned value should be a numeric string.
+        revision = _expected_chromium_revision()
+        assert revision is None or revision.isdigit()
+
+    def test_returns_none_when_playwright_not_importable(self, monkeypatch):
+        import sys
+
+        from lilbee.crawler.bootstrap import _expected_chromium_revision
+
+        # Drop playwright from sys.modules and block re-import.
+        monkeypatch.setitem(sys.modules, "playwright", None)
+        assert _expected_chromium_revision() is None
+
+    def test_returns_none_when_browsers_json_missing(self, tmp_path, monkeypatch):
+        import sys
+        import types
+
+        from lilbee.crawler import bootstrap
+
+        # Stand up a fake playwright package whose path has no browsers.json.
+        fake = types.ModuleType("playwright")
+        fake.__file__ = str(tmp_path / "__init__.py")
+        (tmp_path / "__init__.py").write_text("", encoding="utf-8")
+        monkeypatch.setitem(sys.modules, "playwright", fake)
+        assert bootstrap._expected_chromium_revision() is None
+
+    def test_returns_revision_from_fake_playwright_browsers_json(self, tmp_path, monkeypatch):
+        import sys
+        import types
+
+        from lilbee.crawler import bootstrap
+
+        # Stand up a fake playwright package with a browsers.json that
+        # rglob will discover. Exercises the read path end-to-end.
+        pkg = tmp_path / "playwright"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "browsers.json").write_text(
+            '{"browsers": [{"name": "chromium", "revision": 1208}]}', encoding="utf-8"
+        )
+        fake = types.ModuleType("playwright")
+        fake.__file__ = str(pkg / "__init__.py")
+        monkeypatch.setitem(sys.modules, "playwright", fake)
+        assert bootstrap._expected_chromium_revision() == "1208"
 
 
 class TestBootstrapChromium:
