@@ -1,9 +1,4 @@
-"""Thin wrapper around the provider's tool-capability probe.
-
-Lives at the dispatch boundary so the provider stays the single source
-of truth for whether a model can carry tool calls. ``False`` is the
-conservative default when the probe raises.
-"""
+"""Thin wrapper around the provider's tool-capability probe."""
 
 from __future__ import annotations
 

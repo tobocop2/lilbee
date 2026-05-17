@@ -1,9 +1,4 @@
-"""Translation between the chat-completions wire shape and the canonical types.
-
-Pure functions over plain dicts in, canonical dataclasses out (and vice
-versa). The route layer is the only consumer; it must never reach past
-this module into provider-specific code paths.
-"""
+"""Translation between the chat-completions wire shape and the canonical types."""
 
 from __future__ import annotations
 

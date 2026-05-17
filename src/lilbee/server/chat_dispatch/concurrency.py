@@ -1,9 +1,4 @@
-"""Process-wide chat-generation gate shared by every chat-generating route.
-
-The llama-cpp backend serializes one chat at a time; without this gate a
-second concurrent request would block silently. Each protocol's route
-catches :class:`ChatBusyError` and emits its native busy-error envelope.
-"""
+"""Process-wide chat-generation gate shared by every chat-generating route."""
 
 from __future__ import annotations
 

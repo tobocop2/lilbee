@@ -1,10 +1,4 @@
-"""HTTP routes for ``/v1/models`` and ``/v1/chat/completions``.
-
-Handles its own auth (so errors carry the protocol envelope rather than
-Litestar's default) and routes everything else through
-:mod:`lilbee.server.chat_dispatch`. The router is exposed for
-``server/app.py`` to register.
-"""
+"""HTTP routes for ``/v1/models`` and ``/v1/chat/completions``."""
 
 from __future__ import annotations
 

@@ -1,10 +1,4 @@
-"""Canonical chat dispatch: canonical request to provider call to canonical response.
-
-This module is the only place that talks to the provider abstraction
-for chat. Both compat translation layers route through it; it is also
-the only chat surface aware of the concurrency lock and the tool-
-capability probe.
-"""
+"""Canonical chat dispatch: canonical request to provider call to canonical response."""
 
 from __future__ import annotations
 

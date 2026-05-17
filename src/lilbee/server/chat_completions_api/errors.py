@@ -1,10 +1,4 @@
-"""Error envelope for the chat-completions surface.
-
-OpenAI client SDKs branch on ``error.type`` and ``error.code``. Adding a
-new code means adding a :class:`CompletionsErrorCode` member and an entry
-in :data:`COMPLETIONS_ERROR_TYPES`; the type system then forces every
-call site to use the enum.
-"""
+"""Error envelope and code/type taxonomy for the chat-completions surface."""
 
 from __future__ import annotations
 
