@@ -955,7 +955,7 @@ class ChatScreen(Screen[None]):
                 self.notify(msg.CMD_RESET_SUCCESS)
 
         self.app.push_screen(
-            ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),
+            ConfirmDialog(msg.CMD_RESET_CONFIRM_TITLE, msg.CMD_RESET_CONFIRM_MESSAGE),
             _on_confirm,
         )
 
@@ -1268,7 +1268,7 @@ class ChatScreen(Screen[None]):
                 # files counted so the hint reappears.
                 self._task_bar.start_detect_pending()
 
-        label = "Rebuild index" if force_rebuild else "Sync documents"
+        label = msg.TASK_NAME_REBUILD if force_rebuild else msg.TASK_NAME_SYNC
         self._task_bar.start_task(label, TaskType.SYNC, _target, indeterminate=True)
 
     def _do_sync(self, reporter: ProgressReporter, *, force_rebuild: bool = False) -> None:

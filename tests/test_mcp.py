@@ -1263,6 +1263,29 @@ class TestLilbeeLabel:
         cfg.show_lilbee_path = False
         assert lilbee_label() == "global"
 
+    def test_whitespace_alias_falls_back_to_directory_name(self, isolated_env):
+        """A whitespace-only alias is stripped by the field validator so the
+        label-precedence chain falls through to the directory name."""
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = "   "
+        cfg.show_lilbee_path = False
+        assert cfg.lilbee_name == ""
+        assert lilbee_label() == isolated_env.name
+
+    def test_global_label_matches_when_data_root_has_trailing_slash(self, isolated_env):
+        """A trailing-slash variant of the platform default still resolves to 'global'."""
+        from pathlib import Path
+
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = Path(f"{default_data_dir()}/")
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "global"
+
 
 class TestCatalogBrowseMcp:
     """MCP catalog_browse exposes the featured catalog + HF for any model role."""

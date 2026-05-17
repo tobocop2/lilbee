@@ -48,7 +48,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import HfPage
-from lilbee.catalog.types import CatalogSize, CatalogSort
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
 
 _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
@@ -539,22 +539,16 @@ class TestGetCatalog:
         assert repos1.isdisjoint(repos2)
 
     def test_filter_by_task_chat(self) -> None:
-        from lilbee.catalog.types import ModelTask
-
         result = get_catalog(task=ModelTask.CHAT)
         assert all(m.task == "chat" for m in result.models)
 
     def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.types import ModelTask
-
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task=ModelTask.EMBEDDING)
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.types import ModelTask
-
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task=ModelTask.VISION)
         assert all(m.task == "vision" for m in result.models)
