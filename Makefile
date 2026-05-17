@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar dns-setup
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar dns-setup qa-agent-matrix
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/
@@ -30,6 +30,9 @@ imports-check:
 
 test-integration:
 	uv run pytest tests/integration/ -v
+
+qa-agent-matrix:  ## End-to-end opencode matrix; requires LILBEE_QA_OPENCODE=1 and opencode on PATH
+	LILBEE_QA_OPENCODE=1 uv run pytest tests/qa/test_opencode_matrix.py -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
