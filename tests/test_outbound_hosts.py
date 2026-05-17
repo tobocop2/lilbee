@@ -21,6 +21,7 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # Runtime endpoints.
         "huggingface.co",  # model catalog + hub downloads
         "localhost",  # default Ollama / litellm backend (user-configurable)
+        "127.0.0.1",  # lilbee serve default bind address, used in agent-config output
         # Source references: docstrings, ported-from attributions, examples.
         # Present in source but not called at runtime.
         "arxiv.org",
@@ -28,6 +29,10 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "en.wikipedia.org",
         "example.com",
         "github.com",
+        # Agent-client documentation links cited from agent_configs/ module docstrings.
+        "docs.cline.bot",
+        "docs.litellm.ai",
+        "opencode.ai",
         # Citations for the dual-vendor Vulkan ICD workaround in
         # gpu_select.py, vulkan_icd_discovery.py, and log_dispatch.py.
         "alegruz.github.io",
