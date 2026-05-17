@@ -180,6 +180,13 @@ class TestSearch:
         assert len(results) == 1
         assert results[0]["source"] == "good.md"
 
+    def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
+        """settings_set top_k must govern search calls that omit the arg."""
+        cfg.top_k = 15
+        mock_svc.searcher.search.return_value = []
+        search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=15, chunk_type=None)
+
     def test_keeps_hybrid_results_without_distance(self, mock_svc):
         """Hybrid/RRF results with distance=None are not filtered."""
         mock_svc.searcher.search.return_value = [

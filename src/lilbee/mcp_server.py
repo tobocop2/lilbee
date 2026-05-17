@@ -48,10 +48,12 @@ def _error(msg: str) -> dict[str, Any]:
 
 @mcp.tool()
 def search(
-    query: str, top_k: int = 5, scope: str = SearchScope.BOTH.value
+    query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Search the knowledge base for relevant document chunks.
 
+    ``top_k`` defaults to the ``top_k`` config field so ``settings_set``
+    governs the candidate count for agents that don't pass it explicitly.
     ``scope`` picks the pool: ``"raw"`` (source chunks), ``"wiki"`` (wiki
     page bodies), or ``"both"`` (default, unfiltered). Returns chunks
     sorted by relevance. No LLM call -- uses pre-computed embeddings.
@@ -62,8 +64,11 @@ def search(
         chunk_type = scope_to_chunk_type(scope)
     except ValueError as exc:
         return _error(str(exc))
+    effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
-        results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
+        results = get_services().searcher.search(
+            query, top_k=effective_top_k, chunk_type=chunk_type
+        )
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
     except Exception as exc:
