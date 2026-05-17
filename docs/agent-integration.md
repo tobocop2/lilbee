@@ -98,15 +98,8 @@ For a project where you want the agent to use lilbee reliably, copy three things
 | `settings_get(key)` | Get one setting's current value and metadata | No |
 | `settings_set(updates)` | Atomically update a batch of writable settings; validates, persists, and invalidates the in-process model and provider caches | No |
 | `settings_reset(keys)` | Reset writable settings to their built-in defaults | No |
-| `wiki_list()` | List all wiki pages grouped by type | No |
-| `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
-| `wiki_status()` | Page counts, generator settings, last build timestamp | No |
-| `wiki_synthesize()` | Generate cross-source synthesis pages into `synthesis/` | Yes (LLM) |
-| `wiki_lint(wiki_source)` | Find orphan pages, stale links, and pending drafts | No |
-| `wiki_citations(wiki_source)` | Return per-section citation coverage for a source | No |
-| `wiki_drafts_list()` | List pending drafts with drift, faithfulness, and pairing info | No |
-| `wiki_drafts_diff(slug)` | Show the diff between a pending draft and the live page | No |
-| `wiki_prune()` | Move stale wiki pages to `archive/` | No |
+
+A separate, experimental `wiki_*` family is documented at the end of this page.
 
 ### Example responses
 
@@ -125,16 +118,6 @@ For a project where you want the agent to use lilbee reliably, copy three things
   "config": {"documents_dir": "...", "chat_model": "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf", "embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "reranker_model": "", "enable_ocr": false},
   "sources": [{"filename": "manual.pdf", "chunk_count": 42}],
   "total_chunks": 42
-}
-```
-
-**`wiki_list()`**
-
-```json
-{
-  "concepts": [{"slug": "braking-systems", "sources": 5}],
-  "entities": [{"slug": "henry-ford", "sources": 3}],
-  "drafts": [{"slug": "tire-pressure", "reason": "low_faithfulness"}]
 }
 ```
 
@@ -222,3 +205,34 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 - Run `status` / `status()` first to confirm the right index is active.
 - Run `sync` / `sync()` after adding documents to refresh the index.
 - An LLM backend is needed for: (1) embedding during sync/indexing, (2) `ask` for answers, (3) wiki generation, (4) `model_pull`. Once indexed, `search` works without an LLM. By default, llama-cpp handles everything locally. Install `lilbee[litellm]` to route through external backends like Ollama, OpenAI, Anthropic, or Gemini.
+
+## Experimental: wiki tools
+
+The wiki layer is opt-in and still rough. All `wiki_*` tools return
+`{"error": "wiki disabled"}` until the user runs
+`settings_set({"wiki": true})`. Skip everything here unless the user
+explicitly asks about wiki / synthesis pages.
+
+| Tool | Description | Requires LLM backend |
+|------|-------------|---------------------|
+| `wiki_status()` | Page counts, generator settings, last build timestamp, `wiki_enabled` flag | No |
+| `wiki_list()` | List all wiki pages grouped by type | No |
+| `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
+| `wiki_synthesize()` | Generate cross-source synthesis pages into `synthesis/` | Yes (LLM) |
+| `wiki_lint(wiki_source)` | Find orphan pages, stale links, and pending drafts | No |
+| `wiki_citations(wiki_source)` | Return per-section citation coverage for a source | No |
+| `wiki_drafts_list()` | List pending drafts with drift, faithfulness, and pairing info | No |
+| `wiki_drafts_diff(slug)` | Show the diff between a pending draft and the live page | No |
+| `wiki_prune()` | Move stale wiki pages to `archive/` | No |
+
+**`wiki_list()` example response**
+
+```json
+{
+  "concepts": [{"slug": "braking-systems", "sources": 5}],
+  "entities": [{"slug": "henry-ford", "sources": 3}],
+  "drafts": [{"slug": "tire-pressure", "reason": "low_faithfulness"}]
+}
+```
+
+Query a built wiki via `search(..., scope="wiki")`.

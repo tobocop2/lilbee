@@ -1,6 +1,6 @@
 ---
 name: lilbee-mcp
-description: Search and manage the user's local lilbee knowledge base over MCP. Use whenever the user has indexed code, docs, PDFs, or web pages into lilbee and you need cited answers, or whenever they ask you to ingest content, swap models, tune retrieval, or build a topic wiki over their library. Every fact returned cites file and line. Indexing, crawling, model pulls, and wiki builds are long ops that must go to a worker subagent so the chat stays responsive.
+description: Search and manage the user's local lilbee knowledge base over MCP. Use whenever the user has indexed code, docs, PDFs, or web pages into lilbee and you need cited answers, or whenever they ask you to ingest content, swap models, or tune retrieval against their library. Every fact returned cites file and line. Indexing, crawling, and model pulls are long ops that must go to a worker subagent so the chat stays responsive. A topic-wiki layer is also exposed but is experimental and lives in its own section at the end.
 ---
 
 # lilbee-mcp
@@ -19,8 +19,8 @@ lilbee_search(query, top_k)       → get cited chunks
 ```
 
 Three rules cover 90% of usage: **search before answering**, **cite every claim with the
-chunk's `source` + line range**, and **delegate indexing / crawling / model pulls / wiki
-builds to the `lilbee-worker` subagent** because they block the shared embedder.
+chunk's `source` + line range**, and **delegate indexing / crawling / model pulls to the
+`lilbee-worker` subagent** because they block the shared embedder.
 
 ## Install
 
@@ -50,8 +50,8 @@ full setup.
 ## The shared-embedder rule (read this first)
 
 The MCP server hosts one embedder worker. Indexing (`lilbee_add`, `lilbee_sync`,
-`lilbee_crawl`, `lilbee_model_pull`, `lilbee_wiki_build`, `lilbee_wiki_synthesize`,
-`lilbee_wiki_update`) pins it; `lilbee_search` also needs it to embed the query. Run them
+`lilbee_crawl`, `lilbee_model_pull`, plus the experimental wiki builds) pins it;
+`lilbee_search` also needs it to embed the query. Run them
 concurrently and `lilbee_search` will hang until your host times out.
 
 **Procedure:**
@@ -94,22 +94,8 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source)` | Download a model. Streams progress as MCP notifications. Large models = many minutes. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
-| `lilbee_wiki_build()` | Generate the full topic / entity wiki from the indexed corpus. LLM-bound; minutes per source. |
-| `lilbee_wiki_update()` | Refresh wiki after a sync. Currently a full rebuild. |
-| `lilbee_wiki_synthesize()` | Generate cross-source synthesis pages (concept clusters spanning ≥3 sources). |
-| `lilbee_wiki_prune()` | Archive stale wiki pages whose sources were deleted, and flag pages with mostly-stale citations. |
 
-### Wiki, inline reads
-
-| Tool | Use |
-|---|---|
-| `lilbee_wiki_status()` | Page counts, generator settings, last build. |
-| `lilbee_wiki_list()` | Every wiki page with slug, title, type, source count. |
-| `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
-| `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |
-| `lilbee_wiki_citations(wiki_source)` | Per-section citation coverage for one wiki page. |
-| `lilbee_wiki_drafts_list()` | Pending drafts with drift, faithfulness, and pairing info. |
-| `lilbee_wiki_drafts_diff(slug)` | Unified diff between a pending draft and the live page. |
+(Experimental wiki tools are documented at the end of this skill.)
 
 ## Common workflows
 
@@ -177,18 +163,30 @@ searching again.
 Tell the user which knobs you moved and why; `lilbee_settings_reset([...])` rolls any of
 them back.
 
-### 5. User wants the topic wiki built
+### 5. Your first answer feels thin -- self-tune and retry
+
+When the user asks a broad question against a dense reference-doc corpus
+(godot class XMLs, an API reference, kreuzberg-style docstrings) and your
+first `lilbee_search` returns only one or two relevant hits where you'd
+expect a family, the retrieval defaults are too narrow for the shape of
+the corpus. Self-tune in-place rather than handing the user a thin
+answer:
 
 ```
-lilbee_wiki_status                       # check whether one already exists
-lilbee-worker:  lilbee_wiki_build()      # LLM-bound, minutes per source
-lilbee_wiki_list                         # see what was generated
-lilbee_wiki_drafts_list                  # check what landed in drafts/ for review
+lilbee_search("user's natural query")          # baseline
+# If results are visibly narrow for the corpus shape:
+lilbee_settings_set({
+    "top_k": 15,                                # wider candidate pool
+    "diversity_max_per_source": 8,              # more chunks per file ok
+    "max_distance": 0.85,                       # accept fuzzier matches
+})
+lilbee_search("user's natural query")          # same query, richer pool
+# Answer from the richer results, cite every class you found.
+lilbee_settings_reset(["top_k", "diversity_max_per_source", "max_distance"])
 ```
 
-The wiki is a layer on top of the raw chunks: per-concept and per-entity pages with
-citations. Use `lilbee_search(..., scope="wiki")` to query it. Run
-`lilbee_wiki_lint(wiki_source="")` afterward to surface orphans and stale citations.
+Tell the user one sentence on what you widened and that you've reset
+afterward, so the next question gets the unmodified defaults.
 
 ### 6. User wants to delete or replace content
 
@@ -263,3 +261,45 @@ Never assume you can read a key back.
 - **Not a substitute for codebase discovery tools.** If the host has codesearch / glob /
   grep and the user's question is about a path that isn't indexed yet, offer to index it
   rather than guessing through filesystem tools.
+
+## Experimental: wiki layer
+
+The wiki layer generates per-concept and per-entity pages with citations from the
+indexed corpus, then lets you query and lint them. It is still rough; treat it as
+opt-in, not part of normal answer flow. Skip everything here unless the user
+explicitly asks about wiki / synthesis pages, or `lilbee_status` already shows a
+wiki built. All `lilbee_wiki_*` tools return `{"error": "wiki disabled"}` until the
+user enables it with `lilbee_settings_set({"wiki": true})`.
+
+### Build / refresh (long, must go through `lilbee-worker`)
+
+| Tool | Use |
+|---|---|
+| `lilbee_wiki_build()` | Generate the full topic / entity wiki from the indexed corpus. LLM-bound; minutes per source. |
+| `lilbee_wiki_update()` | Refresh the wiki after a sync. Currently a full rebuild. |
+| `lilbee_wiki_synthesize()` | Generate cross-source synthesis pages (concept clusters spanning ≥3 sources). |
+| `lilbee_wiki_prune()` | Archive stale wiki pages whose sources were deleted, and flag pages with mostly-stale citations. |
+
+### Read / inspect (inline)
+
+| Tool | Use |
+|---|---|
+| `lilbee_wiki_status()` | Page counts, generator settings, last build, and the `wiki_enabled` flag. |
+| `lilbee_wiki_list()` | Every wiki page with slug, title, type, source count. |
+| `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
+| `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |
+| `lilbee_wiki_citations(wiki_source)` | Per-section citation coverage for one wiki page. |
+| `lilbee_wiki_drafts_list()` | Pending drafts with drift, faithfulness, and pairing info. |
+| `lilbee_wiki_drafts_diff(slug)` | Unified diff between a pending draft and the live page. |
+
+### Typical flow
+
+```
+lilbee_wiki_status                       # check whether one already exists
+lilbee-worker:  lilbee_wiki_build()      # LLM-bound, minutes per source
+lilbee_wiki_list                         # see what was generated
+lilbee_wiki_drafts_list                  # check what landed in drafts/ for review
+```
+
+Query a built wiki via `lilbee_search(..., scope="wiki")`. Run
+`lilbee_wiki_lint(wiki_source="")` afterward to surface orphans and stale citations.
