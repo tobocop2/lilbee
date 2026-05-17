@@ -68,15 +68,17 @@ Crawling, API-Keys, System.
 
 ![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
-## Agent: self-tune (the setup, done by the agent)
+## Agent: self-tune (a better answer in one settings_set)
 
-The fastest path from "fresh install" to "useful lilbee" is to let the
-agent do the setup. It reads the retrieval catalog, batches one
-`lilbee_settings_set` to tune for a code-heavy single-source question,
-re-answers with citations, then resets to defaults. Same agent, same
-MCP server, two answers; the second is the one you want.
+Same question asked twice against the godot class reference: with
+defaults `lilbee_search "A star pathfinding"` returns AStar3D as the
+only A* class. One `lilbee_settings_set diversity_max_per_source=8
+top_k=15 max_distance=0.85` and the same query returns AStar3D plus
+AStarGrid2D plus the NavigationPathQueryParameters family; the
+re-answer cites multiple A* variants. Settings reset at the end leaves
+the env clean.
 
-![an opencode agent reads the lilbee retrieval catalog, batches one `lilbee_settings_set` to tune for a code-heavy single-source question, re-answers with citations, then resets to defaults](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+![an opencode agent asks the same A-star pathfinding question against godot-classes twice, batches one lilbee_settings_set in between, and the tuned answer cites multiple A* variants instead of just AStar3D](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
 
 ## Agent: code (lilbee talking to lilbee)
 
