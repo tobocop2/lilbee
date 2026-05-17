@@ -15,6 +15,7 @@ litellm = pytest.importorskip("litellm")
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
+from lilbee.providers.worker.transport import ChatResult, ToolCallDelta  # noqa: E402
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires
@@ -79,11 +80,11 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert isinstance(result, ChatResult)
+        assert len(result.text) > 0
 
     def test_chat_stream_yields_tokens(self) -> None:
-        """Streaming chat yields string tokens."""
+        """Streaming chat yields text and (optionally) tool-call deltas."""
         cfg.chat_model = OLLAMA_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
         result = provider.chat(
@@ -92,10 +93,10 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        tokens = list(result)
-        assert len(tokens) > 0
-        assert all(isinstance(t, str) for t in tokens)
-        full_text = "".join(tokens)
+        items = list(result)
+        assert len(items) > 0
+        assert all(isinstance(t, (str, ToolCallDelta)) for t in items)
+        full_text = "".join(t for t in items if isinstance(t, str))
         assert len(full_text) > 0
 
     def test_chat_with_model_override(self) -> None:
@@ -108,8 +109,8 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert isinstance(result, ChatResult)
+        assert len(result.text) > 0
 
 
 class TestSdkModelManagement:
