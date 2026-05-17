@@ -411,7 +411,7 @@ Every command returns a single JSON object on stdout. Errors return non-zero exi
 
 ### Local model server (OpenAI-compatible)
 
-`lilbee serve` exposes `/v1/models` and `/v1/chat/completions` so any client that lets you set a custom base URL can drive an installed chat model. `lilbee launch opencode` is a one-shot launcher that starts a server, writes a config, and execs opencode. `lilbee agent-config <opencode|litellm>` prints a paste-ready config block for clients you'd rather wire up yourself.
+`lilbee serve` exposes `/v1/models` and `/v1/chat/completions` for any client that takes a custom base URL. `lilbee launch opencode` is the recommended fast path: spawns a server, passes the config inline via `OPENCODE_CONFIG_CONTENT`, installs the `lilbee-mcp` skill into opencode's global skills dir, and pre-populates the model picker. `lilbee agent-config <opencode|litellm>` prints a paste-ready block for users wiring it up themselves. Frontier agents (Claude Code, Cursor, etc.) use their own cloud models and only need the skill copied into their host's skills directory.
 
 See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 
