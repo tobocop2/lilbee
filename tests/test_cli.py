@@ -1939,6 +1939,22 @@ class TestEnsureChatModelWiring:
         runner.invoke(app, ["ask", "test"])
         mock_svc.embedder.validate_model.assert_called_once()
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_persists_pulled_ref_when_ensure_returns_one(self, mock_sync, mock_svc):
+        """ensure_chat_model returning a ref must be persisted via the settings boundary."""
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        with (
+            mock.patch(
+                "lilbee.modelhub.models.ensure_chat_model",
+                return_value="bartowski/SmolLM2-135M-Instruct-GGUF/smol.gguf",
+            ),
+            mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+        ):
+            runner.invoke(app, ["ask", "test"])
+        mock_apply.assert_called_once_with(
+            {"chat_model": "bartowski/SmolLM2-135M-Instruct-GGUF/smol.gguf"}
+        )
+
 
 # ---------------------------------------------------------------------------
 # --ocr flag tests
