@@ -131,81 +131,31 @@ For a project where you want the agent to use lilbee reliably, copy three things
 
 ## API keys never come back over MCP
 
-lilbee tags every API-key field on its `Config` with a `write_only` flag
-(`llm_api_key`, `openrouter_api_key`, `gemini_api_key`,
-`anthropic_api_key`, `openai_api_key`, `mistral_api_key`,
-`deepseek_api_key`, `hf_token`). The MCP read tools refuse them:
-
-- `lilbee_settings_list` skips every write-only key, so secrets do not
-  appear in the catalog the agent enumerates.
-- `lilbee_settings_get("openai_api_key")` returns an error envelope
-  (`"Setting 'openai_api_key' is write-only and cannot be read back"`)
-  rather than the persisted value.
-- `lilbee_status` reads only the public catalog fields (`chat_model`,
-  `embedding_model`, retrieval knobs); API keys are excluded by the
-  same `write_only` filter.
-
-`lilbee_settings_set` still accepts writes to these fields so an agent
-can configure a key on the user's behalf, but the value never round-trips
-back. The flag is declared once on the pydantic Config and consumed by
-the boundary, so a future field becomes write-only with one extra
-`write_only=True` argument and no new code in the MCP layer.
+API-key fields (and `hf_token`) carry a `write_only` flag on the
+config. `settings_set` still accepts writes, but `settings_list`
+skips them and `settings_get` errors. Secrets do not round-trip.
 
 ## Fine-tuning lilbee from your agent
 
-Every writable lilbee setting is reachable from MCP, which means the
-agent can pick models for the user's hardware and dial in the retrieval
-pipeline for the kind of questions the user actually wants to ask.
-There is no separate setup flow; the same MCP server that answers
-queries also configures itself.
+Drop this into any MCP-aware agent:
 
-Example prompt you can drop into any MCP-aware coding agent:
+> I'm going to index `~/projects/my-stack/` with lilbee and ask
+> questions about how the auth layer is wired and which functions call
+> which. Assess my hardware, recommend embedding / reranker / vision
+> models, pull them in the background, then adapt the lilbee defaults
+> for this corpus and question style.
 
-> I'm going to index `~/projects/my-stack/` with lilbee and then mostly
-> ask it questions about how the auth layer is wired and which functions
-> call which. Can you assess my hardware, recommend embedding / reranker
-> / vision models that will fit, pull them in the background, and then
-> walk the lilbee defaults and adapt them for this corpus and this
-> question style?
+The agent answers the questions itself, so it only touches model roles
+that affect retrieval (`embedding_model`, `reranker_model`,
+`vision_model`). The `chat_model` slot is for the human's later TUI use.
 
-The agent itself supplies the answers, so it only manipulates the model
-roles that affect retrieval (`embedding_model`, `reranker_model`,
-`vision_model`). The local `chat_model` slot is for the human's later
-TUI / CLI sessions; the agent leaves it alone unless you ask.
-
-A capable agent will:
-
-1. Call `lilbee_settings_list` to see the writable catalog and
-   `lilbee_status` to see what's already indexed and what models are
-   wired up.
-2. Inspect the host (RAM, GPU, OS) with its native tools.
-3. Use `lilbee_catalog_browse(task="embedding")` /
-   `lilbee_catalog_browse(task="rerank")` /
-   `lilbee_catalog_browse(task="vision")` to see what's available, and
-   `lilbee_model_list(source="native")` to see what's already
-   installed locally.
-4. Pull each picked model with `lilbee_model_pull` through the
-   `lilbee-worker` subagent so the chat thread stays responsive.
-5. Set the embedding / reranker / vision slots through
-   `lilbee_settings_set({"embedding_model": "...", "reranker_model":
-   "...", "vision_model": "..."})`.
-6. Tune retrieval for the question style with one batched
-   `lilbee_settings_set` call: more candidates and a higher
-   `rerank_candidates` plus a non-empty `reranker_model` for "which
-   functions call which"; a larger `top_k` and `max_context_sources`
-   for "walk me through this subsystem". For code-heavy corpora it
-   will usually also drop `chunk_size` and enable `concept_graph`.
-7. Run `lilbee_settings_get` on each key it changed to confirm the
-   value was accepted, and tell the user which knob it moved and why.
-
-All of these writes go through one canonical boundary inside lilbee, so
-the change persists to the per-vault `config.toml`, the in-process
-model architecture cache and provider load cache are dropped, and the
-next `lilbee_search` / `lilbee_sync` call sees the new configuration
-without a restart. If a `reindex_required` knob (chunk_size /
-chunk_overlap) changed, `lilbee_settings_set` returns
-`reindex_required: true`, the agent's cue to delegate
-`lilbee_sync(force_rebuild=true)` to the worker subagent.
+Typical flow: `lilbee_status` + `lilbee_settings_list` to see baseline,
+`lilbee_catalog_browse(task=...)` to pick models per role, `lilbee_model_pull`
+via the `lilbee-worker` subagent, one batched `lilbee_settings_set` to wire
+the models and tune retrieval (raise `top_k` / `diversity_max_per_source`
+for code-heavy corpora; enable `concept_graph`; lower `chunk_size`).
+If the result includes `reindex_required: true`, the agent should hand
+`lilbee_sync(force_rebuild=true)` to the worker.
 
 ## JSON CLI
 

@@ -104,45 +104,32 @@ for the build / draft / prune cycle.
 
 ## Secrets stay out of MCP reads
 
-API keys (`openai_api_key`, `anthropic_api_key`, `hf_token`, etc.) are
-marked write-only on the lilbee config. `lilbee_settings_list` will not
-include them. `lilbee_settings_get` on a write-only key returns an
-error envelope. You can still set them with `lilbee_settings_set` on
-the user's behalf, but you cannot read them back. Treat that as the
-contract: never assume you can fetch a previously-set key over MCP.
+API keys carry a `write_only` flag. `lilbee_settings_list` skips them
+and `lilbee_settings_get` errors on them; `lilbee_settings_set` still
+writes. Never assume you can read a key back.
 
 ## Fine-tuning lilbee for the user's corpus
 
-The user may ask you to set lilbee up for a specific corpus and question
-style ("index this codebase, recommend models, tune for code Q&A"). You
-have everything you need over MCP:
+You manipulate the retrieval surface only: `embedding_model`,
+`reranker_model`, `vision_model`, and the retrieval / ingest knobs.
+The `chat_model` slot is for the human's TUI; leave it unless asked.
 
-1. `lilbee_settings_list` enumerates every knob with help text and
-   defaults. `lilbee_settings_get(key)` reads one. Defaults are sane
-   for general prose; you usually only need to move a handful of knobs.
-2. `lilbee_model_list(source="native")` shows what's installed.
-   `lilbee_model_pull(model, source)` downloads more. Pulls are slow,
-   so dispatch them to the `lilbee-worker` subagent, not inline.
-3. `lilbee_settings_set({...})` writes a batch atomically. Hand it a
-   single dict per logical change ("switch to a code-tuned setup": set
-   `chat_model`, `embedding_model`, `reranker_model`, `chunk_size`,
-   `concept_graph`, `rerank_candidates` in one call).
-4. If `lilbee_settings_set` returns `reindex_required: true`, the
-   change invalidates the persisted vector store. Delegate
-   `lilbee_sync(force_rebuild=true)` to the worker subagent and wait
-   for it to finish before resuming search.
-5. Tell the user which knob you moved and why, in plain English. They
-   should be able to revert with `lilbee_settings_reset([...])`.
+Flow: `lilbee_settings_list` + `lilbee_status` to see baseline →
+`lilbee_catalog_browse(task=...)` to discover candidates →
+`lilbee_model_pull` via the `lilbee-worker` subagent → one batched
+`lilbee_settings_set` to wire the models and tune retrieval → if the
+result says `reindex_required: true`, dispatch
+`lilbee_sync(force_rebuild=true)` to the worker. Report which knobs
+moved and why.
 
-Common adjustments by question style:
+Question-style cheat sheet:
 
-- **Code Q&A / call graphs:** non-empty `reranker_model`, raise
+- **Code Q&A / call graphs:** set `reranker_model`, raise
   `rerank_candidates` (24-48), enable `concept_graph`, lower
   `chunk_size` (256-384).
 - **Long-document walkthroughs:** raise `top_k` (12-16) and
-  `max_context_sources`, drop `diversity_max_per_source` to 1 so
-  the answer spans multiple sources.
-- **Fact lookup over a large library:** raise `top_k`, raise
+  `max_context_sources`, drop `diversity_max_per_source` to 1.
+- **Fact lookup over a large library:** raise `top_k` and
   `candidate_multiplier`, keep `reranker_model` set.
 
 ## Citation rules
