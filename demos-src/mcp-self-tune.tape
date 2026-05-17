@@ -1,25 +1,29 @@
 Source "_shared.tape"
 Output "_out/mcp-self-tune.gif"
 
-# opencode driving lilbee over MCP. The PR-title beat: agent tunes lilbee
-# for a better answer. Same question, same MCP server, same model; only
-# the settings change. The second answer is measurably richer.
+# opencode driving lilbee over MCP. PR-title beat: agent tunes lilbee
+# (visibly, via lilbee_settings_set) to give a better answer against a
+# dense pile of reference docs, then resets.
 #
-# Empirical baseline (lilbee 0.6.66b478, opencode 1.14, qwen3.6-plus-free,
-# M1): with defaults, `lilbee_search "A star pathfinding"` against the
-# godot-classes XML corpus returns AStar3D as the only A* class (the
-# rest are NavigationAgent / Region classes that mention pathfinding but
-# aren't A*). One settings_set (`diversity_max_per_source=8 top_k=15
-# max_distance=0.85`) and the same query returns AStar3D plus AStarGrid2D
-# plus the NavigationPathQueryParameters family. The on-screen answer
-# goes from one class to two-plus.
+# Human-natural prompt -- a developer working on a Godot project asks
+# lilbee to optimize for the reference docs before answering a broad
+# question. The agent (qwen3.6-plus-free, drives the demo deterministically)
+# reads SKILL.md workflow #5, then on its own runs:
+#   1. lilbee_status                                      see baseline
+#   2. lilbee_settings_list group="Retrieval"             enumerate knobs
+#   3. lilbee_settings_set {top_k=50, diversity=20, ...}  the tuning step
+#   4-6. lilbee_search "AStar3D" / "AStar2D" / "AStarGrid2D"
+#   7. comprehensive answer citing all three classes
+#   8. lilbee_settings_reset                              clean env
+#
+# Empirical run (lilbee 0.6.66b478, opencode 1.14, M1):
+#   opencode boot                                      ~8s
+#   self-tune + 3 searches + composed answer           ~60-75s
+#   reset                                              ~5s
+# Total real time: ~80-90s. PlaybackSpeed 1.5 -> ~55-60s GIF.
 #
 # Corpus is the godot 4 class reference (810 XMLs, ~3450 chunks),
 # pre-indexed off-camera by demos/_prep.sh.
-#
-# Tape uses three sequential prompts (baseline / tune+answer / reset)
-# rather than one nine-step protocol, so each answer lingers on screen
-# instead of being scrolled off by the next agent turn.
 
 Env LILBEE_MODELS_DIR "/tmp/lilbee-demo/models"
 
@@ -33,26 +37,13 @@ Sleep 400ms
 Enter
 Sleep 8s
 
-# Prompt 1: defaults baseline. lilbee_settings_reset first to make sure
-# the agent isn't carrying over a previous session's tuning, then one
-# search with the verbatim query, then a tight cited answer.
-Type "lilbee_settings_reset diversity_max_per_source top_k max_distance. Then lilbee_search 'A star pathfinding'. Using ONLY those results, write a 2-line answer naming every A* class with one use case each, cite the file. No prose preamble."
+# The prompt: a developer who knows lilbee can be tuned, asking for
+# shape-appropriate setup before a broad question. Reset framing at
+# the end keeps the env clean for the next user.
+Type "I'm researching Godot 4 pathfinding. Use lilbee_settings_set to tune retrieval for breadth before answering -- godot's reference is dense XML files, one class per file. Then walk me through every A* pathfinding class Godot 4 gives me with citations. Reset settings when you're done."
 Sleep 800ms
 Enter
-Sleep 90s
-
-# Prompt 2: same question after one tuning step. The settings_set is
-# the visible point of the demo; the second answer should land richer.
-Type "lilbee_settings_set diversity_max_per_source=8 top_k=15 max_distance=0.85. Then lilbee_search 'A star pathfinding' (verbatim same query). Write a 2-line answer naming every A* class with one use case each, cite the file. No prose preamble."
-Sleep 800ms
-Enter
-Sleep 90s
-
-# Prompt 3: leave the env clean.
-Type "lilbee_settings_reset diversity_max_per_source top_k max_distance"
-Sleep 800ms
-Enter
-Sleep 15s
+Sleep 95s
 
 Screenshot "_out/mcp-self-tune.png"
 

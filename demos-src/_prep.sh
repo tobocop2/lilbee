@@ -65,7 +65,7 @@ pull_model() {
 
 seed_indexed_corpus() {
     # Stage <ROOT>/<tape>/documents/crown-victoria-manual.pdf and rebuild the
-    # store, but only if the corpus isn't already there.
+    # store, but only if the library isn't already there.
     local tape="$1"
     local data="$ROOT/$tape"
     mkdir -p "$data/documents"
@@ -115,7 +115,7 @@ setup_opencode_dir() {
     # Copy the shared agent artifacts (AGENTS.md, opencode.json, the
     # lilbee-worker subagent, and the lilbee-mcp skill) into a demo dir,
     # then `lilbee init` so the MCP server walks up from cwd to a real
-    # project-local corpus.
+    # project-local library.
     local tape="$1"
     local dir="$ROOT/$tape"
     mkdir -p "$dir/.opencode/agents" "$dir/.opencode/skills/lilbee-mcp"
@@ -165,7 +165,7 @@ stage_godot_search_subset() {
 }
 
 seed_self_tune_corpus() {
-    # Stage the godot-classes XML reference (the same 810-file corpus
+    # Stage the godot-classes XML reference (the same 810-file pile
     # mcp-godot uses) into opencode-self-tune and index it. The tape
     # asks an A* pathfinding question twice, once at defaults and once
     # after one settings_set call; with defaults the search returns
@@ -214,7 +214,7 @@ JSON
 }
 
 preindex_godot_corpus() {
-    # Pre-index the full 810-XML godot corpus into the opencode-godot
+    # Pre-index the full 810-XML godot library into the opencode-godot
     # demo dir so mcp-godot.tape opens straight into the cited-answer
     # phase. Skips if already indexed (mtime gate makes lilbee add a
     # near-no-op on rerun anyway, but the explicit check shaves the
