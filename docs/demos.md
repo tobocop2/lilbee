@@ -68,17 +68,18 @@ Crawling, API-Keys, System.
 
 ![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
-## Agent: self-tune (a better answer in one settings_set)
+## Agent: self-tune (a better answer via lilbee_settings_set)
 
-Same question asked twice against the godot class reference: with
-defaults `lilbee_search "A star pathfinding"` returns AStar3D as the
-only A* class. One `lilbee_settings_set diversity_max_per_source=8
-top_k=15 max_distance=0.85` and the same query returns AStar3D plus
-AStarGrid2D plus the NavigationPathQueryParameters family; the
-re-answer cites multiple A* variants. Settings reset at the end leaves
-the env clean.
+A developer asks lilbee to tune retrieval for breadth before answering
+a broad Godot 4 pathfinding question against the godot class
+reference. The agent runs `lilbee_status` and `lilbee_settings_list`
+to see baseline, batches one `lilbee_settings_set` widening `top_k`
+for the dense XML files, runs three searches to drill into the A*
+variants, writes a comprehensive walkthrough citing every class, and
+resets settings on the way out. Same agent, same MCP server, one
+visible tuning step.
 
-![an opencode agent asks the same A-star pathfinding question against godot-classes twice, batches one lilbee_settings_set in between, and the tuned answer cites multiple A* variants instead of just AStar3D](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+![an opencode agent tunes lilbee for breadth via lilbee_settings_set before answering, then walks through every A-star pathfinding class in Godot 4 with file:line citations and resets the settings on the way out](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
 
 ## Agent: code (lilbee talking to lilbee)
 
