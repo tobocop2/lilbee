@@ -7,12 +7,10 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Any
 
 from litestar import Request, Router, get, post
 from litestar.exceptions import ValidationException
 from litestar.response import Response, Stream
-from pydantic import ValidationError
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
@@ -70,18 +68,15 @@ async def list_models_endpoint(request: Request) -> Response:
 
 @post("/v1/chat/completions", status_code=200)
 @read_only
-async def chat_completions_endpoint(request: Request, data: dict[str, Any]) -> Response | Stream:
+async def chat_completions_endpoint(
+    request: Request, data: CompletionsRequest
+) -> Response | Stream:
     """``/v1/chat/completions`` (stream + non-stream + tools)."""
     auth_error = _auth_failure(request)
     if auth_error is not None:
         return auth_error
 
-    try:
-        validated = CompletionsRequest.model_validate(data)
-    except ValidationError as exc:
-        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _format_validation(exc))
-
-    req = completions_to_canonical_request(validated)
+    req = completions_to_canonical_request(data)
 
     try:
         acquire_or_raise_busy()
@@ -183,16 +178,21 @@ def _auth_failure(request: Request) -> Response | None:
     return _error_response(401, CompletionsErrorCode.INVALID_API_KEY, "Missing or invalid API key.")
 
 
-def _format_validation(exc: ValidationError) -> str:
-    """Render pydantic validation errors as a single user-facing string."""
-    return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
-    )
-
-
 def _validation_exception_handler(_: Request, exc: ValidationException) -> Response:
     """Wrap Litestar's body-parse failures in the OpenAI error envelope."""
-    return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc.detail))
+    return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _format_validation(exc))
+
+
+def _format_validation(exc: ValidationException) -> str:
+    """Render a litestar/pydantic ValidationException as a single user-facing string.
+
+    Litestar wraps pydantic errors as ``{"key": "field_name", "message": "..."}``
+    entries on ``exc.extra``; we flatten them into a semicolon-joined string so
+    the OpenAI envelope carries the same field names a client expects to see.
+    """
+    items: list[dict[str, str]] = exc.extra if isinstance(exc.extra, list) else []
+    parts = [f"{err.get('key') or ''}: {err.get('message', '')}".lstrip(": ") for err in items]
+    return "; ".join(parts) if parts else str(exc.detail)
 
 
 def _parse_created(downloaded_at: str | None) -> int:

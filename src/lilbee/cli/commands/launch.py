@@ -193,6 +193,39 @@ def _ensure_server_running(port: int) -> tuple[tuple[str, int], subprocess.Popen
     return session, spawned
 
 
+def _resolve_opencode_or_exit() -> str:
+    try:
+        return _opencode_binary()
+    except OpencodeNotInstalledError:
+        typer.secho(_OPENCODE_INSTALL_HINT, err=True, fg=typer.colors.RED)
+        raise typer.Exit(1) from None
+
+
+def _opencode_env(token: str, server_port: int, model_refs: list[str]) -> dict[str, str]:
+    block = opencode_config(
+        base_url=f"http://{_LOCAL_HOST}:{server_port}",
+        api_key=token,
+        model_refs=model_refs,
+    )
+    return {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps(block)}
+
+
+def _run_opencode(
+    opencode_bin: str,
+    env: dict[str, str],
+    spawned: subprocess.Popen[bytes] | None,
+    *,
+    keep_serving: bool,
+) -> int:
+    try:
+        # opencode_bin resolved via shutil.which on PATH; no shell interpolation.
+        result = subprocess.run([opencode_bin], env=env, check=False)  # noqa: S603
+    finally:
+        if spawned is not None and not keep_serving:
+            _stop_spawned_server(spawned)
+    return result.returncode
+
+
 @launch_app.command("opencode")
 def opencode_cmd(
     keep_serving: bool = typer.Option(
@@ -210,36 +243,12 @@ def opencode_cmd(
         ),
     ),
 ) -> None:
-    """Launch opencode with lilbee as its model provider.
-
-    Spawns ``lilbee serve`` on a free port (or reuses one already running),
-    passes opencode an inline provider config via ``OPENCODE_CONFIG_CONTENT``,
-    installs the lilbee skill globally so opencode sessions know how to use
-    lilbee, and pre-populates opencode's model picker.
-    """
-    try:
-        opencode_bin = _opencode_binary()
-    except OpencodeNotInstalledError:
-        typer.secho(_OPENCODE_INSTALL_HINT, err=True, fg=typer.colors.RED)
-        raise typer.Exit(1) from None
-
+    """Launch opencode with lilbee as its model provider."""
+    opencode_bin = _resolve_opencode_or_exit()
     (token, server_port), spawned = _ensure_server_running(port)
     model_refs = installed_chat_model_refs()
-
     _install_lilbee_skill()
     _update_opencode_picker_state(model_refs)
-
-    block = opencode_config(
-        base_url=f"http://{_LOCAL_HOST}:{server_port}",
-        api_key=token,
-        model_refs=model_refs,
-    )
-    env = {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps(block)}
-
-    try:
-        # opencode_bin resolved via shutil.which on PATH; no shell interpolation.
-        result = subprocess.run([opencode_bin], env=env, check=False)  # noqa: S603
-    finally:
-        if spawned is not None and not keep_serving:
-            _stop_spawned_server(spawned)
-    raise typer.Exit(result.returncode)
+    env = _opencode_env(token, server_port, model_refs)
+    exit_code = _run_opencode(opencode_bin, env, spawned, keep_serving=keep_serving)
+    raise typer.Exit(exit_code)
