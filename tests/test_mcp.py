@@ -13,6 +13,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.mcp_server import (
     add,
+    catalog_browse,
     crawl,
     crawl_status,
     init,
@@ -1185,3 +1186,35 @@ class TestSettingsMcp:
         cfg.seed = 42
         settings_reset(["seed"])
         assert cfg.seed is None
+
+
+class TestCatalogBrowseMcp:
+    """MCP catalog_browse exposes the featured catalog + HF for any model role."""
+
+    def test_browse_returns_featured_embedding_models(self, isolated_env, mock_svc):
+        """task=embedding + featured=true returns the curated embedding catalog."""
+        # featured=True skips the live HF call; the real HfClient never runs.
+        result = catalog_browse(task="embedding", featured=True, limit=5)
+        assert result["command"] == "catalog_browse"
+        assert result["total"] >= 1
+        for entry in result["models"]:
+            assert entry["task"] == "embedding"
+            assert "ref" in entry
+            assert "size_gb" in entry
+            assert entry["featured"] is True
+
+    def test_browse_returns_featured_vision_and_rerank(self, isolated_env, mock_svc):
+        """The vision and rerank slots both have at least one curated entry."""
+        for task in ("vision", "rerank"):
+            result = catalog_browse(task=task, featured=True)
+            assert result["total"] >= 1, f"no featured models for {task}"
+
+    def test_browse_rejects_invalid_task(self, isolated_env, mock_svc):
+        """An unknown task name returns the uniform error envelope."""
+        result = catalog_browse(task="not-a-task")
+        assert "error" in result
+
+    def test_browse_omits_chat_model_when_filtered_to_embedding(self, isolated_env, mock_svc):
+        """task=embedding never returns chat models even with no other filters."""
+        result = catalog_browse(task="embedding", featured=True)
+        assert all(m["task"] == "embedding" for m in result["models"])

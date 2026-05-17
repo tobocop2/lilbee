@@ -84,6 +84,7 @@ For a project where you want the agent to use lilbee reliably, copy three things
 | `model_show(model)` | Show catalog + installed metadata for a model ref | No |
 | `model_pull(model, source)` | Download a model, streaming progress via MCP notifications | Yes (download) |
 | `model_rm(model, source)` | Remove an installed model | No |
+| `catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the lilbee model catalog (curated + Hugging Face) so the agent can pick what to pull | No |
 | `settings_list(group)` | List every writable setting with value, default, type, help text, choices, and `reindex_required` | No |
 | `settings_get(key)` | Get one setting's current value and metadata | No |
 | `settings_set(updates)` | Atomically update a batch of writable settings; validates, persists, and invalidates the in-process model and provider caches | No |
@@ -158,35 +159,43 @@ pipeline for the kind of questions the user actually wants to ask.
 There is no separate setup flow; the same MCP server that answers
 queries also configures itself.
 
-Example prompt you can drop into Claude Code, opencode, or any other
-MCP-aware host:
+Example prompt you can drop into any MCP-aware coding agent:
 
 > I'm going to index `~/projects/my-stack/` with lilbee and then mostly
 > ask it questions about how the auth layer is wired and which functions
-> call which. Can you assess my hardware, recommend chat / embedding /
-> reranker models that will fit, pull them in the background, and then
+> call which. Can you assess my hardware, recommend embedding / reranker
+> / vision models that will fit, pull them in the background, and then
 > walk the lilbee defaults and adapt them for this corpus and this
 > question style?
 
+The agent itself supplies the answers, so it only manipulates the model
+roles that affect retrieval (`embedding_model`, `reranker_model`,
+`vision_model`). The local `chat_model` slot is for the human's later
+TUI / CLI sessions; the agent leaves it alone unless you ask.
+
 A capable agent will:
 
-1. Call `lilbee_settings_list` to see the catalog and `lilbee_status` to
-   see what's already indexed and what models are wired up.
+1. Call `lilbee_settings_list` to see the writable catalog and
+   `lilbee_status` to see what's already indexed and what models are
+   wired up.
 2. Inspect the host (RAM, GPU, OS) with its native tools.
-3. Use `lilbee_model_list(source="native")` to see what's installed,
-   then suggest models from the curated catalog and pull each one with
-   `lilbee_model_pull` through the `lilbee-worker` subagent so the chat
-   thread stays responsive.
-4. Set the chat / embedding / reranker slots through
-   `lilbee_settings_set({"chat_model": "...", "embedding_model": "...",
-   "reranker_model": "..."})`.
-5. Tune retrieval for the question style with one batched
+3. Use `lilbee_catalog_browse(task="embedding")` /
+   `lilbee_catalog_browse(task="rerank")` /
+   `lilbee_catalog_browse(task="vision")` to see what's available, and
+   `lilbee_model_list(source="native")` to see what's already
+   installed locally.
+4. Pull each picked model with `lilbee_model_pull` through the
+   `lilbee-worker` subagent so the chat thread stays responsive.
+5. Set the embedding / reranker / vision slots through
+   `lilbee_settings_set({"embedding_model": "...", "reranker_model":
+   "...", "vision_model": "..."})`.
+6. Tune retrieval for the question style with one batched
    `lilbee_settings_set` call: more candidates and a higher
    `rerank_candidates` plus a non-empty `reranker_model` for "which
    functions call which"; a larger `top_k` and `max_context_sources`
    for "walk me through this subsystem". For code-heavy corpora it
    will usually also drop `chunk_size` and enable `concept_graph`.
-6. Run `lilbee_settings_get` on each key it changed to confirm the
+7. Run `lilbee_settings_get` on each key it changed to confirm the
    value was accepted, and tell the user which knob it moved and why.
 
 All of these writes go through one canonical boundary inside lilbee, so

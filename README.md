@@ -23,7 +23,7 @@
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total" alt="GitHub release downloads"></a>
 </p>
 
-Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key or use a frontier agent over MCP.
+Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key, and an MCP server so any agent that speaks MCP can drive it.
 
 ![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
@@ -56,7 +56,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI.
-- **Wire it into your agent over MCP.** A coding agent (Claude Code, opencode, anything that speaks MCP) calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. See [Agent integration](#agent-integration).
+- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. See [Agent integration](#agent-integration).
 
 CLI commands, the HTTP API, environment variables, and `config.toml` are also there as reference for scripting, headless runs, and custom integrations; you should not need them for everyday use. See the [usage guide](docs/usage.md).
 
@@ -91,13 +91,13 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 lilbee plugs into whatever AI agent you already use, over MCP. Feed it your project's docs, your dependency source, your API documentation, your design notes, and the agent stops making up function names: it reads the actual code it's about to call, cites the file and line, and says it doesn't know when the answer isn't in your library, instead of guessing.
 
-The agent can be local or a cloud frontier model. lilbee is the local part: your files, the search index, and the embeddings all stay on your machine. The agent calls `lilbee_search` over MCP and gets back a list of cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations.
+The agent can be a local model or a cloud one. lilbee is the local part: your files, the search index, and the embeddings all stay on your machine. The agent calls `lilbee_search` over MCP and gets back a list of cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
 ### Let the agent tune lilbee for you
 
-Every writable lilbee setting is reachable from the same MCP server: `lilbee_settings_list` enumerates the catalog with current values, types, defaults, and help text; `lilbee_settings_set` writes them atomically; `lilbee_settings_reset` puts them back. Agents already know what chunk size, retrieval breadth, MMR weight, and reranker depth do, so you can ask a frontier model to assess your hardware, recommend models, pull them, and dial the retrieval pipeline in for your corpus, all without opening the TUI. The agent can configure lilbee end-to-end from MCP. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for an example prompt.
+Every writable lilbee setting is reachable from the same MCP server: `lilbee_settings_list` enumerates the catalog with current values, types, defaults, and help text; `lilbee_settings_set` writes them atomically; `lilbee_settings_reset` puts them back. The agent can also browse the model catalog (`lilbee_catalog_browse`) and pull entries (`lilbee_model_pull`). It already knows what chunk size, retrieval breadth, MMR weight, and reranker depth do, so you can have it assess your hardware, recommend embedding / vision / reranker models, pull them, and dial the retrieval pipeline in for your corpus, all without opening the TUI. The agent configures lilbee end-to-end from MCP. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for an example prompt.
 
 ![an opencode agent reads the lilbee retrieval catalog, batches one `lilbee_settings_set` to tune for a code-heavy single-source question, re-answers with citations, then resets to defaults](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
 
@@ -139,7 +139,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 lilbee runs entirely on your machine by default. There are two ways to use cloud models when you want to:
 
 - **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add an API key, then point the chat / embedding / vision / rerank role at a cloud model from the same model catalog. The TUI shows a persistent warning whenever a cloud role is active, so it's clear when chunks are leaving the machine.
-- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part: your files, the embeddings, the search index. The agent (opencode, Claude Code, anything that speaks MCP) calls `lilbee_search` / `lilbee_add` and gets back cited snippets. The Godot demo above is exactly this shape: opencode driving MiniMax M2.7 (a cloud frontier model), with the indexed Godot 4 reference and the search both running locally.
+- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part: your files, the embeddings, the search index. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets. The Godot demo above is exactly this shape: a cloud-hosted coding agent on top of opencode, with the indexed Godot 4 reference and the search both running locally.
 
 Either way your files and the index never leave the machine; only the queries and the snippets the model needs to answer cross the wire when you opt in.
 
@@ -238,7 +238,7 @@ lilbee plugs into any agent over MCP or a JSON CLI. The repo ships a drop-in [`A
 
 Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
-![opencode + cloud frontier model indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+![opencode driving a cloud coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the agent can write a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
 

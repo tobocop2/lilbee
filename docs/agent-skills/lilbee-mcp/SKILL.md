@@ -78,6 +78,7 @@ strategy and reach for other tools; the search will work the moment the embedder
 | `lilbee_crawl_status(task_id)` | Poll a running crawl: `status` is `"pending"`, `"running"`, `"done"`, or `"failed"`. |
 | `lilbee_model_list(source, task)` | Installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model. |
+| `lilbee_catalog_browse(task, search, size, installed, featured, sort)` | Browse the curated + Hugging Face catalog. Use before `lilbee_model_pull` to pick what to install. |
 | `lilbee_settings_list(group)` | Every writable lilbee setting with value, default, type, help text, and `reindex_required`. |
 | `lilbee_settings_get(key)` | Current value and metadata for one setting. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, drops the in-process model + provider caches. |

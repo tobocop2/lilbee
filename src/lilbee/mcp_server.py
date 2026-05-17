@@ -619,6 +619,86 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
+def catalog_browse(
+    task: str = "",
+    search: str = "",
+    size: str = "",
+    installed: bool | None = None,
+    featured: bool | None = None,
+    sort: str = "featured",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Browse the lilbee model catalog (featured entries + Hugging Face).
+
+    Lets an agent discover candidates for any model role before pulling.
+    The catalog is the same one the TUI browses: a curated featured list
+    augmented with live Hugging Face results when ``featured=false``.
+
+    Args:
+        task: ``"chat"``, ``"embedding"``, ``"vision"``, ``"rerank"``, or
+            ``""`` for all.
+        search: Substring filter on name / repo / description.
+        size: ``"small"`` (<3 GB), ``"medium"`` (3-10 GB), or ``"large"``
+            (>10 GB). Empty = no size filter.
+        installed: ``true`` shows only installed repos, ``false`` only
+            uninstalled, ``null`` shows both.
+        featured: ``true`` restricts to the curated featured list,
+            ``false`` skips it (HF results only), ``null`` includes both.
+        sort: ``"featured"``, ``"downloads"``, or ``"name"``.
+        limit: Page size (default 20).
+        offset: Page offset for pagination.
+
+    Returns the same shape as the HTTP ``GET /api/catalog`` endpoint:
+    ``{total, limit, offset, has_more, models: [{ref, display_name,
+    task, size_gb, min_ram_gb, downloads, featured, description}, ...]}``.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.catalog.query import get_catalog
+    from lilbee.catalog.types import ModelTask
+
+    try:
+        parsed_task = ModelTask(task) if task else None
+    except ValueError as exc:
+        return _error(str(exc))
+    size_arg = size or None
+    try:
+        result = get_catalog(
+            task=parsed_task,
+            search=search,
+            size=size_arg,
+            installed=installed,
+            featured=featured,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+            model_manager=get_services().model_manager,
+        )
+    except ValueError as exc:
+        return _error(str(exc))
+    return {
+        "command": "catalog_browse",
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "models": [
+            {
+                "ref": m.hf_repo,
+                "display_name": m.display_name,
+                "task": m.task.value,
+                "size_gb": m.size_gb,
+                "min_ram_gb": m.min_ram_gb,
+                "downloads": m.downloads,
+                "featured": m.featured,
+                "description": m.description,
+            }
+            for m in result.models
+        ],
+    }
+
+
+@mcp.tool()
 def model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref."""
     from lilbee.app.models import show_model_data
