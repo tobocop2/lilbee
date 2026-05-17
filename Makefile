@@ -6,7 +6,8 @@
 # checkout so the agent integration recipes + lilbee-mcp skill resolve.
 
 TAPES := tui-setup tui-chat tui-add tui-catalog tui-settings tui-palette \
-         tui-crawl tui-tour mcp-godot-search mcp-godot mcp-manual mcp-code
+         tui-crawl tui-tour mcp-godot-search mcp-godot mcp-manual mcp-code \
+         mcp-self-tune
 
 demo-prep:  ## Pre-stage models, indexed corpora, opencode demo dirs
 	@test -n "$$LILBEE_REPO_ROOT" || (echo "LILBEE_REPO_ROOT must be set (path to main checkout)" >&2; exit 1)
