@@ -99,6 +99,8 @@ The agent can be local or a cloud frontier model. lilbee is the local part: your
 
 Every writable lilbee setting is reachable from the same MCP server: `lilbee_settings_list` enumerates the catalog with current values, types, defaults, and help text; `lilbee_settings_set` writes them atomically; `lilbee_settings_reset` puts them back. Agents already know what chunk size, retrieval breadth, MMR weight, and reranker depth do, so you can ask a frontier model to assess your hardware, recommend models, pull them, and dial the retrieval pipeline in for your corpus, all without opening the TUI. The agent can configure lilbee end-to-end from MCP. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for an example prompt.
 
+![an opencode agent reads the lilbee retrieval catalog, batches one `lilbee_settings_set` to tune for a code-heavy single-source question, re-answers with citations, then resets to defaults](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+
 ### Offline copies of websites
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
