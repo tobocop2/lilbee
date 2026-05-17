@@ -174,6 +174,22 @@ Each active inference role (chat, embed, rerank, vision) runs in its own subproc
 
 ## Install
 
+### NVIDIA users: start here
+
+If you have an NVIDIA GPU, install the **CUDA build** instead of the default. It links straight against `libcuda.so.1` from your driver (no Vulkan in the loop), so it sidesteps the iGPU + dGPU Vulkan-loader crash that bites NVIDIA-on-Windows setups, and it is the faster path on any box where you would otherwise rely on Vulkan over NVIDIA.
+
+| | Command |
+| --- | --- |
+| **pip** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda` |
+| **AUR** | `paru -S lilbee-cuda` |
+| **Nix** | `nix run github:tobocop2/lilbee#lilbee-cuda` |
+| **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
+
+Same `lilbee` command after install. The CUDA runtime (`cudart`, `cublas`) is bundled inside the binary; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically (it `conflicts_with` / `provides` lilbee); on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as standalone binaries on the release page.
+
+### Everyone else (default Vulkan / Metal build)
+
 **Two routes, and the difference matters:**
 
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Smaller install, picks the fastest CPU code path for your machine at runtime, managed with the tools you already use. Recommended if you have Python.
@@ -187,10 +203,9 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; fetches a Python for you if you need one. |
 | **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you. |
 | **AUR** | `paru -S lilbee` | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper. |
-| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data` — mount a volume there. |
+| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. |
 | **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
-| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` | Recommended for NVIDIA users on Windows, both for stability and speed. The default Vulkan wheel works for most setups, but on a Windows box with both an NVIDIA discrete GPU and an integrated AMD or Intel GPU the Vulkan loader has to load every vendor's driver into one process, and some vendor combinations crash. CUDA wheels skip Vulkan entirely. Pick the index that matches `nvidia-smi`: [cu121](https://lilbee.sh/cu121/lilbee/) / [cu124](https://lilbee.sh/cu124/lilbee/) / [cu125](https://lilbee.sh/cu125/lilbee/). Want a standalone binary instead of a wheel? `brew install tobocop2/lilbee/lilbee-cuda`, `paru -S lilbee-cuda`, `nix run github:tobocop2/lilbee#lilbee-cuda`, or download `lilbee-linux-x86_64-cu125` / `lilbee-windows-x86_64-cu125.exe` directly from the [release page](https://github.com/tobocop2/lilbee/releases/latest). |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
 
 Then check it runs and pick a model:
