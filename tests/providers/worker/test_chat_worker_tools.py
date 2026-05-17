@@ -274,3 +274,40 @@ def test_finish_reason_mapping(raw: str | None, expected: FinishReason) -> None:
     from lilbee.providers.worker.chat_worker import _coerce_finish_reason
 
     assert _coerce_finish_reason(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"choices": [{"delta": None}]},  # delta absent
+        {"choices": [{"delta": {"tool_calls": "not-a-list"}}]},
+        {"choices": [{"delta": {"tool_calls": ["not-a-dict"]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": "no-dict"}]}}]},
+    ],
+)
+def test_extract_tool_call_deltas_skips_malformed_shapes(chunk: Any) -> None:
+    """Defensive isinstance checks fall through to empty / no-arg deltas."""
+    from lilbee.providers.worker.chat_worker import _extract_tool_call_deltas
+
+    deltas = _extract_tool_call_deltas(chunk)
+    # Either no deltas (top-level shape rejected) or one delta with no name/args
+    # (function dict replaced with empty {}).
+    assert all(d.arguments_delta is None for d in deltas)
+    assert all(d.name is None for d in deltas)
+
+
+@pytest.mark.parametrize(
+    "raw_calls",
+    [
+        "not-a-list",
+        ["not-a-dict"],
+        [{"id": "c1", "function": "no-dict"}],
+        [{"id": "c1", "function": {"name": 42}}],
+        [{"id": "c1", "function": {"name": ""}}],
+    ],
+)
+def test_coerce_tool_calls_drops_malformed_entries(raw_calls: Any) -> None:
+    """``_coerce_tool_calls`` returns ``()`` when no entry has a valid name."""
+    from lilbee.providers.worker.chat_worker import _coerce_tool_calls
+
+    assert _coerce_tool_calls(raw_calls) == ()

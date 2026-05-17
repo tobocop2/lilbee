@@ -196,6 +196,38 @@ def test_llama_cpp_supports_tools_false_when_metadata_unreadable(monkeypatch) ->
     assert provider.supports_tools("any/model") is False
 
 
+def test_llama_cpp_supports_tools_false_when_metadata_none(monkeypatch) -> None:
+    """``read_gguf_metadata`` returns ``None`` for unreadable files; treat as no tools."""
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: Path("/fake/path.gguf"),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+        lambda path: None,
+    )
+    assert provider.supports_tools("any/model") is False
+
+
+def test_llama_cpp_supports_tools_false_when_template_missing(monkeypatch) -> None:
+    """Metadata without a ``chat_template`` key conservatively reports no tool support."""
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: Path("/fake/path.gguf"),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+        lambda path: {"architecture": "llama"},
+    )
+    assert provider.supports_tools("any/model") is False
+
+
 def test_sdk_provider_chat_returns_chat_result() -> None:
     """``SdkLLMProvider.chat`` wraps the backend ``CompletionResult`` as ``ChatResult``."""
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
@@ -231,6 +263,34 @@ def test_sdk_provider_supports_tools_delegates_to_backend() -> None:
     provider = SdkLLMProvider(backend, base_url="http://x")
     assert provider.supports_tools("any") is True
     assert backend.supports_tools_calls == ["any"]
+
+
+def test_sdk_provider_forwards_tools_and_tool_choice_when_supported() -> None:
+    """When the backend supports tools, ``chat`` passes them through as options."""
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    backend = _StubBackend(tools_supported=True)
+    provider = SdkLLMProvider(backend, base_url="http://x")
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+
+    captured: list[Any] = []
+
+    original_complete = backend.complete
+
+    def _capture(request: CompletionRequest) -> CompletionResult:
+        captured.append(request)
+        return original_complete(request)
+
+    backend.complete = _capture  # type: ignore[method-assign]
+
+    provider.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=tools,
+        tool_choice={"type": "function", "function": {"name": "f"}},
+        model="openai/gpt-4o",
+    )
+    assert captured and captured[0].options["tools"] == tools
+    assert captured[0].options["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
 def test_litellm_supports_tools_true() -> None:
