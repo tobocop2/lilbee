@@ -141,7 +141,9 @@
     {
       packages = forAllSystems (
         system:
-        { default = mkLilbee system; }
+        {
+          default = mkLilbee system;
+        }
         // nixpkgs.lib.optionalAttrs (hasCuda system) {
           lilbee-cuda = mkLilbeeCuda system;
         }
