@@ -73,6 +73,12 @@ CMD_RESET_CONFIRM = "Type '/reset confirm' to delete all data"
 CMD_RESET_SUCCESS = "Knowledge base reset"
 CMD_RESET_PARTIAL = "Knowledge base reset ({skipped} item(s) could not be deleted)"
 CMD_RESET_FAILED = "Reset failed: {error}"
+CMD_REBUILD_CONFIRM_TITLE = "Rebuild the index?"
+CMD_REBUILD_CONFIRM_MESSAGE = (
+    "Drops every chunk and re-embeds the documents directory from "
+    "scratch. Takes minutes on large libraries. Source files on disk "
+    "are left alone."
+)
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"

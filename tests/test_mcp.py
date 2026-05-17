@@ -1195,6 +1195,37 @@ class TestSettingsMcp:
             result = settings_get(role)
             assert result["setting"]["nullable"] is False, role
 
+    def test_settings_list_includes_lilbee_name_and_show_path(self, isolated_env):
+        """The two new naming knobs are reachable over MCP."""
+        cfg.data_root = isolated_env
+        keys = {entry["key"] for entry in settings_list()["settings"]}
+        assert "lilbee_name" in keys
+        assert "show_lilbee_path" in keys
+        assert settings_get("show_lilbee_path")["setting"]["type"] == "bool"
+
+    def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
+        """OSError from the TOML write reverts cfg before re-raising."""
+        from lilbee.app.settings import apply_settings_update
+
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        with (
+            mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            apply_settings_update({"top_k": 11})
+        assert cfg.top_k == 5
+
+    def test_settings_reset_clears_nullable_with_none_default(self, isolated_env):
+        """Resetting a nullable field whose pydantic default is None clears the entry."""
+        cfg.data_root = isolated_env
+        cfg.seed = 42
+        settings_reset(["seed"])
+        assert cfg.seed is None
+
 
 class TestLilbeeLabel:
     """app.status.lilbee_label is the friendly name the TUI status bar shows."""
@@ -1231,29 +1262,6 @@ class TestLilbeeLabel:
         cfg.lilbee_name = ""
         cfg.show_lilbee_path = False
         assert lilbee_label() == "global"
-
-    def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
-        """OSError from the TOML write reverts cfg before re-raising."""
-        from lilbee.app.settings import apply_settings_update
-
-        cfg.data_root = isolated_env
-        cfg.top_k = 5
-        with (
-            mock.patch(
-                "lilbee.app.settings.persistent_settings.update_values",
-                side_effect=OSError("disk full"),
-            ),
-            pytest.raises(OSError, match="disk full"),
-        ):
-            apply_settings_update({"top_k": 11})
-        assert cfg.top_k == 5
-
-    def test_settings_reset_clears_nullable_with_none_default(self, isolated_env):
-        """Resetting a nullable field whose pydantic default is None clears the entry."""
-        cfg.data_root = isolated_env
-        cfg.seed = 42
-        settings_reset(["seed"])
-        assert cfg.seed is None
 
 
 class TestCatalogBrowseMcp:

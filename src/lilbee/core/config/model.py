@@ -522,6 +522,12 @@ class Config(BaseSettings):
     # Class variable: not a settings field
     _toml_cache: ClassVar[dict[str, Any]] = {}
 
+    @field_validator("lilbee_name", mode="after")
+    @classmethod
+    def _strip_lilbee_name(cls, value: str) -> str:
+        """Empty / whitespace-only aliases fall back to the directory name."""
+        return value.strip()
+
     @field_validator(
         "temperature",
         "top_p",

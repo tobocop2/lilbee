@@ -30,7 +30,7 @@ _MODE_COLORS: dict[str, str] = {
 _DEFAULT_MODE_COLOR = "$error"
 
 # Settings keys that trigger a model-pill refresh.
-_MODEL_PILL_KEYS = frozenset({"chat_model", "lilbee_name", "show_lilbee_path"})
+_TRAILING_PILL_KEYS = frozenset({"chat_model", "lilbee_name", "show_lilbee_path"})
 
 
 class ViewTab(Label, can_focus=True):
@@ -123,7 +123,7 @@ class ViewTabs(Widget):
         if key == "wiki":
             self._apply_wiki_visibility()
             return
-        if key in _MODEL_PILL_KEYS:
+        if key in _TRAILING_PILL_KEYS:
             self._refresh()
 
     def _apply_wiki_visibility(self) -> None:

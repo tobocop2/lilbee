@@ -784,7 +784,6 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.app.models import remove_model_data
-    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source)

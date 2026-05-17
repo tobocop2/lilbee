@@ -916,17 +916,17 @@ class ChatScreen(Screen[None]):
             )
 
     def _cmd_rebuild(self, _args: str) -> None:
-        from lilbee.data.ingest import sync as run_sync
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-        async def _run() -> None:
-            try:
-                result = await run_sync(quiet=True, force_rebuild=True)
-            except Exception as exc:
-                self.notify(f"Rebuild failed: {exc}", severity="error")
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
                 return
-            self.notify(f"Rebuild complete: {len(result.added)} files re-indexed")
+            self._run_sync(force_rebuild=True)
 
-        self.run_worker(_run(), exclusive=False)
+        self.app.push_screen(
+            ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, msg.CMD_REBUILD_CONFIRM_MESSAGE),
+            _on_confirm,
+        )
 
     def _cmd_reset(self, args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -1246,8 +1246,8 @@ class ChatScreen(Screen[None]):
         label = "Markdown" if use_md else "Plain text"
         self.notify(msg.CHAT_RENDERING.format(label=label))
 
-    def _run_sync(self) -> None:
-        """Enqueue a document sync in the task bar."""
+    def _run_sync(self, *, force_rebuild: bool = False) -> None:
+        """Enqueue a document sync (or full rebuild) in the task bar."""
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
@@ -1260,7 +1260,7 @@ class ChatScreen(Screen[None]):
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_sync(reporter)
+                self._do_sync(reporter, force_rebuild=force_rebuild)
             finally:
                 self._sync_active = False
                 # Re-detect after every sync attempt: success drives the
@@ -1268,16 +1268,19 @@ class ChatScreen(Screen[None]):
                 # files counted so the hint reappears.
                 self._task_bar.start_detect_pending()
 
-        self._task_bar.start_task("Sync documents", TaskType.SYNC, _target, indeterminate=True)
+        label = "Rebuild index" if force_rebuild else "Sync documents"
+        self._task_bar.start_task(label, TaskType.SYNC, _target, indeterminate=True)
 
-    def _do_sync(self, reporter: ProgressReporter) -> None:
+    def _do_sync(self, reporter: ProgressReporter, *, force_rebuild: bool = False) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
         on_progress = build_sync_progress_callback(reporter)
         try:
-            result = asyncio_loop.run(sync(quiet=True, on_progress=on_progress))
+            result = asyncio_loop.run(
+                sync(quiet=True, on_progress=on_progress, force_rebuild=force_rebuild)
+            )
         except asyncio.CancelledError as exc:
             raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
         if result.failed:

@@ -20,7 +20,9 @@ def lilbee_label() -> str:
         return str(cfg.data_root)
     if cfg.lilbee_name:
         return cfg.lilbee_name
-    if cfg.data_root == default_data_dir():
+    # Resolve both sides so a trailing-slash or unresolved-symlink env
+    # var still matches the platform default.
+    if cfg.data_root.expanduser().resolve() == default_data_dir().resolve():
         return "global"
     return cfg.data_root.name
 

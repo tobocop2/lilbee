@@ -986,6 +986,8 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=10, offset=5, models=[])
         mock_svc.registry.list_installed.return_value = []
+        from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
         await handlers.models_catalog(
             task="chat",
             search="qwen",
@@ -997,12 +999,12 @@ class TestModelsCatalog:
             offset=5,
         )
         mock_get_catalog.assert_called_once_with(
-            task="chat",
+            task=ModelTask.CHAT,
             search="qwen",
-            size="small",
+            size=CatalogSize.SMALL,
             installed=True,
             featured=True,
-            sort="downloads",
+            sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
         )

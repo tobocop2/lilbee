@@ -533,6 +533,11 @@ class TestModelsCatalogRoute:
         resp = client.get("/api/models/catalog?size=huge&featured=true")
         assert resp.status_code == 422
 
+    def test_invalid_task_returns_422(self, client):
+        """An unknown task must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?task=bogus&featured=true")
+        assert resp.status_code == 422
+
 
 class TestModelsInstalledRoute:
     @mock.patch(

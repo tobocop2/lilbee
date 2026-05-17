@@ -48,6 +48,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import HfPage
+from lilbee.catalog.types import CatalogSize, CatalogSort
 from lilbee.core.config import cfg
 
 _EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
@@ -538,18 +539,24 @@ class TestGetCatalog:
         assert repos1.isdisjoint(repos2)
 
     def test_filter_by_task_chat(self) -> None:
-        result = get_catalog(task="chat")
+        from lilbee.catalog.types import ModelTask
+
+        result = get_catalog(task=ModelTask.CHAT)
         assert all(m.task == "chat" for m in result.models)
 
     def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog.types import ModelTask
+
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(task="embedding")
+        result = get_catalog(task=ModelTask.EMBEDDING)
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog.types import ModelTask
+
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(task="vision")
+        result = get_catalog(task=ModelTask.VISION)
         assert all(m.task == "vision" for m in result.models)
         assert result.total == len(FEATURED_VISION)
 
@@ -571,23 +578,23 @@ class TestGetCatalog:
         assert result.total == 0
 
     def test_filter_size_small(self) -> None:
-        result = get_catalog(size="small")
+        result = get_catalog(size=CatalogSize.SMALL)
         for m in result.models:
             assert m.size_gb < 3.0
 
     def test_filter_size_medium(self) -> None:
-        result = get_catalog(size="medium")
+        result = get_catalog(size=CatalogSize.MEDIUM)
         for m in result.models:
             assert 3.0 <= m.size_gb < 10.0
 
     def test_filter_size_large(self) -> None:
-        result = get_catalog(size="large")
+        result = get_catalog(size=CatalogSize.LARGE)
         for m in result.models:
             assert m.size_gb >= 10.0
 
     def test_filter_size_invalid_rejected(self) -> None:
-        with pytest.raises((KeyError, ValueError)):
-            get_catalog(size="gigantic")
+        with pytest.raises(KeyError):
+            get_catalog(size="gigantic")  # type: ignore[arg-type]
 
     def test_filter_featured_true(self) -> None:
         result = get_catalog(featured=True)
@@ -600,31 +607,31 @@ class TestGetCatalog:
 
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort="featured")
+        result = get_catalog(sort=CatalogSort.FEATURED)
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_downloads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort="downloads")
+        result = get_catalog(sort=CatalogSort.DOWNLOADS)
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_size_asc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort="size_asc")
+        result = get_catalog(sort=CatalogSort.SIZE_ASC)
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes)
 
     def test_sort_size_desc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort="size_desc")
+        result = get_catalog(sort=CatalogSort.SIZE_DESC)
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
-        result = get_catalog(sort="name")
+        result = get_catalog(sort=CatalogSort.NAME)
         names = [m.display_name.lower() for m in result.models]
         assert names == sorted(names)
 

@@ -2548,6 +2548,23 @@ async def test_chat_slash_unknown_command():
             assert "Unknown command" in mock_notify.call_args[0][0]
 
 
+async def test_chat_slash_rebuild_confirms_before_running():
+    """/rebuild must push ConfirmDialog and run nothing until confirmed."""
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat_screen = app.screen
+        with patch.object(chat_screen, "_run_sync") as mock_run_sync:
+            chat_screen._handle_slash("/rebuild")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmDialog)
+            mock_run_sync.assert_not_called()
+            await pilot.press("y")
+            await pilot.pause()
+            mock_run_sync.assert_called_once_with(force_rebuild=True)
+
+
 async def test_chat_current_chunk_type_reflects_scope_chip():
     """The helper reads the cycling pill state via the ScopeChip widget."""
     from lilbee.cli.tui.widgets.scope_chip import ScopeChip
