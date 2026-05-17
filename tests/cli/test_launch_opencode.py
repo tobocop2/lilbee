@@ -40,6 +40,19 @@ def _stub_registry() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _healthy_by_default(request, monkeypatch):
+    """Most tests pre-write a session and expect reuse; default the health
+    probe to True so the launcher does not try to spawn fresh.
+
+    Tests marked ``no_health_default`` (the helper unit tests for ``_health_ok``
+    itself, and the stale-session test) skip this patch.
+    """
+    if "no_health_default" in request.keywords:
+        return
+    monkeypatch.setattr("lilbee.cli.commands.launch._health_ok", lambda _port: True)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_env(tmp_path, monkeypatch) -> Path:
     """Isolate cfg.data_dir and redirect Path.home so launcher writes land in tmp."""
     monkeypatch.delenv("LILBEE_DATA", raising=False)
@@ -86,6 +99,67 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     assert options["apiKey"] == _TOKEN
     assert _CHAT_REF in payload["provider"]["lilbee"]["models"]
     assert "mcp" not in payload, "launcher inline config must not bundle mcp"
+
+
+@pytest.mark.no_health_default
+def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_path):
+    """A leftover server.port from a crashed server must not poison reuse."""
+    _write_server_session()
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+
+    def _spawn_and_rewrite_session(_port: int):
+        # Real server would write fresh session files on boot; simulate that
+        # so running_server_session() returns the spawned (fresh) port/token.
+        _write_server_session()
+        return fake_proc
+
+    with (
+        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
+        # Override the autouse "healthy by default" fixture for this test.
+        patch("lilbee.cli.commands.launch._health_ok", return_value=False),
+        patch("lilbee.cli.commands.launch._spawn_server", side_effect=_spawn_and_rewrite_session),
+        patch("lilbee.cli.commands.launch._wait_for_health", return_value=True),
+        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
+        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+
+    assert result.exit_code == 0
+    fake_proc.terminate.assert_called_once()
+
+
+@pytest.mark.no_health_default
+def test_health_ok_returns_false_on_connection_error(monkeypatch):
+    from lilbee.cli.commands import launch as launch_mod
+
+    def _boom(url, timeout):
+        raise launch_mod.httpx.HTTPError("refused")
+
+    monkeypatch.setattr(launch_mod.httpx, "get", _boom)
+    assert launch_mod._health_ok(8765) is False
+
+
+@pytest.mark.no_health_default
+def test_health_ok_returns_true_on_200(monkeypatch):
+    from lilbee.cli.commands import launch as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 200
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod._health_ok(8765) is True
+
+
+@pytest.mark.no_health_default
+def test_health_ok_returns_false_on_non_200(monkeypatch):
+    from lilbee.cli.commands import launch as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 503
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod._health_ok(8765) is False
 
 
 def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):

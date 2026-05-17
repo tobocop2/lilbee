@@ -103,6 +103,7 @@ markers = [
     "real_model_classify: opt out of the global _classify_installed_models mock",
     "real_litellm_probe: opt out of the global litellm_available True override",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
+    "no_health_default: opt out of the launch tests' default-healthy fixture",
 ]
 
 [tool.coverage.run]

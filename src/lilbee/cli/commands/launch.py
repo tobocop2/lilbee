@@ -61,6 +61,15 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _health_ok(port: int) -> bool:
+    """Single-shot ``/api/health`` probe; True iff a 200 comes back fast."""
+    try:
+        resp = httpx.get(f"http://{_LOCAL_HOST}:{port}/api/health", timeout=2.0)
+    except httpx.HTTPError:
+        return False
+    return resp.status_code == _HTTP_OK
+
+
 def _wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> bool:
     url = f"http://{_LOCAL_HOST}:{port}/api/health"
     deadline = time.monotonic() + timeout_s
@@ -177,7 +186,10 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 def _ensure_server_running(port: int) -> tuple[tuple[str, int], subprocess.Popen[bytes] | None]:
     """Return ``(session, spawned_proc)``. Spawns lilbee serve if not already running."""
     existing = running_server_session()
-    if existing is not None:
+    # The session files may be stale (server crashed or exited without
+    # cleanup). Probe /api/health before trusting them; if the probe fails,
+    # treat the session as absent and spawn a fresh server.
+    if existing is not None and _health_ok(existing[1]):
         return existing, None
     chosen_port = port if port > 0 else _free_port()
     console.print(f"Starting lilbee server on port {chosen_port}...")
