@@ -79,7 +79,7 @@ For a project where you want the agent to use lilbee reliably, copy three things
 
 | Tool | Description | Requires LLM backend |
 |------|-------------|---------------------|
-| `search(query, top_k, scope)` | Retrieve relevant chunks. `scope` is `"raw"` (source docs), `"wiki"` (wiki pages), or `"both"` (default) | No (uses pre-computed embeddings) |
+| `search(query, top_k, scope)` | Retrieve relevant chunks. Omitting `top_k` falls back to `cfg.top_k` so `settings_set` governs candidate count. `scope` is `"raw"` (source docs), `"wiki"` (wiki pages), or `"both"` (default) | No (uses pre-computed embeddings) |
 | `status()` | Show indexed documents, config, and chunk counts | No |
 | `sync()` | Sync the documents directory into the vector store | Yes (for embedding) |
 | `add(paths, force, enable_ocr, ocr_timeout)` | Add files, directories, or URLs and index them | Yes (for embedding) |
@@ -208,16 +208,21 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 
 ## Experimental: wiki tools
 
-The wiki layer is opt-in and still rough. All `wiki_*` tools return
-`{"error": "wiki disabled"}` until the user runs
-`settings_set({"wiki": true})`. Skip everything here unless the user
-explicitly asks about wiki / synthesis pages.
+The wiki layer is opt-in and still rough. The build / read tools
+(`wiki_list`, `wiki_read`, `wiki_build`, `wiki_update`, `wiki_synthesize`)
+return `{"error": "wiki disabled"}` until the user runs
+`settings_set({"wiki": true})`. The remaining wiki tools work against
+the on-disk wiki directory regardless of the flag and report empty
+results when there's nothing to read. Skip everything here unless the
+user explicitly asks about wiki / synthesis pages.
 
 | Tool | Description | Requires LLM backend |
 |------|-------------|---------------------|
 | `wiki_status()` | Page counts, generator settings, last build timestamp, `wiki_enabled` flag | No |
 | `wiki_list()` | List all wiki pages grouped by type | No |
 | `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
+| `wiki_build()` | Generate the full topic / entity wiki from the indexed library | Yes (LLM) |
+| `wiki_update()` | Refresh the wiki after a sync (currently a full rebuild) | Yes (LLM) |
 | `wiki_synthesize()` | Generate cross-source synthesis pages into `synthesis/` | Yes (LLM) |
 | `wiki_lint(wiki_source)` | Find orphan pages, stale links, and pending drafts | No |
 | `wiki_citations(wiki_source)` | Return per-section citation coverage for a source | No |

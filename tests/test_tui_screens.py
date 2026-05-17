@@ -2645,7 +2645,7 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.core.settings.set_value"):
+        with patch("lilbee.app.settings.persistent_settings.update_values"):
             new_ref = "ollama/new-model:latest"
             app.screen._handle_slash(f"/model {new_ref}")
             await _pilot.pause()
@@ -3538,7 +3538,7 @@ async def test_command_provider_set_model():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.core.settings.set_value"):
+        with patch("lilbee.app.settings.persistent_settings.update_values"):
             provider._set_model("chat_model", "ollama/new-model:latest")
             assert cfg.chat_model == "ollama/new-model:latest"
             assert "ollama/new-model:latest" in app.title

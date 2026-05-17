@@ -223,25 +223,12 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     embedding model that built the persisted vector store. The caller is
     expected to trigger a rebuild (``lilbee rebuild`` or ``POST /api/sync``
     with ``force_rebuild=true``). Search and ingest will refuse to operate
-    until that happens.
-
-    Pins a legacy store's identity to the OLD cfg before mutating it. Without
-    this step, a pre-upgrade store with chunks but no ``_meta`` row would have
-    its meta lazy-initialized from the NEW cfg on the next read, hiding the
-    drift the caller just introduced.
+    until that happens. The settings boundary pins legacy store meta to
+    the OLD ref before the write and computes ``reindex_required`` after.
     """
-    from lilbee.data.store.lance_helpers import refs_compatible
-
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
-    store = get_services().store
-    store.initialize_meta_if_legacy()
-    await _set_model("embedding_model", normalized)
-    store.canonicalize_meta_if_legacy()
-    meta = store.get_meta()
-    reindex_required = meta is not None and not refs_compatible(
-        meta["embedding_model"], normalized, meta["embedding_dim"], meta["embedding_dim"]
-    )
-    return SetModelResponse(model=normalized, reindex_required=reindex_required)
+    result = apply_settings_update({"embedding_model": normalized})
+    return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:

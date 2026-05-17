@@ -1684,10 +1684,14 @@ class TestSetEmbeddingModel:
         with pytest.raises(ValueError, match="not embedding"):
             await handlers.set_embedding_model(_CHAT_REF)
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_reindex_required_when_persisted_meta_differs(self, mock_svc):
+    async def test_returns_reindex_required_when_persisted_meta_differs(
+        self, mock_svc, mock_boundary_svc
+    ):
         """Switching to a model different from the one that built the store flags rebuild."""
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.store.get_meta.return_value = {
             "embedding_model": "previous-model:v1",
             "embedding_dim": 768,
@@ -1698,17 +1702,21 @@ class TestSetEmbeddingModel:
         assert result.model == _EMBED_REF
         assert result.reindex_required is True
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc):
+    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc, mock_boundary_svc):
         """A store with no _meta row (fresh install) does not need a rebuild."""
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         mock_svc.return_value.store.get_meta.return_value = None
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_when_same_model(self, mock_svc):
+    async def test_returns_no_reindex_required_when_same_model(self, mock_svc, mock_boundary_svc):
         """Re-setting the same model that already built the store does not need a rebuild."""
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         mock_svc.return_value.store.get_meta.return_value = {
             "embedding_model": _EMBED_REF,
@@ -1719,14 +1727,18 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_for_legacy_bare_repo(self, mock_svc):
+    async def test_returns_no_reindex_required_for_legacy_bare_repo(
+        self, mock_svc, mock_boundary_svc
+    ):
         """A bare-repo meta row that matches the new full ref does NOT need a rebuild.
 
         Pre-canonical lilbee persisted only ``<org>/<repo>`` in ``_meta``. The
         new full ref ``<org>/<repo>/<file>.gguf`` matches by canonical identity
         when dims agree, so the swap is a no-op for the gate.
         """
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         bare_repo = _EMBED_REF.rsplit("/", 1)[0]
         mock_svc.return_value.store.get_meta.return_value = {
@@ -1740,14 +1752,16 @@ class TestSetEmbeddingModel:
         # Migration helper must be called so the meta row is rewritten silently.
         mock_svc.return_value.store.canonicalize_meta_if_legacy.assert_called_once()
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc):
+    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc, mock_boundary_svc):
         """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
 
         Asserts call ordering: initialize_meta_if_legacy must run BEFORE cfg is
         mutated. A regression that swaps the two would let lazy-init adopt the
         NEW cfg as the legacy identity, hiding the drift the caller just introduced.
         """
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         store_mock = mock_svc.return_value.store
         store_mock.get_meta.return_value = {

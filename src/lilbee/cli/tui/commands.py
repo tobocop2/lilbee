@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, cast
 from textual.command import Hit, Hits, Provider
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 
@@ -104,8 +103,9 @@ class LilbeeCommandProvider(Provider):
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:
-
-        apply_settings_update({attr: value})
+        # Route through LilbeeApp.set_active_model so model-bar / scope chip
+        # / status bar subscribers (settings_changed_signal) refresh.
+        self.screen.app.set_active_model(attr, value)
         display = value or "off"
         self.screen.app.notify(f"{attr}: {display}")
         if attr == "chat_model":

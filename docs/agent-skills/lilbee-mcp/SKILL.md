@@ -70,7 +70,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
-| `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `scope` = `"raw"` / `"wiki"` / `"both"` (default). No LLM call. |
+| `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `top_k` omitted falls back to `cfg.top_k` so `settings_set` governs candidate count. `scope` = `"raw"` / `"wiki"` / `"both"` (default). No LLM call. |
 | `lilbee_status()` | Indexed sources, total chunks, active model refs. First call of any session. |
 | `lilbee_list_documents()` | All indexed sources with chunk counts. |
 | `lilbee_init(path)` | Create a `.lilbee/` in the given dir and switch the session to it. |
@@ -213,7 +213,7 @@ For a clean slate: `lilbee_reset(confirm=true)` via the worker.
 - **`total_chunks == 0`.** The library is empty. Don't search. Tell the user and offer
   `lilbee_add` or `lilbee_crawl`.
 - **`lilbee_search` returns 0 results.** Try a more specific noun phrase. If still zero,
-  the content isn't indexed — verify with `lilbee_list_documents`.
+  the content isn't indexed. Verify with `lilbee_list_documents`.
 - **`lilbee_search` times out.** Indexing is in flight. Wait 10s, re-check
   `lilbee_status`, retry. Do not switch tools.
 - **`lilbee_settings_set` returns `error`.** The boundary rejected the value (unknown
@@ -223,7 +223,7 @@ For a clean slate: `lilbee_reset(confirm=true)` via the worker.
   store is no longer valid for the new `chunk_size` / `chunk_overlap`. Run
   `lilbee_sync(force_rebuild=true)` through the worker.
 - **`lilbee_model_pull` failed mid-stream.** The progress notifications stop. Retry the
-  same call — partially-downloaded files are skipped.
+  same call; partially-downloaded files are skipped.
 - **Want to set a model role but the catalog ref isn't installed.** Pull first, then
   `settings_set`. The boundary checks the catalog-task assignment but not whether the
   file is present on disk.
@@ -268,8 +268,12 @@ The wiki layer generates per-concept and per-entity pages with citations from th
 indexed library, then lets you query and lint them. It is still rough; treat it as
 opt-in, not part of normal answer flow. Skip everything here unless the user
 explicitly asks about wiki / synthesis pages, or `lilbee_status` already shows a
-wiki built. All `lilbee_wiki_*` tools return `{"error": "wiki disabled"}` until the
-user enables it with `lilbee_settings_set({"wiki": true})`.
+wiki built. The build / read tools (`lilbee_wiki_list`, `lilbee_wiki_read`,
+`lilbee_wiki_build`, `lilbee_wiki_update`, `lilbee_wiki_synthesize`) return
+`{"error": "wiki disabled"}` until the user enables it with
+`lilbee_settings_set({"wiki": true})`. The remaining wiki tools operate on
+the on-disk wiki directory regardless of the flag and will report empty
+results when there's nothing to read.
 
 ### Build / refresh (long, must go through `lilbee-worker`)
 

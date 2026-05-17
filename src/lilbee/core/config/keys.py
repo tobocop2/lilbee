@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-# Keep in sync with ``providers.sdk_backend.API_KEY_FIELDS`` when adding a
-# new provider; core cannot import from providers so the two sets live in
-# parallel.
+# Per-provider entries mirror ``providers.sdk_backend.API_KEY_FIELDS``;
+# ``llm_api_key`` is the extra generic-provider key the SDK fan-out doesn't
+# consume but the settings boundary still publishes availability for.
+# Core cannot import from providers, so the per-provider half lives in
+# parallel; add new providers here AND in ``API_KEY_FIELDS`` together.
 PROVIDER_API_KEYS: frozenset[str] = frozenset(
     {
         "llm_api_key",

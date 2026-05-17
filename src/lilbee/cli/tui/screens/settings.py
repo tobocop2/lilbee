@@ -27,7 +27,7 @@ from textual.widgets import (
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import reset_settings
-from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, get_default
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
@@ -79,7 +79,7 @@ class _PaneGroup:
     """One settings tab: pane id, group label, ordered settings."""
 
     pane_id: str
-    group_name: str
+    group_name: SettingGroup
     items: list[tuple[str, SettingDef]]
 
 

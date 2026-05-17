@@ -1927,7 +1927,9 @@ class TestEnsureChatModelWiring:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_ensure_chat_model(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
-        with mock.patch("lilbee.modelhub.models.ensure_chat_model") as mock_ensure:
+        with mock.patch(
+            "lilbee.modelhub.models.ensure_chat_model", return_value=None
+        ) as mock_ensure:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 

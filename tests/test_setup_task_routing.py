@@ -61,7 +61,7 @@ async def test_enter_on_non_installed_chat_card_submits_download() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
-                patch("lilbee.core.settings.set_value"),
+                patch("lilbee.app.settings.persistent_settings.update_values"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
             mock_start.assert_called_once()
@@ -95,7 +95,7 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
             try:
                 with (
                     patch.object(app.task_bar, "start_download", side_effect=_capture),
-                    patch("lilbee.core.settings.set_value"),
+                    patch("lilbee.app.settings.persistent_settings.update_values"),
                     patch.object(wizard, "_apply_selection") as mock_apply,
                     patch(
                         "lilbee.cli.tui.screens.setup.call_from_thread",
@@ -136,7 +136,7 @@ async def test_enter_on_installed_card_does_not_submit_download() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download") as mock_start,
-                patch("lilbee.core.settings.set_value"),
+                patch("lilbee.app.settings.persistent_settings.update_values"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=chosen))
             mock_start.assert_not_called()
@@ -159,7 +159,7 @@ async def test_enter_does_not_resubmit_same_model_twice() -> None:
             mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
-                patch("lilbee.core.settings.set_value"),
+                patch("lilbee.app.settings.persistent_settings.update_values"),
             ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
@@ -178,7 +178,7 @@ async def test_enter_noop_outside_lilbee_app() -> None:
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
-            with patch("lilbee.core.settings.set_value"):
+            with patch("lilbee.app.settings.persistent_settings.update_values"):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
             assert first.selected is True
 
@@ -207,7 +207,7 @@ async def test_commit_selection_with_no_ref_returns_early() -> None:
             with (
                 patch.object(wizard, "_mark_selection", side_effect=_stub),
                 patch.object(app.task_bar, "start_download") as mock_start,
-                patch("lilbee.core.settings.set_value") as mock_set,
+                patch("lilbee.app.settings.persistent_settings.update_values") as mock_set,
             ):
                 wizard._commit_selection(first, ModelTask.CHAT)
             mock_start.assert_not_called()

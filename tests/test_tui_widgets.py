@@ -946,7 +946,7 @@ class TestModelPickerButton:
             btn = app.query_one("#chat-model-button", ModelPickerButton)
             new_ref = "ollama/new-chat:latest"
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
@@ -963,7 +963,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#chat-model-button", ModelPickerButton)
             write_tracker = mock.Mock()
-            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+            with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(TEST_LOCAL_REF)
                 await pilot.pause()
             write_tracker.assert_not_called()
@@ -978,7 +978,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#chat-model-button", ModelPickerButton)
             write_tracker = mock.Mock()
-            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+            with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(None)
                 await pilot.pause()
             write_tracker.assert_not_called()
@@ -997,7 +997,7 @@ class TestModelPickerButton:
             store_mock = mock.MagicMock()
             store_mock.has_chunks.return_value = False
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
@@ -1019,7 +1019,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             write_tracker = mock.Mock()
-            with mock.patch("lilbee.core.settings.set_value", write_tracker):
+            with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(TEST_EMBED_REF)
                 await pilot.pause()
             write_tracker.assert_not_called()
@@ -1044,7 +1044,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
                     return_value=services_mock,
@@ -1073,7 +1073,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
                     return_value=services_mock,
@@ -1102,7 +1102,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
                     return_value=services_mock,
@@ -1132,7 +1132,7 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#embed-model-button", ModelPickerButton)
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
                     return_value=services_mock,
@@ -1164,7 +1164,7 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock()
             services_mock.store.has_chunks.return_value = False
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
@@ -1193,7 +1193,7 @@ class TestModelPickerButton:
             btn = app.query_one("#chat-model-button", ModelPickerButton)
             services_mock = mock.MagicMock()
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_bar.get_services",
@@ -3551,7 +3551,7 @@ class LilbeeAppHostSettingWriter:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                mock.patch("lilbee.core.settings.set_value") as mock_set,
+                mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_set,
                 mock.patch.object(app.settings_changed_signal, "publish") as mock_publish,
             ):
                 app.set_setting("chat_mode", "chat")

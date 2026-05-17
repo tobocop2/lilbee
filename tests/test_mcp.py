@@ -1136,7 +1136,23 @@ class TestSettingsMcp:
         cfg.chunk_size = 512
         result = settings_set({"chunk_overlap": 1024})
         assert "error" in result
-        assert "chunk_overlap" in result["error"]
+
+    def test_settings_set_rejects_overlap_equal_to_chunk_size(self, isolated_env):
+        """chunk_overlap == chunk_size is also rejected (strict less-than)."""
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": 512})
+        assert "error" in result
+
+    def test_settings_set_writes_hf_token_and_keeps_it_out_of_reads(self, isolated_env):
+        """hf_token is write_only: settings_set succeeds, but it stays out of every read."""
+        cfg.data_root = isolated_env
+        result = settings_set({"hf_token": "hf_abc123"})
+        assert "command" in result and result["command"] == "settings_set"
+        assert cfg.hf_token == "hf_abc123"
+        keys = {entry["key"] for entry in settings_list()["settings"]}
+        assert "hf_token" not in keys
+        assert "error" in settings_get("hf_token")
 
     def test_list_settings_accepts_settinggroup_enum(self, isolated_env):
         """list_settings accepts a SettingGroup enum directly, not just a string."""
@@ -1218,13 +1234,23 @@ class TestCatalogBrowseMcp:
 
     def test_browse_rejects_invalid_task(self, isolated_env, mock_svc):
         """An unknown task name returns the uniform error envelope."""
-        result = catalog_browse(task="not-a-task")
+        result = catalog_browse(task="not-a-task", featured=True)
         assert "error" in result
 
-    def test_browse_omits_chat_model_when_filtered_to_embedding(self, isolated_env, mock_svc):
-        """task=embedding never returns chat models even with no other filters."""
-        result = catalog_browse(task="embedding", featured=True)
-        assert all(m["task"] == "embedding" for m in result["models"])
+    def test_browse_rejects_invalid_size(self, isolated_env, mock_svc):
+        """An unknown size bucket returns the uniform error envelope."""
+        result = catalog_browse(size="huge", featured=True)
+        assert "error" in result
+
+    def test_browse_rejects_invalid_sort(self, isolated_env, mock_svc):
+        """An unknown sort key returns the uniform error envelope."""
+        result = catalog_browse(sort="random", featured=True)
+        assert "error" in result
+
+    def test_browse_omits_chat_model_when_filtered_to_chat_only_role(self, isolated_env, mock_svc):
+        """task=rerank never returns chat models even with no other filters."""
+        result = catalog_browse(task="rerank", featured=True)
+        assert all(m["task"] == "rerank" for m in result["models"])
 
     def test_browse_forwards_get_catalog_value_error(self, isolated_env, mock_svc):
         """A ValueError from get_catalog surfaces as the uniform error envelope."""

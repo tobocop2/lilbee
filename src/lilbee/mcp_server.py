@@ -656,26 +656,27 @@ def catalog_browse(
         limit: Page size (default 20).
         offset: Page offset for pagination.
 
-    Returns the same shape as the HTTP ``GET /api/catalog`` endpoint:
-    ``{total, limit, offset, has_more, models: [{ref, display_name,
-    task, size_gb, min_ram_gb, downloads, featured, description}, ...]}``.
+    Returns ``{total, limit, offset, has_more, models}`` where each model
+    is ``{ref, display_name, task, size_gb, min_ram_gb, downloads,
+    featured, description}``.
     """
     from lilbee.catalog.query import get_catalog
-    from lilbee.catalog.types import ModelTask
+    from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
     try:
         parsed_task = ModelTask(task) if task else None
+        parsed_size = CatalogSize(size) if size else None
+        parsed_sort = CatalogSort(sort)
     except ValueError as exc:
         return _error(str(exc))
-    size_arg = size or None
     try:
         result = get_catalog(
             task=parsed_task,
             search=search,
-            size=size_arg,
+            size=parsed_size.value if parsed_size else None,
             installed=installed,
             featured=featured,
-            sort=sort,
+            sort=parsed_sort.value,
             limit=limit,
             offset=offset,
             model_manager=get_services().model_manager,

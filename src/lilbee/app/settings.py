@@ -1,11 +1,4 @@
-"""Canonical write boundary for lilbee configuration.
-
-API-key fields declared with ``ConfigField(..., write_only=True)`` in
-``core.config.model`` (every ``*_api_key`` and ``hf_token``) are
-filtered out of ``list_settings`` and refused by ``get_setting``.
-``apply_settings_update`` still accepts writes so an agent can
-configure a key on the user's behalf; nothing reads it back.
-"""
+"""Canonical write boundary for lilbee configuration."""
 
 from __future__ import annotations
 
@@ -114,7 +107,7 @@ def _public_writable_keys() -> list[str]:
 
 def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     field_info = Config.model_fields[key]
-    nullable = WRITABLE_CONFIG_FIELDS.get(key, False) or key in MODEL_ROLE_FIELDS
+    nullable = _is_nullable(key)
     group = definition.group if definition else SettingGroup.MODELS
     help_text = definition.help_text if definition else ""
     choices = definition.choices if definition else None
@@ -257,6 +250,12 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         inject_provider_keys()
+    if "llm_provider" in changed_keys:
+        # Swap requires reconstructing the provider singleton via
+        # providers.factory.create_provider, only called at services init.
+        from lilbee.app.services import reset_services
+
+        reset_services()
 
 
 def apply_settings_update(
@@ -285,6 +284,14 @@ def apply_settings_update(
                 "not the general settings update."
             )
     _validate(updates)
+    embed_in_batch = "embedding_model" in updates
+    if embed_in_batch:
+        # Pin the OLD ref into store meta before mutation, otherwise the
+        # next read lazy-initializes meta from the NEW cfg and silently
+        # hides the dimension drift. Runs even when the value is unchanged
+        # so a legacy meta row is always canonicalized on the first swap
+        # attempt.
+        _pin_legacy_store_meta()
     to_persist, to_delete, snapshot = _apply_with_rollback(updates)
     try:
         if to_persist:
@@ -296,9 +303,34 @@ def apply_settings_update(
         raise
     _invalidate_caches(set(updates))
     reindex_required = bool(REINDEX_FIELDS & set(updates))
+    if embed_in_batch:
+        reindex_required = reindex_required or _embed_reindex_required(updates["embedding_model"])
     return SettingsUpdateResult(
         updated=sorted(updates),
         reindex_required=reindex_required,
+    )
+
+
+def _pin_legacy_store_meta() -> None:
+    """Pin the current embedding ref into store meta before swapping it."""
+    # heavy: ~100ms (lance + store init); only paid when embedding_model is in the batch.
+    from lilbee.app.services import get_services
+
+    get_services().store.initialize_meta_if_legacy()
+
+
+def _embed_reindex_required(new_ref: str) -> bool:
+    """Compare *new_ref* to the persisted store meta; True if rebuild needed."""
+    from lilbee.app.services import get_services
+    from lilbee.data.store.lance_helpers import refs_compatible
+
+    store = get_services().store
+    store.canonicalize_meta_if_legacy()
+    meta = store.get_meta()
+    if meta is None:
+        return False
+    return not refs_compatible(
+        meta["embedding_model"], new_ref, meta["embedding_dim"], meta["embedding_dim"]
     )
 
 

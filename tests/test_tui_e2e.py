@@ -218,7 +218,7 @@ class TestModelSwitchSafety:
             chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
             ref = "ollama/new-model:latest"
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch.object(screen, "apply_model_change") as mock_apply,
             ):
                 chat_btn._on_picker_dismissed(ref)
