@@ -655,7 +655,6 @@ def catalog_browse(
     ``{total, limit, offset, has_more, models: [{ref, display_name,
     task, size_gb, min_ram_gb, downloads, featured, description}, ...]}``.
     """
-    from lilbee.app.services import get_services
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import ModelTask
 
