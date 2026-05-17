@@ -1,0 +1,104 @@
+name: Publish CUDA Packages
+
+# Updates the Homebrew lilbee-cuda formula, AUR lilbee-cuda PKGBUILD, and the
+# Nix flake CUDA entry to pin a tag's GH-release CUDA Linux binary. Runs
+# manually after build-cuda-executables.yml has attached the CUDA exe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose CUDA executables are on the GH release (e.g. v0.6.66b476)."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-cuda-packages-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      version: ${{ steps.info.outputs.version }}
+      sha_linux_cuda: ${{ steps.info.outputs.sha_linux_cuda }}
+    steps:
+      - name: Resolve tag and CUDA asset digest
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          version="${tag#v}"
+          gh api "/repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+
+          get_sha() {
+            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
+          }
+          sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
+
+          [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-cuda-executables.yml first"; exit 1; }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha_linux_cuda=$sha_linux_cuda"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-homebrew-formula
+        with:
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula-path: Formula/lilbee-cuda.rb
+          render-args: --cuda --version ${{ needs.resolve.outputs.version }} --sha-linux-cu125 ${{ needs.resolve.outputs.sha_linux_cuda }}
+          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }}"
+
+  aur:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-aur-package
+        with:
+          pkgname: lilbee-cuda
+          pkgbuild-dir: packaging/aur/lilbee-cuda
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build systems JSON
+        id: sys
+        env:
+          SHA_LINUX_CUDA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+        run: |
+          systems=$(jq -nc \
+            --arg sha "$SHA_LINUX_CUDA" \
+            '{ "x86_64-linux": { asset: "lilbee-linux-x86_64-cu125", sha256: $sha } }')
+          echo "value=${systems}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-flake-sources
+        with:
+          target-file: sources-cuda.json
+          version: ${{ needs.resolve.outputs.version }}
+          systems-json: ${{ steps.sys.outputs.value }}
+          commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"

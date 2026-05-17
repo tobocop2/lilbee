@@ -7,12 +7,14 @@ on:
       - flake.nix
       - flake.lock
       - sources.json
+      - sources-cuda.json
       - .github/workflows/flake-check.yml
   pull_request:
     paths:
       - flake.nix
       - flake.lock
       - sources.json
+      - sources-cuda.json
       - .github/workflows/flake-check.yml
 
 jobs:
