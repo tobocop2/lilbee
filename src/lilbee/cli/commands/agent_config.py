@@ -10,8 +10,7 @@ import typer
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
-from lilbee.cli.agent_configs import cline, opencode
-from lilbee.cli.app import console
+from lilbee.cli.agent_configs import cline, litellm, opencode
 from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
@@ -61,9 +60,11 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         **kwargs,
     )
     if isinstance(block, str):
-        console.print(block, end="")
+        # Use typer.echo (no Rich word-wrap) so YAML stays parseable when
+        # piped to a file or wrapped in narrow test terminals.
+        typer.echo(block, nl=False)
     else:
-        console.print(json.dumps(block, indent=2))
+        typer.echo(json.dumps(block, indent=2))
 
 
 @agent_config_app.command("opencode")
@@ -76,3 +77,9 @@ def _opencode_cmd() -> None:
 def _cline_cmd() -> None:
     """Print a Cline settings block (Anthropic-compatible provider)."""
     _emit_block(cline.cline_config)
+
+
+@agent_config_app.command("litellm")
+def _litellm_cmd() -> None:
+    """Print a LiteLLM `config.yaml` snippet routing model names to lilbee."""
+    _emit_block(litellm.litellm_config)
