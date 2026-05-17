@@ -409,6 +409,10 @@ lilbee --json sync
 
 Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`.
 
+### Local model server (OpenAI- / Anthropic-compatible)
+
+`lilbee serve` also exposes `/v1/models`, `/v1/chat/completions` (OpenAI shape), and `/v1/messages` (Anthropic shape) so any client that lets you set a custom base URL can drive an installed chat model. `lilbee agent-config <opencode|cline|litellm>` prints a paste-ready config block keyed to the running server's port and token.
+
 See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 
 ## Key Files

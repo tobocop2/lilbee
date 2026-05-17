@@ -223,6 +223,53 @@ quote back. lilbee stays the local part: your files, the embeddings, the
 search index. See [agent-integration.md](agent-integration.md) for setup,
 example configs, and the full tool list.
 
+### Use lilbee as a local model server
+
+`lilbee serve` also speaks the OpenAI Chat Completions and Anthropic Messages
+protocols. Anything that lets you set a custom base URL (opencode, Cline,
+Continue, Zed, the `llm` CLI, LiteLLM, and so on) can drive a lilbee model the
+same way it would drive a hosted one. Whatever chat models you've installed
+through lilbee show up at `GET /v1/models`; streaming, cancellation, and
+tool-calling round-trip through both protocols.
+
+`lilbee agent-config <client>` prints a paste-ready config block for `opencode`,
+`cline`, or `litellm`, pulling the running server's port and token. Start the
+server once, then pick the recipe that matches your client.
+
+**opencode.** Emits both an OpenAI-compatible provider block (one entry per
+installed chat model) and an `mcp.lilbee` block invoking `lilbee mcp`, so the
+agent gets the model and the `lilbee_search` / `lilbee_add` tools in the same
+config:
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config opencode > opencode.json
+opencode
+```
+
+**Cline.** Cline's native path is Anthropic-flavored; the block points its
+Anthropic provider at lilbee. Paste it into Cline's settings UI:
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config cline
+```
+
+**LiteLLM proxy.** Emits a `config.yaml` snippet routing every installed model
+name through lilbee's `/v1` base URL. Useful for fanning lilbee out to clients
+that only speak OpenAI but want to call it through a proxy:
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config litellm > config.yaml
+litellm --config config.yaml
+```
+
+The block lists whatever you've pulled at the moment the command runs, so
+re-run it after installing a new chat model. `/v1/*` shares the same bearer
+token as the rest of the REST API; see [HTTP server](#http-server) for the
+flags that control the bind address, port, and token storage.
+
 > [!CAUTION]
 > **Private data and cloud agents**
 >

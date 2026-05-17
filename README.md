@@ -240,6 +240,37 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md).
 
+### Use lilbee as a local model server
+
+`lilbee serve` also speaks the OpenAI Chat Completions and Anthropic Messages protocols, so any client that lets you set a custom base URL can drive a lilbee model the same way it would drive a hosted one. The chat catalog you've installed via lilbee shows up at `/v1/models`; cancellation, streaming, and tool calls work end-to-end. `lilbee agent-config <client>` prints a paste-ready block for each client, using the running server's port and token.
+
+Start the server once, then pick whichever recipe matches your client:
+
+**opencode** (gets the OpenAI-compatible provider and lilbee's MCP tools in one config):
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config opencode > opencode.json
+opencode
+```
+
+**Cline** (VS Code / Cursor extension, Anthropic-compatible):
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config cline    # paste into Cline's settings
+```
+
+**LiteLLM proxy** (front any other client that already speaks OpenAI):
+
+```bash
+lilbee serve --port 8080
+lilbee agent-config litellm > config.yaml
+litellm --config config.yaml
+```
+
+The catalog of model refs in each block is read from the running server, so it stays in sync with whatever you've pulled. Run `lilbee serve --help` for host / port / token options; `/v1/*` shares the same bearer token as the rest of the REST API.
+
 ## HTTP Server
 
 `lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md#http-server) for invocation options. (These are HTTP server / REST docs; a Python-library reference is still in progress.)
