@@ -124,10 +124,11 @@ async def dispatch_chat_stream(
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
 
-    # Provider streaming iterators implement both sync (Iterator) and async
-    # (AsyncIterator) protocols; the Protocol type captures only the sync side
-    # for back-compat with reasoning.py's existing sync iteration. Dispatch
-    # uses async iteration to avoid blocking the event loop on each token.
+    # The llama-cpp pool iterator implements both Iterator and AsyncIterator;
+    # the Protocol declares only the sync side because the SDK provider's
+    # streaming path is a sync generator and cannot satisfy AsyncIterator.
+    # Async iteration here is required so token-by-token reads do not block
+    # the event loop. See ClosableIterator in providers/base.py.
     async_stream = cast(AsyncIterator[str | ToolCallDelta], stream)
     try:
         yield MessageStart(id=_new_message_id(), model=req.model)

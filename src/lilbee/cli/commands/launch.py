@@ -18,7 +18,7 @@ import typer
 
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.app import console
-from lilbee.cli.commands.agent_config import _chat_model_refs, _server_session
+from lilbee.cli.commands.agent_config import installed_chat_model_refs, running_server_session
 
 launch_app = typer.Typer(help="Launch a third-party AI client wired to lilbee.")
 log = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 
 def _ensure_server_running(port: int) -> tuple[tuple[str, int], subprocess.Popen[bytes] | None]:
     """Return ``(session, spawned_proc)``. Spawns lilbee serve if not already running."""
-    existing = _server_session()
+    existing = running_server_session()
     if existing is not None:
         return existing, None
     chosen_port = port if port > 0 else _free_port()
@@ -181,7 +181,7 @@ def _ensure_server_running(port: int) -> tuple[tuple[str, int], subprocess.Popen
             fg=typer.colors.RED,
         )
         raise typer.Exit(1)
-    session = _server_session()
+    session = running_server_session()
     if session is None:
         _stop_spawned_server(spawned)
         typer.secho(
@@ -224,7 +224,7 @@ def opencode_cmd(
         raise typer.Exit(1) from None
 
     (token, server_port), spawned = _ensure_server_running(port)
-    model_refs = _chat_model_refs()
+    model_refs = installed_chat_model_refs()
 
     _install_lilbee_skill()
     _update_opencode_picker_state(model_refs)

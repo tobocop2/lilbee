@@ -21,7 +21,7 @@ _MCP_COMMAND = ["lilbee", "mcp"]
 _SERVE_HINT = "Start `lilbee serve --port 8080` first, then re-run this command."
 
 
-def _server_session() -> tuple[str, int] | None:
+def running_server_session() -> tuple[str, int] | None:
     """Return `(token, port)` for the running server, or `None` if none is running."""
     session_path = server_json_path()
     port_path = cfg.data_dir / "server.port"
@@ -38,7 +38,8 @@ def _server_session() -> tuple[str, int] | None:
     return token, port
 
 
-def _chat_model_refs() -> list[str]:
+def installed_chat_model_refs() -> list[str]:
+    """Return sorted refs for every chat-task model in the registry."""
     registry = get_services().registry
     return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
 
@@ -48,7 +49,7 @@ _TextBuilder = Callable[..., str]
 
 
 def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
-    session = _server_session()
+    session = running_server_session()
     if session is None:
         typer.secho(_SERVE_HINT, err=True, fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -56,7 +57,7 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
     block = builder(
         base_url=f"http://{_LOCAL_HOST}:{port}",
         api_key=token,
-        model_refs=_chat_model_refs(),
+        model_refs=installed_chat_model_refs(),
         **kwargs,
     )
     if isinstance(block, str):

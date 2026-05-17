@@ -81,6 +81,7 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
+    --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
     "${MYPYC_FLAGS[@]}" \
     src/lilbee/__main__.py

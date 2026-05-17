@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -11,7 +10,9 @@ from datetime import datetime
 from typing import Any
 
 from litestar import Request, Router, get, post
+from litestar.exceptions import ValidationException
 from litestar.response import Response, Stream
+from pydantic import ValidationError
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
@@ -19,6 +20,12 @@ from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
     completions_error_body,
+)
+from lilbee.server.chat_completions_api.models import (
+    CompletionsRequest,
+    CompletionsResponse,
+    ModelEntry,
+    ModelsListResponse,
 )
 from lilbee.server.chat_completions_api.streaming import encode_completions_sse
 from lilbee.server.chat_completions_api.translate import (
@@ -52,16 +59,13 @@ async def list_models_endpoint(request: Request) -> Response:
 
     registry = get_services().registry
     chat_models = [m for m in registry.list_installed() if m.task == ModelTask.CHAT]
-    data = [
-        {
-            "id": m.ref,
-            "object": "model",
-            "owned_by": "lilbee",
-            "created": _parse_created(m.downloaded_at),
-        }
-        for m in sorted(chat_models, key=lambda m: m.ref)
-    ]
-    return Response({"object": "list", "data": data}, media_type="application/json")
+    payload = ModelsListResponse(
+        data=[
+            ModelEntry(id=m.ref, created=_parse_created(m.downloaded_at))
+            for m in sorted(chat_models, key=lambda m: m.ref)
+        ]
+    )
+    return Response(payload.model_dump(), media_type="application/json")
 
 
 @post("/v1/chat/completions", status_code=200)
@@ -73,9 +77,11 @@ async def chat_completions_endpoint(request: Request, data: dict[str, Any]) -> R
         return auth_error
 
     try:
-        req = completions_to_canonical_request(data)
-    except ValueError as exc:
-        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
+        validated = CompletionsRequest.model_validate(data)
+    except ValidationError as exc:
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _format_validation(exc))
+
+    req = completions_to_canonical_request(validated)
 
     try:
         acquire_or_raise_busy()
@@ -111,10 +117,8 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
         return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, str(exc))
     finally:
         lock.release()
-    return Response(
-        canonical_to_completions_response(resp, response_id=_response_id()),
-        media_type="application/json",
-    )
+    body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
+    return Response(body.model_dump(exclude_none=True), media_type="application/json")
 
 
 async def _gated_completions_stream(
@@ -149,8 +153,10 @@ async def _gated_completions_stream(
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
     """SSE frame carrying an error body, followed by ``[DONE]``."""
+    import json as _json
+
     body = completions_error_body(code, message)
-    payload = json.dumps(body, separators=(",", ":"))
+    payload = _json.dumps(body, separators=(",", ":"))
     return f"data: {payload}\n\ndata: [DONE]\n\n".encode()
 
 
@@ -177,6 +183,18 @@ def _auth_failure(request: Request) -> Response | None:
     return _error_response(401, CompletionsErrorCode.INVALID_API_KEY, "Missing or invalid API key.")
 
 
+def _format_validation(exc: ValidationError) -> str:
+    """Render pydantic validation errors as a single user-facing string."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+    )
+
+
+def _validation_exception_handler(_: Request, exc: ValidationException) -> Response:
+    """Wrap Litestar's body-parse failures in the OpenAI error envelope."""
+    return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc.detail))
+
+
 def _parse_created(downloaded_at: str | None) -> int:
     """Best-effort ISO-8601 to Unix-timestamp conversion; zero on failure."""
     if not downloaded_at:
@@ -195,4 +213,5 @@ def _response_id() -> str:
 completions_router = Router(
     path="/",
     route_handlers=[list_models_endpoint, chat_completions_endpoint],
+    exception_handlers={ValidationException: _validation_exception_handler},
 )

@@ -228,7 +228,7 @@ def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
         patch("lilbee.cli.commands.launch.sys.platform", "darwin"),
         patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
         patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
-        patch("lilbee.cli.commands.launch._chat_model_refs", return_value=[]),
+        patch("lilbee.cli.commands.launch.installed_chat_model_refs", return_value=[]),
     ):
         runner.invoke(app, ["launch", "opencode"])
 

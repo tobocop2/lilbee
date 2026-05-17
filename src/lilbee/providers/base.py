@@ -25,8 +25,10 @@ class ClosableIterator(Iterator[T_co], Protocol[T_co]):
 
     Streaming chat responses use this to guarantee the upstream model lock
     is released even when callers truncate the stream before exhaustion.
-    Generators satisfy this implicitly; explicit wrappers (e.g. the llama-cpp
-    chat-lock iterator) implement it directly.
+    Concrete implementations may additionally satisfy ``AsyncIterator``
+    (the llama-cpp pool wrapper does, for non-blocking dispatch in
+    ``server/chat_dispatch``); the Protocol underspecifies because some
+    backends only expose a sync generator.
     """
 
     def close(self) -> None: ...

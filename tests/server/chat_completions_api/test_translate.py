@@ -351,18 +351,17 @@ class TestCompletionsToCanonicalRequest:
         )
         assert req.tool_choice == CanonicalToolChoice(mode="tool", tool_name="search")
 
-    def test_unknown_string_tool_choice_raises(self) -> None:
-        # Pydantic accepts any string for tool_choice; the translator
-        # rejects unknown modes with a plain ValueError.
-        req = CompletionsRequest.model_validate(
-            {
-                "model": "m",
-                "messages": [{"role": "user", "content": "x"}],
-                "tool_choice": "bogus",
-            }
-        )
+    def test_unknown_string_tool_choice_rejected_at_validation(self) -> None:
+        # The ``ToolChoiceMode`` enum on the request model blocks any
+        # string that is not ``auto`` / ``none`` / ``required``.
         with pytest.raises(ValueError):
-            completions_to_canonical_request(req)
+            CompletionsRequest.model_validate(
+                {
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "x"}],
+                    "tool_choice": "bogus",
+                }
+            )
 
     def test_malformed_tool_choice_dict_raises(self) -> None:
         # Missing ``name`` inside the function-choice nested model is a
@@ -746,6 +745,73 @@ class TestCanonicalStreamToCompletionsChunks:
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),
             MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert chunks == []
+
+    async def test_second_text_block_does_not_re_emit_role(self) -> None:
+        # Two consecutive text blocks share one role-emit chunk;
+        # the second block's start yields nothing.
+        events: list[CanonicalStreamEvent] = [
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockStop(index=0),
+            ContentBlockStart(index=1, block=TextBlock(text="")),
+            ContentBlockDelta(index=1, delta=TextDelta(text="ok")),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        role_chunks = [c for c in chunks if c.choices[0].delta.role == "assistant"]
+        assert len(role_chunks) == 1
+
+    async def test_message_delta_without_stop_reason_emits_stop(self) -> None:
+        events: list[CanonicalStreamEvent] = [
+            MessageDelta(stop_reason=None),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert chunks[-1].choices[0].finish_reason == "stop"
+
+    async def test_unrecognized_content_block_is_silently_skipped(self) -> None:
+        # Image and tool-result blocks do not appear in assistant responses;
+        # the chunker drops them rather than emitting a malformed chunk.
+        from lilbee.server.chat_dispatch.canonical import ImageBlock, ToolResultBlock
+
+        events: list[CanonicalStreamEvent] = [
+            ContentBlockStart(index=0, block=ImageBlock(media_type="image/png", data=b"\x89")),
+            ContentBlockStart(
+                index=1, block=ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="r")])
+            ),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert chunks == []
+
+    async def test_unrecognized_content_block_delta_is_silently_skipped(self) -> None:
+        # The mapper guards against a future canonical delta variant that
+        # is not TextDelta or ToolUseDelta. Construct one ad-hoc to cover
+        # the defensive ``return None`` branch.
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class _UnknownDelta:
+            pass
+
+        events: list[CanonicalStreamEvent] = [
+            ContentBlockDelta(index=0, delta=_UnknownDelta()),  # type: ignore[arg-type]
         ]
         chunks = await _drain(
             canonical_stream_to_completions_chunks(

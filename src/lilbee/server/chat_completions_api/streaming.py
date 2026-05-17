@@ -1,16 +1,16 @@
-"""OpenAI SSE encoder: ``data: {json}\\n\\n`` frames plus ``[DONE]`` terminator."""
+"""SSE encoder: ``data: {json}\\n\\n`` frames plus ``[DONE]`` terminator."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
-from typing import Any
+
+from lilbee.server.chat_completions_api.models import CompletionsStreamChunk
 
 
 async def encode_completions_sse(
-    chunks: AsyncIterator[dict[str, Any]],
+    chunks: AsyncIterator[CompletionsStreamChunk],
 ) -> AsyncIterator[bytes]:
     """Frame each chunk as an SSE ``data:`` event and append the ``[DONE]`` sentinel."""
     async for chunk in chunks:
-        yield f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode()
+        yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n".encode()
     yield b"data: [DONE]\n\n"

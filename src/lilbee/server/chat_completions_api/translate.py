@@ -1,4 +1,4 @@
-"""Translation between the chat-completions wire shape and the canonical types."""
+"""Translation between OpenAI chat-completions models and the canonical types."""
 
 from __future__ import annotations
 
@@ -6,8 +6,30 @@ import base64
 import json
 import time
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Literal
 
+from lilbee.server.chat_completions_api.models import (
+    CompletionsImageContent,
+    CompletionsImageUrl,
+    CompletionsMessage,
+    CompletionsNamedToolChoice,
+    CompletionsRequest,
+    CompletionsResponse,
+    CompletionsResponseChoice,
+    CompletionsResponseMessage,
+    CompletionsResponseToolCall,
+    CompletionsResponseToolCallFunction,
+    CompletionsStreamChoice,
+    CompletionsStreamChunk,
+    CompletionsStreamDelta,
+    CompletionsStreamToolCall,
+    CompletionsStreamToolCallFunction,
+    CompletionsTextContent,
+    CompletionsTool,
+    CompletionsUsage,
+    FinishReason,
+    ToolChoiceMode,
+)
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -28,94 +50,132 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseDelta,
 )
 
-_OPENAI_TOOL_CHOICE_MODES: dict[str, Literal["auto", "any", "none"]] = {
-    "auto": "auto",
-    "none": "none",
-    "required": "any",
+_TOOL_CHOICE_MODES: dict[ToolChoiceMode, Literal["auto", "any", "none"]] = {
+    ToolChoiceMode.AUTO: "auto",
+    ToolChoiceMode.NONE: "none",
+    ToolChoiceMode.REQUIRED: "any",
 }
 
-_STOP_REASON_TO_OPENAI_FINISH: dict[StopReason, str] = {
-    StopReason.END_TURN: "stop",
-    StopReason.MAX_TOKENS: "length",
-    StopReason.STOP_SEQUENCE: "stop",
-    StopReason.TOOL_USE: "tool_calls",
-    StopReason.ERROR: "stop",
+_STOP_REASON_TO_FINISH: dict[StopReason, FinishReason] = {
+    StopReason.END_TURN: FinishReason.STOP,
+    StopReason.MAX_TOKENS: FinishReason.LENGTH,
+    StopReason.STOP_SEQUENCE: FinishReason.STOP,
+    StopReason.TOOL_USE: FinishReason.TOOL_CALLS,
+    StopReason.ERROR: FinishReason.STOP,
 }
 
-_VALID_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
-
-def completions_to_canonical_request(payload: dict[str, Any]) -> CanonicalChatRequest:
-    """Translate a ``/v1/chat/completions`` JSON payload to a canonical request."""
-    model = payload.get("model")
-    if not isinstance(model, str) or not model:
-        raise ValueError("Field 'model' is required.")
-    raw_messages = payload.get("messages")
-    if not isinstance(raw_messages, list) or not raw_messages:
-        raise ValueError("Field 'messages' is required and must be non-empty.")
-
+def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalChatRequest:
+    """Translate a validated ``CompletionsRequest`` to the canonical request."""
     system_parts: list[str] = []
     messages: list[CanonicalMessage] = []
-    for raw in raw_messages:
-        role = raw.get("role")
-        if role not in _VALID_ROLES:
-            raise ValueError(f"Unknown message role: {role!r}")
-        if role == "system":
-            system_parts.append(_extract_system_text(raw))
+    for msg in request.messages:
+        if msg.role == "system":
+            system_parts.append(_system_text(msg))
             continue
-        messages.append(_message_from_openai(raw))
-
-    tools = _tools_from_openai(payload.get("tools"))
-    tool_choice = _tool_choice_from_openai(payload.get("tool_choice"))
-    stop = _stop_from_openai(payload.get("stop"))
+        messages.append(_message_from_request(msg))
 
     return CanonicalChatRequest(
-        model=model,
+        model=request.model,
         messages=messages,
         system="\n\n".join(system_parts) if system_parts else None,
-        tools=tools,
-        tool_choice=tool_choice,
-        temperature=payload.get("temperature"),
-        top_p=payload.get("top_p"),
-        top_k=payload.get("top_k"),
-        max_tokens=payload.get("max_tokens"),
-        stop=stop,
-        stream=bool(payload.get("stream", False)),
+        tools=_tools_from_request(request.tools),
+        tool_choice=_tool_choice_from_request(request.tool_choice),
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        max_tokens=request.max_tokens,
+        stop=_stop_from_request(request.stop),
+        stream=request.stream,
     )
 
 
 def canonical_to_completions_response(
-    resp: CanonicalResponse, *, response_id: str | None = None
-) -> dict[str, Any]:
-    """Translate a canonical chat response to an OpenAI ``chat.completion`` object."""
-    message: dict[str, Any] = {"role": "assistant"}
+    resp: CanonicalResponse, *, response_id: str
+) -> CompletionsResponse:
+    """Translate a canonical chat response to the OpenAI ``chat.completion`` model."""
     text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
-    tool_calls = [_openai_tool_call(b) for b in resp.content if isinstance(b, ToolUseBlock)]
-    if tool_calls:
-        message["content"] = "".join(text_parts) if text_parts else None
-        message["tool_calls"] = tool_calls
-    else:
-        message["content"] = "".join(text_parts)
+    tool_calls = [_response_tool_call(b) for b in resp.content if isinstance(b, ToolUseBlock)]
+    joined = "".join(text_parts)
+    content: str | None = joined if joined or not tool_calls else None
 
     total = resp.usage.input_tokens + resp.usage.output_tokens
-    return {
-        "id": response_id if response_id is not None else resp.id,
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": resp.model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": _STOP_REASON_TO_OPENAI_FINISH[resp.stop_reason],
-            }
+    return CompletionsResponse(
+        id=response_id,
+        created=int(time.time()),
+        model=resp.model,
+        choices=[
+            CompletionsResponseChoice(
+                index=0,
+                message=CompletionsResponseMessage(
+                    content=content,
+                    tool_calls=tool_calls or None,
+                ),
+                finish_reason=_STOP_REASON_TO_FINISH[resp.stop_reason],
+            )
         ],
-        "usage": {
-            "prompt_tokens": resp.usage.input_tokens,
-            "completion_tokens": resp.usage.output_tokens,
-            "total_tokens": total,
-        },
-    }
+        usage=CompletionsUsage(
+            prompt_tokens=resp.usage.input_tokens,
+            completion_tokens=resp.usage.output_tokens,
+            total_tokens=total,
+        ),
+    )
+
+
+class _StreamMapper:
+    """Per-stream state for the canonical-to-OpenAI chunk converter."""
+
+    def __init__(self) -> None:
+        self._role_emitted = False
+        self._tool_index_for_block: dict[int, int] = {}
+        self._next_tool_index = 0
+
+    def block_start(self, event: ContentBlockStart) -> CompletionsStreamDelta | None:
+        if isinstance(event.block, TextBlock):
+            if self._role_emitted:
+                return None
+            self._role_emitted = True
+            return CompletionsStreamDelta(role="assistant")
+        if isinstance(event.block, ToolUseBlock):
+            tool_index = self._next_tool_index
+            self._tool_index_for_block[event.index] = tool_index
+            self._next_tool_index += 1
+            return CompletionsStreamDelta(
+                tool_calls=[_tool_call_open(tool_index, event.block.id, event.block.name)],
+            )
+        return None
+
+    def block_delta(self, event: ContentBlockDelta) -> CompletionsStreamDelta | None:
+        if isinstance(event.delta, TextDelta):
+            return CompletionsStreamDelta(content=event.delta.text)
+        if isinstance(event.delta, ToolUseDelta):
+            tool_index = self._tool_index_for_block[event.index]
+            return CompletionsStreamDelta(
+                tool_calls=[_tool_call_args(tool_index, event.delta.partial_json)],
+            )
+        return None
+
+
+def _tool_call_open(index: int, call_id: str, name: str) -> CompletionsStreamToolCall:
+    return CompletionsStreamToolCall(
+        index=index,
+        id=call_id,
+        type="function",
+        function=CompletionsStreamToolCallFunction(name=name, arguments=""),
+    )
+
+
+def _tool_call_args(index: int, partial_json: str) -> CompletionsStreamToolCall:
+    return CompletionsStreamToolCall(
+        index=index,
+        function=CompletionsStreamToolCallFunction(arguments=partial_json),
+    )
+
+
+def _finish_reason_for(event: MessageDelta) -> FinishReason:
+    if event.stop_reason is None:
+        return FinishReason.STOP
+    return _STOP_REASON_TO_FINISH[event.stop_reason]
 
 
 async def canonical_stream_to_completions_chunks(
@@ -123,132 +183,94 @@ async def canonical_stream_to_completions_chunks(
     *,
     model: str,
     response_id: str,
-) -> AsyncIterator[dict[str, Any]]:
-    """Turn canonical stream events into a sequence of OpenAI chunk dicts."""
-    role_emitted = False
-    tool_index_for_block: dict[int, int] = {}
-    next_tool_index = 0
-
+) -> AsyncIterator[CompletionsStreamChunk]:
+    """Turn canonical stream events into ``CompletionsStreamChunk`` instances."""
+    mapper = _StreamMapper()
     async for event in events:
         if isinstance(event, ContentBlockStart):
-            if isinstance(event.block, TextBlock):
-                if not role_emitted:
-                    yield _chunk(model, response_id, {"role": "assistant"})
-                    role_emitted = True
-            elif isinstance(event.block, ToolUseBlock):
-                tool_index = next_tool_index
-                tool_index_for_block[event.index] = tool_index
-                next_tool_index += 1
-                yield _chunk(
-                    model,
-                    response_id,
-                    {
-                        "tool_calls": [
-                            {
-                                "index": tool_index,
-                                "id": event.block.id,
-                                "type": "function",
-                                "function": {
-                                    "name": event.block.name,
-                                    "arguments": "",
-                                },
-                            }
-                        ]
-                    },
-                )
+            delta = mapper.block_start(event)
+            if delta is not None:
+                yield _chunk(model, response_id, delta)
         elif isinstance(event, ContentBlockDelta):
-            if isinstance(event.delta, TextDelta):
-                yield _chunk(model, response_id, {"content": event.delta.text})
-            elif isinstance(event.delta, ToolUseDelta):
-                tool_index = tool_index_for_block[event.index]
-                yield _chunk(
-                    model,
-                    response_id,
-                    {
-                        "tool_calls": [
-                            {
-                                "index": tool_index,
-                                "function": {"arguments": event.delta.partial_json},
-                            }
-                        ]
-                    },
-                )
+            delta = mapper.block_delta(event)
+            if delta is not None:
+                yield _chunk(model, response_id, delta)
         elif isinstance(event, MessageDelta):
-            finish = (
-                _STOP_REASON_TO_OPENAI_FINISH[event.stop_reason]
-                if event.stop_reason is not None
-                else "stop"
+            yield _chunk(
+                model,
+                response_id,
+                CompletionsStreamDelta(),
+                finish_reason=_finish_reason_for(event),
             )
-            yield _chunk(model, response_id, {}, finish_reason=finish)
 
 
 def _chunk(
     model: str,
     response_id: str,
-    delta: dict[str, Any],
+    delta: CompletionsStreamDelta,
     *,
-    finish_reason: str | None = None,
-) -> dict[str, Any]:
-    choice: dict[str, Any] = {"index": 0, "delta": delta, "finish_reason": finish_reason}
-    return {
-        "id": response_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [choice],
-    }
+    finish_reason: FinishReason | None = None,
+) -> CompletionsStreamChunk:
+    return CompletionsStreamChunk(
+        id=response_id,
+        created=int(time.time()),
+        model=model,
+        choices=[CompletionsStreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
+    )
 
 
-def _extract_system_text(raw: dict[str, Any]) -> str:
-    content = raw.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(part.get("text", "") for part in content if part.get("type") == "text")
-    raise ValueError(f"Unsupported system content shape: {type(content).__name__}")
+def _system_text(msg: CompletionsMessage) -> str:
+    if isinstance(msg.content, str):
+        return msg.content
+    if isinstance(msg.content, list):
+        return "".join(
+            part.text for part in msg.content if isinstance(part, CompletionsTextContent)
+        )
+    return ""
 
 
-def _message_from_openai(raw: dict[str, Any]) -> CanonicalMessage:
-    role = raw["role"]
+def _message_from_request(msg: CompletionsMessage) -> CanonicalMessage:
+    role = msg.role
+    if role == "system":
+        raise ValueError("system messages should be extracted by the caller")
     if role == "tool":
         return CanonicalMessage(
             role="tool",
             content=[
                 ToolResultBlock(
-                    tool_use_id=raw.get("tool_call_id", ""),
-                    content=_tool_result_content(raw.get("content")),
+                    tool_use_id=msg.tool_call_id or "",
+                    content=_tool_result_content(msg.content),
                 )
             ],
         )
 
-    blocks: list[ContentBlock] = []
-    text_blocks = _content_blocks(raw.get("content"))
-    blocks.extend(text_blocks)
-    for call in raw.get("tool_calls") or []:
-        blocks.append(_tool_use_from_openai(call))
+    blocks: list[ContentBlock] = list(_content_blocks(msg.content))
+    for call in msg.tool_calls or []:
+        blocks.append(
+            ToolUseBlock(
+                id=call.id,
+                name=call.function.name,
+                input=_parse_arguments(call.function.arguments),
+            )
+        )
     return CanonicalMessage(role=role, content=blocks)
 
 
-def _content_blocks(content: Any) -> list[ContentBlock]:
+def _content_blocks(content: str | list | None) -> list[ContentBlock]:
     if content is None or content == "":
         return []
     if isinstance(content, str):
         return [TextBlock(text=content)]
-    if isinstance(content, list):
-        out: list[ContentBlock] = []
-        for part in content:
-            kind = part.get("type")
-            if kind == "text":
-                out.append(TextBlock(text=part.get("text", "")))
-            elif kind == "image_url":
-                out.append(_image_from_openai(part.get("image_url", {})))
-            else:
-                raise ValueError(f"Unsupported content block type: {kind!r}")
-        return out
-    raise ValueError(f"Unsupported content shape: {type(content).__name__}")
+    blocks: list[ContentBlock] = []
+    for part in content:
+        if isinstance(part, CompletionsTextContent):
+            blocks.append(TextBlock(text=part.text))
+        elif isinstance(part, CompletionsImageContent):
+            blocks.append(_image_from_request(part.image_url))
+    return blocks
 
 
-def _tool_result_content(content: Any) -> list[ContentBlock]:
+def _tool_result_content(content: str | list | None) -> list[ContentBlock]:
     if isinstance(content, str):
         return [TextBlock(text=content)]
     if isinstance(content, list):
@@ -256,8 +278,8 @@ def _tool_result_content(content: Any) -> list[ContentBlock]:
     return [TextBlock(text="" if content is None else str(content))]
 
 
-def _image_from_openai(image_url: dict[str, Any]) -> ImageBlock:
-    url = image_url.get("url", "")
+def _image_from_request(image_url: CompletionsImageUrl) -> ImageBlock:
+    url = image_url.url
     if url.startswith("data:"):
         header, _, b64 = url.partition(",")
         media_type = header.removeprefix("data:").partition(";")[0] or "image/png"
@@ -265,68 +287,51 @@ def _image_from_openai(image_url: dict[str, Any]) -> ImageBlock:
     return ImageBlock(media_type="image/url", data=url.encode())
 
 
-def _tool_use_from_openai(call: dict[str, Any]) -> ToolUseBlock:
-    function = call.get("function", {})
-    name = function.get("name", "")
-    raw_args = function.get("arguments", "")
+def _parse_arguments(raw: str) -> dict:
     try:
-        parsed = json.loads(raw_args) if raw_args else {}
+        parsed = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
-        parsed = {"_raw": raw_args}
+        return {"_raw": raw}
     if not isinstance(parsed, dict):
-        parsed = {"_raw": raw_args}
-    return ToolUseBlock(id=call.get("id", ""), name=name, input=parsed)
+        return {"_raw": raw}
+    return parsed
 
 
-def _openai_tool_call(block: ToolUseBlock) -> dict[str, Any]:
-    return {
-        "id": block.id,
-        "type": "function",
-        "function": {
-            "name": block.name,
-            "arguments": json.dumps(block.input),
-        },
-    }
+def _response_tool_call(block: ToolUseBlock) -> CompletionsResponseToolCall:
+    return CompletionsResponseToolCall(
+        id=block.id,
+        function=CompletionsResponseToolCallFunction(
+            name=block.name, arguments=json.dumps(block.input)
+        ),
+    )
 
 
-def _tools_from_openai(raw: Any) -> list[CanonicalTool] | None:
-    if not raw:
+def _tools_from_request(tools: list[CompletionsTool] | None) -> list[CanonicalTool] | None:
+    if not tools:
         return None
-    tools: list[CanonicalTool] = []
-    for entry in raw:
-        function = entry.get("function", {})
-        tools.append(
-            CanonicalTool(
-                name=function.get("name", ""),
-                description=function.get("description", ""),
-                input_schema=function.get("parameters", {}),
-            )
+    return [
+        CanonicalTool(
+            name=tool.function.name,
+            description=tool.function.description or "",
+            input_schema=tool.function.parameters,
         )
-    return tools
+        for tool in tools
+    ]
 
 
-def _tool_choice_from_openai(raw: Any) -> CanonicalToolChoice | None:
-    if raw is None:
+def _tool_choice_from_request(
+    choice: ToolChoiceMode | CompletionsNamedToolChoice | None,
+) -> CanonicalToolChoice | None:
+    if choice is None:
         return None
-    if isinstance(raw, str):
-        mode = _OPENAI_TOOL_CHOICE_MODES.get(raw)
-        if mode is None:
-            raise ValueError(f"Unknown tool_choice mode: {raw!r}")
-        return CanonicalToolChoice(mode=mode)
-    if isinstance(raw, dict):
-        function = raw.get("function", {})
-        name = function.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError("tool_choice function dict requires a non-empty 'name'.")
-        return CanonicalToolChoice(mode="tool", tool_name=name)
-    raise ValueError(f"Unsupported tool_choice shape: {type(raw).__name__}")
+    if isinstance(choice, ToolChoiceMode):
+        return CanonicalToolChoice(mode=_TOOL_CHOICE_MODES[choice])
+    return CanonicalToolChoice(mode="tool", tool_name=choice.function.name)
 
 
-def _stop_from_openai(raw: Any) -> list[str] | None:
-    if raw is None:
+def _stop_from_request(stop: str | list[str] | None) -> list[str] | None:
+    if stop is None:
         return None
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, list):
-        return [str(item) for item in raw]
-    raise ValueError(f"Unsupported stop shape: {type(raw).__name__}")
+    if isinstance(stop, str):
+        return [stop]
+    return list(stop)

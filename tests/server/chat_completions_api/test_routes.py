@@ -343,9 +343,8 @@ class TestNonStreamingCompletion:
     async def test_unknown_tool_choice_mode_returns_400_invalid_request(
         self, services_with_chat_model, _auth_token
     ):
-        # ``tool_choice: "bogus"`` parses (it is a string) but fails in
-        # the translator with ``ValueError``; the route maps it to a
-        # 400 invalid-request envelope.
+        # ``tool_choice: "bogus"`` is rejected at request validation by
+        # the ``ToolChoiceMode`` enum before the translator ever sees it.
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
                 "/v1/chat/completions",
@@ -360,7 +359,7 @@ class TestNonStreamingCompletion:
         body = resp.json()
         assert body["error"]["type"] == "invalid_request_error"
         assert body["error"]["code"] == "invalid_request"
-        assert "bogus" in body["error"]["message"]
+        assert "tool_choice" in body["error"]["message"]
 
     async def test_non_dict_body_returns_400_via_validation_handler(
         self, services_with_chat_model, _auth_token
