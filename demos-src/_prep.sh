@@ -37,15 +37,6 @@ readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 readonly FRESH_TAPES=(tui-setup tui-add tui-crawl)
 # opencode demo dirs.
 readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual opencode-self-tune)
-# Four-file corpus for the self-tune tape. Small enough to index in seconds,
-# big enough that the agent's per-source / max_distance / top_k tuning shows
-# a measurable difference in what comes back.
-readonly SELF_TUNE_CORPUS=(
-    "examples/agent-integration/AGENTS.md::AGENTS.md"
-    "docs/agent-integration.md::agent-integration.md"
-    "src/lilbee/app/settings.py::app_settings.py"
-    "src/lilbee/app/settings_map.py::app_settings_map.py"
-)
 # Subset of godot-classes used by the small live-indexing demo. Six
 # files = ~110 KB; indexes in seconds. Keeps mcp-godot-search.tape from
 # stalling on indexing dead air.
@@ -174,28 +165,21 @@ stage_godot_search_subset() {
 }
 
 seed_self_tune_corpus() {
-    # Stage the four-file corpus the self-tune tape answers from and
-    # index it so the demo opens with `lilbee_status` reporting
-    # 4 sources. The agent's job in the recording is the tuning loop,
-    # not the indexing flow (other tapes cover that).
-    #
-    # File names are intentionally rewritten on copy so citations in the
-    # answer read as `app_settings.py:101` rather than the repo-relative
-    # path. The QA run this demo recreates used the same naming.
+    # Stage the godot-classes XML reference (the same 810-file corpus
+    # mcp-godot uses) into opencode-self-tune and index it. The tape
+    # asks an A* pathfinding question twice, once at defaults and once
+    # after one settings_set call; with defaults the search returns
+    # AStar3D only, with tuned retrieval it adds AStarGrid2D and the
+    # NavigationPathQueryParameters family, and the visible second
+    # answer is measurably richer than the first.
     local dir="$ROOT/opencode-self-tune"
-    local docs="$dir/.lilbee/documents"
-    mkdir -p "$docs"
-    local entry src dst
-    for entry in "${SELF_TUNE_CORPUS[@]}"; do
-        src="${entry%::*}"
-        dst="${entry##*::}"
-        cp -f "$REPO_DIR/$src" "$docs/$dst"
-    done
-    # opencode.json: pin the model to opencode/qwen3.6-plus-free (free
-    # tier, drove the full tuning chain in the QA run we're recreating)
-    # and pin the MCP command to LILBEE_BIN so opencode talks to the
-    # same build that prep used (i.e. the feat/mcp-settings-tools venv,
-    # the one that actually ships settings_list / set / reset).
+    local src="$ROOT/opencode-godot/godot-classes"
+    if [[ ! -d "$src" ]]; then
+        printf 'warn: %s missing; run link_godot_classes first.\n' "$src" >&2
+        return 0
+    fi
+    rm -rf "$dir/godot-classes"
+    cp -R "$src" "$dir/godot-classes"
     cat >"$dir/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -222,11 +206,11 @@ seed_self_tune_corpus() {
   }
 }
 JSON
-    if ( cd "$dir" && "$LILBEE" status 2>/dev/null ) | grep -q "Chunks:.*[1-9]\|Documents.*Hash"; then
+    if ( cd "$dir" && "$LILBEE" status 2>/dev/null ) | grep -q "Documents:.*[1-9]"; then
         return 0
     fi
-    log "indexing self-tune corpus (4 files) into $dir"
-    ( cd "$dir" && "$LILBEE" sync >/dev/null )
+    log "indexing godot-classes into $dir (one-time, ~5 min on M1)"
+    ( cd "$dir" && "$LILBEE" add ./godot-classes/ )
 }
 
 preindex_godot_corpus() {
