@@ -1822,6 +1822,7 @@ class TestDownloadTaskName:
 
     def test_repo_ref_matches_catalog_display_name(self) -> None:
         from lilbee.catalog import CatalogModel, download_task_name
+
         model = CatalogModel(
             hf_repo="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             gguf_filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
