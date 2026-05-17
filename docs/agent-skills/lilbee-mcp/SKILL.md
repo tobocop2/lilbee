@@ -7,7 +7,7 @@ description: Search and manage the user's local lilbee knowledge base over MCP. 
 
 [lilbee](https://github.com/tobocop2/lilbee) is a local retrieval engine. It indexes the
 user's code, documents, PDFs, and crawled web pages into a per-project `.lilbee/` store and
-exposes the corpus over MCP. Every tool here is prefixed `lilbee_`. Data and embeddings stay
+exposes the library over MCP. Every tool here is prefixed `lilbee_`. Data and embeddings stay
 on the user's machine; the only thing leaving is what you, the agent, decide to quote.
 
 ## In 30 seconds
@@ -89,8 +89,8 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
-| `lilbee_add(paths, force, enable_ocr, ocr_timeout)` | Copy files / dirs / URLs into the corpus and index them. Seconds to minutes. |
-| `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large corpora. |
+| `lilbee_add(paths, force, enable_ocr, ocr_timeout)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
+| `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
 | `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source)` | Download a model. Streams progress as MCP notifications. Large models = many minutes. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
@@ -102,7 +102,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 ### 1. User asks a question about their library
 
 ```
-lilbee_status                           # confirm a corpus exists
+lilbee_status                           # confirm a library exists
 lilbee_search(query, top_k=8)           # one or two distinct noun-phrase queries
 answer with file:line citations
 ```
@@ -132,7 +132,7 @@ lilbee_status                           # new "_web/..." sources should appear
 The crawl writes pages into the documents directory as it goes; a final auto-sync indexes
 them. Pages already crawled this session are skipped.
 
-### 4. User wants to set lilbee up for their hardware and corpus
+### 4. User wants to set lilbee up for their hardware and files
 
 You manipulate the retrieval surface only: `embedding_model`, `reranker_model`,
 `vision_model`, and the retrieval / ingest knobs. The `chat_model` slot is for the user's
@@ -165,16 +165,16 @@ them back.
 
 ### 5. Your first answer feels thin -- self-tune and retry
 
-When the user asks a broad question against a dense reference-doc corpus
-(godot class XMLs, an API reference, kreuzberg-style docstrings) and your
-first `lilbee_search` returns only one or two relevant hits where you'd
-expect a family, the retrieval defaults are too narrow for the shape of
-the corpus. Self-tune in-place rather than handing the user a thin
-answer:
+When the user asks a broad question against a dense pile of reference
+docs (godot class XMLs, an API reference, kreuzberg-style docstrings)
+and your first `lilbee_search` returns only one or two relevant hits
+where you'd expect a family, the retrieval defaults are too narrow for
+the shape of what's indexed. Self-tune in-place rather than handing the
+user a thin answer:
 
 ```
 lilbee_search("user's natural query")          # baseline
-# If results are visibly narrow for the corpus shape:
+# If results are visibly narrow for the indexed shape:
 lilbee_settings_set({
     "top_k": 15,                                # wider candidate pool
     "diversity_max_per_source": 8,              # more chunks per file ok
@@ -244,7 +244,7 @@ Never assume you can read a key back.
   `src/lilbee/data/ingest/pipeline.py:216-247`).
 - If a chunk doesn't actually support a claim, drop the claim. Re-search before
   inventing.
-- "Not in the corpus" is a valid answer. Say so plainly and suggest indexing the right
+- "Not in the indexed files" is a valid answer. Say so plainly and suggest indexing the right
   path if the user expected it to be there.
 - When the user reads code in their editor that you've cited, your line numbers must
   match. If you see the chunk metadata report a line range, do not guess a different one.
@@ -253,7 +253,7 @@ Never assume you can read a key back.
 
 - **Not a code editor.** Use the host's `read` / `edit` / `write` tools after pulling
   context through `lilbee_search`.
-- **Not a web search.** `lilbee_crawl` fetches a specific URL into the corpus on the
+- **Not a web search.** `lilbee_crawl` fetches a specific URL into the library on the
   user's explicit request; it isn't a general fallback when search misses.
 - **Not a chat model.** lilbee can run its own chat / wiki / OCR models locally, but as
   a tool consumer you stay on the host's model. Don't manipulate `chat_model` unless the
@@ -265,7 +265,7 @@ Never assume you can read a key back.
 ## Experimental: wiki layer
 
 The wiki layer generates per-concept and per-entity pages with citations from the
-indexed corpus, then lets you query and lint them. It is still rough; treat it as
+indexed library, then lets you query and lint them. It is still rough; treat it as
 opt-in, not part of normal answer flow. Skip everything here unless the user
 explicitly asks about wiki / synthesis pages, or `lilbee_status` already shows a
 wiki built. All `lilbee_wiki_*` tools return `{"error": "wiki disabled"}` until the
@@ -275,7 +275,7 @@ user enables it with `lilbee_settings_set({"wiki": true})`.
 
 | Tool | Use |
 |---|---|
-| `lilbee_wiki_build()` | Generate the full topic / entity wiki from the indexed corpus. LLM-bound; minutes per source. |
+| `lilbee_wiki_build()` | Generate the full topic / entity wiki from the indexed library. LLM-bound; minutes per source. |
 | `lilbee_wiki_update()` | Refresh the wiki after a sync. Currently a full rebuild. |
 | `lilbee_wiki_synthesize()` | Generate cross-source synthesis pages (concept clusters spanning ≥3 sources). |
 | `lilbee_wiki_prune()` | Archive stale wiki pages whose sources were deleted, and flag pages with mostly-stale citations. |

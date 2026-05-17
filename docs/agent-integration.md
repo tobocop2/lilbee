@@ -135,7 +135,7 @@ Drop this into any MCP-aware agent:
 > questions about how the auth layer is wired and which functions call
 > which. Assess my hardware, recommend embedding / reranker / vision
 > models, pull them in the background, then adapt the lilbee defaults
-> for this corpus and question style.
+> for this library and question style.
 
 The agent answers the questions itself, so it only touches model roles
 that affect retrieval (`embedding_model`, `reranker_model`,
@@ -145,7 +145,7 @@ Typical flow: `lilbee_status` + `lilbee_settings_list` to see baseline,
 `lilbee_catalog_browse(task=...)` to pick models per role, `lilbee_model_pull`
 via the `lilbee-worker` subagent, one batched `lilbee_settings_set` to wire
 the models and tune retrieval (raise `top_k` / `diversity_max_per_source`
-for code-heavy corpora; enable `concept_graph`; lower `chunk_size`).
+for code-heavy libraries; enable `concept_graph`; lower `chunk_size`).
 If the result includes `reindex_required: true`, the agent should hand
 `lilbee_sync(force_rebuild=true)` to the worker.
 
