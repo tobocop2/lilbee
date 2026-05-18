@@ -36,7 +36,7 @@ readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 # Tapes that start from a clean slate (the recording does its own ingest).
 readonly FRESH_TAPES=(tui-setup tui-add tui-crawl)
 # opencode demo dirs.
-readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual opencode-self-tune)
+readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual opencode-self-tune opencode-pdf-self-tune)
 # Subset of godot-classes used by the small live-indexing demo. Six
 # files = ~110 KB; indexes in seconds. Keeps mcp-godot-search.tape from
 # stalling on indexing dead air.
@@ -213,6 +213,49 @@ JSON
     ( cd "$dir" && "$LILBEE" add ./godot-classes/ )
 }
 
+seed_pdf_self_tune_corpus() {
+    # Stage the Crown Vic owner's manual PDF into opencode-pdf-self-tune
+    # and index it. The tape asks 'why does my steering wheel shake' twice,
+    # once at the previous defaults (top_k=8, max_distance=0.65) and once
+    # after tuning to the new shipped defaults. With old values lilbee
+    # returns ~2 pages and the agent falls back to general automotive
+    # knowledge; with new defaults the same query surfaces 10+ entries
+    # across 5 pages, sourced entirely from the manual.
+    local dir="$ROOT/opencode-pdf-self-tune"
+    cp -f "$CV_MANUAL" "$dir/cv-manual.pdf"
+    cat >"$dir/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "opencode/qwen3.6-plus-free",
+  "permission": {
+    "codesearch": "deny",
+    "websearch": "deny",
+    "webfetch": "deny",
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lilbee_*": "allow"
+  },
+  "mcp": {
+    "lilbee": {
+      "type": "local",
+      "command": ["$LILBEE", "mcp"],
+      "timeout": 900000
+    }
+  }
+}
+JSON
+    if ( cd "$dir" && "$LILBEE" status 2>/dev/null ) | grep -q "Documents:.*[1-9]"; then
+        return 0
+    fi
+    log "indexing cv-manual.pdf into $dir"
+    ( cd "$dir" && "$LILBEE" add ./cv-manual.pdf )
+}
+
 preindex_godot_corpus() {
     # Pre-index the full 810-XML godot library into the opencode-godot
     # demo dir so mcp-godot.tape opens straight into the cited-answer
@@ -266,6 +309,7 @@ main() {
     stage_godot_search_subset
     preindex_godot_corpus
     seed_self_tune_corpus
+    seed_pdf_self_tune_corpus
 
     log "prep done. $ROOT is ready."
 }
