@@ -121,7 +121,7 @@ Each agent demo ships with a drop-in [`AGENTS.md`](../examples/agent-integration
 [`lilbee-worker` subagent](../examples/agent-integration/.opencode/agents/lilbee-worker.md) that
 handles the long-running ops (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`,
 `lilbee_model_pull`), and the
-[`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill
+[`lilbee-mcp` skill](../src/lilbee/skills/lilbee_mcp/SKILL.md) (opencode / Claude Skill
 format) that documents every MCP tool with a quick-vs-long split. The agent runs
 on the dev's default cloud model (MiniMax M2.7); the lilbee library stays local.
 On screen, inline: `# lilbee_<tool>` for each tool call,
