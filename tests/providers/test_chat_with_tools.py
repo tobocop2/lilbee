@@ -293,12 +293,18 @@ def test_sdk_provider_forwards_tools_and_tool_choice_when_supported() -> None:
     assert captured[0].options["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
-def test_litellm_supports_tools_true() -> None:
-    """The litellm backend reports tool support for all cloud routes."""
+def test_litellm_supports_tools_false() -> None:
+    """The litellm backend reports no tool support today.
+
+    The SDK path can forward tool definitions and receive tool calls but
+    does not yet parse them out of the litellm response. Returning False
+    makes the dispatcher surface a clean ``ModelDoesNotSupportToolsError``
+    instead of silently dropping the tool calls from the response.
+    """
     from lilbee.providers.litellm_sdk import LitellmSdkBackend
 
     backend = LitellmSdkBackend()
-    assert backend.supports_tools("openai/gpt-4o") is True
+    assert backend.supports_tools("openai/gpt-4o") is False
 
 
 def test_routing_provider_chat_returns_chat_result() -> None:

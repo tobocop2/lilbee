@@ -236,9 +236,18 @@ class LitellmSdkBackend:
         return litellm_available()
 
     def supports_tools(self, model_ref: str) -> bool:
-        """Every litellm-routed chat model speaks OpenAI-shaped tool calls."""
+        """Tool calls are not surfaced through the SDK path yet.
+
+        The litellm backend can forward tool definitions and receive tool
+        calls, but ``_LitellmResponseView`` does not extract them and
+        ``CompletionResult`` / ``StreamChunk`` do not carry tool-call
+        fields. Returning False here makes the dispatch layer reject
+        tool-bearing requests with a clean ``ModelDoesNotSupportToolsError``
+        instead of silently dropping the tool calls in the response.
+        Re-enable when full tool-call plumbing lands.
+        """
         del model_ref
-        return True
+        return False
 
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Apply litellm's debug-info suppression toggle when requested."""

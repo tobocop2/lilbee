@@ -520,3 +520,60 @@ class TestDispatchChatStream:
         assert all(isinstance(s.block, ToolUseBlock) for s in starts)
         # Two content blocks opened, two closed.
         assert len(stops) == 2
+
+
+class _SyncFakeStream:
+    """Sync-only iterator that mimics the SDK provider's chat-stream return.
+
+    The SDK path (``providers/sdk_llm_provider.py::_chat_stream``) is a plain
+    sync generator with no ``__aiter__``. Used to verify ``dispatch_chat_stream``
+    can drive a non-async-iterable provider stream without raising
+    ``TypeError: object is not an async iterator``.
+    """
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self._frames:
+            raise StopIteration
+        return self._frames.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestDispatchChatStreamSyncProvider:
+    """``dispatch_chat_stream`` must work for providers whose stream is sync-only."""
+
+    async def _drain(self, gen):
+        return [event async for event in gen]
+
+    async def test_drains_sync_iterator_without_blocking_event_loop(
+        self, services_with_model
+    ) -> None:
+        stream = _SyncFakeStream(["hi", " there"])
+        services_with_model.provider.chat.return_value = stream
+
+        events = await self._drain(dispatch_chat_stream(_req()))
+
+        text_deltas = [e.delta.text for e in events if isinstance(e, ContentBlockDelta)]
+        assert text_deltas == ["hi", " there"]
+        assert isinstance(events[0], MessageStart)
+        assert isinstance(events[-1], MessageStop)
+        # Stream must be closed in dispatch_chat_stream's finally block.
+        assert stream.closed is True
+
+    async def test_drains_empty_sync_iterator(self, services_with_model) -> None:
+        stream = _SyncFakeStream([])
+        services_with_model.provider.chat.return_value = stream
+
+        events = await self._drain(dispatch_chat_stream(_req()))
+
+        kinds = [type(e).__name__ for e in events]
+        assert kinds == ["MessageStart", "MessageDelta", "MessageStop"]
+        assert stream.closed is True

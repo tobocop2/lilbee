@@ -263,13 +263,26 @@ class TestRagHandlerHelpers:
         from lilbee.server.handlers.rag import _retrieval_skipped
 
         monkeypatch.setattr(cfg, "chat_mode", ChatMode.CHAT.value)
-        assert _retrieval_skipped("q") is True
+        assert _retrieval_skipped() is True
 
     def test_retrieval_skipped_when_no_embedding(self, services_with_chat_dispatch) -> None:
         from lilbee.server.handlers.rag import _retrieval_skipped
 
         services_with_chat_dispatch.embedder.embedding_available = MagicMock(return_value=False)
-        assert _retrieval_skipped("q") is True
+        assert _retrieval_skipped() is True
+
+    def test_canonical_role_accepts_known_roles(self) -> None:
+        from lilbee.server.handlers.rag import _canonical_role
+
+        assert _canonical_role("user") == "user"
+        assert _canonical_role("assistant") == "assistant"
+        assert _canonical_role("tool") == "tool"
+
+    def test_canonical_role_rejects_unknown_role(self) -> None:
+        from lilbee.server.handlers.rag import _canonical_role
+
+        with pytest.raises(ValueError, match="Unsupported message role"):
+            _canonical_role("system")
 
     def test_build_chat_messages_falls_back_when_retrieval_skipped(
         self, services_with_chat_dispatch, monkeypatch

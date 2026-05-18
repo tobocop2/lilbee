@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from enum import StrEnum
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from lilbee.app.services import get_services
 from lilbee.providers.worker.transport import FinishReason, ToolCallDelta
@@ -128,17 +129,10 @@ async def dispatch_chat_stream(
         tools=_provider_tools(req.tools),
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
-
-    # The llama-cpp pool iterator implements both Iterator and AsyncIterator;
-    # the Protocol declares only the sync side because the SDK provider's
-    # streaming path is a sync generator and cannot satisfy AsyncIterator.
-    # Async iteration here is required so token-by-token reads do not block
-    # the event loop. See ClosableIterator in providers/base.py.
-    async_stream = cast(AsyncIterator[str | ToolCallDelta], stream)
     try:
         yield MessageStart(id=_new_message_id(), model=req.model)
         state = _StreamState()
-        async for frame in async_stream:
+        async for frame in _async_iter_provider_stream(stream):
             for event in state.feed(frame):
                 yield event
         for event in state.finish():
@@ -146,6 +140,46 @@ async def dispatch_chat_stream(
         yield MessageStop()
     finally:
         stream.close()
+
+
+async def _async_iter_provider_stream(
+    stream: Iterator[str | ToolCallDelta] | AsyncIterator[str | ToolCallDelta],
+) -> AsyncIterator[str | ToolCallDelta]:
+    """Iterate a provider chat stream without blocking the event loop.
+
+    The llama-cpp pool wrapper implements both Iterator and AsyncIterator so
+    its async path runs without thread hops. The SDK provider's streaming
+    method is a plain sync generator; iterating it inline on the event loop
+    would block, so each ``next()`` runs in a worker thread via
+    ``asyncio.to_thread``. ``LLMProvider.chat`` cannot narrow this distinction
+    in the Protocol because the SDK backend has no async-native path.
+    """
+    if isinstance(stream, AsyncIterable):
+        async for frame in stream:
+            yield frame
+        return
+    while True:
+        frame = await asyncio.to_thread(_next_or_done, stream)
+        if frame is _STREAM_DONE:
+            return
+        yield frame
+
+
+_STREAM_DONE: Any = object()
+"""Sentinel returned by :func:`_next_or_done` to mean ``StopIteration``."""
+
+
+def _next_or_done(stream: Iterator[str | ToolCallDelta]) -> str | ToolCallDelta | Any:
+    """Pull the next frame from *stream*; return ``_STREAM_DONE`` at exhaustion.
+
+    Raising ``StopIteration`` inside a coroutine becomes ``RuntimeError`` per
+    PEP 479; this helper converts that signal into a sentinel value the async
+    caller can branch on.
+    """
+    try:
+        return next(stream)
+    except StopIteration:
+        return _STREAM_DONE
 
 
 class _StreamState:
