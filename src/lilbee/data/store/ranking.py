@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from lilbee.core.config import cfg
@@ -13,12 +11,13 @@ from .types import SearchChunk
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
+    arr_a = np.asarray(a, dtype=np.float64)
+    arr_b = np.asarray(b, dtype=np.float64)
+    norm_a = float(np.linalg.norm(arr_a))
+    norm_b = float(np.linalg.norm(arr_b))
+    if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(np.dot(arr_a, arr_b) / (norm_a * norm_b))
 
 
 def mmr_rerank(
