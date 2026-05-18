@@ -1,9 +1,11 @@
 name: Build CUDA executables
 
-# CUDA-flavored standalone executables for an already-published release tag.
-# Runs on workflow_dispatch only. Each cell builds independently; failures
-# do not block the rest. Attaches successful builds to the release named
-# by the tag input.
+# CUDA-flavored standalone executables. Called from release-candidate.yml in
+# parallel with the Vulkan/Metal build, or dispatched standalone for an
+# already-released tag. Each cell builds independently; failures do not block
+# the rest. In workflow_call mode, run artifacts are picked up by the caller's
+# attach-prerelease step. In workflow_dispatch mode, the cell attaches directly
+# to the named release.
 
 on:
   workflow_dispatch:
@@ -15,39 +17,26 @@ on:
         description: "Build even if the smoke step fails (re-run past a known-flaky cell)."
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build at (defaults to caller's ref)."
+        type: string
+        default: ""
+      skip_tests:
+        description: "Build even if the smoke step fails."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-cuda-executables-${{ inputs.tag }}
+  group: build-cuda-executables-${{ inputs.tag || inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  resolve:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.info.outputs.version }}
-      ref: ${{ steps.info.outputs.ref }}
-    steps:
-      - name: Resolve tag and ref
-        id: info
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          sha=$(gh api "repos/${REPO}/git/refs/tags/${TAG}" --jq .object.sha)
-          [ -n "$sha" ] || { echo "tag ${TAG} not found"; exit 1; }
-          {
-            echo "version=$version"
-            echo "ref=$sha"
-          } >> "$GITHUB_OUTPUT"
-
   build:
-    needs: [resolve]
     continue-on-error: true
     timeout-minutes: 360
     strategy:
@@ -82,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.resolve.outputs.ref }}
+          ref: ${{ inputs.ref || inputs.tag || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -187,7 +176,11 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
-      - name: Attach binary to release
+      # Standalone-dispatch mode: attach to the named release tag directly.
+      # workflow_call mode skips this because the caller's attach-prerelease
+      # picks up the run artifact via the lilbee-* glob.
+      - name: Attach binary to release (dispatch mode)
+        if: inputs.tag != ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
