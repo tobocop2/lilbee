@@ -90,7 +90,8 @@
           <button type="button" class="reeltab" role="tab" id="reel-tab-settings" aria-controls="reel-pane-settings" aria-selected="false" tabindex="-1">settings</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-palette"  aria-controls="reel-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
           <div class="reeltabs-break" aria-hidden="true"></div>
-          <button type="button" class="reeltab" role="tab" id="reel-tab-selftune" aria-controls="reel-pane-selftune" aria-selected="false" tabindex="-1">agent: self-tune</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-pdftune"  aria-controls="reel-pane-pdftune"  aria-selected="false" tabindex="-1">agent: tune for a PDF</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-selftune" aria-controls="reel-pane-selftune" aria-selected="false" tabindex="-1">agent: tune for code</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-agent"    aria-controls="reel-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-pdf"      aria-controls="reel-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-index"    aria-controls="reel-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
@@ -146,11 +147,18 @@
           <p class="reel-caption">50+ settings: search depth, reranking, sampling, parsers. Sane defaults; tune the moment you want to.</p>
         </div>
 
+        <div class="reelpane" role="tabpanel" id="reel-pane-pdftune" aria-labelledby="reel-tab-pdftune" hidden>
+          <div class="reel-frame">
+            <img alt="two-turn conversation against a Crown Vic owner's manual PDF: at the previous lilbee defaults the agent finds 4 manual entries and admits the manual is thin on the symptom; after tuning to the new shipped defaults the same query surfaces 10+ entries across many pages and the answer stays grounded in the manual" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-pdf-self-tune.gif">
+          </div>
+          <p class="reel-caption">An agent re-tunes lilbee for a long-form PDF. Same human question (&ldquo;steering wheel shakes on the highway&rdquo;) at the previous defaults gives 4 manual entries and the agent admits coverage is thin; one <code>lilbee_settings_set</code> later it surfaces 10+ entries across many pages, all from the manual. The agent&rsquo;s tuned values are what lilbee now ships.</p>
+        </div>
+
         <div class="reelpane" role="tabpanel" id="reel-pane-selftune" aria-labelledby="reel-tab-selftune" hidden>
           <div class="reel-frame">
-            <img alt="two-turn natural conversation: at default settings the agent finds AStar3D only and flags AStar2D as missing; the user reacts, the agent batches one lilbee_settings_set widening top_k and other knobs, runs the same search, and the answer now covers AStar3D + AStar2D + AStarGrid2D with a one-line summary of every knob it moved" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif">
+            <img alt="two-turn natural conversation against the godot 4 class reference: at default settings the agent finds AStar3D only and flags AStar2D as missing; the user reacts, the agent batches one lilbee_settings_set widening top_k and other knobs, runs the same search, and the answer now covers AStar3D + AStar2D + AStarGrid2D with a one-line summary of every knob it moved" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif">
           </div>
-          <p class="reel-caption">The agent improves its own answer by tuning lilbee. Same agent, same MCP server, same query: defaults find one class; one <code>lilbee_settings_set</code> later the same search returns three. The agent prints the knobs it moved (e.g. <code>top_k 8&nbsp;&rarr;&nbsp;40</code>) and resets on the way out.</p>
+          <p class="reel-caption">Same shape against a code library (godot class reference). Defaults find one A* class; one <code>lilbee_settings_set</code> later the same search returns three. The agent prints the knobs it moved and resets on the way out.</p>
         </div>
 
         <div class="reelpane" role="tabpanel" id="reel-pane-agent" aria-labelledby="reel-tab-agent" hidden>

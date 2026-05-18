@@ -100,7 +100,11 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 The fastest path to a useful lilbee install is to hand it to an MCP-aware agent and let it do the setup. `lilbee_catalog_browse` lets the agent see what's available, `lilbee_model_pull` installs picks, and `lilbee_settings_set` wires them into the embedding / reranker / vision roles and tunes the retrieval knobs for the library and question style you actually care about. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
 
-![two-turn natural conversation: turn 1 at default settings returns AStar3D only and the agent flags AStar2D as missing; turn 2 the agent batches one lilbee_settings_set widening top_k and other knobs, runs the same search, and the answer now covers AStar3D + AStar2D + AStarGrid2D. The chat stream prints a one-line tuning summary naming each knob and its before-and-after value, then resets settings.](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
+Below: an agent asks the same human question against a PDF manual twice. First at the previous narrower defaults (4 manual entries, agent admits the manual is thin on the symptom). Then after tuning to the new shipped defaults (10+ entries across many pages, answer stays grounded in the manual). The agent's tuned values are exactly what lilbee now ships.
+
+![two-turn conversation against a PDF manual: at the previous lilbee defaults the agent finds 4 manual entries and admits the manual is thin on the symptom; after tuning to the new shipped defaults the same query surfaces 10+ entries across many pages and the answer stays grounded in the manual.](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-pdf-self-tune.gif)
+
+Same shape for code: the [godot self-tune demo](docs/demos.md#agent-self-tune-for-a-code-library-godot-class-reference) shows the agent surfacing extra A* classes after a single `lilbee_settings_set`.
 
 ### Grounding for AI agents
 
