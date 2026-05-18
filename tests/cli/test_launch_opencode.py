@@ -49,7 +49,7 @@ def _healthy_by_default(request, monkeypatch):
     """
     if "no_health_default" in request.keywords:
         return
-    monkeypatch.setattr("lilbee.cli.commands.launch._health_ok", lambda _port: True)
+    monkeypatch.setattr("lilbee.cli.launchers.server.health_ok", lambda _port: True)
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +71,7 @@ def _isolated_env(tmp_path, monkeypatch) -> Path:
 
 def test_launch_opencode_without_binary_exits_1():
     _write_server_session()
-    with patch("lilbee.cli.commands.launch.shutil.which", return_value=None):
+    with patch("lilbee.cli.launchers.opencode.shutil.which", return_value=None):
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
     assert "opencode binary not found" in result.stderr
@@ -82,9 +82,9 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed) as run,
-        patch("lilbee.cli.commands.launch._spawn_server") as spawn,
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed) as run,
+        patch("lilbee.cli.launchers.server.spawn_server") as spawn,
     ):
         result = runner.invoke(app, ["launch", "opencode"])
 
@@ -117,13 +117,13 @@ def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_pa
         return fake_proc
 
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
         # Override the autouse "healthy by default" fixture for this test.
-        patch("lilbee.cli.commands.launch._health_ok", return_value=False),
-        patch("lilbee.cli.commands.launch._spawn_server", side_effect=_spawn_and_rewrite_session),
-        patch("lilbee.cli.commands.launch._wait_for_health", return_value=True),
-        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.health_ok", return_value=False),
+        patch("lilbee.cli.launchers.server.spawn_server", side_effect=_spawn_and_rewrite_session),
+        patch("lilbee.cli.launchers.server.wait_for_health", return_value=True),
+        patch("lilbee.cli.launchers.server.free_port", return_value=_PORT),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
 
@@ -133,33 +133,33 @@ def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_pa
 
 @pytest.mark.no_health_default
 def test_health_ok_returns_false_on_connection_error(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     def _boom(url, timeout):
         raise launch_mod.httpx.HTTPError("refused")
 
     monkeypatch.setattr(launch_mod.httpx, "get", _boom)
-    assert launch_mod._health_ok(8765) is False
+    assert launch_mod.health_ok(8765) is False
 
 
 @pytest.mark.no_health_default
 def test_health_ok_returns_true_on_200(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     resp = MagicMock()
     resp.status_code = 200
     monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
-    assert launch_mod._health_ok(8765) is True
+    assert launch_mod.health_ok(8765) is True
 
 
 @pytest.mark.no_health_default
 def test_health_ok_returns_false_on_non_200(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     resp = MagicMock()
     resp.status_code = 503
     monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
-    assert launch_mod._health_ok(8765) is False
+    assert launch_mod.health_ok(8765) is False
 
 
 def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):
@@ -167,8 +167,8 @@ def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -186,8 +186,8 @@ def test_launch_opencode_skips_skill_install_when_already_present(tmp_path):
     custom = existing_dir / "SKILL.md"
     custom.write_text("user customization")
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -199,9 +199,9 @@ def test_launch_opencode_updates_picker_state_on_unix(tmp_path):
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "darwin"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -230,9 +230,9 @@ def test_launch_opencode_picker_state_dedupes_prior_lilbee_entries(tmp_path):
         )
     )
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "linux"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "linux"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -247,9 +247,9 @@ def test_launch_opencode_skips_picker_state_on_windows(tmp_path):
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "win32"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "win32"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -265,9 +265,9 @@ def test_launch_opencode_picker_state_recovers_from_corrupt_file(tmp_path):
     state_path.parent.mkdir(parents=True)
     state_path.write_text("not json{{")
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "darwin"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -283,9 +283,9 @@ def test_launch_opencode_picker_state_ignores_non_dict_root(tmp_path):
     state_path.parent.mkdir(parents=True)
     state_path.write_text(json.dumps(["unexpected", "shape"]))
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "darwin"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -299,10 +299,10 @@ def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
-        patch("lilbee.cli.commands.launch.sys.platform", "darwin"),
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
-        patch("lilbee.cli.commands.launch.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
     ):
         runner.invoke(app, ["launch", "opencode"])
 
@@ -321,11 +321,11 @@ def test_launch_opencode_spawns_server_when_none_running():
         return fake_proc
 
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch._spawn_server", side_effect=_spawn_and_write),
-        patch("lilbee.cli.commands.launch._wait_for_health", return_value=True),
-        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.server.spawn_server", side_effect=_spawn_and_write),
+        patch("lilbee.cli.launchers.server.wait_for_health", return_value=True),
+        patch("lilbee.cli.launchers.server.free_port", return_value=_PORT),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
 
@@ -333,38 +333,15 @@ def test_launch_opencode_spawns_server_when_none_running():
     fake_proc.terminate.assert_called_once()
 
 
-def test_launch_opencode_keep_serving_skips_terminate():
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    fake_proc = MagicMock()
-    fake_proc.poll.return_value = None
-
-    def _spawn_and_write(_port: int):
-        _write_server_session()
-        return fake_proc
-
-    with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch._spawn_server", side_effect=_spawn_and_write),
-        patch("lilbee.cli.commands.launch._wait_for_health", return_value=True),
-        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
-    ):
-        result = runner.invoke(app, ["launch", "opencode", "--keep-serving"])
-
-    assert result.exit_code == 0
-    fake_proc.terminate.assert_not_called()
-
-
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
     fake_opencode = "/usr/local/bin/opencode"
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch._spawn_server", return_value=fake_proc),
-        patch("lilbee.cli.commands.launch._wait_for_health", return_value=False),
-        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.server.spawn_server", return_value=fake_proc),
+        patch("lilbee.cli.launchers.server.wait_for_health", return_value=False),
+        patch("lilbee.cli.launchers.server.free_port", return_value=_PORT),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
@@ -378,10 +355,10 @@ def test_launch_opencode_health_ok_but_session_missing_exits_1():
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch._spawn_server", return_value=fake_proc),
-        patch("lilbee.cli.commands.launch._wait_for_health", return_value=True),
-        patch("lilbee.cli.commands.launch._free_port", return_value=_PORT),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.server.spawn_server", return_value=fake_proc),
+        patch("lilbee.cli.launchers.server.wait_for_health", return_value=True),
+        patch("lilbee.cli.launchers.server.free_port", return_value=_PORT),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
@@ -390,72 +367,75 @@ def test_launch_opencode_health_ok_but_session_missing_exits_1():
 
 
 def test_free_port_returns_open_port():
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
-    port = launch_mod._free_port()
+    port = launch_mod.free_port()
     assert 1024 < port < 65536
 
 
+@pytest.mark.no_health_default
 def test_wait_for_health_returns_true_on_200(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     resp = MagicMock()
     resp.status_code = 200
     monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
-    assert launch_mod._wait_for_health(8765, timeout_s=1.0) is True
+    assert launch_mod.wait_for_health(8765, timeout_s=1.0) is True
 
 
+@pytest.mark.no_health_default
 def test_wait_for_health_swallows_http_errors_until_timeout(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     def _boom(url, timeout):
         raise launch_mod.httpx.HTTPError("connection refused")
 
     monkeypatch.setattr(launch_mod.httpx, "get", _boom)
     monkeypatch.setattr(launch_mod.time, "sleep", lambda _seconds: None)
-    assert launch_mod._wait_for_health(8765, timeout_s=0.05) is False
+    assert launch_mod.wait_for_health(8765, timeout_s=0.05) is False
 
 
+@pytest.mark.no_health_default
 def test_wait_for_health_returns_false_on_non_200(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     resp = MagicMock()
     resp.status_code = 503
     monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
     monkeypatch.setattr(launch_mod.time, "sleep", lambda _seconds: None)
-    assert launch_mod._wait_for_health(8765, timeout_s=0.05) is False
+    assert launch_mod.wait_for_health(8765, timeout_s=0.05) is False
 
 
 def test_spawn_server_returns_popen(monkeypatch):
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     fake = MagicMock()
     monkeypatch.setattr(launch_mod.subprocess, "Popen", lambda *a, **k: fake)
-    out = launch_mod._spawn_server(8765)
+    out = launch_mod.spawn_server(8765)
     assert out is fake
 
 
 def test_stop_spawned_server_kills_on_terminate_timeout():
     import subprocess as _subprocess
 
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
     fake_proc.wait.side_effect = [_subprocess.TimeoutExpired(cmd="x", timeout=10), None]
 
-    launch_mod._stop_spawned_server(fake_proc)
+    launch_mod.stop_spawned_server(fake_proc)
 
     fake_proc.terminate.assert_called_once()
     fake_proc.kill.assert_called_once()
 
 
 def test_stop_spawned_server_noop_when_process_already_exited():
-    from lilbee.cli.commands import launch as launch_mod
+    from lilbee.cli.launchers import server as launch_mod
 
     fake_proc = MagicMock()
     fake_proc.poll.return_value = 0
-    launch_mod._stop_spawned_server(fake_proc)
+    launch_mod.stop_spawned_server(fake_proc)
     fake_proc.terminate.assert_not_called()
 
 
@@ -464,8 +444,8 @@ def test_launch_opencode_propagates_opencode_exit_code():
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=42)
     with (
-        patch("lilbee.cli.commands.launch.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.commands.launch.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 42

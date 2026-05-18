@@ -49,6 +49,7 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseBlock,
     ToolUseDelta,
 )
+from lilbee.server.chat_dispatch.dispatch import parse_tool_arguments
 
 _TOOL_CHOICE_MODES: dict[ToolChoiceMode, Literal["auto", "any", "none"]] = {
     ToolChoiceMode.AUTO: "auto",
@@ -250,7 +251,7 @@ def _message_from_request(msg: CompletionsMessage) -> CanonicalMessage:
             ToolUseBlock(
                 id=call.id,
                 name=call.function.name,
-                input=_parse_arguments(call.function.arguments),
+                input=parse_tool_arguments(call.function.arguments),
             )
         )
     return CanonicalMessage(role=role, content=blocks)
@@ -285,16 +286,6 @@ def _image_from_request(image_url: CompletionsImageUrl) -> ImageBlock:
         media_type = header.removeprefix("data:").partition(";")[0] or "image/png"
         return ImageBlock(media_type=media_type, data=base64.b64decode(b64))
     return ImageBlock(media_type="image/url", data=url.encode())
-
-
-def _parse_arguments(raw: str) -> dict:
-    try:
-        parsed = json.loads(raw) if raw else {}
-    except (TypeError, ValueError):
-        return {"_raw": raw}
-    if not isinstance(parsed, dict):
-        return {"_raw": raw}
-    return parsed
 
 
 def _response_tool_call(block: ToolUseBlock) -> CompletionsResponseToolCall:

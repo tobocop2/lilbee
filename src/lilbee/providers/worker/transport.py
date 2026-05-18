@@ -66,17 +66,7 @@ class FinishReason(StrEnum):
 
 @dataclass(frozen=True)
 class ChatRequest:
-    """Pickle-friendly chat request that crosses the parent->worker pipe.
-
-    ``messages`` is the standard chat message list (content may be a string
-    or a list of content blocks for multimodal / tool-use turns). ``stream``
-    decides between single-result and chunked replies. ``options`` is the
-    post-``filter_options`` kwarg dict the worker forwards to
-    ``create_chat_completion``. ``model`` triggers a transparent reload
-    inside the worker if it differs from the role-config model. ``tools``
-    and ``tool_choice`` carry OpenAI-shaped tool definitions when the
-    caller wants the model to be able to emit tool calls.
-    """
+    """Chat request that crosses the parent->worker pipe."""
 
     messages: list[dict[str, Any]]
     stream: bool = False
@@ -88,11 +78,7 @@ class ChatRequest:
 
 @dataclass(frozen=True)
 class ToolCall:
-    """One tool-call emitted by the model.
-
-    ``arguments`` is the raw JSON string the model produced; validation
-    against the tool's schema is the caller's job.
-    """
+    """One tool-call emitted by the model; ``arguments`` is the raw JSON string."""
 
     id: str
     name: str
@@ -101,13 +87,7 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatResult:
-    """Structured result from a non-streaming chat call.
-
-    ``text`` is the assistant's textual reply (possibly empty when the
-    turn was a pure tool-call). ``tool_calls`` is an immutable tuple so
-    the result is hashable and pickle-friendly. ``finish_reason`` is the
-    OpenAI-shaped completion reason.
-    """
+    """Structured result from a non-streaming chat call."""
 
     text: str
     tool_calls: tuple[ToolCall, ...]
@@ -116,12 +96,7 @@ class ChatResult:
 
 @dataclass(frozen=True)
 class ToolCallDelta:
-    """Partial tool-call delta in a streaming response.
-
-    Multiple deltas for the same ``index`` accumulate into one final
-    tool call: ``id`` and ``name`` arrive on the first delta for an
-    index; ``arguments_delta`` is the per-frame JSON fragment.
-    """
+    """Partial tool-call delta in a streaming response, accumulated by ``index``."""
 
     index: int
     id: str | None
@@ -130,7 +105,7 @@ class ToolCallDelta:
 
 
 ChatStreamItem = str | ToolCallDelta
-"""One frame yielded by a streaming chat call: a text token or a tool-call delta."""
+"""One frame yielded by a streaming chat call: text token or tool-call delta."""
 
 
 @dataclass(frozen=True)

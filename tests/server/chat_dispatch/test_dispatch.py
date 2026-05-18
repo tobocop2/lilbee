@@ -152,6 +152,19 @@ class TestDispatchChat:
         tool_blocks = [b for b in resp.content if isinstance(b, ToolUseBlock)]
         assert tool_blocks[0].input == {"_raw": "not json{"}
 
+    def test_empty_tool_arguments_parse_to_empty_dict(self, services_with_model) -> None:
+        services_with_model.provider.supports_tools.return_value = True
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="",
+            tool_calls=(ToolCall(id="c1", name="search", arguments=""),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        )
+        resp = dispatch_chat(
+            _req(tools=[CanonicalTool(name="search", description="", input_schema={})])
+        )
+        tool_blocks = [b for b in resp.content if isinstance(b, ToolUseBlock)]
+        assert tool_blocks[0].input == {}
+
     def test_unknown_model_raises_model_not_found(self, services_with_model) -> None:
         with pytest.raises(ModelNotFoundError) as exc_info:
             dispatch_chat(_req(model="missing/model::Q4"))
@@ -162,14 +175,6 @@ class TestDispatchChat:
         with pytest.raises(ModelDoesNotSupportToolsError) as exc_info:
             dispatch_chat(_req(tools=[CanonicalTool(name="x", description="", input_schema={})]))
         assert exc_info.value.model == "vendor/model::Q4"
-
-    def test_string_provider_result_is_normalized_to_chat_result(self, services_with_model) -> None:
-        # Older provider impls return a bare str; the dispatcher must
-        # tolerate that without losing the stop-reason semantics.
-        services_with_model.provider.chat.return_value = "plain"
-        resp = dispatch_chat(_req())
-        assert resp.content == [TextBlock(text="plain")]
-        assert resp.stop_reason == StopReason.END_TURN
 
     def test_system_prompt_is_forwarded_as_system_message(self, services_with_model) -> None:
         dispatch_chat(_req(system="be terse"))

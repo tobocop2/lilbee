@@ -6,16 +6,14 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from enum import StrEnum
 from typing import Any, cast
 
 from lilbee.app.services import get_services
-from lilbee.providers.worker.transport import (
-    ChatResult,
-    FinishReason,
-    ToolCallDelta,
-)
+from lilbee.providers.worker.transport import FinishReason, ToolCallDelta
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
+    CanonicalMessage,
     CanonicalResponse,
     CanonicalStreamEvent,
     CanonicalTool,
@@ -36,6 +34,23 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseDelta,
 )
 from lilbee.server.chat_dispatch.capability import model_supports_tools
+
+
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Turn an OpenAI tool-call ``arguments`` JSON string into a dict.
+
+    Falls back to ``{"_raw": raw}`` when the model produces malformed JSON or
+    a non-object value; the canonical layer holds invariants that the route
+    layer would otherwise have to defend.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {"_raw": raw}
+    return parsed if isinstance(parsed, dict) else {"_raw": raw}
+
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +85,12 @@ _TOOL_CHOICE_MODES: dict[str, str] = {
 }
 
 
+class _OpenBlockKind(StrEnum):
+    NONE = "none"
+    TEXT = "text"
+    TOOL = "tool"
+
+
 def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
     """Run a non-streaming chat request through the provider and return canonical output."""
     _ensure_model_known(req.model)
@@ -83,9 +104,6 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
         tools=_provider_tools(req.tools),
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
-    if isinstance(result, str):
-        result = ChatResult(text=result, tool_calls=(), finish_reason=FinishReason.STOP)
-
     content: list[ContentBlock] = []
     if result.text:
         content.append(TextBlock(text=result.text))
@@ -94,7 +112,7 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
             ToolUseBlock(
                 id=call.id or _new_call_id(),
                 name=call.name,
-                input=_parse_json_args(call.arguments),
+                input=parse_tool_arguments(call.arguments),
             )
         )
 
@@ -146,12 +164,8 @@ async def dispatch_chat_stream(
 class _StreamState:
     """Tracks open content blocks so deltas land in the right index."""
 
-    _NO_BLOCK = "none"
-    _TEXT_BLOCK = "text"
-    _TOOL_BLOCK = "tool"
-
     def __init__(self) -> None:
-        self._open: str = self._NO_BLOCK
+        self._open: _OpenBlockKind = _OpenBlockKind.NONE
         self._index: int = -1
         self._tool_index: int | None = None
         self._stop_reason: StopReason = StopReason.END_TURN
@@ -163,26 +177,26 @@ class _StreamState:
             yield from self._feed_tool(frame)
 
     def finish(self) -> Iterator[CanonicalStreamEvent]:
-        if self._open != self._NO_BLOCK:
+        if self._open != _OpenBlockKind.NONE:
             yield ContentBlockStop(index=self._index)
-            self._open = self._NO_BLOCK
+            self._open = _OpenBlockKind.NONE
         yield MessageDelta(stop_reason=self._stop_reason)
 
     def _feed_text(self, text: str) -> Iterator[CanonicalStreamEvent]:
-        if self._open != self._TEXT_BLOCK:
+        if self._open != _OpenBlockKind.TEXT:
             yield from self._close_current()
             self._index += 1
-            self._open = self._TEXT_BLOCK
+            self._open = _OpenBlockKind.TEXT
             yield ContentBlockStart(index=self._index, block=TextBlock(text=""))
         yield ContentBlockDelta(index=self._index, delta=TextDelta(text=text))
 
     def _feed_tool(self, frame: ToolCallDelta) -> Iterator[CanonicalStreamEvent]:
         self._stop_reason = StopReason.TOOL_USE
-        is_new_call = self._open != self._TOOL_BLOCK or frame.index != self._tool_index
+        is_new_call = self._open != _OpenBlockKind.TOOL or frame.index != self._tool_index
         if is_new_call:
             yield from self._close_current()
             self._index += 1
-            self._open = self._TOOL_BLOCK
+            self._open = _OpenBlockKind.TOOL
             self._tool_index = frame.index
             yield ContentBlockStart(
                 index=self._index,
@@ -199,9 +213,9 @@ class _StreamState:
             )
 
     def _close_current(self) -> Iterator[CanonicalStreamEvent]:
-        if self._open != self._NO_BLOCK:
+        if self._open != _OpenBlockKind.NONE:
             yield ContentBlockStop(index=self._index)
-            self._open = self._NO_BLOCK
+            self._open = _OpenBlockKind.NONE
 
 
 def _ensure_model_known(model: str) -> None:
@@ -226,7 +240,7 @@ def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
     return out
 
 
-def _translate_message(msg: Any) -> list[dict[str, Any]]:
+def _translate_message(msg: CanonicalMessage) -> list[dict[str, Any]]:
     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
     tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
     tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
@@ -310,14 +324,6 @@ def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
     if req.stop is not None:
         out["stop"] = req.stop
     return out or None
-
-
-def _parse_json_args(raw: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return {"_raw": raw}
-    return parsed if isinstance(parsed, dict) else {"_raw": raw}
 
 
 def _new_call_id() -> str:
