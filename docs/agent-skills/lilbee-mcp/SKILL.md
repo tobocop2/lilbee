@@ -103,7 +103,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 ```
 lilbee_status                           # confirm a library exists
-lilbee_search(query, top_k=8)           # one or two distinct noun-phrase queries
+lilbee_search(query)                    # top_k defaults to cfg.top_k (12)
 answer with file:line citations
 ```
 

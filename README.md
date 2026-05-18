@@ -55,8 +55,10 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
-- **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI.
-- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. See [Agent integration](#agent-integration).
+- **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
+- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also *fine-tune lilbee on the fly* via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface — every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
+
+**Fine-tuning is a first-class capability.** Defaults are sane and balanced for the common cases: chatting with your code, with code documentation, with crawled websites, and with long-form PDFs (manuals, ebooks, research papers). Every retrieval setting is writable — through the TUI Settings screen, `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When the answer feels thin (or noisy), the right knob to move is usually `top_k`, `max_distance`, or `diversity_max_per_source`. The agent integration above lets a coding agent move them for you while you stay in chat.
 
 CLI commands, the HTTP API, environment variables, and `config.toml` are also there as reference for scripting, headless runs, and custom integrations; you should not need them for everyday use. See the [usage guide](docs/usage.md).
 
@@ -64,13 +66,19 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 
 ## Highlights
 
-- **One program, one install.** A model catalog, a search over your own files and code, and a chat. The same executable is also a CLI, a Textual TUI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library (Python library reference is coming; for now the source under `src/lilbee/` is the canonical reference). No background daemon, no separate inference server, no vector database to stand up.
-- **Answers cite the source line.** Ask a question; get a reply with clickable citations pointing back to the exact line they came from.
-- **Bring your own files.** PDFs, Office files, ebooks, code in 150+ languages, scanned pages and photos (OCR), and crawled docs sites turned into searchable markdown.
-- **A built-in model catalog.** Browse and pull models straight from Hugging Face Hub, from inside the app. lilbee is the model runtime; no hunting for files yourself.
-- **Runs on your computer.** Models, index, and files all stay local. lilbee uses a cloud model only when you pick one, and flags it when it does.
-- **Per-project libraries.** Run globally, or drop a `.lilbee/` next to `.git/` the way git does; each domain stays its own clean library.
-- **Agents can tune lilbee themselves.** Every writable setting is exposed over MCP, so a coding agent can pick models, pull them, wire them into the embedding / reranker / vision roles, and widen retrieval for the shape of what's indexed without you leaving the chat. [See the agent: self-tune demo](#let-the-agent-set-up-lilbee-for-you).
+One install gets you a TUI, a CLI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library. No daemon, no inference server, no vector database to stand up.
+
+Answers cite the source line. Click a citation, jump to the file at the exact line.
+
+Throw anything at it: PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), crawled docs sites.
+
+Pull models from Hugging Face inside the app. Pick something, it downloads, it's ready.
+
+Everything stays local unless you opt into a cloud model. When you do, lilbee flags it.
+
+Run globally, or drop a `.lilbee/` next to `.git/` to keep a project's library separate from your other stuff.
+
+Agents can tune lilbee themselves over MCP — swap models, widen retrieval, rebuild the index, all without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
 
 ## Why lilbee
 
