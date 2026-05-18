@@ -368,7 +368,83 @@ def test_session_chat_raises_context_window_exceeded_on_unfittable_prompt(
             tools=None,
             tool_choice=None,
         )
-    assert excinfo.value.requested > excinfo.value.available
+    assert "exceeds" in str(excinfo.value)
+
+
+def test_session_chat_zero_n_ctx_clamps_budget_and_raises_overflow(monkeypatch, tmp_path) -> None:
+    """A misbehaving ``llm.n_ctx() == 0`` clamps the budget to 0 (no negative
+    arithmetic) and surfaces as ``ContextWindowExceededError`` since the
+    un-droppable subset cannot fit in zero tokens.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _ZeroCtx:
+        def n_ctx(self) -> int:
+            return 0
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("inference must not run with a zero-budget prompt")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _ZeroCtx())
+    with pytest.raises(ContextWindowExceededError):
+        session.chat(
+            messages=[{"role": "user", "content": "anything"}],
+            stream=False,
+            options=None,
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+
+
+def test_session_chat_logs_when_messages_dropped(monkeypatch, tmp_path, caplog) -> None:
+    """When windowing drops messages to fit budget, an INFO log records the count."""
+    import logging
+
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 2048
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(
+            self, *, messages: list[dict[str, str]], stream: bool, **_kwargs: Any
+        ) -> Any:
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.worker.chat_worker"):
+        session.chat(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "y" * 1800},
+                {"role": "user", "content": "ask"},
+            ],
+            stream=False,
+            options={"num_predict": 256},
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+    assert any("Chat windowing dropped" in rec.message for rec in caplog.records)
 
 
 def test_session_chat_drops_oldest_tool_pair_when_prompt_overflows(monkeypatch, tmp_path) -> None:

@@ -8,7 +8,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, NoReturn, cast, overload
 
 from lilbee.app.services import get_services
 from lilbee.catalog import is_rerank_ref
@@ -148,14 +148,8 @@ class LlamaCppProvider(LLMProvider):
         self._registered_roles: set[WorkerRole] = set()
 
     @staticmethod
-    def _raise_chat_worker_error(exc: WorkerError) -> None:
-        """Translate a worker-side chat error into the right parent-side exception.
-
-        ``ContextWindowExceededError`` from the worker survives the wire as
-        a ``WorkerError`` with that class name; rebuild the typed exception
-        so the route layer can surface a ``context_length_exceeded`` 400.
-        Every other ``WorkerError`` becomes a generic ``ProviderError``.
-        """
+    def _raise_chat_worker_error(exc: WorkerError) -> NoReturn:
+        """Translate a worker-side chat error into the right parent-side exception."""
         if exc.original_type == "ContextWindowExceededError":
             raise ContextWindowExceededError(str(exc).split(": ", 1)[-1]) from exc
         raise ProviderError(
@@ -461,7 +455,6 @@ class LlamaCppProvider(LLMProvider):
                 )
         except WorkerError as exc:
             self._raise_chat_worker_error(exc)
-            raise  # _raise_chat_worker_error always raises; satisfy type-checker
         except TimeoutError as exc:
             raise ProviderError(
                 "Chat worker timed out. Please try again.",
@@ -646,7 +639,6 @@ class _PoolChatStreamIterator:
         except WorkerError as exc:
             self._exhausted = True
             LlamaCppProvider._raise_chat_worker_error(exc)
-            raise  # _raise_chat_worker_error always raises; satisfy type-checker
 
     def __next__(self) -> ChatStreamItem:
         if self._exhausted:
@@ -666,7 +658,6 @@ class _PoolChatStreamIterator:
             # everything else as a generic ProviderError.
             self._exhausted = True
             LlamaCppProvider._raise_chat_worker_error(exc)
-            raise  # _raise_chat_worker_error always raises; satisfy type-checker
         except TimeoutError as exc:
             self._exhausted = True
             raise ProviderError(

@@ -24,13 +24,10 @@ from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_w
 
 log = logging.getLogger(__name__)
 
-# Reserved tokens for the model's response when the caller doesn't set
-# ``num_predict``. Conservative so the model has room to produce a full
-# answer (typical tool-using turns produce 256-768 tokens of reply).
+# Reserved tokens for the model's response when the caller omits ``num_predict``.
 _DEFAULT_RESPONSE_BUDGET = 1024
 
-# Token safety margin between count-time and inference-time to absorb chat-
-# template overhead and tokenizer drift around special tokens.
+# Tokenizer-drift cushion between count-time and inference-time.
 _CTX_SAFETY_MARGIN = 64
 
 _ABORT_BRIDGE_POLL_S = 0.025
@@ -100,15 +97,9 @@ class _ChatSession:
         options: dict[str, Any] | None,
         llm: Any,
     ) -> list[dict[str, Any]]:
-        """Trim *messages* to fit the loaded model's context window.
-
-        Raises :class:`ContextWindowExceededError` when the un-droppable
-        subset (system + the trailing user message) alone exceeds the
-        budget. Returns the original message list unchanged when it
-        already fits.
-        """
+        """Trim *messages* to fit the loaded model's context window."""
         reserved = (options or {}).get("num_predict") or _DEFAULT_RESPONSE_BUDGET
-        budget = int(llm.n_ctx()) - int(reserved) - _CTX_SAFETY_MARGIN
+        budget = max(0, int(llm.n_ctx()) - int(reserved) - _CTX_SAFETY_MARGIN)
         outcome = window_messages_to_budget(
             messages,
             budget=budget,

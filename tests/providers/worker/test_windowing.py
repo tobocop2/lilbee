@@ -58,6 +58,28 @@ class TestCountMessageTokens:
         # "search" = 6 bytes, '{"q": "x"}' = 10 bytes, overhead = 4
         assert count_message_tokens(msg, _bytes_tokenizer) == 6 + 10 + 4
 
+    def test_skips_non_dict_tool_call_entries(self) -> None:
+        """Malformed tool_calls list items (non-dict) don't break counting."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                "not a dict",
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ],
+        }
+        assert count_message_tokens(msg, _bytes_tokenizer) == 1 + 2 + 4  # "x" + "{}" + overhead
+
+    def test_counts_dict_shaped_arguments(self) -> None:
+        """``arguments`` already parsed as a dict serialises to JSON for the count."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": {"q": "x"}}}],
+        }
+        # "f" (1) + json.dumps({"q":"x"}) (10) + overhead (4) = 15
+        assert count_message_tokens(msg, _bytes_tokenizer) == 1 + 10 + 4
+
 
 class TestWindowMessagesToBudget:
     def test_returns_unchanged_when_under_budget(self) -> None:
@@ -98,14 +120,13 @@ class TestWindowMessagesToBudget:
         assert all("tool_calls" not in m for m in outcome.messages if m["role"] == "assistant")
 
     def test_drops_oldest_user_assistant_when_no_tool_pairs(self) -> None:
-        """Without tool pairs, drop oldest user/assistant exchanges first."""
+        """Without tool pairs, drop the OLDEST user/assistant exchange first."""
         msgs = [
             _sys(),
             _user("old question"),
             _assistant_text("old answer"),
             _user("new question"),
         ]
-        # Trim just enough to force one drop.
         total = sum(count_message_tokens(m, _bytes_tokenizer) for m in msgs)
         smallest_droppable = count_message_tokens(msgs[1], _bytes_tokenizer)
         outcome = window_messages_to_budget(
@@ -115,6 +136,9 @@ class TestWindowMessagesToBudget:
         assert outcome.dropped >= 1
         assert outcome.messages[0]["role"] == "system"
         assert outcome.messages[-1]["content"] == "new question"
+        # The OLDEST exchange is the one that's gone.
+        remaining_contents = [m["content"] for m in outcome.messages]
+        assert "old question" not in remaining_contents
 
     def test_overflow_when_only_keep_set_exceeds_budget(self) -> None:
         """If system + last user message alone exceeds budget, overflow."""
@@ -153,6 +177,13 @@ class TestWindowMessagesToBudget:
         ]
         assert "c1" not in remaining_tool_ids
         assert "c2" in remaining_tool_ids
+
+    def test_handles_messages_with_no_user_message(self) -> None:
+        """An odd request without a user message still trims via the no-in-flight branch."""
+        msgs = [_sys(), _assistant_text("only assistant"), _assistant_text("filler" * 200)]
+        outcome = window_messages_to_budget(msgs, budget=30, tokenize=_bytes_tokenizer)
+        # Trimmed at least one assistant message.
+        assert outcome.messages is None or outcome.dropped >= 1
 
 
 class TestWindowingOutcome:

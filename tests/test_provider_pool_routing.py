@@ -239,6 +239,28 @@ def test_chat_pool_context_overflow_reraises_as_typed_exception(monkeypatch, tmp
         provider.shutdown()
 
 
+def test_chat_pool_other_worker_errors_still_raise_provider_error(monkeypatch, tmp_path) -> None:
+    """Non-context-overflow ``WorkerError`` keeps the legacy contract: surfaces
+    as a generic ``ProviderError``, not as ``ContextWindowExceededError``.
+    """
+    from lilbee.providers.base import ContextWindowExceededError, ProviderError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("ValueError", "some other failure", "")
+    )
+    try:
+        with pytest.raises(ProviderError) as excinfo:
+            provider.chat([{"role": "user", "content": "x"}])
+        # The catch-all branch must NOT promote a random worker error to
+        # the typed context-window exception.
+        assert not isinstance(excinfo.value, ContextWindowExceededError)
+        assert "Chat worker" in str(excinfo.value)
+    finally:
+        provider.shutdown()
+
+
 def test_embed_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool ``TimeoutError`` must surface as ProviderError instead of leaking raw."""
     from lilbee.providers.base import ProviderError

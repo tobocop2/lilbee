@@ -7,17 +7,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-# Roles used by /v1/chat/completions wire format. Constants prevent typos
-# from silently breaking pair-matching.
-_SYSTEM = "system"
 _USER = "user"
 _ASSISTANT = "assistant"
 _TOOL = "tool"
 
-# Conservative per-message overhead the chat template adds around every
-# message (role markers, separators). Slightly over-estimating is fine: it
-# only widens the safety margin against tokenizer drift between count-time
-# and inference-time.
+# Per-message overhead from chat-template role markers + separators.
 _PER_MESSAGE_OVERHEAD = 4
 
 Tokenizer = Callable[[bytes], list[int]]
@@ -111,8 +105,6 @@ def window_messages_to_budget(
     for idx in droppable_idx:
         if total <= budget:
             break
-        if not keep[idx]:
-            continue
         keep[idx] = False
         total -= counts[idx]
 
