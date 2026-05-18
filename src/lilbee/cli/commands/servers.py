@@ -20,7 +20,8 @@ if TYPE_CHECKING:
     import uvicorn
 
 
-def _port_file() -> Path:
+def port_file() -> Path:
+    """Path to the running server's port file under ``cfg.data_dir``."""
     return cfg.data_dir / "server.port"
 
 
@@ -30,7 +31,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
 
     from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
 
-    port_path = _port_file()
+    port_path = port_file()
 
     def _cleanup_port_file() -> None:
         port_path.unlink(missing_ok=True)

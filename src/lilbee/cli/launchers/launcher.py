@@ -7,8 +7,11 @@ from typing import Protocol
 
 import typer
 
-from lilbee.cli.commands.agent_config import installed_chat_model_refs
-from lilbee.cli.launchers.server import ensure_server_running, stop_spawned_server
+from lilbee.cli.launchers.server import (
+    ensure_server_running,
+    installed_chat_model_refs,
+    stop_spawned_server,
+)
 
 
 class Launcher(Protocol):

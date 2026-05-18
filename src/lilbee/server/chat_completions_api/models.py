@@ -7,12 +7,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-
-class FinishReason(StrEnum):
-    STOP = "stop"
-    LENGTH = "length"
-    TOOL_CALLS = "tool_calls"
-    CONTENT_FILTER = "content_filter"
+# Wire layer reuses the provider-layer enum so the two can never drift.
+from lilbee.providers.worker.transport import FinishReason as FinishReason
 
 
 class ToolChoiceMode(StrEnum):

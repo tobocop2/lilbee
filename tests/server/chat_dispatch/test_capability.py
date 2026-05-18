@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app.services import set_services
+from lilbee.providers.base import ProviderError
 from lilbee.server.chat_dispatch.capability import model_supports_tools
 
 pytestmark = pytest.mark.usefixtures("_isolated_services")
@@ -40,8 +41,21 @@ def test_model_supports_tools_returns_false_when_provider_says_no(
 def test_model_supports_tools_returns_false_on_provider_error(
     _isolated_services,
 ) -> None:
-    # A misbehaving provider must not crash the dispatch layer; the safe
-    # default is "no tools" so callers surface a clean error instead of
-    # exposing the backend exception to clients.
-    _isolated_services.supports_tools.side_effect = RuntimeError("backend down")
+    # ProviderError from the probe (model file unavailable, backend down) is
+    # the safe-default-False path so callers see a clean 400, not a 500.
+    # Other exceptions are intentionally NOT caught here; see capability.py.
+    _isolated_services.supports_tools.side_effect = ProviderError(
+        "backend down", provider="llama-cpp"
+    )
     assert model_supports_tools("nonexistent/model::Q4") is False
+
+
+def test_model_supports_tools_propagates_unexpected_exceptions(
+    _isolated_services,
+) -> None:
+    # A non-ProviderError bug in the provider must surface as a 500, not be
+    # silently downgraded to "no tools". Documents the intentional narrowing
+    # of the except clause in capability.py.
+    _isolated_services.supports_tools.side_effect = RuntimeError("genuine bug")
+    with pytest.raises(RuntimeError, match="genuine bug"):
+        model_supports_tools("nonexistent/model::Q4")

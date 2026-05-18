@@ -40,8 +40,11 @@ from lilbee.server.chat_dispatch.canonical import (
     ContentBlock,
     ContentBlockDelta,
     ContentBlockStart,
+    ContentBlockStop,
     ImageBlock,
     MessageDelta,
+    MessageStart,
+    MessageStop,
     StopReason,
     TextBlock,
     TextDelta,
@@ -49,7 +52,7 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseBlock,
     ToolUseDelta,
 )
-from lilbee.server.chat_dispatch.dispatch import parse_tool_arguments
+from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
 _TOOL_CHOICE_MODES: dict[ToolChoiceMode, Literal["auto", "any", "none"]] = {
     ToolChoiceMode.AUTO: "auto",
@@ -203,6 +206,13 @@ async def canonical_stream_to_completions_chunks(
                 CompletionsStreamDelta(),
                 finish_reason=_finish_reason_for(event),
             )
+        elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
+            # OpenAI's wire format has no equivalent for these canonical events:
+            # MessageStart carries metadata we already encoded in the chunk header,
+            # ContentBlockStop is implicit (the next block opens), and MessageStop
+            # is replaced by the final chunk's finish_reason. Explicit branch so
+            # a new event type added later forces a translation decision.
+            continue
 
 
 def _chunk(

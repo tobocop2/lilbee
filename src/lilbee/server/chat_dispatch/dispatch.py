@@ -7,7 +7,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from lilbee.app.services import get_services
 from lilbee.providers.worker.transport import FinishReason, ToolCallDelta
@@ -34,23 +34,7 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseDelta,
 )
 from lilbee.server.chat_dispatch.capability import model_supports_tools
-
-
-def parse_tool_arguments(raw: str) -> dict[str, Any]:
-    """Turn an OpenAI tool-call ``arguments`` JSON string into a dict.
-
-    Falls back to ``{"_raw": raw}`` when the model produces malformed JSON or
-    a non-object value; the canonical layer holds invariants that the route
-    layer would otherwise have to defend.
-    """
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return {"_raw": raw}
-    return parsed if isinstance(parsed, dict) else {"_raw": raw}
-
+from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +62,10 @@ _FINISH_REASON_TO_STOP: dict[FinishReason, StopReason] = {
     FinishReason.CONTENT_FILTER: StopReason.END_TURN,
 }
 
-_TOOL_CHOICE_MODES: dict[str, str] = {
+_CanonicalChoiceMode = Literal["auto", "any", "none"]
+_ProviderChoiceMode = Literal["auto", "required", "none"]
+
+_TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
     "auto": "auto",
     "any": "required",
     "none": "none",

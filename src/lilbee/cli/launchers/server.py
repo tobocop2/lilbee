@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import socket
@@ -12,12 +13,17 @@ import time
 import httpx
 import typer
 
+from lilbee.app.services import get_services
+from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
-from lilbee.cli.commands.agent_config import running_server_session
+from lilbee.cli.commands.servers import port_file
+from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
 
-_LOCAL_HOST = "127.0.0.1"
+LOOPBACK = "127.0.0.1"
+"""Loopback address used for launcher-spawned sessions and the URLs we hand to clients."""
+
 _SERVER_BOOT_TIMEOUT_S = 60.0
 _SERVER_POLL_INTERVAL_S = 0.5
 _HEALTH_PROBE_TIMEOUT_S = 2.0
@@ -26,17 +32,40 @@ _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
 
 
+def running_server_session() -> tuple[str, int] | None:
+    """Return ``(token, port)`` for a server already running on this machine, else None."""
+    session_path = server_json_path()
+    port_path = port_file()
+    if not session_path.exists() or not port_path.exists():
+        return None
+    try:
+        data = json.loads(session_path.read_text(encoding="utf-8"))
+        token = data.get("token")
+        port = int(port_path.read_text(encoding="utf-8").strip())
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(token, str) or not token:
+        return None
+    return token, port
+
+
+def installed_chat_model_refs() -> list[str]:
+    """Return sorted refs for every chat-task model in the registry."""
+    registry = get_services().registry
+    return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+
+
 def free_port() -> int:
     """Return an unused TCP port on the loopback interface."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((_LOCAL_HOST, 0))
+        s.bind((LOOPBACK, 0))
         return int(s.getsockname()[1])
 
 
 def health_ok(port: int) -> bool:
     """Single-shot ``/api/health`` probe; True iff a 200 comes back fast."""
     try:
-        resp = httpx.get(f"http://{_LOCAL_HOST}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
+        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
     except httpx.HTTPError:
         return False
     return resp.status_code == _HTTP_OK

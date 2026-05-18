@@ -8,7 +8,7 @@ import dataclasses
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
@@ -328,7 +328,7 @@ def _text_from_event(event: Any) -> str:
     return ""
 
 
-def _retrieval_skipped(question: str) -> bool:
+def _retrieval_skipped() -> bool:
     """Re-derive whether retrieval would have run; mirrors ``Searcher.ask_raw`` branches."""
     services = get_services()
     if cfg.chat_mode == ChatMode.CHAT.value:
@@ -349,7 +349,7 @@ def _build_chat_messages(
     ``Searcher.build_rag_context``.
     """
     services = get_services()
-    if _retrieval_skipped(question):
+    if _retrieval_skipped():
         return [], _direct_messages(question, history)
     rag = services.searcher.build_rag_context(
         question, top_k=top_k, history=history, chunk_type=chunk_type
@@ -368,6 +368,9 @@ def _direct_messages(question: str, history: list[ChatMessage]) -> list[ChatMess
     return msgs
 
 
+_CANONICAL_ROLES: frozenset[str] = frozenset({"user", "assistant", "tool"})
+
+
 def _build_canonical_request(
     messages: list[ChatMessage], options: dict[str, Any] | None
 ) -> CanonicalChatRequest:
@@ -377,7 +380,7 @@ def _build_canonical_request(
     return CanonicalChatRequest(
         model=cfg.chat_model,
         messages=[
-            CanonicalMessage.from_string(role=cast("Any", m["role"]), text=m["content"])
+            CanonicalMessage.from_string(role=_canonical_role(m["role"]), text=m["content"])
             for m in chat_msgs
         ],
         system=system,
@@ -387,6 +390,13 @@ def _build_canonical_request(
         max_tokens=opts.get("num_predict"),
         stop=opts.get("stop"),
     )
+
+
+def _canonical_role(role: str) -> Literal["user", "assistant", "tool"]:
+    """Narrow a raw wire role string to the canonical literal set or raise."""
+    if role not in _CANONICAL_ROLES:
+        raise ValueError(f"Unsupported message role {role!r}")
+    return cast("Literal['user', 'assistant', 'tool']", role)
 
 
 def _split_system(

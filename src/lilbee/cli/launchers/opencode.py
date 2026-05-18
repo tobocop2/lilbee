@@ -12,8 +12,8 @@ from typing import Any, TypedDict
 
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import run_launcher
+from lilbee.cli.launchers.server import LOOPBACK
 
-_LOCAL_HOST = "127.0.0.1"
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
 _SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
 _OPENCODE_PROVIDER_ID = "lilbee"
@@ -129,7 +129,7 @@ class OpencodeLauncher:
         _install_lilbee_skill()
         _update_opencode_picker_state(model_refs)
         block = opencode_config(
-            base_url=f"http://{_LOCAL_HOST}:{port}",
+            base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,
             model_refs=model_refs,
         )

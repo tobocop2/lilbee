@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -107,9 +108,13 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
         return _error_response(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
     except ModelDoesNotSupportToolsError as exc:
         return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-    except Exception as exc:
+    except Exception:
         log.exception("chat_completions_endpoint failed")
-        return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, str(exc))
+        return _error_response(
+            500,
+            CompletionsErrorCode.INTERNAL_ERROR,
+            "Internal server error. Check the server logs for details.",
+        )
     finally:
         lock.release()
     body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
@@ -139,19 +144,20 @@ async def _gated_completions_stream(
             yield _sse_error_frame(CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
         except ModelDoesNotSupportToolsError as exc:
             yield _sse_error_frame(CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-        except Exception as exc:
+        except Exception:
             log.exception("chat_completions stream failed")
-            yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, str(exc))
+            yield _sse_error_frame(
+                CompletionsErrorCode.INTERNAL_ERROR,
+                "Internal server error. Check the server logs for details.",
+            )
     finally:
         lock.release()
 
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
     """SSE frame carrying an error body, followed by ``[DONE]``."""
-    import json as _json
-
     body = completions_error_body(code, message)
-    payload = _json.dumps(body, separators=(",", ":"))
+    payload = json.dumps(body, separators=(",", ":"))
     return f"data: {payload}\n\ndata: [DONE]\n\n".encode()
 
 
