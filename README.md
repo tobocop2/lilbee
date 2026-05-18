@@ -202,7 +202,7 @@ The default Vulkan build works on NVIDIA cards, but there is a dedicated CUDA bu
 | **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda` |
 | **AUR** | `paru -S lilbee-cuda` |
 | **Nix** | `nix run github:tobocop2/lilbee#lilbee-cuda` |
-| **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) (the Windows CUDA binary follows once that build finishes) |
+| **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 
 Same `lilbee` command after install. The CUDA runtime (`cudart`, `cublas`) is bundled inside the binary; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically (it `conflicts_with` / `provides` lilbee); on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
