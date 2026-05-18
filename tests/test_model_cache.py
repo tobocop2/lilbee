@@ -80,6 +80,18 @@ class TestComputeDynamicCtx:
         )
         assert ctx == 4096
 
+    def test_returns_target_when_kv_per_token_is_zero_and_target_set(self) -> None:
+        """The zero-kv fast-path honors the target instead of maxing to ceiling."""
+        ctx = compute_dynamic_ctx(
+            model_bytes=1_000_000,
+            available_bytes=10_000_000,
+            training_ctx=40_960,
+            kv_bytes_per_tok=0,
+            ceiling=40_960,
+            target=8192,
+        )
+        assert ctx == 8192
+
     def test_returns_floor_when_budget_zero_or_negative(self) -> None:
         ctx = compute_dynamic_ctx(
             model_bytes=10_000_000,

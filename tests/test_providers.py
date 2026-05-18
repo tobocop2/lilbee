@@ -584,6 +584,18 @@ class TestLlamaCppProvider:
         assert "type_k" not in kwargs
         assert "type_v" not in kwargs
 
+    def testapply_kv_cache_type_returns_early_for_f16(self) -> None:
+        """F16 is the implicit llama-cpp default; the function skips the type_k/type_v kwargs."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import _apply_kv_cache_type
+
+        kwargs: dict[str, object] = {}
+        with patch.object(cfg, "kv_cache_type", "f16"):
+            _apply_kv_cache_type(kwargs)
+        assert "type_k" not in kwargs
+        assert "type_v" not in kwargs
+
     def testload_llama_oom_retry_halves_embed_batch_sizes(self, models_dir: Path) -> None:
         """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx.
 
