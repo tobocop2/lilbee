@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import time
 from collections.abc import AsyncIterator
@@ -10,7 +9,6 @@ from typing import Literal
 
 from lilbee.server.chat_completions_api.models import (
     CompletionsImageContent,
-    CompletionsImageUrl,
     CompletionsMessage,
     CompletionsNamedToolChoice,
     CompletionsRequest,
@@ -41,7 +39,6 @@ from lilbee.server.chat_dispatch.canonical import (
     ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
-    ImageBlock,
     MessageDelta,
     MessageStart,
     MessageStop,
@@ -63,10 +60,12 @@ _TOOL_CHOICE_MODES: dict[ToolChoiceMode, Literal["auto", "any", "none"]] = {
 _STOP_REASON_TO_FINISH: dict[StopReason, FinishReason] = {
     StopReason.END_TURN: FinishReason.STOP,
     StopReason.MAX_TOKENS: FinishReason.LENGTH,
-    StopReason.STOP_SEQUENCE: FinishReason.STOP,
     StopReason.TOOL_USE: FinishReason.TOOL_CALLS,
-    StopReason.ERROR: FinishReason.STOP,
 }
+
+_IMAGE_CONTENT_UNSUPPORTED = (
+    "Image content is not supported by /v1/chat/completions yet. Send a text-only request."
+)
 
 
 def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalChatRequest:
@@ -277,7 +276,7 @@ def _content_blocks(content: str | list | None) -> list[ContentBlock]:
         if isinstance(part, CompletionsTextContent):
             blocks.append(TextBlock(text=part.text))
         elif isinstance(part, CompletionsImageContent):
-            blocks.append(_image_from_request(part.image_url))
+            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
     return blocks
 
 
@@ -287,15 +286,6 @@ def _tool_result_content(content: str | list | None) -> list[ContentBlock]:
     if isinstance(content, list):
         return _content_blocks(content)
     return [TextBlock(text="" if content is None else str(content))]
-
-
-def _image_from_request(image_url: CompletionsImageUrl) -> ImageBlock:
-    url = image_url.url
-    if url.startswith("data:"):
-        header, _, b64 = url.partition(",")
-        media_type = header.removeprefix("data:").partition(";")[0] or "image/png"
-        return ImageBlock(media_type=media_type, data=base64.b64decode(b64))
-    return ImageBlock(media_type="image/url", data=url.encode())
 
 
 def _response_tool_call(block: ToolUseBlock) -> CompletionsResponseToolCall:

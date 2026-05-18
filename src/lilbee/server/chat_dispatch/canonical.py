@@ -12,9 +12,7 @@ class StopReason(StrEnum):
 
     END_TURN = "end_turn"
     MAX_TOKENS = "max_tokens"
-    STOP_SEQUENCE = "stop_sequence"
     TOOL_USE = "tool_use"
-    ERROR = "error"
 
 
 @dataclass(frozen=True)
@@ -23,15 +21,6 @@ class TextBlock:
 
     text: str
     type: Literal["text"] = "text"
-
-
-@dataclass(frozen=True)
-class ImageBlock:
-    """Inline image content; encoders pick base64 / data-URL framing."""
-
-    media_type: str
-    data: bytes
-    type: Literal["image"] = "image"
 
 
 @dataclass(frozen=True)
@@ -54,7 +43,7 @@ class ToolResultBlock:
     type: Literal["tool_result"] = "tool_result"
 
 
-ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock
+ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
 
 
 @dataclass(frozen=True)

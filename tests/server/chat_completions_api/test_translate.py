@@ -28,7 +28,6 @@ from lilbee.server.chat_dispatch.canonical import (
     ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
-    ImageBlock,
     MessageDelta,
     MessageStart,
     MessageStop,
@@ -128,52 +127,29 @@ class TestCompletionsToCanonicalRequest:
         )
         assert req.system == "be terse\n\nno apologies"
 
-    def test_multi_content_user_message_with_text_and_image(self) -> None:
-        req = _translate(
-            {
-                "model": "m",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "describe"},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,aGVsbG8="},
-                            },
-                        ],
-                    }
-                ],
-            }
-        )
-        assert len(req.messages[0].content) == 2
-        assert req.messages[0].content[0] == TextBlock(text="describe")
-        image = req.messages[0].content[1]
-        assert isinstance(image, ImageBlock)
-        assert image.media_type == "image/png"
-        assert image.data == b"hello"
-
-    def test_image_url_with_http_url_keeps_url_in_data(self) -> None:
-        req = _translate(
-            {
-                "model": "m",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "https://example/cat.png"},
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-        image = req.messages[0].content[0]
-        assert isinstance(image, ImageBlock)
-        assert image.media_type == "image/url"
-        assert image.data == b"https://example/cat.png"
+    def test_image_content_in_user_message_is_rejected(self) -> None:
+        # The dispatcher cannot route image content to the chat provider
+        # today. Translate raises ValueError so the route layer returns 400
+        # rather than silently dropping the image and returning a text-only
+        # completion that ignored the visual input.
+        with pytest.raises(ValueError, match="Image content is not supported"):
+            _translate(
+                {
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "describe"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                                },
+                            ],
+                        }
+                    ],
+                }
+            )
 
     def test_assistant_message_with_tool_calls(self) -> None:
         req = _translate(
@@ -676,9 +652,7 @@ class TestCanonicalToCompletionsResponse:
         [
             (StopReason.END_TURN, "stop"),
             (StopReason.MAX_TOKENS, "length"),
-            (StopReason.STOP_SEQUENCE, "stop"),
             (StopReason.TOOL_USE, "tool_calls"),
-            (StopReason.ERROR, "stop"),
         ],
     )
     def test_finish_reason_mapping(self, stop_reason, expected) -> None:
@@ -783,14 +757,11 @@ class TestCanonicalStreamToCompletionsChunks:
         assert chunks[-1].choices[0].finish_reason == "stop"
 
     async def test_unrecognized_content_block_is_silently_skipped(self) -> None:
-        # Image and tool-result blocks do not appear in assistant responses;
-        # the chunker drops them rather than emitting a malformed chunk.
-        from lilbee.server.chat_dispatch.canonical import ImageBlock, ToolResultBlock
-
+        # Tool-result blocks do not appear in assistant responses; the chunker
+        # drops them rather than emitting a malformed chunk.
         events: list[CanonicalStreamEvent] = [
-            ContentBlockStart(index=0, block=ImageBlock(media_type="image/png", data=b"\x89")),
             ContentBlockStart(
-                index=1, block=ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="r")])
+                index=0, block=ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="r")])
             ),
         ]
         chunks = await _drain(
@@ -915,7 +886,6 @@ class TestCanonicalStreamToCompletionsChunks:
         [
             (StopReason.END_TURN, "stop"),
             (StopReason.MAX_TOKENS, "length"),
-            (StopReason.STOP_SEQUENCE, "stop"),
             (StopReason.TOOL_USE, "tool_calls"),
         ],
     )

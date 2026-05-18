@@ -15,7 +15,6 @@ from lilbee.server.chat_dispatch.canonical import (
     ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
-    ImageBlock,
     MessageDelta,
     MessageStart,
     MessageStop,
@@ -118,21 +117,12 @@ def test_tool_result_block_can_flag_error() -> None:
     assert block.is_error is True
 
 
-def test_image_block_carries_media_type_and_data() -> None:
-    block = ImageBlock(media_type="image/png", data=b"\x89PNG")
-    assert block.media_type == "image/png"
-    assert block.data == b"\x89PNG"
-    assert block.type == "image"
-
-
 def test_stop_reason_is_string_enum() -> None:
     # StrEnum members behave as strings; this lets translators emit them
     # directly into protocol envelopes without an explicit ``.value``.
     assert StopReason.END_TURN == "end_turn"
     assert StopReason.MAX_TOKENS == "max_tokens"
-    assert StopReason.STOP_SEQUENCE == "stop_sequence"
     assert StopReason.TOOL_USE == "tool_use"
-    assert StopReason.ERROR == "error"
 
 
 def test_canonical_tool_choice_modes() -> None:

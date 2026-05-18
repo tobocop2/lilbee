@@ -77,7 +77,12 @@ async def chat_completions_endpoint(
     if auth_error is not None:
         return auth_error
 
-    req = completions_to_canonical_request(data)
+    try:
+        req = completions_to_canonical_request(data)
+    except ValueError as exc:
+        # Request shape is wire-valid but carries something we can't translate
+        # (e.g. image content). Surface as 400 instead of a generic 500.
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
     try:
         acquire_or_raise_busy()
