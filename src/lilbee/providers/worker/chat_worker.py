@@ -89,11 +89,7 @@ class _ChatSession:
 
     @property
     def response_schema(self) -> ResponseSchema | None:
-        """Cached response schema for this session's currently-loaded model.
-
-        ``None`` when the model's chat template did not match any known
-        family; in that case schema-driven tool-call extraction is skipped.
-        """
+        """Cached response schema for the currently-loaded model, or ``None``."""
         return self._response_schema
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
@@ -224,17 +220,7 @@ def _handle_chat_streaming(
     *,
     schema: ResponseSchema | None,
 ) -> None:
-    """Drain *response_iter* and emit batched stream_chunk frames on the data pipe.
-
-    Polls ``state.session._abort_flag`` between chunks so a cancel from the
-    parent flushes a clean ``stream_end`` at the next token boundary.
-    Text tokens batch through :class:`_TextBatchBuffer`; tool-call deltas
-    flush any pending text first and then ride the wire unbuffered so
-    framing stays in order. ``schema`` is the cached response schema for
-    the loaded model; when set, accumulated text deltas are also fed through
-    :class:`StreamingResponseParser` so embedded tool calls (Qwen3-style
-    ``<tool_call>...</tool_call>`` markup) surface as structured deltas.
-    """
+    """Drain *response_iter* and emit batched stream_chunk frames on the data pipe."""
     abort_flag = state.session._abort_flag
     text = _TextBatchBuffer(reply)
     schema_parser = StreamingResponseParser(schema) if schema is not None else None
@@ -304,14 +290,7 @@ def _extract_non_streaming_result(
     tools_requested: bool,
     schema: ResponseSchema | None,
 ) -> ChatResult:
-    """Build a ``ChatResult`` from one llama-cpp non-streaming response.
-
-    When llama-cpp natively populated ``message.tool_calls`` (its chat handler
-    recognised the format), those are used. Otherwise, if the request carried
-    tools and a schema is cached for the loaded model, the response text is
-    run through schema-driven extraction so embedded tool-call markup is
-    surfaced as structured calls with ``finish_reason`` remapped accordingly.
-    """
+    """Build a ``ChatResult`` from one llama-cpp non-streaming response."""
     if not isinstance(response, dict):
         raise TypeError(f"chat response must be dict, got {type(response).__name__}")
     choices = response.get("choices")

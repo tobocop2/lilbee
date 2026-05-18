@@ -144,12 +144,12 @@ _GEMMA4_SCHEMA: ResponseSchema = {
 }
 
 
+# Response schemas indexed by detected model family. ``ModelFamily.UNKNOWN``
+# has no entry on purpose: when detection cannot classify the loaded model,
+# tool extraction is skipped and the raw output is returned as-is.
 SCHEMAS: dict[ModelFamily, ResponseSchema] = {
     ModelFamily.QWEN3: _QWEN3_SCHEMA,
     ModelFamily.QWEN3_CODER: _QWEN3_CODER_SCHEMA,
     ModelFamily.MISTRAL: _MISTRAL_SCHEMA,
     ModelFamily.GEMMA4: _GEMMA4_SCHEMA,
 }
-"""Response schemas indexed by detected model family. ``ModelFamily.UNKNOWN``
-intentionally has no entry: when family detection cannot classify the loaded
-model's template, tool extraction is skipped and the raw output is returned."""

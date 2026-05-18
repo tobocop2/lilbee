@@ -2,41 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from lilbee.providers.worker.response_parser.parse import parse_response
+from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCallDelta
 
+# First characters of every marker the shipped schemas watch for. The
+# heuristic also pauses on benign content (e.g., "5 < 10"); the pause self-
+# heals when the next chunk pushes the `<` past the peek window.
 _MARKER_OPENERS = ("<", "[")
-"""First characters of every tool-call / reasoning marker any shipped schema
-watches for. ``<`` for ``<tool_call>``, ``<think>``, ``<|tool_call>``;
-``[`` for Mistral's ``[TOOL_CALLS]``. Over-broad on purpose: also pauses
-emission briefly on benign content (math, JSON-looking prose). The pause
-self-heals on the next chunk as more bytes either complete a real marker
-or push the `<` / `[` past the peek window."""
 
+# Window large enough to hold the longest marker (`<|tool_call>` = 12 chars).
 _MARKER_PEEK_WINDOW = 16
-"""How far back from the tail to scan for a marker-opener character.
-
-Sized to fit the longest marker any shipped schema watches for (``<|tool_call>``
-at 12 chars). The window must exceed the longest marker length minus one so a
-partial marker landing at the boundary still gets caught."""
 
 
 class StreamingResponseParser:
-    """Re-parse the accumulated stream buffer per chunk and emit deltas.
+    """Re-parse the accumulated stream buffer per chunk and emit deltas."""
 
-    ``feed(text)`` is called for each text fragment from the provider. It
-    returns the *new* content to forward to the client plus any tool calls
-    that have completed since the last call. ``flush()`` is called at end of
-    stream to release any content held by the safety margin.
-
-    Content emissions are stable: once a character has been emitted it is
-    never retracted, even if a subsequent re-parse extracts a shorter
-    ``content`` because a tool-call marker just appeared in the buffer.
-    """
-
-    def __init__(self, schema: dict[str, Any]) -> None:
+    def __init__(self, schema: ResponseSchema) -> None:
         self._schema = schema
         self._buffer = ""
         self._emitted_content_len = 0
@@ -81,13 +63,7 @@ class StreamingResponseParser:
 
 
 def _safe_emit_position(content: str) -> int:
-    """Latest position safe to emit; anything beyond might be a partial marker.
-
-    Scans the trailing :data:`_MARKER_PEEK_WINDOW` characters for a marker-
-    opener character; if one is found, emission stops at that character so a
-    later chunk can complete the marker without the partial bytes leaking out
-    as text. Content with no marker-opener in the window is fully emittable.
-    """
+    """Latest position safe to emit; anything beyond might be a partial marker."""
     end = len(content)
     window_start = max(0, end - _MARKER_PEEK_WINDOW)
     for i in range(window_start, end):

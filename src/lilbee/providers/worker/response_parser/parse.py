@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCall
 
 log = logging.getLogger(__name__)
@@ -26,28 +27,15 @@ class ParsedResponse:
     tool_calls: tuple[ToolCall, ...]
 
 
-def parse_response(text: str, schema: dict[str, Any]) -> ParsedResponse:
-    """Extract structured tool calls from *text* using *schema*.
-
-    Returns a ``ParsedResponse`` with the schema-extracted ``content`` and any
-    detected tool calls. On parse failure the original ``text`` is returned as
-    content with no tool calls, so a malformed model output never raises out
-    of this layer. ``transformers`` is imported lazily: pulling it in eagerly
-    adds ~1.2s to worker subprocess boot, paid even when no chat request
-    carries tools. Deferring the import to the first parse keeps cold-start
-    fast and pays the cost only when tool extraction is actually needed.
-    """
+def parse_response(text: str, schema: ResponseSchema) -> ParsedResponse:
+    """Extract content and structured tool calls from *text* using *schema*."""
+    # transformers is heavy (~1.2s cold import); lazy so the cost only lands
+    # the first time a chat request actually carries tools.
     from transformers.utils.chat_parsing_utils import recursive_parse
 
     try:
         parsed = recursive_parse(text, schema)
-    except (ValueError, TypeError, ImportError) as exc:
-        # ValueError / TypeError from the schema walker on a malformed model
-        # output; ImportError reserved for ``x-parser-args.transform`` schemas
-        # that pull in jmespath (no shipped schema uses one today; guarded for
-        # forward safety so a future schema cannot break the worker). Any of
-        # them falls back to returning the raw text as content rather than
-        # propagating to the worker as a 500.
+    except (ValueError, TypeError) as exc:
         log.debug("response schema parse failed: %s", exc)
         return ParsedResponse(content=text, tool_calls=())
     if not isinstance(parsed, dict):
@@ -73,13 +61,7 @@ def _tool_calls_from_parsed(raw: object) -> tuple[ToolCall, ...]:
 
 
 def _coerce_one(entry: dict[str, Any]) -> ToolCall | None:
-    """Build a ``ToolCall`` from one parsed entry, handling flat and wrapped shapes.
-
-    Some schemas (Mistral) emit ``{"name": ..., "arguments": ...}`` at the top
-    level. Others (Qwen3, Qwen3-Coder, Gemma 4) wrap in ``{"function": {...}}``.
-    Both shapes are accepted so the schema authors can pick whichever fits
-    the model's output most directly.
-    """
+    """Build a ``ToolCall`` from one parsed entry; accepts flat or function-wrapped shape."""
     if _FUNCTION_KEY in entry and isinstance(entry[_FUNCTION_KEY], dict):
         body = entry[_FUNCTION_KEY]
     else:
