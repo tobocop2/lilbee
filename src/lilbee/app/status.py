@@ -12,12 +12,8 @@ from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 
 LILBEE_LABEL_MAX_LEN = 40
-"""Soft cap on the compact-label width so the status pill stays inside the bar.
-
-Hard cap: the helper always returns at most this many characters, even when
-both the head and the leaf segment are too long to fit; the leaf gets its
-own internal ellipsis to keep the cap honest on auto-generated paths.
-"""
+"""Hard cap on the compact-label width. The leaf gets its own internal
+ellipsis when even the leaf alone would breach the cap."""
 
 _ELLIPSIS = "…"
 
@@ -54,13 +50,10 @@ def _compact_path(full: str) -> str:
 def lilbee_label() -> str:
     """Status-bar pill text for the active lilbee.
 
-    User-set ``lilbee_name`` always wins. Default behaviour: "global"
-    for the platform default data dir, otherwise the project path
-    (``~``-substituted, left-truncated to ``LILBEE_LABEL_MAX_LEN``).
-    ``show_lilbee_path`` (toggled by F4) expands the label to the full
-    untruncated absolute path. Useful when the user wants to see what
-    "global" actually resolves to on disk, or what the truncated path
-    head was hiding.
+    Precedence: ``lilbee_name`` override > ``"global"`` (when data_root
+    is the platform default) > project path. ``show_lilbee_path``
+    (toggled by F4) returns the full absolute path instead of the
+    compact / "global" form.
     """
     if cfg.lilbee_name:
         return cfg.lilbee_name

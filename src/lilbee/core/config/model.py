@@ -525,7 +525,7 @@ class Config(BaseSettings):
     @field_validator("lilbee_name", mode="after")
     @classmethod
     def _strip_lilbee_name(cls, value: str) -> str:
-        """Empty / whitespace-only aliases fall back to the directory name."""
+        """Strip whitespace; an empty string signals 'use the path-derived label'."""
         return value.strip()
 
     @field_validator(
