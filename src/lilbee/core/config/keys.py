@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-# Per-provider entries mirror ``providers.sdk_backend.API_KEY_FIELDS``;
-# ``llm_api_key`` is the extra generic-provider key the SDK fan-out doesn't
-# consume but the settings boundary still publishes availability for.
-# Core cannot import from providers, so the per-provider half lives in
-# parallel; add new providers here AND in ``API_KEY_FIELDS`` together.
+# Keep in sync with ``providers.sdk_backend.API_KEY_FIELDS``.
 PROVIDER_API_KEYS: frozenset[str] = frozenset(
     {
         "llm_api_key",
@@ -19,8 +15,8 @@ PROVIDER_API_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Settings baked into Llama() at load time, or whose change picks a
-# different model file. Sampling params are read per-call and excluded.
+# Settings whose value is baked into a loaded model and only takes effect
+# after the worker reloads.
 LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
     {
         "num_ctx",
@@ -31,13 +27,8 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Subset of LOAD_AFFECTING_KEYS whose change is observed by the worker on
-# the next per-call ``request.model`` (chat / vision workers check the path
-# in ``_ensure_loaded`` and reload in place). For these the pool does not
-# need to drop the role; the next call swaps the model inside the live
-# worker, saving the 1-3 s spawn cost.
+# Subset of LOAD_AFFECTING_KEYS the worker can swap in place on the next call.
 PER_CALL_RELOADABLE_KEYS: frozenset[str] = frozenset({"chat_model", "vision_model"})
 
-# Keys whose write requires reconstructing the services singleton because
-# the provider class itself changes (not just the loaded model).
+# Writes here require reconstructing the services singleton.
 PROVIDER_SWITCHING_KEYS: frozenset[str] = frozenset({"llm_provider"})
