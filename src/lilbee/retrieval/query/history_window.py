@@ -45,7 +45,7 @@ def windowed_history(
     # error if it must, rather than send nothing at all).
     while start < len(messages) - 2 and total > max_tokens:
         # Drop the front pair (user + assistant). If the front isn't a user
-        # message (legacy state), drop one to realign.
+        # message (malformed input), drop one to realign.
         drop = 2 if messages[start]["role"] == "user" else 1
         for i in range(start, min(start + drop, len(messages))):
             total -= sizes[i]

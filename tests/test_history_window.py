@@ -55,7 +55,7 @@ class TestWindowedHistory:
         assert out == msgs
 
     def test_realigns_when_history_does_not_start_at_user(self) -> None:
-        """Legacy state with a leading assistant message is realigned to user-start."""
+        """Malformed input with a leading assistant message is realigned to user-start."""
         msgs = [
             _msg("assistant", 4096, marker="orphan-"),
             _msg("user", 4096, marker="u0-"),

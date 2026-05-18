@@ -49,6 +49,15 @@ class TestFromEnvDefaults:
             assert c.top_k == 12
             assert c.max_distance == 0.75
             assert c.json_mode is False
+            # Memory-budget defaults: q8_0 KV halves per-token cost vs f16,
+            # 8K target keeps the working window inside chat-with-RAG needs,
+            # and ``None`` num_ctx_max lets the model's training_ctx be the
+            # only ceiling on hosts with the RAM to back it.
+            from lilbee.core.config.enums import KvCacheType
+
+            assert c.kv_cache_type is KvCacheType.Q8_0
+            assert c.chat_n_ctx_target == 8192
+            assert c.num_ctx_max is None
             # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
             # scope picker only appear when the user explicitly enables it.
             assert c.wiki is False
