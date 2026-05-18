@@ -179,11 +179,22 @@ class TestWindowMessagesToBudget:
         assert "c2" in remaining_tool_ids
 
     def test_handles_messages_with_no_user_message(self) -> None:
-        """An odd request without a user message still trims via the no-in-flight branch."""
-        msgs = [_sys(), _assistant_text("only assistant"), _assistant_text("filler" * 200)]
+        """Without a user message, ``_last_role_index`` returns -1 and the
+        windowing loop has no droppable indices; an overfull prompt then
+        surfaces as overflow rather than crashing. Verifies the -1 branch
+        of ``_last_role_index``.
+        """
+        msgs = [_sys(), _assistant_text("filler" * 200)]
         outcome = window_messages_to_budget(msgs, budget=30, tokenize=_bytes_tokenizer)
-        # Trimmed at least one assistant message.
-        assert outcome.messages is None or outcome.dropped >= 1
+        assert outcome.messages is None
+        assert outcome.requested > outcome.available
+
+    def test_under_budget_with_no_user_message_passes_through(self) -> None:
+        """Without a user message and under budget, returns the list unchanged."""
+        msgs = [_sys(), _assistant_text("brief")]
+        outcome = window_messages_to_budget(msgs, budget=1000, tokenize=_bytes_tokenizer)
+        assert outcome.messages == msgs
+        assert outcome.dropped == 0
 
 
 class TestWindowingOutcome:
