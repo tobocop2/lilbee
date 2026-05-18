@@ -77,8 +77,8 @@ class Config(BaseSettings):
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     max_embed_chars: int = Field(default=2000, ge=1)
-    top_k: int = ConfigField(default=8, ge=1, writable=True)
-    max_distance: float = ConfigField(default=0.65, ge=0.0, writable=True)
+    top_k: int = ConfigField(default=12, ge=1, writable=True)
+    max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
     # Floor for hybrid-search relevance scores (0.0 = no filtering). lilbee
     # surfaces LanceDB's raw RRF sum, not a normalized score: with K=60 a
     # chunk ranked first in both the vector and FTS lists tops out near
@@ -143,7 +143,7 @@ class Config(BaseSettings):
     # Retrieval quality knobs.
 
     # Max chunks per source in top-k; prevents one large file monopolizing results.
-    diversity_max_per_source: int = ConfigField(default=3, ge=1, writable=True)
+    diversity_max_per_source: int = ConfigField(default=5, ge=1, writable=True)
 
     # MMR relevance/diversity tradeoff; 0 = max diversity, 1 = pure relevance
     # (Carbonell & Goldstein 1998).
@@ -176,7 +176,7 @@ class Config(BaseSettings):
     expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
 
     # Chunks included in LLM context after adaptive selection.
-    max_context_sources: int = ConfigField(default=6, ge=1, writable=True)
+    max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
