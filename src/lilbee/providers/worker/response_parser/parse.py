@@ -43,8 +43,9 @@ def parse_response(text: str, schema: dict[str, Any]) -> ParsedResponse:
         parsed = recursive_parse(text, schema)
     except (ValueError, TypeError, ImportError) as exc:
         # ValueError / TypeError from the schema walker on a malformed model
-        # output; ImportError from optional sub-parsers (jmespath) when a
-        # schema needs an extension package the env doesn't have. Any of
+        # output; ImportError reserved for ``x-parser-args.transform`` schemas
+        # that pull in jmespath (no shipped schema uses one today; guarded for
+        # forward safety so a future schema cannot break the worker). Any of
         # them falls back to returning the raw text as content rather than
         # propagating to the worker as a 500.
         log.debug("response schema parse failed: %s", exc)

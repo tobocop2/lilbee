@@ -9,15 +9,18 @@ from lilbee.providers.worker.transport import ToolCallDelta
 
 _MARKER_OPENERS = ("<", "[")
 """First characters of every tool-call / reasoning marker any shipped schema
-watches for (e.g., ``<tool_call>``, ``<think>``, ``[TOOL_CALLS]``)."""
+watches for. ``<`` for ``<tool_call>``, ``<think>``, ``<|tool_call>``;
+``[`` for Mistral's ``[TOOL_CALLS]``. Over-broad on purpose: also pauses
+emission briefly on benign content (math, JSON-looking prose). The pause
+self-heals on the next chunk as more bytes either complete a real marker
+or push the `<` / `[` past the peek window."""
 
 _MARKER_PEEK_WINDOW = 16
-"""How far back from the tail to look for a marker-opener character.
+"""How far back from the tail to scan for a marker-opener character.
 
-The longest marker any schema watches for (``<|channel>thought``, at 17 chars
-including the surrounding wraps) fits inside this window. Looking further
-back would needlessly withhold content; looking shorter would risk emitting
-a partial marker before its close arrives."""
+Sized to fit the longest marker any shipped schema watches for (``<|tool_call>``
+at 12 chars). The window must exceed the longest marker length minus one so a
+partial marker landing at the boundary still gets caught."""
 
 
 class StreamingResponseParser:
