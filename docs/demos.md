@@ -70,8 +70,8 @@ Crawling, API-Keys, System.
 
 ## Agent: code (lilbee talking to lilbee)
 
-The headline agent demo. An agent indexes lilbee's own source through lilbee's MCP
-server, then answers questions about how lilbee works, citing
+The headline grounding demo. An agent indexes lilbee's own source through lilbee's
+MCP server, then answers questions about how lilbee works, citing
 `src/lilbee/.../file.py:LINE` for every claim.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
@@ -89,11 +89,11 @@ These don't have a tab on the site, but they're part of the same reel.
 
 ### Agent: live indexing
 
-The smaller agent-over-MCP demo. opencode on MiniMax M2.7 indexes a Godot 4
+The smaller agent-over-MCP demo. An MCP-aware coding agent indexes a Godot 4
 pathfinding subset in a few seconds, then `lilbee_search`-es for `AStarGrid2D` and
 answers method-by-method against the local files.
 
-![opencode + cloud frontier model indexes a small local godot subset](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 ### Agent: Godot codegen against the full class reference
 
@@ -121,7 +121,7 @@ Each agent demo ships with a drop-in [`AGENTS.md`](../examples/agent-integration
 [`lilbee-worker` subagent](../examples/agent-integration/.opencode/agents/lilbee-worker.md) that
 handles the long-running ops (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`,
 `lilbee_model_pull`), and the
-[`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill
+[`lilbee-mcp` skill](../src/lilbee/skills/lilbee_mcp/SKILL.md) (opencode / Claude Skill
 format) that documents every MCP tool with a quick-vs-long split. The agent runs
 on the dev's default cloud model (MiniMax M2.7); the lilbee library stays local.
 On screen, inline: `# lilbee_<tool>` for each tool call,

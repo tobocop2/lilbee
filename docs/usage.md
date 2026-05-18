@@ -591,9 +591,24 @@ pip install --pre 'lilbee[graph,crawler,litellm]'
 uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 ```
 
-For NVIDIA users wanting CUDA-native acceleration (default install already
-covers GPU via Vulkan), append `--extra-index-url https://lilbee.sh/cu125/`
-(or `cu124/` / `cu121/` to match older drivers, picked from `nvidia-smi`).
+**NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
+faster and dodges the Vulkan-loader crash that affects NVIDIA-on-Windows
+setups. Same `lilbee` command, links straight against your NVIDIA driver:
+
+```bash
+pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/
+brew install tobocop2/lilbee/lilbee-cuda
+paru -S lilbee-cuda
+nix run github:tobocop2/lilbee#lilbee-cuda
+```
+
+The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
+`paru -S lilbee-cuda` swaps automatically. On Homebrew, run `brew
+uninstall lilbee` first because the two formulas both ship a `lilbee`
+binary. For older drivers swap `cu125` for `cu124` or `cu121` (run
+`nvidia-smi` to see which matches). cu121 and cu124 are wheel-index and
+direct-download only; cu125 is the variant fanned out to the package
+managers.
 
 While 0.6.66 is in beta, the `--pre` flag (or uv's `--prerelease=allow`) is
 required on every install.

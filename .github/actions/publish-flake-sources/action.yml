@@ -1,0 +1,55 @@
+name: Publish Nix flake sources
+description: "Write a sources JSON file, validate the flake against it, and commit. Used by publish-packages and publish-cuda-packages."
+
+inputs:
+  target-file:
+    description: "Path of the sources file to write (e.g. sources.json, sources-cuda.json)."
+    required: true
+  version:
+    description: "Release version (without leading 'v')."
+    required: true
+  systems-json:
+    description: "JSON-encoded systems map, e.g. {\"x86_64-linux\":{\"asset\":\"...\",\"sha256\":\"...\"}}."
+    required: true
+  commit-message:
+    description: "Commit message for the sources file commit."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@main
+    - name: Write sources file
+      shell: bash
+      env:
+        TARGET_FILE: ${{ inputs.target-file }}
+        VERSION: ${{ inputs.version }}
+        SYSTEMS_JSON: ${{ inputs.systems-json }}
+      run: |
+        set -euo pipefail
+        jq -n \
+          --arg version "$VERSION" \
+          --argjson systems "$SYSTEMS_JSON" \
+          '{ version: $version, systems: $systems }' \
+          > "$TARGET_FILE"
+
+    - name: Validate flake against new sources
+      shell: bash
+      run: nix flake check --all-systems
+
+    - name: Commit and push
+      shell: bash
+      env:
+        TARGET_FILE: ${{ inputs.target-file }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -euo pipefail
+        git config user.name "lilbee-bot"
+        git config user.email "lilbee-bot@users.noreply.github.com"
+        git add "${TARGET_FILE}"
+        if git diff --cached --quiet; then
+          echo "no source changes; skipping push"
+          exit 0
+        fi
+        git commit -m "${COMMIT_MESSAGE}"
+        git push origin main

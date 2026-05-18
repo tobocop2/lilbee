@@ -30,7 +30,7 @@ _MODE_COLORS: dict[str, str] = {
 _DEFAULT_MODE_COLOR = "$error"
 
 # Settings keys that trigger a model-pill refresh.
-_MODEL_PILL_KEYS = frozenset({"chat_model"})
+_TRAILING_PILL_KEYS = frozenset({"chat_model", "lilbee_name", "show_lilbee_path"})
 
 
 class ViewTab(Label, can_focus=True):
@@ -123,7 +123,7 @@ class ViewTabs(Widget):
         if key == "wiki":
             self._apply_wiki_visibility()
             return
-        if key in _MODEL_PILL_KEYS:
+        if key in _TRAILING_PILL_KEYS:
             self._refresh()
 
     def _apply_wiki_visibility(self) -> None:
@@ -143,6 +143,7 @@ class ViewTabs(Widget):
         self._update_trailing()
 
     def _update_trailing(self) -> None:
+        from lilbee.app.status import lilbee_label
         from lilbee.catalog import display_label_for_ref
 
         parts: list[Content | str | tuple[str, str]] = []
@@ -156,4 +157,6 @@ class ViewTabs(Widget):
             color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
             parts.append("  ")
             parts.append(pill(self.mode_text, color, "$text"))
+        parts.append("  ")
+        parts.append(pill(lilbee_label(), "$secondary-muted", "$text"))
         self.query_one("#view-tabs-trailing", Static).update(Content.assemble(*parts))

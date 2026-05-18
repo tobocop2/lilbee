@@ -3,6 +3,15 @@
 lilbee serves as a local retrieval backend for AI coding agents. Two entry
 points are available: MCP (recommended) and JSON CLI.
 
+## Fastest start: have the agent configure lilbee for you
+
+The shortest path from "fresh install" to "useful lilbee" is to hand the
+setup to an MCP-aware agent. It can pick models for your hardware, pull
+them, wire them into the embedding / reranker / vision roles, and tune
+retrieval for the kind of questions you actually want to ask. See
+[Fine-tuning lilbee from your agent](#fine-tuning-lilbee-from-your-agent)
+below for the canonical example prompt.
+
 ## MCP Server (recommended)
 
 `lilbee mcp` launches an MCP server that agents call directly as tools. No
@@ -60,7 +69,7 @@ For a project where you want the agent to use lilbee reliably, copy three things
 2. A `lilbee-worker` subagent that handles `lilbee_add` / `lilbee_sync` / `lilbee_crawl` /
    `lilbee_model_pull`. Copy from
    [`demos/.opencode/agents/lilbee-worker.md`](../demos/.opencode/agents/lilbee-worker.md).
-3. The [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude
+3. The [`lilbee-mcp` skill](../src/lilbee/skills/lilbee_mcp/SKILL.md) (opencode / Claude
    Skill format), copied into `.opencode/skills/lilbee-mcp/` or
    `.claude/skills/lilbee-mcp/`. A single `SKILL.md` that documents every lilbee
    MCP tool with a quick-vs-long split, so the agent knows which calls block and
@@ -70,7 +79,7 @@ For a project where you want the agent to use lilbee reliably, copy three things
 
 | Tool | Description | Requires LLM backend |
 |------|-------------|---------------------|
-| `search(query, top_k, scope)` | Retrieve relevant chunks. `scope` is `"raw"` (source docs), `"wiki"` (wiki pages), or `"both"` (default) | No (uses pre-computed embeddings) |
+| `search(query, top_k, scope)` | Retrieve relevant chunks. Omitting `top_k` falls back to `cfg.top_k` so `settings_set` governs candidate count. `scope` is `"raw"` (source docs), `"wiki"` (wiki pages), or `"both"` (default) | No (uses pre-computed embeddings) |
 | `status()` | Show indexed documents, config, and chunk counts | No |
 | `sync()` | Sync the documents directory into the vector store | Yes (for embedding) |
 | `add(paths, force, enable_ocr, ocr_timeout)` | Add files, directories, or URLs and index them | Yes (for embedding) |
@@ -84,15 +93,13 @@ For a project where you want the agent to use lilbee reliably, copy three things
 | `model_show(model)` | Show catalog + installed metadata for a model ref | No |
 | `model_pull(model, source)` | Download a model, streaming progress via MCP notifications | Yes (download) |
 | `model_rm(model, source)` | Remove an installed model | No |
-| `wiki_list()` | List all wiki pages grouped by type | No |
-| `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
-| `wiki_status()` | Page counts, generator settings, last build timestamp | No |
-| `wiki_synthesize()` | Generate cross-source synthesis pages into `synthesis/` | Yes (LLM) |
-| `wiki_lint(wiki_source)` | Find orphan pages, stale links, and pending drafts | No |
-| `wiki_citations(wiki_source)` | Return per-section citation coverage for a source | No |
-| `wiki_drafts_list()` | List pending drafts with drift, faithfulness, and pairing info | No |
-| `wiki_drafts_diff(slug)` | Show the diff between a pending draft and the live page | No |
-| `wiki_prune()` | Move stale wiki pages to `archive/` | No |
+| `catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the lilbee model catalog (curated + Hugging Face) so the agent can pick what to pull | No |
+| `settings_list(group)` | List every writable setting with value, default, type, help text, choices, and `reindex_required` | No |
+| `settings_get(key)` | Get one setting's current value and metadata | No |
+| `settings_set(updates)` | Atomically update a batch of writable settings; validates, persists, and invalidates the in-process model and provider caches | No |
+| `settings_reset(keys)` | Reset writable settings to their built-in defaults | No |
+
+A separate, experimental `wiki_*` family is documented at the end of this page.
 
 ### Example responses
 
@@ -114,15 +121,33 @@ For a project where you want the agent to use lilbee reliably, copy three things
 }
 ```
 
-**`wiki_list()`**
+## API keys never come back over MCP
 
-```json
-{
-  "concepts": [{"slug": "braking-systems", "sources": 5}],
-  "entities": [{"slug": "henry-ford", "sources": 3}],
-  "drafts": [{"slug": "tire-pressure", "reason": "low_faithfulness"}]
-}
-```
+API-key fields (and `hf_token`) carry a `write_only` flag on the
+config. `settings_set` still accepts writes, but `settings_list`
+skips them and `settings_get` errors. Secrets do not round-trip.
+
+## Fine-tuning lilbee from your agent
+
+Drop this into any MCP-aware agent:
+
+> I'm going to index `~/projects/my-stack/` with lilbee and ask
+> questions about how the auth layer is wired and which functions call
+> which. Assess my hardware, recommend embedding / reranker / vision
+> models, pull them in the background, then adapt the lilbee defaults
+> for this library and question style.
+
+The agent answers the questions itself, so it only touches model roles
+that affect retrieval (`embedding_model`, `reranker_model`,
+`vision_model`). The `chat_model` slot is for the human's later TUI use.
+
+Typical flow: `lilbee_status` + `lilbee_settings_list` to see baseline,
+`lilbee_catalog_browse(task=...)` to pick models per role, `lilbee_model_pull`
+via the `lilbee-worker` subagent, one batched `lilbee_settings_set` to wire
+the models and tune retrieval (raise `top_k` / `diversity_max_per_source`
+for code-heavy libraries; enable `concept_graph`; lower `chunk_size`).
+If the result includes `reindex_required: true`, the agent should hand
+`lilbee_sync(force_rebuild=true)` to the worker.
 
 ## JSON CLI
 
@@ -180,3 +205,39 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 - Run `status` / `status()` first to confirm the right index is active.
 - Run `sync` / `sync()` after adding documents to refresh the index.
 - An LLM backend is needed for: (1) embedding during sync/indexing, (2) `ask` for answers, (3) wiki generation, (4) `model_pull`. Once indexed, `search` works without an LLM. By default, llama-cpp handles everything locally. Install `lilbee[litellm]` to route through external backends like Ollama, OpenAI, Anthropic, or Gemini.
+
+## Experimental: wiki tools
+
+The wiki layer is opt-in and still rough. The build / read tools
+(`wiki_list`, `wiki_read`, `wiki_build`, `wiki_update`, `wiki_synthesize`)
+return `{"error": "wiki not enabled"}` until the user runs
+`settings_set({"wiki": true})`. The remaining wiki tools work against
+the on-disk wiki directory regardless of the flag and report empty
+results when there's nothing to read. Skip everything here unless the
+user explicitly asks about wiki / synthesis pages.
+
+| Tool | Description | Requires LLM backend |
+|------|-------------|---------------------|
+| `wiki_status()` | Page counts, generator settings, last build timestamp, `wiki_enabled` flag | No |
+| `wiki_list()` | List all wiki pages grouped by type | No |
+| `wiki_read(slug)` | Return the body and metadata of a single wiki page | No |
+| `wiki_build()` | Generate the full topic / entity wiki from the indexed library | Yes (LLM) |
+| `wiki_update()` | Refresh the wiki after a sync (currently a full rebuild) | Yes (LLM) |
+| `wiki_synthesize()` | Generate cross-source synthesis pages into `synthesis/` | Yes (LLM) |
+| `wiki_lint(wiki_source)` | Find orphan pages, stale links, and pending drafts | No |
+| `wiki_citations(wiki_source)` | Return per-section citation coverage for a source | No |
+| `wiki_drafts_list()` | List pending drafts with drift, faithfulness, and pairing info | No |
+| `wiki_drafts_diff(slug)` | Show the diff between a pending draft and the live page | No |
+| `wiki_prune()` | Move stale wiki pages to `archive/` | No |
+
+**`wiki_list()` example response**
+
+```json
+{
+  "concepts": [{"slug": "braking-systems", "sources": 5}],
+  "entities": [{"slug": "henry-ford", "sources": 3}],
+  "drafts": [{"slug": "tire-pressure", "reason": "low_faithfulness"}]
+}
+```
+
+Query a built wiki via `search(..., scope="wiki")`.
