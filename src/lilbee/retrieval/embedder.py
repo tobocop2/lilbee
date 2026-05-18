@@ -1,7 +1,8 @@
 """Thin wrapper around LLM provider embeddings API."""
 
 import logging
-import math
+
+import numpy as np
 
 from lilbee.core.config import Config
 from lilbee.providers.base import LLMProvider
@@ -78,9 +79,11 @@ class Embedder:
                 f"Embedding dimension mismatch: expected {self._config.embedding_dim}, "
                 f"got {len(vector)}"
             )
-        for i, v in enumerate(vector):
-            if math.isnan(v) or math.isinf(v):
-                raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
+        arr = np.asarray(vector, dtype=np.float64)
+        bad = np.where(~np.isfinite(arr))[0]
+        if bad.size:
+            i = int(bad[0])
+            raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
 
     def validate_model(self) -> bool:
         """Check if the configured embedding model is available. No side effects."""
