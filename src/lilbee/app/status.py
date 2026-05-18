@@ -2,29 +2,50 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.system import default_data_dir
+from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
+
+LILBEE_LABEL_MAX_LEN = 40
+"""Soft cap on the compact-label width to keep the status pill inside the bar."""
+
+
+def _project_root() -> Path:
+    """Walk past a trailing ``.lilbee`` marker to the project dir that owns it."""
+    root = cfg.data_root
+    if root.name == LOCAL_ROOT_DIRNAME:
+        return root.parent
+    return root
 
 
 def lilbee_label() -> str:
-    """Human label for the active lilbee, used in the TUI status bar.
+    """Status-bar pill text for the active lilbee.
 
-    Precedence: cfg.show_lilbee_path -> full ``data_root`` string;
-    cfg.lilbee_name -> the user-set alias; data_root at the platform
-    default -> "global"; otherwise the data_root directory name.
+    User-set ``lilbee_name`` always wins. Global data dir always renders
+    "global". Otherwise the project path: compact (``~``-substituted,
+    truncated from the left to ``LILBEE_LABEL_MAX_LEN``) by default, or
+    full absolute when ``show_lilbee_path`` is on (toggle: Ctrl+L).
     """
-    if cfg.show_lilbee_path:
-        return str(cfg.data_root)
     if cfg.lilbee_name:
         return cfg.lilbee_name
-    # Resolve both sides so a trailing-slash or unresolved-symlink env
-    # var still matches the platform default.
     if cfg.data_root.expanduser().resolve() == default_data_dir().resolve():
         return "global"
-    return cfg.data_root.name
+    full = str(_project_root().expanduser().resolve())
+    if cfg.show_lilbee_path:
+        return full
+    home = str(Path.home())
+    compact = f"~{full[len(home) :]}" if full.startswith(home) else full
+    if len(compact) <= LILBEE_LABEL_MAX_LEN:
+        return compact
+    leaf = _project_root().name or compact
+    head_budget = LILBEE_LABEL_MAX_LEN - len(leaf) - 2
+    if head_budget <= 0:
+        return f"…/{leaf}"
+    return f"…{compact[-(LILBEE_LABEL_MAX_LEN - 1) :]}"
 
 
 class StatusConfig(BaseModel):

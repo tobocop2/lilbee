@@ -1230,7 +1230,7 @@ class TestSettingsMcp:
 class TestLilbeeLabel:
     """app.status.lilbee_label is the friendly name the TUI status bar shows."""
 
-    def test_user_alias_wins_over_directory_name(self, isolated_env):
+    def test_user_alias_wins(self, isolated_env):
         from lilbee.app.status import lilbee_label
 
         cfg.data_root = isolated_env
@@ -1238,21 +1238,27 @@ class TestLilbeeLabel:
         cfg.show_lilbee_path = False
         assert lilbee_label() == "my-project"
 
-    def test_path_toggle_overrides_alias(self, isolated_env):
-        from lilbee.app.status import lilbee_label
-
-        cfg.data_root = isolated_env
-        cfg.lilbee_name = "my-project"
-        cfg.show_lilbee_path = True
-        assert lilbee_label() == str(isolated_env)
-
-    def test_default_falls_back_to_directory_name(self, isolated_env):
+    def test_path_toggle_shows_full_absolute(self, isolated_env):
         from lilbee.app.status import lilbee_label
 
         cfg.data_root = isolated_env
         cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        assert lilbee_label() == str(isolated_env.resolve())
+
+    def test_project_local_label_strips_dotlilbee(self, isolated_env):
+        """A project-local ``.lilbee`` data_root labels as the project path, not '.lilbee'."""
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import LOCAL_ROOT_DIRNAME
+
+        project = isolated_env / "my-godot-game"
+        project.mkdir()
+        cfg.data_root = project / LOCAL_ROOT_DIRNAME
+        cfg.lilbee_name = ""
         cfg.show_lilbee_path = False
-        assert lilbee_label() == isolated_env.name
+        label = lilbee_label()
+        assert ".lilbee" not in label
+        assert "my-godot-game" in label
 
     def test_global_data_dir_label(self, isolated_env):
         from lilbee.app.status import lilbee_label
@@ -1263,16 +1269,15 @@ class TestLilbeeLabel:
         cfg.show_lilbee_path = False
         assert lilbee_label() == "global"
 
-    def test_whitespace_alias_falls_back_to_directory_name(self, isolated_env):
-        """A whitespace-only alias is stripped by the field validator so the
-        label-precedence chain falls through to the directory name."""
+    def test_whitespace_alias_falls_through(self, isolated_env):
+        """A whitespace-only alias is stripped so the path chain takes over."""
         from lilbee.app.status import lilbee_label
 
         cfg.data_root = isolated_env
         cfg.lilbee_name = "   "
         cfg.show_lilbee_path = False
         assert cfg.lilbee_name == ""
-        assert lilbee_label() == isolated_env.name
+        assert "/" in lilbee_label() or lilbee_label().startswith("~") or lilbee_label() == "global"
 
     def test_global_label_matches_when_data_root_has_trailing_slash(self, isolated_env):
         """A trailing-slash variant of the platform default still resolves to 'global'."""
@@ -1285,6 +1290,51 @@ class TestLilbeeLabel:
         cfg.lilbee_name = ""
         cfg.show_lilbee_path = False
         assert lilbee_label() == "global"
+
+    def test_home_paths_collapse_to_tilde(self, isolated_env, tmp_path, monkeypatch):
+        """Compact labels substitute ``~`` for $HOME."""
+        from lilbee.app.status import lilbee_label
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project = tmp_path / "code" / "lilbee-mcp-settings"
+        project.mkdir(parents=True)
+        cfg.data_root = project / ".lilbee"
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert label.startswith("~/")
+        assert "lilbee-mcp-settings" in label
+
+    def test_long_path_truncates_from_left(self, isolated_env):
+        """Paths over LILBEE_LABEL_MAX_LEN truncate with a leading ellipsis."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        deep = isolated_env
+        for chunk in ("aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "leaf"):
+            deep = deep / chunk
+        deep.mkdir(parents=True)
+        cfg.data_root = deep
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert label.startswith("…")
+        assert len(label) <= LILBEE_LABEL_MAX_LEN
+        assert "leaf" in label
+
+    def test_path_toggle_overrides_truncation(self, isolated_env):
+        """show_lilbee_path returns the full untruncated absolute path."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        deep = isolated_env
+        for chunk in ("aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "leaf"):
+            deep = deep / chunk
+        deep.mkdir(parents=True)
+        cfg.data_root = deep
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        label = lilbee_label()
+        assert label == str(deep.resolve())
+        assert len(label) > LILBEE_LABEL_MAX_LEN
 
 
 class TestCatalogBrowseMcp:
