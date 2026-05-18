@@ -235,7 +235,7 @@ def _handle_chat_streaming(
         completed_cleanly = True
     finally:
         if schema_parser is not None:
-            _drain_schema_parser_flush(reply, text, schema_parser)
+            _drain_schema_parser_flush(text, schema_parser)
         text.flush()
     if completed_cleanly:
         reply.send(WireKind.STREAM_END, None)
@@ -270,18 +270,17 @@ def _emit_stream_chunk(
 
 
 def _drain_schema_parser_flush(
-    reply: Reply,
     text: _TextBatchBuffer,
     schema_parser: StreamingResponseParser,
 ) -> None:
-    """Release any content/tool-call deltas held by the schema parser's safety margin."""
-    content_delta, schema_deltas = schema_parser.flush()
+    """Release any content held by the schema parser's safety margin at stream end.
+
+    Tool-call completion is detected during ``feed()`` on every chunk, so the
+    only thing ``flush()`` can carry is content the safety margin held back.
+    """
+    content_delta, _ = schema_parser.flush()
     if content_delta:
         text.append(content_delta)
-    if schema_deltas:
-        text.flush()
-        for delta in schema_deltas:
-            reply.send(WireKind.STREAM_CHUNK, delta)
 
 
 def _extract_non_streaming_result(

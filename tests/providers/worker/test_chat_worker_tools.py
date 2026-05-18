@@ -444,6 +444,64 @@ def test_chat_session_caches_none_schema_for_unrecognised_template(monkeypatch, 
     assert session.response_schema is None
 
 
+def test_non_streaming_schema_extraction_skipped_when_model_emits_plain_text() -> None:
+    """When schema is cached but the model just emits text (no tool markup),
+    the response passes through unchanged with finish_reason left at STOP.
+    """
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+
+    reply, conn = _make_reply()
+    session = _StubSession(
+        response={
+            "choices": [
+                {
+                    "message": {"content": "plain prose", "tool_calls": None},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    session.response_schema = SCHEMAS[ModelFamily.QWEN3]
+    payload = ChatRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+        tools=[{"type": "function", "function": {"name": "search", "parameters": {}}}],
+    )
+    _handle_chat(reply, payload, WorkerLoopState(session=session))
+    kind, value = conn.sent[0]
+    assert kind == "result"
+    assert isinstance(value, ChatResult)
+    assert value.text == "plain prose"
+    assert value.tool_calls == ()
+    assert value.finish_reason == FinishReason.STOP
+
+
+def test_streaming_flush_releases_held_content_via_drain() -> None:
+    """A short text-only stream gets held in the safety margin until flush.
+
+    Exercises ``_drain_schema_parser_flush``: when the buffer ends mid-stream
+    with content held back by the marker-opener safety margin (here, the
+    trailing ``<``), the end-of-stream drain releases it as a final text
+    delta. Without the drain those bytes would never reach the client.
+    """
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+
+    reply, conn = _make_reply()
+    # Chunk ends with '<' which the safety margin holds back; no </tool_call>
+    # ever arrives, so the drain on stream end must release it.
+    stream = iter([{"choices": [{"delta": {"content": "hi <"}}]}])
+    session = _StubSession(response=stream)
+    session.response_schema = SCHEMAS[ModelFamily.QWEN3]
+    payload = ChatRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
+    )
+    _handle_chat(reply, payload, WorkerLoopState(session=session))
+    text_chunks = [v for kind, v in conn.sent if kind == "stream_chunk" and isinstance(v, str)]
+    assert "hi <" in "".join(text_chunks)
+
+
 def test_streaming_schema_extraction_emits_tool_delta_from_text_chunks() -> None:
     """A streamed sequence of text deltas containing ``<tool_call>...{json}...</tool_call>``
     surfaces a ``ToolCallDelta`` via schema extraction, with prefix text flushed first.
