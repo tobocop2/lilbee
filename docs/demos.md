@@ -68,34 +68,6 @@ Crawling, API-Keys, System.
 
 ![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
-## Agent: self-tune for a PDF manual (upgrade-story)
-
-Same human question ("steering wheel shakes on the highway") asked
-twice against a Crown Victoria owner's manual. **Turn 1**: the agent
-runs the query at lilbee's previous defaults (`top_k=8`,
-`max_distance=0.65`); it finds 4 manual entries and admits the
-manual doesn't cover the symptom directly. **Turn 2**: the agent
-tunes to the new shipped defaults (`top_k=12`, `max_distance=0.75`,
-`diversity_max_per_source=5`) and reruns; the same query now surfaces
-10+ entries across pages 151, 180, 184, 159, 207, 263, ... and the
-answer stays grounded in the manual. Ends with a one-line summary of
-which settings changed.
-
-The demo is also the rebalanced-defaults rationale on screen: the
-agent's tuned values are exactly what lilbee now ships.
-
-![two-turn conversation against a PDF manual: at the previous lilbee defaults the agent finds 4 manual entries and admits the manual is thin on the symptom; after tuning to the new shipped defaults the same query surfaces 10+ entries across many pages and the answer stays grounded in the manual. Ends with a one-line tuning summary.](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-pdf-self-tune.gif)
-
-## Agent: self-tune for a code library (godot class reference)
-
-Same shape against the godot 4 class reference (810 XMLs). The agent
-runs a single `lilbee_search` at defaults, returns AStar3D and flags
-AStar2D as missing, then tunes (batched `lilbee_settings_set`
-widening `top_k`) and reruns; the second answer covers AStar3D +
-AStar2D + AStarGrid2D with citations.
-
-![two-turn natural conversation: turn 1 at default settings returns AStar3D only and the agent flags AStar2D as missing; turn 2 the agent batches one lilbee_settings_set widening top_k and other knobs, runs the same search, and the answer now covers AStar3D + AStar2D + AStarGrid2D. The chat stream prints a one-line tuning summary naming each knob and its before-and-after value, then resets settings.](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-self-tune.gif)
-
 ## Agent: code (lilbee talking to lilbee)
 
 The headline grounding demo. An agent indexes lilbee's own source through lilbee's
