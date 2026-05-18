@@ -72,8 +72,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/reset",
         "_cmd_reset",
-        args_hint="confirm",
-        help_text="Factory reset (deletes all data)",
+        help_text="Factory reset (asks for confirmation)",
+    ),
+    SlashCommand(
+        "/rebuild",
+        "_cmd_rebuild",
+        help_text="Re-index the documents directory from scratch",
     ),
     SlashCommand("/status", "_cmd_status", help_text="Show knowledge-base status"),
     SlashCommand("/settings", "_cmd_settings", help_text="Open settings"),

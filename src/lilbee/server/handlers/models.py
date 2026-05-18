@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -23,8 +24,7 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.catalog.refs import hf_repo_from_ref
-from lilbee.catalog.types import ModelSource, ModelTask
-from lilbee.core import settings
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.model_ref import parse_model_ref
@@ -151,9 +151,8 @@ async def _set_model(
     field: Literal["chat_model", "embedding_model", "vision_model", "reranker_model"],
     model: str,
 ) -> SetModelResponse:
-    """Shared helper for switching a model field."""
-    setattr(cfg, field, model)
-    settings.set_value(cfg.data_root, field, model)
+    """Persist a model field through the shared write boundary."""
+    apply_settings_update({field: model})
     return SetModelResponse(model=model)
 
 
@@ -224,25 +223,12 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     embedding model that built the persisted vector store. The caller is
     expected to trigger a rebuild (``lilbee rebuild`` or ``POST /api/sync``
     with ``force_rebuild=true``). Search and ingest will refuse to operate
-    until that happens.
-
-    Pins a legacy store's identity to the OLD cfg before mutating it. Without
-    this step, a pre-upgrade store with chunks but no ``_meta`` row would have
-    its meta lazy-initialized from the NEW cfg on the next read, hiding the
-    drift the caller just introduced.
+    until that happens. The settings boundary pins legacy store meta to
+    the OLD ref before the write and computes ``reindex_required`` after.
     """
-    from lilbee.data.store.lance_helpers import refs_compatible
-
     normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
-    store = get_services().store
-    store.initialize_meta_if_legacy()
-    await _set_model("embedding_model", normalized)
-    store.canonicalize_meta_if_legacy()
-    meta = store.get_meta()
-    reindex_required = meta is not None and not refs_compatible(
-        meta["embedding_model"], normalized, meta["embedding_dim"], meta["embedding_dim"]
-    )
-    return SetModelResponse(model=normalized, reindex_required=reindex_required)
+    result = apply_settings_update({"embedding_model": normalized})
+    return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
@@ -339,17 +325,18 @@ async def models_catalog(
     offset: int = 0,
 ) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
-    # task arrives as a raw query-string; validate against the closed enum
-    # at the HTTP boundary instead of letting an unknown value silently
-    # short-circuit the catalog filter inside.
+    # Validate every closed-set param at the HTTP boundary instead of
+    # letting unknown values silently short-circuit the filter inside.
     parsed_task = ModelTask(task) if task else None
+    parsed_size = CatalogSize(size) if size else None
+    parsed_sort = CatalogSort(sort)
     result = get_catalog(
         task=parsed_task,
         search=search,
-        size=size,
+        size=parsed_size,
         installed=installed,
         featured=featured,
-        sort=sort,
+        sort=parsed_sort,
         limit=limit,
         offset=offset,
     )
