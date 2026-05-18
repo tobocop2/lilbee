@@ -65,6 +65,7 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 ## Highlights
 
 - **One program, one install.** A model catalog, a search over your own files and code, and a chat. The same executable is also a CLI, a Textual TUI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library (Python library reference is coming; for now the source under `src/lilbee/` is the canonical reference). No background daemon, no separate inference server, no vector database to stand up.
+- **Compact.** The pip wheel is ~10-44 MB (down from the 450-600 MB bundled Electron UIs popular all-in-one desktop AI apps ship before any models load — close to an order of magnitude). The standalone binary, which folds Python, the model runtime, OCR, the crawler, and the vector store into a single file, lands around 253-365 MB across Linux, macOS, and Windows.
 - **Answers cite the source line.** Ask a question; get a reply with clickable citations pointing back to the exact line they came from.
 - **Bring your own files.** PDFs, Office files, ebooks, code in 150+ languages, scanned pages and photos (OCR), and crawled docs sites turned into searchable markdown.
 - **A built-in model catalog.** Browse and pull models straight from Hugging Face Hub, from inside the app. lilbee is the model runtime; no hunting for files yourself.
