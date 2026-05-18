@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # fanout-cuda dispatches publish-cuda-packages.yml
 
 concurrency:
   group: build-cuda-executables-${{ inputs.tag }}
@@ -193,3 +194,36 @@ jobs:
           tag_name: ${{ inputs.tag }}
           files: dist/${{ matrix.asset_name }}
           fail_on_unmatched_files: true
+
+  # Runs in parallel with the build matrix. Polls the release for the cu125
+  # Linux asset (the only one publish-cuda-packages.yml consumes) and dispatches
+  # it as soon as that asset attaches, without waiting for Windows cu125 to
+  # finish its ~3-4h build. Fails loudly if cu125 Linux never attaches.
+  fanout-cuda:
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Wait for cu125 Linux asset and dispatch publish-cuda-packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 14000 ))
+          while true; do
+            names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
+            case " ${names} " in
+              *" lilbee-linux-x86_64-cu125 "*)
+                echo "cu125 Linux attached; dispatching publish-cuda-packages"
+                gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
+                exit 0
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::error::cu125 Linux never attached to ${TAG} within 4h; skipping publish-cuda-packages dispatch"
+              exit 1
+            fi
+            sleep 60
+          done

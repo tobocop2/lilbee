@@ -13,12 +13,19 @@ inputs:
 runs:
   using: composite
   steps:
-    # publish-docker.yml curls the GH-release Linux binary; publish-packages.yml
-    # pins Linux and macOS-arm64 by hash. Nothing downstream consumes
-    # lilbee-windows-x86_64.exe, so it is not in the wait list -- waiting on
-    # the ~3h45m Windows nuitka build would block Homebrew / AUR / Nix / Docker
-    # for hours after their inputs are already on the release. Linux ~2h15m
-    # and macOS-arm64 ~1h25m are the real gate.
+    # CUDA build runs entirely from source, doesn't need Vulkan binaries on the
+    # release, so dispatch it up front in parallel with the Vulkan wait below.
+    # build-cuda-executables.yml has its own watcher that fires
+    # publish-cuda-packages.yml once cu125 Linux attaches.
+    - name: Trigger Build CUDA Executables
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh workflow run build-cuda-executables.yml \
+          --repo ${{ github.repository }} \
+          -f tag=${{ inputs.tag }}
+
     - name: Wait for the release to have the downstream-consumed executables
       shell: bash
       env:
