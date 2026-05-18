@@ -101,7 +101,7 @@ class LilbeeApp(App[None]):
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
-        Binding("ctrl+b", "toggle_lilbee_path", "Path/Name", show=True),
+        Binding("ctrl+l", "toggle_lilbee_path", "Path/Name", show=True),
         # Non-priority so Chat's "focus_commands" and Catalog's
         # "focus_search" still win on those screens. Fires only on
         # screens that don't bind slash themselves, routing the user
