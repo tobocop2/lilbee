@@ -277,14 +277,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.DISPLAY,
         help_text=(
             "Human-readable label for this lilbee, shown in the status bar. "
-            "Empty falls back to the data-root directory name (or 'global')."
+            "Empty falls back to 'global' for the platform default dir or "
+            "to the project path (~-substituted and left-truncated)."
         ),
     ),
     "show_lilbee_path": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.DISPLAY,
-        help_text="Show the full data-root path in the status bar instead of the friendly name.",
+        help_text=(
+            "Show the full absolute path in the status bar: expands 'global' "
+            "to its on-disk path and skips ~ substitution / truncation."
+        ),
     ),
     "theme": SettingDef(
         str,

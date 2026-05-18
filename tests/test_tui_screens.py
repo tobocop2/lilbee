@@ -2455,7 +2455,7 @@ async def test_app_cycle_theme():
 
 
 async def test_app_toggle_lilbee_path_flips_setting():
-    """Ctrl+B (action_toggle_lilbee_path) flips show_lilbee_path on cfg."""
+    """F4 (action_toggle_lilbee_path) flips show_lilbee_path on cfg."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()

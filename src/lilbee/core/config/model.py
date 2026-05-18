@@ -56,11 +56,13 @@ class Config(BaseSettings):
     # ``vault_path`` so a host UI can deep-link into the vault.
     vault_base: Path | None = ConfigField(default=None, writable=True)
 
-    # Human-readable label for the active lilbee. Empty falls back to the
-    # data_root basename (or "global" for the platform default dir).
+    # Human-readable label for the active lilbee. Empty falls back to
+    # "global" for the platform default dir, otherwise the project path
+    # (~-substituted and left-truncated to a hard cap).
     lilbee_name: str = ConfigField(default="", writable=True)
-    # If True, the status bar shows the full data_root path instead of
-    # the friendly name; useful when juggling several project-local libs.
+    # If True, the status bar pill shows the full absolute path: expands
+    # "global" to the on-disk platform-default path and skips the
+    # ~-substitution / left-truncation for project paths. Toggled by F4.
     show_lilbee_path: bool = ConfigField(default=False, writable=True)
 
     chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)

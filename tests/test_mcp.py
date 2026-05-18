@@ -1269,6 +1269,16 @@ class TestLilbeeLabel:
         cfg.show_lilbee_path = False
         assert lilbee_label() == "global"
 
+    def test_show_path_expands_global_to_default_data_dir(self, isolated_env):
+        """F4 on global swaps 'global' for the actual platform-default path."""
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = default_data_dir()
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        assert lilbee_label() == str(default_data_dir())
+
     def test_whitespace_alias_falls_through(self, isolated_env):
         """A whitespace-only alias is stripped so the path chain takes over."""
         from lilbee.app.status import lilbee_label

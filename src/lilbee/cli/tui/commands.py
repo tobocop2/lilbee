@@ -55,8 +55,8 @@ class LilbeeCommandProvider(Provider):
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",
-                "Delete all data (requires /reset confirm)",
-                self._action_noop,
+                "Delete all data (asks for confirmation)",
+                self._action_reset,
             ),
             ("Quit", "Exit lilbee", app.action_quit),
         ]
@@ -148,5 +148,13 @@ class LilbeeCommandProvider(Provider):
     def _action_open_wiki(self) -> None:
         self._app.switch_view("Wiki")
 
-    def _action_noop(self) -> None:
-        self.screen.app.notify("Type '/reset confirm' in chat to reset")
+    def _action_reset(self) -> None:
+        """Trigger /reset from the palette so the ConfirmDialog flow fires."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = self._app
+        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        if chat is None:
+            app.notify("Open Chat to run /reset")
+            return
+        chat._cmd_reset("")
