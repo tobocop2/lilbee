@@ -61,7 +61,7 @@ The rule for you (the agent):
 3. Then search.
 
 If a `lilbee_search` call ever returns an MCP timeout, treat it as "indexing isn't fully
-done yet" — wait 10 seconds, re-check `lilbee_status`, and retry. Do **not** change
+done yet". Wait 10 seconds, re-check `lilbee_status`, and retry. Do **not** change
 strategy and reach for other tools; the search will work the moment the embedder is free.
 
 ## Tools, by cost
