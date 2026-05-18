@@ -54,25 +54,26 @@ def _compact_path(full: str) -> str:
 def lilbee_label() -> str:
     """Status-bar pill text for the active lilbee.
 
-    User-set ``lilbee_name`` always wins. Global data dir always renders
-    "global". Otherwise the project path: compact (``~``-substituted,
-    truncated to ``LILBEE_LABEL_MAX_LEN`` keeping the leaf visible) by
-    default, or full absolute when ``show_lilbee_path`` is on (toggle:
-    Ctrl+L). Uses ``os.sep`` so the separator is native on Windows.
+    User-set ``lilbee_name`` always wins. Default behaviour: "global"
+    for the platform default data dir, otherwise the project path
+    (``~``-substituted, left-truncated to ``LILBEE_LABEL_MAX_LEN``).
+    ``show_lilbee_path`` (toggled by F4) expands the label to the full
+    untruncated absolute path. Useful when the user wants to see what
+    "global" actually resolves to on disk, or what the truncated path
+    head was hiding.
     """
     if cfg.lilbee_name:
         return cfg.lilbee_name
-    if cfg.data_root.expanduser().resolve() == default_data_dir().resolve():
+    is_global = cfg.data_root.expanduser().resolve() == default_data_dir().resolve()
+    if cfg.show_lilbee_path:
+        return str(default_data_dir() if is_global else _project_root().expanduser().resolve())
+    if is_global:
         return "global"
     full = str(_project_root().expanduser().resolve())
-    if cfg.show_lilbee_path:
-        return full
     compact = _compact_path(full)
     if len(compact) <= LILBEE_LABEL_MAX_LEN:
         return compact
     leaf = _project_root().name or compact
-    # Reserve "…<sep>" for the head; cap the leaf to the remaining budget
-    # so a single super-long directory name still respects MAX_LEN.
     leaf_budget = LILBEE_LABEL_MAX_LEN - 1 - len(os.sep)
     return f"{_ELLIPSIS}{os.sep}{_truncate_leaf(leaf, leaf_budget)}"
 
