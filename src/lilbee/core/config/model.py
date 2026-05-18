@@ -265,7 +265,9 @@ class Config(BaseSettings):
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the
     # model's training window; this caps it at a sane ceiling.
-    num_ctx_max: int = ConfigField(default=16384, ge=512, writable=True)
+    # 32K fits opencode / Claude Code-class system prompts (~25K-30K tokens)
+    # without overflow; 16K used to cap them mid-prompt.
+    num_ctx_max: int = ConfigField(default=32768, ge=512, writable=True)
 
     # Flash attention. None (default) = on with TypeError fallback for
     # older llama-cpp-python builds, True = force on, False = off.

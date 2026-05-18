@@ -794,7 +794,7 @@ class TestLlamaCppProvider:
             ):
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 ctx_used = mock_llama_cls.call_args[1]["n_ctx"]
-            assert 512 <= ctx_used <= 16384
+            assert 512 <= ctx_used <= 32768
             assert ctx_used % 256 == 0
             # Should be much smaller than the 131072 training window on a tight host.
             assert ctx_used < 131072
