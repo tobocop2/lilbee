@@ -130,3 +130,20 @@ jobs:
       - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}
+
+  # CUDA lane runs in parallel with publish-pypi: building standalone CUDA exes
+  # has no dependency on PyPI succeeding or on Vulkan/Metal binaries. Only needs
+  # the tag verified (guard) and the GH release to exist (attach-prerelease did
+  # that during the RC run). build-cuda-executables itself watches for the
+  # cu125 Linux asset and dispatches publish-cuda-packages once it attaches.
+  dispatch-cuda:
+    needs: [guard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch build-cuda-executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build-cuda-executables.yml \
+            --repo ${{ github.repository }} \
+            -f tag=${{ inputs.tag }}

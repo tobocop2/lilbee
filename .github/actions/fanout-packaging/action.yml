@@ -13,19 +13,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # CUDA build runs entirely from source, doesn't need Vulkan binaries on the
-    # release, so dispatch it up front in parallel with the Vulkan wait below.
-    # build-cuda-executables.yml has its own watcher that fires
-    # publish-cuda-packages.yml once cu125 Linux attaches.
-    - name: Trigger Build CUDA Executables
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh workflow run build-cuda-executables.yml \
-          --repo ${{ github.repository }} \
-          -f tag=${{ inputs.tag }}
-
     - name: Wait for the release to have the downstream-consumed executables
       shell: bash
       env:
