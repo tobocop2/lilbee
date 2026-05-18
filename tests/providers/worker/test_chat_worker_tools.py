@@ -151,6 +151,14 @@ def test_session_chat_drops_none_tool_fields_from_kwargs(monkeypatch, tmp_path) 
     captured: dict[str, Any] = {}
 
     class _Stub:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
             captured.update(kwargs)
             return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
@@ -177,6 +185,14 @@ def test_session_chat_passes_tools_when_present(monkeypatch, tmp_path) -> None:
     captured: dict[str, Any] = {}
 
     class _Stub:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
             captured.update(kwargs)
             return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
@@ -311,3 +327,100 @@ def test_coerce_tool_calls_drops_malformed_entries(raw_calls: Any) -> None:
     from lilbee.providers.worker.chat_worker import _coerce_tool_calls
 
     assert _coerce_tool_calls(raw_calls) == ()
+
+
+def test_session_chat_raises_context_window_exceeded_on_unfittable_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    """A prompt whose un-droppable subset exceeds the budget raises the typed
+    ContextWindowExceededError instead of falling through to llama-cpp's
+    own ValueError.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _TinyCtx:
+        def n_ctx(self) -> int:
+            return 256  # tight: 256 - 1024 reserve - 64 margin < 0
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("inference must not run when windowing rejects the prompt")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _TinyCtx())
+    big_user_text = "x" * 1000
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": big_user_text},
+            ],
+            stream=False,
+            options=None,
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+    assert excinfo.value.requested > excinfo.value.available
+
+
+def test_session_chat_drops_oldest_tool_pair_when_prompt_overflows(monkeypatch, tmp_path) -> None:
+    """When trimming makes the prompt fit, the worker forwards the trimmed
+    list to ``create_chat_completion`` and inference runs normally.
+    """
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    seen_messages: list[Any] = []
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 2048
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(
+            self, *, messages: list[dict[str, str]], stream: bool, **_kwargs: Any
+        ) -> Any:
+            seen_messages.append(messages)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    huge_tool_result = "x" * 1800  # bigger than the remaining budget
+    session.chat(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "s", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": huge_tool_result},
+            {"role": "user", "content": "now answer"},
+        ],
+        stream=False,
+        options={"num_predict": 256},
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    forwarded = seen_messages[0]
+    # The tool pair was dropped; system and the in-flight user message survive.
+    assert all(m.get("role") != "tool" for m in forwarded)
+    assert forwarded[0]["role"] == "system"
+    assert forwarded[-1]["content"] == "now answer"

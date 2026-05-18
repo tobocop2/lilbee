@@ -397,6 +397,34 @@ class TestNonStreamingCompletion:
         assert body["error"]["type"] == "api_error"
         assert not chat_lock().locked()
 
+    async def test_context_window_exceeded_returns_400_with_openai_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        """When the provider raises ``ContextWindowExceededError`` (prompt
+        too large for the loaded model's context window), the wire surface
+        is a 400 with ``context_length_exceeded``, not a generic 500.
+        """
+        from lilbee.providers.base import ContextWindowExceededError
+
+        services_with_chat_model.provider.chat.side_effect = ContextWindowExceededError.from_counts(
+            requested=161_000, available=40_960, model=INSTALLED_REF
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "context_length_exceeded"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "161000" in body["error"]["message"]
+        assert not chat_lock().locked()
+
 
 class TestStreamingCompletion:
     async def test_stream_emits_role_content_done(self, services_with_chat_model, _auth_token):
@@ -502,6 +530,34 @@ class TestStreamingCompletion:
         chunks = _sse_to_chunks(resp.content)
         assert chunks[0]["error"]["code"] == "internal_error"
         assert chunks[0]["error"]["type"] == "api_error"
+        assert chunks[-1] == "[DONE]"
+        assert not chat_lock().locked()
+
+    async def test_stream_context_window_exceeded_emits_400_error_frame(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Mid-stream context overflow surfaces as one SSE error frame with
+        ``context_length_exceeded`` followed by ``[DONE]``, not a generic
+        ``internal_error``.
+        """
+        from lilbee.providers.base import ContextWindowExceededError
+
+        services_with_chat_model.provider.chat.side_effect = ContextWindowExceededError.from_counts(
+            requested=161_000, available=40_960, model=INSTALLED_REF
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": True,
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[0]["error"]["code"] == "context_length_exceeded"
+        assert chunks[0]["error"]["type"] == "invalid_request_error"
         assert chunks[-1] == "[DONE]"
         assert not chat_lock().locked()
 

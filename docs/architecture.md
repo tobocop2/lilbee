@@ -262,6 +262,21 @@ Each active role spawns a subprocess. Memory cost: ~50 MB Python overhead per wo
 
 First-call latency per role is the spawn + model-load cost: 1–3 s on Apple Silicon, longer on cold disk. The TUI surfaces this via spawn notifications wired through `Services.add_pool_listener` (see `cli/tui/app.py`), and `cfg.worker_pool_eager_start` opts into amortizing the cost at TUI startup.
 
+### Chat context-window management
+
+OpenAI-compatible clients send the full conversation history every request. Frontier models tolerate this with 200K+ context windows; lilbee-hosted local models top out at the loaded `num_ctx`, typically 32-64K. A multi-tool agent loop accumulates tool results across turns and reaches that ceiling fast.
+
+The chat worker takes ownership of the trim. After `_ensure_loaded`, each chat call runs the OpenAI-wire messages through `window_messages_to_budget` (in `providers/worker/windowing.py`), which:
+
+1. Counts each message with the model's own `tokenize` (precise, not an estimate).
+2. If the total fits, returns the list unchanged.
+3. Otherwise drops the oldest **tool-call/tool-result pair** (paired by `tool_call_id`), then the oldest user/assistant exchanges, until the prompt fits the budget `n_ctx - max_tokens - safety_margin`.
+4. Always preserves the system message, the trailing user message, and any in-flight tool exchange.
+
+When trimming can't make the prompt fit (system + trailing user message alone exceeds the budget), the worker raises `ContextWindowExceededError`. That typed exception crosses the worker boundary as a `WorkerError` named `"ContextWindowExceededError"`, gets reconstructed parent-side in `LlamaCppProvider._raise_chat_worker_error`, and the route layer maps it to a `context_length_exceeded` 400 in the OpenAI envelope.
+
+This logic applies only to native llama-cpp refs. SDK-routed refs (frontier providers) skip the trim entirely; they have native room and their own context limits to manage.
+
 ---
 
 ## Search Pipeline

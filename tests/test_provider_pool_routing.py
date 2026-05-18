@@ -213,6 +213,32 @@ def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_p
         provider.shutdown()
 
 
+def test_chat_pool_context_overflow_reraises_as_typed_exception(monkeypatch, tmp_path) -> None:
+    """A worker reporting ``ContextWindowExceededError`` survives the wire as
+    a typed ``ContextWindowExceededError`` on the parent side, NOT as a generic
+    ``ProviderError``. The route layer relies on the typed catch to surface
+    a 400 ``context_length_exceeded`` instead of a 500.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch,
+        WorkerError(
+            "ContextWindowExceededError",
+            "Prompt of 161000 tokens exceeds the 40960-token context window of 'X'.",
+            "",
+        ),
+    )
+    try:
+        with pytest.raises(ContextWindowExceededError) as excinfo:
+            provider.chat([{"role": "user", "content": "x"}])
+        assert "161000" in str(excinfo.value)
+    finally:
+        provider.shutdown()
+
+
 def test_embed_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool ``TimeoutError`` must surface as ProviderError instead of leaking raw."""
     from lilbee.providers.base import ProviderError
@@ -478,6 +504,14 @@ def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tm
 
 def _stub_chat_load(_self) -> Any:
     class _StubLlama:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
             tokens = ["hi", " ", "there"]
             if stream:

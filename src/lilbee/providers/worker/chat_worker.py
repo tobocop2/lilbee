@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import time
 from typing import Any
 
+from lilbee.providers.base import ContextWindowExceededError
 from lilbee.providers.worker.transport import (
     ChatRequest,
     ChatResult,
@@ -16,8 +18,20 @@ from lilbee.providers.worker.transport import (
     ToolCallDelta,
 )
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.windowing import window_messages_to_budget
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+
+log = logging.getLogger(__name__)
+
+# Reserved tokens for the model's response when the caller doesn't set
+# ``num_predict``. Conservative so the model has room to produce a full
+# answer (typical tool-using turns produce 256-768 tokens of reply).
+_DEFAULT_RESPONSE_BUDGET = 1024
+
+# Token safety margin between count-time and inference-time to absorb chat-
+# template overhead and tokenizer drift around special tokens.
+_CTX_SAFETY_MARGIN = 64
 
 _ABORT_BRIDGE_POLL_S = 0.025
 """How often the abort bridge polls the parent's mp.Value flag.
@@ -72,12 +86,47 @@ class _ChatSession:
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
+        windowed = self._window_messages(messages, options, llm)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
-        return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
+        return llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+
+    def _window_messages(
+        self,
+        messages: list[dict[str, Any]],
+        options: dict[str, Any] | None,
+        llm: Any,
+    ) -> list[dict[str, Any]]:
+        """Trim *messages* to fit the loaded model's context window.
+
+        Raises :class:`ContextWindowExceededError` when the un-droppable
+        subset (system + the trailing user message) alone exceeds the
+        budget. Returns the original message list unchanged when it
+        already fits.
+        """
+        reserved = (options or {}).get("num_predict") or _DEFAULT_RESPONSE_BUDGET
+        budget = int(llm.n_ctx()) - int(reserved) - _CTX_SAFETY_MARGIN
+        outcome = window_messages_to_budget(
+            messages,
+            budget=budget,
+            tokenize=lambda data: llm.tokenize(data, add_bos=False, special=False),
+        )
+        if outcome.messages is None:
+            raise ContextWindowExceededError.from_counts(
+                requested=outcome.requested,
+                available=outcome.available,
+                model=self._model_path or "model",
+            )
+        if outcome.dropped:
+            log.info(
+                "Chat windowing dropped %d messages to fit budget=%d",
+                outcome.dropped,
+                budget,
+            )
+        return outcome.messages
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
         from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path

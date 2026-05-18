@@ -66,6 +66,46 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
+class ContextWindowExceededError(ProviderError):
+    """Raised when a chat prompt does not fit the loaded model's context window.
+
+    Subclasses ``ProviderError`` so existing ``except ProviderError`` paths
+    still catch it; the route layer matches on ``isinstance`` to surface
+    a ``context_length_exceeded`` 400 in the OpenAI envelope.
+
+    Two construction paths: worker-side code with structured counts uses
+    :meth:`from_counts` so the canonical message is generated consistently;
+    parent-side code re-raising after the worker boundary uses the plain
+    constructor with the already-formatted message that crossed the pipe.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model: str = "",
+        requested: int = 0,
+        available: int = 0,
+    ) -> None:
+        self.model = model
+        self.requested = requested
+        self.available = available
+        super().__init__(message, provider="llama-cpp")
+
+    @classmethod
+    def from_counts(
+        cls, *, requested: int, available: int, model: str
+    ) -> ContextWindowExceededError:
+        """Build from structured token counts with a canonical user-facing message."""
+        return cls(
+            f"Prompt of {requested} tokens exceeds the {available}-token "
+            f"context window of {model!r}.",
+            model=model,
+            requested=requested,
+            available=available,
+        )
+
+
 ChatMessage = dict[str, Any]
 """One chat message; ``content`` may be a string or a list of content blocks."""
 
