@@ -411,7 +411,7 @@ Every command returns a single JSON object on stdout. Errors return non-zero exi
 
 ### Opencode integration
 
-opencode is the supported agent integration today. `lilbee launch opencode` is the fast path: spawns a server, passes the config inline via `OPENCODE_CONFIG_CONTENT`, installs the `lilbee-mcp` skill into opencode's global skills dir, and pre-populates the model picker. Recommend pulling chat models via the TUI catalog before first launch; `lilbee` (no args) opens the TUI, `/models` is the catalog screen. `lilbee agent-config opencode` prints the same block without launching, and `lilbee agent-config litellm` prints a LiteLLM proxy config for fanout. `lilbee serve` directly exposes `/v1/models` and `/v1/chat/completions` if you need to wire something custom.
+opencode is the supported agent integration today. `lilbee launch opencode` is the fast path. Pull chat models via the TUI catalog first (`lilbee` -> `/models`). `lilbee agent-config opencode` prints the same config block without launching. `lilbee serve` exposes `/v1/models` and `/v1/chat/completions` directly for anything custom.
 
 See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 

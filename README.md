@@ -242,15 +242,13 @@ The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](doc
 
 ### Use opencode with lilbee models
 
-opencode is the supported agent integration today. Pull a chat model first via the TUI: run `lilbee` and use the catalog screen (`/models`) to browse what's available, then pick something tool-capable. You can also let an agent discover and pull models for you via MCP if you prefer, but the TUI's catalog is built for interactive browsing.
-
-Then, one command:
+opencode is the supported agent integration today. Pull a chat model first via the TUI: run `lilbee`, use the catalog screen (`/models`) to browse, and pick something tool-capable. Then:
 
 ```bash
 lilbee launch opencode
 ```
 
-That starts a lilbee server in the background, hands opencode an inline config pointing at your local models, installs the bundled `lilbee-mcp` skill into opencode's global skills directory so the agent knows how to use lilbee out of the box, and pre-populates the model picker. When opencode exits the spawned server shuts down. Nothing to paste, nothing to edit.
+opencode opens with your local lilbee models in the picker and the `lilbee-mcp` skill ready to use. `lilbee launch opencode --help` for the flags.
 
 ## HTTP Server
 

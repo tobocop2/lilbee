@@ -229,8 +229,8 @@ opencode is the supported agent integration today.
 
 Pull a chat model first via the TUI: run `lilbee`, open the catalog
 (`/models`), and pick something tool-capable. You can also let an agent
-discover and pull models for you via MCP if you prefer; the TUI's catalog
-screen is built for browsing interactively.
+discover and pull models for you via MCP; the TUI's catalog is built for
+browsing interactively.
 
 Then, one command:
 
@@ -238,19 +238,10 @@ Then, one command:
 lilbee launch opencode
 ```
 
-starts a lilbee server in the background, passes opencode an inline config via
-`OPENCODE_CONFIG_CONTENT`, installs the bundled `lilbee-mcp` skill into
-opencode's global skills directory (`~/.config/opencode/skills/lilbee-mcp/`)
-so the agent knows how to use lilbee from turn one, and pre-populates
-opencode's model picker. The skill is copied once and skipped on subsequent
-runs so any edits you make are preserved. When opencode exits, the spawned
-server is stopped (`--keep-serving` keeps it up).
-
-If you'd rather wire opencode up yourself, `lilbee agent-config opencode`
-prints the same config block. For fanning lilbee out to a stack you already
-front with a LiteLLM proxy, `lilbee agent-config litellm` prints a proxy
-config you can drop in. See [HTTP server](#http-server) for the flags that
-control the bind address, port, and token storage.
+opencode opens with your local lilbee models in the picker and the
+`lilbee-mcp` skill installed. `lilbee launch opencode --help` covers
+the flags. `lilbee agent-config opencode` prints the same config block
+if you prefer to wire opencode up yourself.
 
 > [!CAUTION]
 > **Private data and cloud agents**
