@@ -68,6 +68,8 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 
 One install gets you a TUI, a CLI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library. No daemon, no inference server, no vector database to stand up.
 
+Compact: pip wheel is ~10-44 MB (vs the 450-600 MB bundled Electron UIs popular all-in-one desktop AI apps ship before any models load). The standalone binary that folds Python, the model runtime, OCR, the crawler, and the vector store into a single file lands around 253-365 MB across Linux, macOS, and Windows.
+
 Answers cite the source line. Click a citation, jump to the file at the exact line.
 
 Throw anything at it: PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), crawled docs sites.
@@ -190,7 +192,9 @@ Each active inference role (chat, embed, rerank, vision) runs in its own subproc
 **Two routes, and the difference matters:**
 
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Smaller install, picks the fastest CPU code path for your machine at runtime, managed with the tools you already use. Recommended if you have Python.
-- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install, but a large file on a fixed CPU baseline (a 2013-or-newer x86_64 chip), a touch slower on newer hardware than the `pip` / `uv` wheel. Recommended if you'd rather not deal with Python.
+- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install. The trade-off is a much larger download (the binary bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
+
+Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default Vulkan path. Skip to [On NVIDIA hardware](#on-nvidia-hardware).
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
@@ -203,8 +207,21 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. |
 | **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
-| **CUDA-native** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` | Recommended for NVIDIA users on Windows, both for stability and speed. The default Vulkan wheel works for most setups, but on a Windows box with both an NVIDIA discrete GPU and an integrated AMD or Intel GPU the Vulkan loader has to load every vendor's driver into one process, and some vendor combinations crash. CUDA wheels skip Vulkan entirely. Pick the index that matches `nvidia-smi`: [cu121](https://lilbee.sh/cu121/lilbee/) / [cu124](https://lilbee.sh/cu124/lilbee/) / [cu125](https://lilbee.sh/cu125/lilbee/). |
 | **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
+
+### On NVIDIA hardware
+
+The default Vulkan build works on NVIDIA cards, but there is a dedicated CUDA build that links straight against `libcuda.so.1` from your driver. It sidesteps the iGPU + dGPU Vulkan-loader crash that bites NVIDIA-on-Windows setups and is the faster path on any box where you would otherwise rely on Vulkan over an NVIDIA card.
+
+| | Command |
+| --- | --- |
+| **pip** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda` |
+| **AUR** | `paru -S lilbee-cuda` |
+| **Nix** | `nix run github:tobocop2/lilbee#lilbee-cuda` |
+| **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
+
+Same `lilbee` command after install. The CUDA runtime (`cudart`, `cublas`) is bundled inside the binary; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically (it `conflicts_with` / `provides` lilbee); on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
 Then check it runs and pick a model:
 

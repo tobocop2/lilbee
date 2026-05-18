@@ -1,0 +1,42 @@
+name: Publish Homebrew formula
+description: "Clone the homebrew-lilbee tap, render the formula in place, commit, and push. Used by publish-packages and publish-cuda-packages."
+
+inputs:
+  tap-token:
+    description: "Token with push rights to the homebrew-lilbee tap."
+    required: true
+  formula-path:
+    description: "Formula filename inside the tap (e.g. Formula/lilbee.rb)."
+    required: true
+  render-args:
+    description: "Argument string passed to render_formula.py after the formula path."
+    required: true
+  commit-message:
+    description: "Commit message for the tap commit."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Clone tap, render in place, push
+      shell: bash
+      env:
+        TAP_TOKEN: ${{ inputs.tap-token }}
+        FORMULA_PATH: ${{ inputs.formula-path }}
+        RENDER_ARGS: ${{ inputs.render-args }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -euo pipefail
+        git config --global user.name "lilbee-bot"
+        git config --global user.email "lilbee-bot@users.noreply.github.com"
+        git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
+        # shellcheck disable=SC2086
+        python3 packaging/tools/render_formula.py "/tmp/tap/${FORMULA_PATH}" ${RENDER_ARGS}
+        cd /tmp/tap
+        git add "${FORMULA_PATH}"
+        if git diff --cached --quiet; then
+          echo "no formula changes; skipping push"
+          exit 0
+        fi
+        git commit -m "${COMMIT_MESSAGE}"
+        git push

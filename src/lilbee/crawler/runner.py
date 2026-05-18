@@ -62,10 +62,19 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
+def _looks_like_missing_chromium(exc: BaseException) -> bool:
+    """Heuristic for the Playwright "Executable doesn't exist" launch failure."""
+    return "Executable doesn't exist" in str(exc)
+
+
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     """Fetch a single URL.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
+    On a "Chromium executable missing" launch failure, re-runs the
+    bootstrap once and retries -- ``chromium_installed()`` can return True
+    when the wrong revision lives in the cache root, in which case the
+    launch fails the first attempt.
     """
     validate_crawl_url(url)
     from lilbee.crawler import crawler_available
@@ -81,6 +90,16 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     except CrawlerBrowserError:
         raise
     except Exception as exc:
+        if _looks_like_missing_chromium(exc):
+            log.warning("Chromium missing for %s; bootstrapping then retrying", url)
+            await bootstrap.bootstrap_chromium(on_progress=None)
+            try:
+                async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+                    page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
+                return _fetched_to_result(page)
+            except Exception as retry_exc:
+                log.warning("Crawl retry failed for %s: %s", url, retry_exc)
+                return CrawlResult(url=url, success=False, error=str(retry_exc))
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
 

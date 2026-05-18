@@ -63,60 +63,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Clone tap, render formula in place, push
+      - name: Build render-args
+        id: args
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA_MACOS_ARM64: ${{ needs.resolve.outputs.sha_macos_arm64 }}
+          SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
+          SHA_MACOS_X86_64: ${{ needs.resolve.outputs.sha_macos_x86_64 }}
         run: |
-          set -euo pipefail
-          git config --global user.name "lilbee-bot"
-          git config --global user.email "lilbee-bot@users.noreply.github.com"
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
-          extra_args=()
-          if [ -n "${{ needs.resolve.outputs.sha_macos_x86_64 }}" ]; then
-            extra_args+=(--sha-macos-x86_64 "${{ needs.resolve.outputs.sha_macos_x86_64 }}")
+          args="--version ${VERSION} --sha-macos-arm64 ${SHA_MACOS_ARM64} --sha-linux-x86_64 ${SHA_LINUX}"
+          if [ -n "${SHA_MACOS_X86_64}" ]; then
+            args="${args} --sha-macos-x86_64 ${SHA_MACOS_X86_64}"
           fi
-          python3 packaging/tools/render_formula.py /tmp/tap/Formula/lilbee.rb \
-            --version "${{ needs.resolve.outputs.version }}" \
-            --sha-macos-arm64 "${{ needs.resolve.outputs.sha_macos_arm64 }}" \
-            --sha-linux-x86_64 "${{ needs.resolve.outputs.sha_linux }}" \
-            "${extra_args[@]}"
-          cd /tmp/tap
-          git add Formula/lilbee.rb
-          if git diff --cached --quiet; then
-            echo "no formula changes; skipping push"
-            exit 0
-          fi
-          git commit -m "lilbee ${{ needs.resolve.outputs.version }}"
-          git push
+          echo "value=${args}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-homebrew-formula
+        with:
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula-path: Formula/lilbee.rb
+          render-args: ${{ steps.args.outputs.value }}
+          commit-message: "lilbee ${{ needs.resolve.outputs.version }}"
 
   aur:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Render PKGBUILD
-        run: |
-          bash packaging/tools/render_pkgbuild.sh \
-            packaging/aur/lilbee/PKGBUILD \
-            "${{ needs.resolve.outputs.version }}" \
-            "${{ needs.resolve.outputs.sha_linux }}"
-      - name: Regenerate .SRCINFO
-        run: |
-          docker run --rm -v "$PWD/packaging/aur/lilbee:/pkg" -w /pkg archlinux:latest \
-            bash -c 'pacman -Sy --noconfirm pacman-contrib >/dev/null && \
-                     useradd -m b && chown -R b /pkg && \
-                     su b -c "makepkg --printsrcinfo" > .SRCINFO'
-      - name: Deploy to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+      - uses: ./.github/actions/publish-aur-package
         with:
           pkgname: lilbee
-          pkgbuild: packaging/aur/lilbee/PKGBUILD
-          assets: packaging/aur/lilbee/.SRCINFO
-          commit_username: tobocop
-          commit_email: tobias.perelstein@gmail.com
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "lilbee ${{ needs.resolve.outputs.version }}"
-          force_push: false
+          pkgbuild-dir: packaging/aur/lilbee
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux }}
+          aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   nix-flake:
     needs: resolve
@@ -128,35 +106,23 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/nix-installer-action@main
-      - name: Update sources.json
+      - name: Build systems JSON
+        id: sys
         env:
-          VERSION: ${{ needs.resolve.outputs.version }}
           SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
           SHA_DARWIN: ${{ needs.resolve.outputs.sha_macos_arm64 }}
         run: |
-          jq -n \
-            --arg version "$VERSION" \
+          systems=$(jq -nc \
             --arg sha_linux "$SHA_LINUX" \
             --arg sha_darwin "$SHA_DARWIN" \
             '{
-              version: $version,
-              systems: {
-                "x86_64-linux":   { asset: "lilbee-linux-x86_64", sha256: $sha_linux },
-                "aarch64-darwin": { asset: "lilbee-macos-arm64",  sha256: $sha_darwin }
-              }
-            }' > sources.json
-      - name: Validate flake against new sources
-        run: nix flake check --all-systems
-      - name: Commit and push
-        run: |
-          set -euo pipefail
-          git config user.name "lilbee-bot"
-          git config user.email "lilbee-bot@users.noreply.github.com"
-          git add sources.json
-          if git diff --cached --quiet; then
-            echo "no source changes; skipping push"
-            exit 0
-          fi
-          git commit -m "lilbee ${{ needs.resolve.outputs.version }} (flake)"
-          git push origin main
+              "x86_64-linux":   { asset: "lilbee-linux-x86_64", sha256: $sha_linux },
+              "aarch64-darwin": { asset: "lilbee-macos-arm64",  sha256: $sha_darwin }
+            }')
+          echo "value=${systems}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-flake-sources
+        with:
+          target-file: sources.json
+          version: ${{ needs.resolve.outputs.version }}
+          systems-json: ${{ steps.sys.outputs.value }}
+          commit-message: "lilbee ${{ needs.resolve.outputs.version }} (flake)"
