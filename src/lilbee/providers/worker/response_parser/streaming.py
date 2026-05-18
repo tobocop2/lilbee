@@ -6,13 +6,13 @@ from lilbee.providers.worker.response_parser.parse import parse_response
 from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCallDelta
 
-# First characters of every marker the shipped schemas watch for. The
-# heuristic also pauses on benign content (e.g., "5 < 10"); the pause self-
-# heals when the next chunk pushes the `<` past the peek window.
+# First characters of every marker the shipped schemas watch for. When an
+# opener appears in the unemitted content, we hold from that position until
+# the closing marker arrives and parse_response strips the block. Benign
+# content with these characters (e.g., "5 < 10") is also held; it releases
+# on the next chunk that completes whatever the parser would otherwise
+# treat as a tool-call block, or on stream finalisation.
 _MARKER_OPENERS = ("<", "[")
-
-# Window large enough to hold the longest marker (`<|tool_call>` = 12 chars).
-_MARKER_PEEK_WINDOW = 16
 
 
 class StreamingResponseParser:
@@ -48,10 +48,10 @@ class StreamingResponseParser:
         ]
         self._emitted_tool_call_count += len(new_calls)
 
-        if finalize or parsed.tool_calls:
+        if finalize:
             safe_end = len(parsed.content)
         else:
-            safe_end = _safe_emit_position(parsed.content)
+            safe_end = _safe_emit_position(parsed.content, self._emitted_content_len)
 
         if safe_end > self._emitted_content_len:
             content_delta = parsed.content[self._emitted_content_len : safe_end]
@@ -62,11 +62,15 @@ class StreamingResponseParser:
         return content_delta, tool_deltas
 
 
-def _safe_emit_position(content: str) -> int:
-    """Latest position safe to emit; anything beyond might be a partial marker."""
-    end = len(content)
-    window_start = max(0, end - _MARKER_PEEK_WINDOW)
-    for i in range(window_start, end):
+def _safe_emit_position(content: str, start: int) -> int:
+    """Latest position safe to emit; everything after the first opener is held.
+
+    Anything from the first opener onward could turn into a tool-call block
+    once the closing marker arrives. We release it only when ``parse_response``
+    strips the now-complete block out of ``content`` (so the opener disappears)
+    or on stream finalisation.
+    """
+    for i in range(start, len(content)):
         if content[i] in _MARKER_OPENERS:
             return i
-    return end
+    return len(content)

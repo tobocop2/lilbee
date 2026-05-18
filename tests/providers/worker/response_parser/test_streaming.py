@@ -79,3 +79,52 @@ def test_streaming_flush_releases_held_content() -> None:
     held, _ = parser.feed("short text")
     flushed, _ = parser.flush()
     assert held + flushed == "short text"
+
+
+def test_streaming_does_not_leak_tool_call_body_across_chunks() -> None:
+    """Regression: a ``<tool_call>`` body that spans many chunks must not
+    leak its prefix as content before the closing marker arrives. (bb-zgcx)
+
+    Without holding content from the first opener, mid-body chunks like
+    ``{"name": "x",`` would be emitted as plain text, and opencode would
+    render the raw JSON instead of invoking the tool.
+    """
+    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    chunks = [
+        "Before. ",
+        "<tool_call>\n",
+        '{"name": ',
+        '"lilbee_search", ',
+        '"arguments": ',
+        '{"query": "battery"}',
+        "}\n</tool_call>\n",
+        "Middle. ",
+        "<tool_call>\n",
+        '{"name": ',
+        '"lilbee_search", ',
+        '"arguments": ',
+        '{"query": "oil"}',
+        "}\n</tool_call>",
+    ]
+    content, deltas = _drain(parser, chunks)
+    assert "<tool_call>" not in content
+    assert '"name"' not in content
+    assert "lilbee_search" not in content
+    assert "Before." in content
+    assert "Middle." in content
+    assert [d.name for d in deltas] == ["lilbee_search", "lilbee_search"]
+    args = [json.loads(d.arguments_delta) for d in deltas if d.arguments_delta]
+    assert args == [{"query": "battery"}, {"query": "oil"}]
+
+
+def test_streaming_handles_token_sized_chunks() -> None:
+    """A token-by-token stream (1 char at a time) emits no partial tool-call text."""
+    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    full = 'Answer: <tool_call>{"name": "f", "arguments": {"q": "x"}}</tool_call> done.'
+    chunks = list(full)
+    content, deltas = _drain(parser, chunks)
+    assert "<tool_call>" not in content
+    assert "{" not in content
+    assert content.strip().split() == ["Answer:", "done."]
+    assert len(deltas) == 1
+    assert deltas[0].name == "f"
