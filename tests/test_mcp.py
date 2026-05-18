@@ -1292,7 +1292,9 @@ class TestLilbeeLabel:
         assert lilbee_label() == "global"
 
     def test_home_paths_collapse_to_tilde(self, isolated_env, tmp_path, monkeypatch):
-        """Compact labels substitute ``~`` for $HOME."""
+        """Compact labels substitute ``~`` for $HOME using the native separator."""
+        import os
+
         from lilbee.app.status import lilbee_label
 
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -1302,7 +1304,7 @@ class TestLilbeeLabel:
         cfg.lilbee_name = ""
         cfg.show_lilbee_path = False
         label = lilbee_label()
-        assert label.startswith("~/")
+        assert label.startswith(f"~{os.sep}")
         assert "lilbee-mcp-settings" in label
 
     def test_long_path_truncates_from_left(self, isolated_env):
@@ -1321,6 +1323,18 @@ class TestLilbeeLabel:
         assert len(label) <= LILBEE_LABEL_MAX_LEN
         assert "leaf" in label
 
+    def test_pathological_leaf_still_respects_max_len(self, isolated_env):
+        """A single huge leaf segment gets an internal ellipsis to honor the hard cap."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        # No mkdir; the label helper only reads the path, doesn't stat it.
+        cfg.data_root = isolated_env / ("z" * 500)
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert len(label) <= LILBEE_LABEL_MAX_LEN
+        assert "…" in label
+
     def test_path_toggle_overrides_truncation(self, isolated_env):
         """show_lilbee_path returns the full untruncated absolute path."""
         from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
@@ -1335,6 +1349,16 @@ class TestLilbeeLabel:
         label = lilbee_label()
         assert label == str(deep.resolve())
         assert len(label) > LILBEE_LABEL_MAX_LEN
+
+    def test_truncate_leaf_helper_handles_tight_budget(self):
+        """``_truncate_leaf`` keeps a head + tail when budget allows, else just ellipsis."""
+        from lilbee.app.status import _truncate_leaf
+
+        assert _truncate_leaf("short", 10) == "short"
+        out = _truncate_leaf("a" * 100, 9)
+        assert len(out) == 9
+        assert "…" in out
+        assert _truncate_leaf("anything", 1) == "…"
 
 
 class TestCatalogBrowseMcp:

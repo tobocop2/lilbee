@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -11,7 +12,14 @@ from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 
 LILBEE_LABEL_MAX_LEN = 40
-"""Soft cap on the compact-label width to keep the status pill inside the bar."""
+"""Soft cap on the compact-label width so the status pill stays inside the bar.
+
+Hard cap: the helper always returns at most this many characters, even when
+both the head and the leaf segment are too long to fit; the leaf gets its
+own internal ellipsis to keep the cap honest on auto-generated paths.
+"""
+
+_ELLIPSIS = "…"
 
 
 def _project_root() -> Path:
@@ -22,13 +30,35 @@ def _project_root() -> Path:
     return root
 
 
+def _truncate_leaf(leaf: str, max_len: int) -> str:
+    """Shrink an over-long leaf to fit a budget, with an internal ellipsis."""
+    if len(leaf) <= max_len:
+        return leaf
+    if max_len <= 1:
+        return _ELLIPSIS
+    keep = max_len - 1
+    head = keep // 2
+    tail = keep - head
+    return f"{leaf[:head]}{_ELLIPSIS}{leaf[-tail:] if tail else ''}"
+
+
+def _compact_path(full: str) -> str:
+    """Render *full* with ``~`` substituted for ``$HOME`` when it leads."""
+    home = str(Path.home())
+    if full == home:
+        return "~"
+    home_prefix = f"{home}{os.sep}"
+    return f"~{os.sep}{full[len(home_prefix) :]}" if full.startswith(home_prefix) else full
+
+
 def lilbee_label() -> str:
     """Status-bar pill text for the active lilbee.
 
     User-set ``lilbee_name`` always wins. Global data dir always renders
     "global". Otherwise the project path: compact (``~``-substituted,
-    truncated from the left to ``LILBEE_LABEL_MAX_LEN``) by default, or
-    full absolute when ``show_lilbee_path`` is on (toggle: Ctrl+L).
+    truncated to ``LILBEE_LABEL_MAX_LEN`` keeping the leaf visible) by
+    default, or full absolute when ``show_lilbee_path`` is on (toggle:
+    Ctrl+L). Uses ``os.sep`` so the separator is native on Windows.
     """
     if cfg.lilbee_name:
         return cfg.lilbee_name
@@ -37,15 +67,14 @@ def lilbee_label() -> str:
     full = str(_project_root().expanduser().resolve())
     if cfg.show_lilbee_path:
         return full
-    home = str(Path.home())
-    compact = f"~{full[len(home) :]}" if full.startswith(home) else full
+    compact = _compact_path(full)
     if len(compact) <= LILBEE_LABEL_MAX_LEN:
         return compact
     leaf = _project_root().name or compact
-    head_budget = LILBEE_LABEL_MAX_LEN - len(leaf) - 2
-    if head_budget <= 0:
-        return f"…/{leaf}"
-    return f"…{compact[-(LILBEE_LABEL_MAX_LEN - 1) :]}"
+    # Reserve "…<sep>" for the head; cap the leaf to the remaining budget
+    # so a single super-long directory name still respects MAX_LEN.
+    leaf_budget = LILBEE_LABEL_MAX_LEN - 1 - len(os.sep)
+    return f"{_ELLIPSIS}{os.sep}{_truncate_leaf(leaf, leaf_budget)}"
 
 
 class StatusConfig(BaseModel):
