@@ -16,31 +16,18 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import apply_settings_update
+from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
-from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.worker.transport import WorkerRole
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-DARK_THEMES = (
-    "monokai",
-    "dracula",
-    "tokyo-night",
-    "nord",
-    "gruvbox",
-    "catppuccin-mocha",
-    "catppuccin-frappe",
-    "atom-one-dark",
-    "rose-pine",
-    "solarized-dark",
-    "textual-dark",
-)
 
 
 def _view_screen_name(view_name: str) -> str:
@@ -94,30 +81,6 @@ def get_views() -> dict[str, Callable[[], Screen]]:
     return views
 
 
-_MODEL_REF_KEYS = frozenset({"chat_model", "embedding_model", "vision_model", "reranker_model"})
-
-
-def _on_settings_changed_evict_cache(payload: tuple[str, object]) -> None:
-    """Drop loaded-model state when a load-affecting setting changes."""
-    from lilbee.providers.llama_cpp.provider import (
-        LOAD_AFFECTING_KEYS,
-        PER_CALL_RELOADABLE_KEYS,
-    )
-
-    key, _value = payload
-    if key in LOAD_AFFECTING_KEYS and key not in PER_CALL_RELOADABLE_KEYS:
-        # Roles that do NOT honor per-call request.model (embed, rerank, plus
-        # any role-agnostic key like num_ctx) need the pool to drop the worker
-        # so the next call respawns under the new cfg. Chat and vision workers
-        # observe the new path on the next request via _ensure_loaded and
-        # reload in place, saving the 1-3 s spawn cost.
-        get_services().provider.invalidate_load_cache()
-    if key in _MODEL_REF_KEYS:
-        from lilbee.modelhub.model_info import invalidate_cache
-
-        invalidate_cache()
-
-
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -138,6 +101,7 @@ class LilbeeApp(App[None]):
         Binding("escape", "dismiss_help_if_open", "Close help", show=False, priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", show=True),
         Binding("t", "open_tasks", "Tasks", show=True),
+        Binding("f4", "toggle_lilbee_path", "Path/Name", show=True),
         # Non-priority so Chat's "focus_commands" and Catalog's
         # "focus_search" still win on those screens. Fires only on
         # screens that don't bind slash themselves, routing the user
@@ -204,7 +168,6 @@ class LilbeeApp(App[None]):
         self.theme = persisted if persisted in self.available_themes else _DEFAULT_THEME
         self._sync_theme_index_to_current()
 
-        self.settings_changed_signal.subscribe(self, _on_settings_changed_evict_cache)
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self._wire_worker_pool_notifications()
 
@@ -238,13 +201,7 @@ class LilbeeApp(App[None]):
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
     def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback, persist, and log once.
-
-        Persisting the swap via ``settings.set_value`` is what makes this a
-        one-time notice. The previous version only updated cfg in memory, so
-        the warning fired every restart for as long as the stale ref sat in
-        ``config.toml``.
-        """
+        """Swap stale persisted refs to a working fallback, persist, and log once."""
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
@@ -257,8 +214,8 @@ class LilbeeApp(App[None]):
         ):
             if canon.status == ValidationResult.OK or canon.original == canon.effective:
                 continue
-            setattr(cfg, field, canon.effective)
-            settings.set_value(cfg.data_root, field, canon.effective)
+
+            apply_settings_update({field: canon.effective})
             log.warning(
                 msg.MODEL_FALLBACK_NOTICE.format(
                     label=label, original=canon.original, effective=canon.effective
@@ -279,6 +236,10 @@ class LilbeeApp(App[None]):
         self._apply_and_persist_theme(name)
         self.notify(msg.THEME_SET.format(name=name))
 
+    def action_toggle_lilbee_path(self) -> None:
+        """Flip the status-bar pill between the friendly name and the data-root path."""
+        self.set_setting("show_lilbee_path", not cfg.show_lilbee_path)
+
     def set_theme(self, name: str) -> None:
         """Set theme by name (used by /theme command). Persists across sessions."""
         if name in self.available_themes:
@@ -287,19 +248,17 @@ class LilbeeApp(App[None]):
 
     def _apply_and_persist_theme(self, name: str) -> None:
         """Apply *name* live and write it to config.toml."""
+
         self.theme = name
-        cfg.theme = name
-        settings.set_value(cfg.data_root, "theme", name)
+        apply_settings_update({"theme": name})
 
     def set_active_model(self, key: str, value: str) -> None:
-        """Single write boundary for active model refs.
+        """Persist an active model ref through the shared write boundary.
 
-        Refs whose download is still queued or active are refused; the
-        catalog task validator runs next so a chat-only model cannot
-        land in the embedding slot (and equivalents for vision /
-        rerank). Provider-prefixed refs and the empty string pass
-        through both checks.
+        Refs whose download is still queued or active are refused before the
+        boundary runs, so a half-pulled file cannot land in a model slot.
         """
+
         downloading = self.task_bar.downloading_label_for(value)
         if downloading is not None:
             self.notify(
@@ -308,31 +267,22 @@ class LilbeeApp(App[None]):
             )
             return
         try:
-            canonical = validate_model_task_assignment(key, value)
+            apply_settings_update({key: value})
         except ValueError as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return
-        setattr(cfg, key, canonical)
-        normalized = getattr(cfg, key)
-        settings.set_value(cfg.data_root, key, normalized)
-        self.settings_changed_signal.publish((key, normalized))
+        self.settings_changed_signal.publish((key, getattr(cfg, key)))
 
     def set_setting(self, key: str, value: object) -> None:
-        """Single write boundary for non-model settings."""
-        setattr(cfg, key, value)
+        """Apply a writable / model-role setting through the boundary, then fan out to the UI.
+
+        Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
+        or values rejected by pydantic validation. Callers either catch and toast or let it
+        propagate.
+        """
+
+        apply_settings_update({key: value})
         normalized = getattr(cfg, key)
-        # settings.set_value persists into TOML, which only accepts strings.
-        # Persisting None as "" used to break pydantic-settings load (no
-        # coercion from "" to int|None), so drop the key on None and let
-        # the field default apply on next startup.
-        if normalized is None:
-            settings.delete_value(cfg.data_root, key)
-        else:
-            if isinstance(normalized, list):
-                persisted = "\n".join(str(x) for x in normalized)
-            else:
-                persisted = str(normalized)
-            settings.set_value(cfg.data_root, key, persisted)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
             self.theme = normalized
             self._sync_theme_index_to_current()

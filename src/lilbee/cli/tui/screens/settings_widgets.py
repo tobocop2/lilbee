@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
-from lilbee.cli.settings_map import SETTINGS_MAP, RenderStyle, SettingDef
+from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
@@ -40,7 +40,7 @@ LIST_RESTORE_PREFIX = "list-restore-"
 LIST_ERROR_ID_PREFIX = "err-"
 LIST_ERROR_VISIBLE_CLASS = "-visible"
 
-API_KEYS_GROUP = "API-Keys"
+API_KEYS_GROUP = SettingGroup.API_KEYS
 API_KEYS_WARNING_CLASS = "api-keys-warning"
 CONFIG_TOML_FILENAME = "config.toml"
 
@@ -190,16 +190,16 @@ def _wiki_enabled() -> bool:
     return bool(cfg.wiki)
 
 
-_FEATURE_GATED_GROUPS: dict[str, Callable[[], bool]] = {
-    "API-Keys": _litellm_installed,
-    "Crawling": _crawler_installed,
-    "Wiki": _wiki_enabled,
+_FEATURE_GATED_GROUPS: dict[SettingGroup, Callable[[], bool]] = {
+    SettingGroup.API_KEYS: _litellm_installed,
+    SettingGroup.CRAWLING: _crawler_installed,
+    SettingGroup.WIKI: _wiki_enabled,
 }
 
 
-def group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
+def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
     """Group settings by group field, skipping hidden entries and gated features."""
-    groups: dict[str, list[tuple[str, SettingDef]]] = defaultdict(list)
+    groups: dict[SettingGroup, list[tuple[str, SettingDef]]] = defaultdict(list)
     for key, defn in SETTINGS_MAP.items():
         if defn.hidden:
             continue

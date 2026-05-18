@@ -314,7 +314,6 @@ class ModelPickerButton(Static, can_focus=True):
 
     def _apply_embed_change(self, ref: str) -> None:
         """Persist the new embed ref, refresh the bar, and respawn the embed worker."""
-        get_services().store.initialize_meta_if_legacy()
         apply_active_model(self.app, "embedding_model", ref)
         self._commit_after_change()
 

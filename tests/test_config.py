@@ -46,8 +46,8 @@ class TestFromEnvDefaults:
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
             assert c.max_embed_chars == 2000
-            assert c.top_k == 8
-            assert c.max_distance == 0.65
+            assert c.top_k == 12
+            assert c.max_distance == 0.75
             assert c.json_mode is False
             # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
             # scope picker only appear when the user explicitly enables it.

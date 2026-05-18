@@ -986,6 +986,8 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=10, offset=5, models=[])
         mock_svc.registry.list_installed.return_value = []
+        from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
         await handlers.models_catalog(
             task="chat",
             search="qwen",
@@ -997,12 +999,12 @@ class TestModelsCatalog:
             offset=5,
         )
         mock_get_catalog.assert_called_once_with(
-            task="chat",
+            task=ModelTask.CHAT,
             search="qwen",
-            size="small",
+            size=CatalogSize.SMALL,
             installed=True,
             featured=True,
-            sort="downloads",
+            sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
         )
@@ -1519,7 +1521,7 @@ class TestUpdateConfig:
         assert "temperature" not in stored
 
     async def test_update_config_unknown_field(self):
-        with pytest.raises(ValueError, match="Unknown or read-only config field"):
+        with pytest.raises(ValueError, match="Unknown or read-only setting"):
             await handlers.update_config({"bogus_field": 123})
 
     async def test_non_nullable_field_rejects_null(self):
@@ -1545,6 +1547,11 @@ class TestUpdateConfig:
         result = await handlers.update_config({"chunk_size": 64})
         assert result.updated == ["chunk_size"]
         assert cfg.chunk_size == 64
+
+    async def test_chunk_overlap_at_or_above_chunk_size_rejected(self):
+        cfg.chunk_size = 512
+        with pytest.raises(ValueError, match="chunk_overlap"):
+            await handlers.update_config({"chunk_overlap": 1024})
 
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
@@ -1594,31 +1601,31 @@ class TestUpdateConfig:
         assert stored["top_k"] == "5"
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
-        with patch("lilbee.server.handlers.config.inject_provider_keys") as mock_inject:
+        with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
             result = await handlers.update_config({"openai_api_key": "sk-new"})
         assert result.updated == ["openai_api_key"]
         mock_inject.assert_called_once()
 
     async def test_non_key_update_skips_injection(self, tmp_path):
-        with patch("lilbee.server.handlers.config.inject_provider_keys") as mock_inject:
+        with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
             await handlers.update_config({"temperature": 0.5})
         mock_inject.assert_not_called()
 
     async def test_update_config_rejects_chat_model(self):
         """Role fields only move via PUT /api/models/<role>; PATCH must 422."""
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
 
     async def test_update_config_rejects_embedding_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
 
     async def test_update_config_rejects_vision_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
 
     async def test_update_config_rejects_reranker_model(self):
-        with pytest.raises(ValueError, match="read-only"):
+        with pytest.raises(ValueError, match="dedicated model route"):
             await handlers.update_config(
                 {"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"}
             )
@@ -1679,10 +1686,14 @@ class TestSetEmbeddingModel:
         with pytest.raises(ValueError, match="not embedding"):
             await handlers.set_embedding_model(_CHAT_REF)
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_reindex_required_when_persisted_meta_differs(self, mock_svc):
+    async def test_returns_reindex_required_when_persisted_meta_differs(
+        self, mock_svc, mock_boundary_svc
+    ):
         """Switching to a model different from the one that built the store flags rebuild."""
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.store.get_meta.return_value = {
             "embedding_model": "previous-model:v1",
             "embedding_dim": 768,
@@ -1693,17 +1704,21 @@ class TestSetEmbeddingModel:
         assert result.model == _EMBED_REF
         assert result.reindex_required is True
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc):
+    async def test_returns_no_reindex_required_on_empty_store(self, mock_svc, mock_boundary_svc):
         """A store with no _meta row (fresh install) does not need a rebuild."""
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         mock_svc.return_value.store.get_meta.return_value = None
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_when_same_model(self, mock_svc):
+    async def test_returns_no_reindex_required_when_same_model(self, mock_svc, mock_boundary_svc):
         """Re-setting the same model that already built the store does not need a rebuild."""
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         mock_svc.return_value.store.get_meta.return_value = {
             "embedding_model": _EMBED_REF,
@@ -1714,14 +1729,18 @@ class TestSetEmbeddingModel:
         result = await handlers.set_embedding_model(_EMBED_REF)
         assert result.reindex_required is False
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_returns_no_reindex_required_for_legacy_bare_repo(self, mock_svc):
+    async def test_returns_no_reindex_required_for_legacy_bare_repo(
+        self, mock_svc, mock_boundary_svc
+    ):
         """A bare-repo meta row that matches the new full ref does NOT need a rebuild.
 
         Pre-canonical lilbee persisted only ``<org>/<repo>`` in ``_meta``. The
         new full ref ``<org>/<repo>/<file>.gguf`` matches by canonical identity
         when dims agree, so the swap is a no-op for the gate.
         """
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         bare_repo = _EMBED_REF.rsplit("/", 1)[0]
         mock_svc.return_value.store.get_meta.return_value = {
@@ -1735,14 +1754,16 @@ class TestSetEmbeddingModel:
         # Migration helper must be called so the meta row is rewritten silently.
         mock_svc.return_value.store.canonicalize_meta_if_legacy.assert_called_once()
 
+    @patch("lilbee.app.services.get_services")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc):
+    async def test_pins_legacy_meta_before_cfg_mutation(self, mock_svc, mock_boundary_svc):
         """A pre-upgrade store with chunks but no _meta is pinned under the OLD cfg.
 
         Asserts call ordering: initialize_meta_if_legacy must run BEFORE cfg is
         mutated. A regression that swaps the two would let lazy-init adopt the
         NEW cfg as the legacy identity, hiding the drift the caller just introduced.
         """
+        mock_boundary_svc.return_value = mock_svc.return_value
         mock_svc.return_value.provider.list_models.return_value = [_EMBED_REF]
         store_mock = mock_svc.return_value.store
         store_mock.get_meta.return_value = {
@@ -1927,14 +1948,16 @@ class TestSetVisionModel:
         assert result.model == _VISION_REF
         assert cfg.vision_model == _VISION_REF
 
-    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+    async def test_empty_string_unsets(self, mock_svc, mock_update_values):
         cfg.vision_model = _VISION_REF
         result = await handlers.set_vision_model("")
         assert result.model == ""
         assert cfg.vision_model == ""
-        mock_set_value.assert_called_once_with(cfg.data_root, "vision_model", "")
+        mock_update_values.assert_called_once()
+        persisted = mock_update_values.call_args.args[1]
+        assert persisted.get("vision_model") == ""
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):
@@ -1976,14 +1999,16 @@ class TestSetRerankerModel:
         assert result.model == _RERANK_REF
         assert cfg.reranker_model == _RERANK_REF
 
-    @patch("lilbee.server.handlers.models.settings.set_value")
+    @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_empty_string_unsets(self, mock_svc, mock_set_value):
+    async def test_empty_string_unsets(self, mock_svc, mock_update_values):
         cfg.reranker_model = _RERANK_REF
         result = await handlers.set_reranker_model("")
         assert result.model == ""
         assert cfg.reranker_model == ""
-        mock_set_value.assert_called_once_with(cfg.data_root, "reranker_model", "")
+        mock_update_values.assert_called_once()
+        persisted = mock_update_values.call_args.args[1]
+        assert persisted.get("reranker_model") == ""
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_whitespace_string_unsets(self, mock_svc):

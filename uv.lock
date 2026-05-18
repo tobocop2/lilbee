@@ -1585,7 +1585,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.66b476"
+version = "0.6.66b477"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },

@@ -28,7 +28,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
-from lilbee.app.services import get_services, reset_services
+from lilbee.app.services import reset_services
 from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
@@ -279,11 +279,6 @@ class SetupWizard(Screen[str | None]):
         ref = self._selections[task][0]
         if ref is None:
             return
-        if task == ModelTask.EMBEDDING:
-            # Pin a legacy store's identity to the OLD model BEFORE any
-            # cfg mutation so the gate in store.search/add_chunks
-            # correctly detects drift on the next op. See bb-x1qa.
-            get_services().store.initialize_meta_if_legacy()
         pending = _pending_download(card)
         if pending is None:
             self._apply_selection(task, ref)
