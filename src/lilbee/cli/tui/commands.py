@@ -9,7 +9,6 @@ from textual.command import Hit, Hits, Provider
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
-from lilbee.core import settings
 from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
@@ -56,8 +55,8 @@ class LilbeeCommandProvider(Provider):
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",
-                "Delete all data (requires /reset confirm)",
-                self._action_noop,
+                "Delete all data (asks for confirmation)",
+                self._action_reset,
             ),
             ("Quit", "Exit lilbee", app.action_quit),
         ]
@@ -104,12 +103,14 @@ class LilbeeCommandProvider(Provider):
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:
-        setattr(cfg, attr, value)
-        settings.set_value(cfg.data_root, attr, value)
+        # Route through LilbeeApp.set_active_model so model-bar / scope chip
+        # / status bar subscribers (settings_changed_signal) refresh.
+        app = self._app
+        app.set_active_model(attr, value)
         display = value or "off"
-        self.screen.app.notify(f"{attr}: {display}")
+        app.notify(f"{attr}: {display}")
         if attr == "chat_model":
-            self.screen.app.title = f"lilbee: {value}"
+            app.title = f"lilbee: {value}"
 
     def _delete_doc(self, name: str) -> None:
         store = get_services().store
@@ -147,5 +148,13 @@ class LilbeeCommandProvider(Provider):
     def _action_open_wiki(self) -> None:
         self._app.switch_view("Wiki")
 
-    def _action_noop(self) -> None:
-        self.screen.app.notify("Type '/reset confirm' in chat to reset")
+    def _action_reset(self) -> None:
+        """Trigger /reset from the palette so the ConfirmDialog flow fires."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = self._app
+        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        if chat is None:
+            app.notify("Open Chat to run /reset")
+            return
+        chat._cmd_reset("")

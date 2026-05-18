@@ -99,15 +99,18 @@ async def models_catalog_route(
     offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> ModelsCatalogResponse:
     """Browse the model catalog with optional filters."""
-    return await handlers.models_catalog(
-        task=task,
-        search=search,
-        size=size,
-        featured=featured,
-        sort=sort,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return await handlers.models_catalog(
+            task=task,
+            search=search,
+            size=size,
+            featured=featured,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @get("/api/models/installed")

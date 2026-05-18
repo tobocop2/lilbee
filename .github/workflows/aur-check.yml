@@ -26,14 +26,15 @@ jobs:
               pacman -Syu --noconfirm namcap shellcheck pacman-contrib diffutils >/dev/null
               useradd -m b
               chown -R b /pkg
-              shellcheck -s bash -e SC2034,SC2154 aur/lilbee/PKGBUILD
               shellcheck tools/render_pkgbuild.sh
-              out=$(namcap aur/lilbee/PKGBUILD)
-              if [ -n "$out" ]; then
-                echo "$out"
-                exit 1
-              fi
-              cd aur/lilbee
-              su b -c "makepkg --printsrcinfo" > /tmp/new.SRCINFO
-              diff -u .SRCINFO /tmp/new.SRCINFO
+              for pkg in lilbee lilbee-cuda; do
+                shellcheck -s bash -e SC2034,SC2154 "aur/${pkg}/PKGBUILD"
+                out=$(namcap "aur/${pkg}/PKGBUILD")
+                if [ -n "$out" ]; then
+                  echo "$out"
+                  exit 1
+                fi
+                ( cd "aur/${pkg}" && su b -c "makepkg --printsrcinfo" > "/tmp/${pkg}.SRCINFO" )
+                diff -u "aur/${pkg}/.SRCINFO" "/tmp/${pkg}.SRCINFO"
+              done
             '

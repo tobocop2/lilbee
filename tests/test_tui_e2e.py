@@ -218,7 +218,7 @@ class TestModelSwitchSafety:
             chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
             ref = "ollama/new-model:latest"
             with (
-                mock.patch("lilbee.core.settings.set_value"),
+                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch.object(screen, "apply_model_change") as mock_apply,
             ):
                 chat_btn._on_picker_dismissed(ref)
@@ -721,7 +721,8 @@ class TestScreenTransitions:
 
     async def test_theme_cycling(self, _mock_resolve):
         """Ctrl+T cycles through themes without crashing."""
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
+        from lilbee.app.themes import DARK_THEMES
+        from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -2045,7 +2046,7 @@ class TestSettingsInteractions:
             app.screen.populate_all_panes()
             await pilot.pause()
 
-            from lilbee.cli.settings_map import SETTINGS_MAP
+            from lilbee.app.settings_map import SETTINGS_MAP
 
             for key, defn in SETTINGS_MAP.items():
                 if not defn.writable:

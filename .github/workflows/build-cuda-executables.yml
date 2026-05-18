@@ -1,0 +1,188 @@
+name: Build CUDA executables
+
+# CUDA-flavored standalone executables. Called from release-candidate.yml in
+# parallel with the Vulkan/Metal build, or dispatched standalone for an
+# already-released tag. Each cell builds independently; failures do not block
+# the rest. In workflow_call mode, run artifacts are picked up by the caller's
+# attach-prerelease step. In workflow_dispatch mode, the cell attaches directly
+# to the named release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach CUDA executables to (e.g. v0.6.66b476)."
+        required: true
+      skip_tests:
+        description: "Build even if the smoke step fails (re-run past a known-flaky cell)."
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build at (defaults to caller's ref)."
+        type: string
+        default: ""
+      skip_tests:
+        description: "Build even if the smoke step fails."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-cuda-executables-${{ inputs.tag || inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    continue-on-error: true
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
+          - os: ubuntu-22.04
+            backend: cu121
+            cuda: "12.1.0"
+            asset_name: lilbee-linux-x86_64-cu121
+          - os: ubuntu-22.04
+            backend: cu124
+            cuda: "12.4.0"
+            asset_name: lilbee-linux-x86_64-cu124
+          - os: ubuntu-22.04
+            backend: cu125
+            cuda: "12.5.0"
+            asset_name: lilbee-linux-x86_64-cu125
+          # Windows cu121 dropped: MSVC 14.44 on windows-2022 requires CUDA 12.4+.
+          - os: windows-2022
+            backend: cu124
+            cuda: "12.4.0"
+            asset_name: lilbee-windows-x86_64-cu124.exe
+          - os: windows-2022
+            backend: cu125
+            cuda: "12.5.0"
+            asset_name: lilbee-windows-x86_64-cu125.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || inputs.tag || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Compute version
+        # NUITKA_VERSION: int-tuple form Nuitka --product-version accepts.
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          NUITKA_VERSION=$(echo "$VERSION" | tr -cs '0-9' ' ' | awk '{ printf "%s.%s.%s.%s", $1, $2, $3, $4 }')
+          echo "LILBEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install CUDA Toolkit (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Install CUDA Toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
+
+      - name: Set up ccache (Linux)
+        if: runner.os == 'Linux'
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
+          max-size: '2G'
+
+      - name: Install dependencies
+        # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
+
+      - name: Build llama-cpp-python from source (CUDA + AVX baseline)
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          LLAMA_BUILD_DIR: "/tmp/llama-build"
+        run: bash tools/wheel-build/build_llama_cpp.sh
+
+      - name: Install the freshly-built llama-cpp-python into the venv
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
+
+      - name: Verify extras installed in build venv
+        shell: bash
+        # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
+        run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+
+      - name: Build executable
+        shell: bash
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+          PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+        run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      - name: Smoke test
+        # CUDA binaries on no-GPU runners fall back to CPU because GGML_CPU stays on by default.
+        if: inputs.skip_tests != true
+        shell: bash
+        run: |
+          set -euxo pipefail
+          EXE="./dist/${{ matrix.asset_name }}"
+          EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+
+          STDERR=$(mktemp)
+          ACTUAL=$("$EXE" --version 2>"$STDERR")
+          echo "Expected: lilbee ${EXPECTED}"
+          echo "Actual:   ${ACTUAL}"
+          cat "$STDERR"
+          test "${ACTUAL}" = "lilbee ${EXPECTED}"
+          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
+            echo "FAIL: --version produced typer/runtime errors on stderr"
+            exit 1
+          fi
+
+          "$EXE" --help > /dev/null 2>"$STDERR"
+          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
+            echo "FAIL: --help produced typer/runtime errors on stderr"
+            cat "$STDERR"
+            exit 1
+          fi
+
+          echo "CUDA smoke test passed (--version, --help)"
+
+      - name: Upload binary as a run artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+
+      # Standalone-dispatch mode: attach to the named release tag directly.
+      # workflow_call mode skips this because the caller's attach-prerelease
+      # picks up the run artifact via the lilbee-* glob.
+      - name: Attach binary to release (dispatch mode)
+        if: inputs.tag != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: dist/${{ matrix.asset_name }}
+          fail_on_unmatched_files: true

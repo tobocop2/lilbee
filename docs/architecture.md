@@ -122,50 +122,6 @@ flowchart TD
 
 ---
 
-## Tool-call extraction
-
-`/v1/chat/completions` returns structured `tool_calls` in the OpenAI envelope by extracting them from the model's text output. Different chat models emit tool calls in different shapes: Qwen3 wraps a JSON object in `<tool_call>...</tool_call>`, Mistral prefixes a JSON array with `[TOOL_CALLS]`, Gemma 4 uses its own bracket syntax, and so on. llama-cpp-python's chat handlers auto-extract structured `tool_calls` for some of these but not all, so lilbee runs an extraction pass on the model output when llama-cpp returned text-only.
-
-The extractor is **schema-driven**, not parser-per-family. Each model family is described by a declarative JSON schema with regex / JSON / `jmespath` operators, and one function applies that schema to the model output. The function is `transformers.utils.chat_parsing_utils.recursive_parse` from the HuggingFace `transformers` library, which is the same code path used by HuggingFace's reference `tokenizer.parse_response()` API.
-
-```mermaid
-flowchart TD
-    LOAD[Model load] --> READ[Read GGUF chat_template metadata]
-    READ --> DETECT[detect_family - scan template markers]
-    DETECT --> CACHE[Cache family + schema on chat session]
-    CACHE --> READY[Ready]
-
-    REQ[/v1/chat/completions with tools/] --> CALL[Provider chat call]
-    CALL --> NATIVE{llama-cpp returned structured tool_calls?}
-    NATIVE -->|Yes| PASS[Pass through]
-    NATIVE -->|No| EXTRACT[recursive_parse text + cached schema]
-    EXTRACT --> EXTRACTED{Parser found tool calls?}
-    EXTRACTED -->|Yes| REMAP[Remap finish_reason to tool_calls]
-    EXTRACTED -->|No| TEXT[Return content as text]
-```
-
-### Pipeline
-
-1. **At model load** (`_ChatSession._ensure_loaded`): read the GGUF's `tokenizer.chat_template` from its metadata. `detect_family` scans the template for distinctive markers (e.g., `<tool_call>` for Qwen3, `[TOOL_CALLS]` for Mistral) and returns a `ModelFamily` enum value. The matching response schema is looked up from `SCHEMAS` and cached on the session along with the family name.
-
-2. **Per non-streaming request**: if llama-cpp-python natively populated `message.tool_calls`, use those. Otherwise, if the request carried `tools`, call `recursive_parse(model_output, schema)`. If parsing surfaces tool calls, replace the content with the schema's extracted `content` field and remap `finish_reason` from `stop` to `tool_calls`.
-
-3. **Per streaming request**: a stateful `StreamingResponseParser` buffers text deltas. On each new chunk it re-runs `recursive_parse` over the full accumulated buffer and emits the deltas vs the prior parsed state: the new tail of `content` as a text delta, and any newly-completed tool calls as `ToolCallDelta` frames.
-
-4. **On parse failure**: log at debug level and fall back to returning the raw model output as text content. The request succeeds with a text-only response rather than raising.
-
-### Why this design enables low-maintenance tool-call coverage
-
-Adding support for a new model family is a small addition to `providers/worker/response_parser/schemas.py` (one JSON-shaped dict) plus an enum value and a detection marker. No Python parser code. No PEG grammar. No per-family streaming state machine. The actual parsing implementation belongs to HuggingFace, who maintains it as part of their chat infrastructure.
-
-When HuggingFace ships a `response_schema` attribute on a model's tokenizer config (already done for Gemma 4, and the documented direction), lilbee can pick it up directly from the tokenizer without any code change in this layer. The `families.py` detection becomes a fallback for models whose tokenizer doesn't ship a schema yet.
-
-### Coverage
-
-`SCHEMAS` ships with response schemas for Qwen3, Qwen3-Coder, Mistral, and Gemma 4. The Qwen3 schema also serves as the catch-all for any model whose template uses the `<tool_call>{json}</tool_call>` convention since `detect_family` classifies that pattern as `QWEN3`. Detection falls back to `UNKNOWN` for templates with no recognised markers; in that case extraction is skipped and the model output is returned as-is.
-
----
-
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.
@@ -298,7 +254,7 @@ The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappab
 
 ### Per-call model override
 
-Two of the four worker roles let the parent swap models without respawning the subprocess: `chat_worker` and `vision_worker` accept a `model` field on every request and check it against the currently-loaded path inside `_ensure_loaded`; if it differs they close the old `Llama` and load the new one in place. `LOAD_AFFECTING_KEYS` lists every config key that requires reloading; the subset `PER_CALL_RELOADABLE_KEYS = {"chat_model", "vision_model"}` is the slice that the parent skips when calling `invalidate_load_cache`, because the worker will pick up the change on the next request automatically. `embed_worker` and `rerank_worker` do not have per-call model overrides; those models change at config time, not per-call, so the simpler "release the role + lazy respawn" path is correct there.
+Two of the four worker roles let the parent swap models without respawning the subprocess: `chat_worker` and `vision_worker` accept a `model` field on every request and check it against the currently-loaded path inside `_ensure_loaded`; if it differs they close the old `Llama` and load the new one in place. `LOAD_AFFECTING_KEYS` lists every config key that requires reloading; the subset `PER_CALL_RELOADABLE_KEYS = {"chat_model", "vision_model"}` is the slice that the parent skips when calling `invalidate_load_cache`, because the worker will pick up the change on the next request automatically. `embed_worker` and `rerank_worker` do not have per-call model overrides — those models change at config time, not per-call, so the simpler "release the role + lazy respawn" path is correct there.
 
 ### Resource budget
 
@@ -620,18 +576,20 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 ## Release pipeline
 
-Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream. The PyPI publish needs only the default wheels + sdist (they finish ~25 min into the run), so it doesn't wait on the executables, the CUDA matrix, or QA. Only the downstream packaging fan-out (which consumes the executables on the GH release) waits for those.
+Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream. The PyPI publish needs only the default wheels + sdist (they finish ~25 min into the run), so it doesn't wait on the executables, the CUDA matrix, or QA — only the downstream packaging fan-out (which consumes the executables on the GH release) waits for those.
 
 ```mermaid
 flowchart TB
-    TAG["push tag v*"] --> RC["release-candidate.yml<br/>build wheels + sdist + executables, once"]
-    RC --> PRE["GH pre-release · executables attached"]
+    TAG["push tag v*"] --> RC["release-candidate.yml<br/>build wheels + sdist + Vulkan/Metal exes + CUDA exes — once"]
+    RC --> PRE["GH pre-release · every artifact attached"]
     RC --> QA["QA matrix"]
     RC -.-> PAGES["pages.yml · site + wheel index"]
     RC ==> PUB["publish.yml · manual, no rebuild"]
     PUB --> PYPI["download wheels + sdist → publish to PyPI"]
     PYPI --> FAN["fanout-packaging"]
-    FAN --> PKG["Docker · Homebrew · AUR · Nix"]
+    FAN --> PKG["Docker · lilbee Homebrew · lilbee AUR · lilbee Nix"]
+    PUB --> CUDAFAN["dispatch-cuda · waits for cu125 Linux on release"]
+    CUDAFAN --> CUDAPKG["publish-cuda-packages.yml<br/>lilbee-cuda Homebrew · AUR · Nix"]
     EMG["emergency-publish.yml · skip-QA escape hatch"] -.-> PYPI
 ```
 
@@ -641,18 +599,23 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 
 | Lane | Trigger | Builds | QA | Publishes |
 |---|---|---|---|---|
-| **Release candidate** | `git push v0.6.66bN` | default wheels, sdist, extra (CUDA) wheels, executables, once | yes | no (artifacts only); attaches executables to a GH **pre-release** |
-| **Publish to PyPI** | `gh workflow run publish.yml -f tag=v0.6.66bN` | nothing; downloads the RC run's artifacts | n/a; needs only the default wheels (no wait on executables/CUDA/QA) | PyPI, then dispatches Docker / Homebrew / AUR / Nix once the executables are on the release |
-| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing; downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI; tolerates an incomplete artifact set |
+| **Release candidate** | `git push v0.6.66bN` | default wheels, sdist, extra (CUDA) wheels, Vulkan/Metal executables, CUDA executables — once, all in parallel | yes | no (artifacts only); attaches everything to a GH **pre-release** |
+| **Publish to PyPI** | `gh workflow run publish.yml -f tag=v0.6.66bN` | nothing — downloads the RC run's artifacts | n/a — needs only the default wheels (no wait on executables/CUDA/QA) | PyPI, then in parallel: Docker / lilbee Homebrew / AUR / Nix via `fanout-packaging`, and `lilbee-cuda` Homebrew / AUR / Nix via `dispatch-cuda` → `publish-cuda-packages.yml` |
+| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing — downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI; tolerates an incomplete artifact set |
 
-`release-candidate.yml` can also be dispatched manually against a branch/SHA. Same build + QA, no pre-release attach, never publishes. That's a dry run.
+`release-candidate.yml` can also be dispatched manually against a branch/SHA — same build + QA, no pre-release attach, never publishes. That's a dry run.
+
+`build-cuda-executables.yml` is also dispatchable standalone (`gh workflow run build-cuda-executables.yml -f tag=v...`) to backfill CUDA binaries onto a historical release; in that mode each cell attaches directly to the named release tag instead of relying on `attach-prerelease`.
 
 ### Notes
 
-- **Single build location.** Wheels, sdist, and executables are produced only by the `release-candidate.yml` run for the tag. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up anything.
-- **PyPI publishes early; the fan-out waits.** `publish.yml` gates only on the default-wheel + sdist artifacts being complete in the RC run, so PyPI gets the release ~30 min after the tag push regardless of the executables/CUDA/QA still running. The Homebrew/AUR/Nix/Docker fan-out pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
-- **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates.
-- **Package versions auto-increment.** `publish-docker.yml` and `publish-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formula, the AUR `PKGBUILD`, and the Nix flake all bump to the new version on their own. No manual edits.
+- **Single build location.** Wheels, sdist, and every executable (Vulkan, Metal, and CUDA) are produced only by the `release-candidate.yml` run for the tag. `release.yml` builds the Vulkan/Metal exes, `build-cuda-executables.yml` builds the CUDA exes, both called as siblings of the wheel builders; `attach-prerelease` waits on all four and picks every artifact up via the `lilbee-*` glob. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac extra wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up anything; the same `continue-on-error` policy applies to the CUDA executable cells.
+- **PyPI publishes early; the fan-out waits.** `publish.yml` gates only on the default-wheel + sdist artifacts being complete in the RC run, so PyPI gets the release ~30 min after the tag push regardless of the executables/CUDA/QA still running. The Homebrew/AUR/Nix/Docker fan-out for the default `lilbee` package pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
+- **CUDA fan-out is its own lane.** `publish.yml`'s `dispatch-cuda` job runs in parallel with `publish-pypi` (it needs `guard` only, not the PyPI upload), polls the release for `lilbee-linux-x86_64-cu125`, and dispatches `publish-cuda-packages.yml` as soon as that asset attaches. That workflow updates the `lilbee-cuda` Homebrew formula, the `lilbee-cuda` AUR package, and the `sources-cuda.json` flake entry. Vulkan and CUDA fan-outs are fully decoupled: a slow Windows CUDA cell can't stall the `lilbee` Homebrew update, and a PyPI hiccup can't stall the `lilbee-cuda` update.
+- **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
+- **`lilbee` and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** Both ship a `lilbee` binary; the formula and `PKGBUILD` declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-cuda`).
+- **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-cuda-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
+- **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
 - **`llama-cpp-python` version comes from `uv.lock`.** It's built from source in CI (no upstream prebuilts for our backends). The version isn't hardcoded in the workflows: `tools/wheel-build/build_llama_cpp.sh` reads the resolved version out of `uv.lock`, so `uv lock`-ing a new release is all it takes. Set `LLAMA_CPP_VERSION` (or the `llama_cpp_version` workflow input) to override for a one-off build.
 
