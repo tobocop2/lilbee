@@ -329,7 +329,7 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
 async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> None:
     """A theme set outside DARK_THEMES must not raise; the cycle index falls
     back to 0 instead of propagating the ValueError from list.index."""
-    from lilbee.cli.tui.app import DARK_THEMES
+    from lilbee.app.themes import DARK_THEMES
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

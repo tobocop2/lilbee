@@ -966,7 +966,7 @@ async def test_settings_persist_value_still_toasts_on_error():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["top_k"]
         with patch.object(screen, "notify") as mock_notify:
@@ -1080,12 +1080,11 @@ async def test_settings_wiki_pane_scroll_clamps_past_top():
 
 
 async def test_settings_exposes_wiki_fields():
-    """Settings screen renders an editor for every wiki config field."""
+    """Settings screen renders an editor for every writable wiki config field."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        wiki_keys = [
+        writable_wiki_keys = [
             "wiki",
-            "wiki_dir",
             "wiki_prune_raw",
             "wiki_embedding_faithfulness_threshold",
             "wiki_stale_citation_threshold",
@@ -1093,8 +1092,11 @@ async def test_settings_exposes_wiki_fields():
             "wiki_clusterer",
             "wiki_clusterer_k",
         ]
-        for key in wiki_keys:
+        for key in writable_wiki_keys:
             assert app.screen.query_one(f"#ed-{key}") is not None
+        # wiki_dir is read-only (writing it silently strands existing wiki
+        # content), so the row exists but no editor is rendered.
+        assert app.screen.query_one("#row-wiki_dir") is not None
 
 
 async def test_settings_wiki_clusterer_k_persists():
@@ -1311,7 +1313,7 @@ async def test_settings_list_editor_restore_defaults():
 
 async def test_settings_parse_value_list_branch():
     """_parse_value splits, strips, and drops blanks for list-typed settings."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     defn = SettingDef(list, nullable=False)
@@ -1329,7 +1331,7 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     one-element list with corrupt contents.
     """
 
-    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
     from lilbee.core import settings
@@ -1509,7 +1511,7 @@ async def test_settings_persist_invalid_int():
 
 async def test_settings_select_save():
     """_on_select_save routes through _persist_value correctly."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1533,7 +1535,7 @@ async def test_settings_select_save():
 
 def test_get_default_for_scalar():
     """get_default returns the cfg default for a simple scalar field."""
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
     from lilbee.core.config import Config
 
     expected = Config.model_fields["top_k"].default
@@ -1543,14 +1545,14 @@ def test_get_default_for_scalar():
 
 def test_get_default_for_nullable_scalar():
     """Nullable fields whose default is None return None."""
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
 
     assert get_default("seed") is None
 
 
 def test_get_default_for_list_factory():
     """List-valued fields built by a factory return a fresh copy of the default list."""
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
     from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
     result = get_default("crawl_exclude_patterns")
@@ -1563,7 +1565,7 @@ def test_get_default_handles_pydantic_undefined():
 
     from pydantic_core import PydanticUndefined
 
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
     from lilbee.core.config import cfg
 
     fake = SimpleNamespace(default=PydanticUndefined, default_factory=None)
@@ -1578,7 +1580,7 @@ async def test_reset_button_resets_scalar():
     """Pressing the reset button restores a scalar setting to its cfg default."""
     from textual.widgets import Button, Input
 
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
 
     cfg.wiki_clusterer_k = 99
     app = SettingsTestApp()
@@ -1608,7 +1610,7 @@ async def test_ctrl_r_resets_focused_row():
     """Ctrl+R walks up from the focused editor to reset its row."""
     from textual.widgets import Input
 
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
 
     cfg.top_k = 99
     app = SettingsTestApp()
@@ -1660,7 +1662,7 @@ async def test_refresh_editor_updates_checkbox():
     """Resetting a boolean setting syncs the Checkbox widget to the default."""
     from textual.widgets import Checkbox
 
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
 
     default = bool(get_default("show_reasoning"))
     cfg.show_reasoning = not default
@@ -1703,7 +1705,7 @@ async def test_reset_select_clears_when_default_none():
     """Resetting a Select-backed field to a None default clears the widget."""
     from textual.widgets import Select
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1725,7 +1727,7 @@ async def test_reset_select_sets_value_when_default_provided():
     """Resetting a Select to a concrete string sets widget.value accordingly."""
     from textual.widgets import Select
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1741,7 +1743,7 @@ async def test_reset_select_sets_value_when_default_provided():
 
 async def test_refresh_editor_missing_widget_is_logged(caplog):
     """Missing editor widget on refresh logs a debug message instead of raising."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1758,7 +1760,7 @@ async def test_refresh_editor_updates_textarea_list(monkeypatch):
     """Future-proofing: _refresh_editor loads list values into a TextArea."""
     from textual.widgets import TextArea
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1776,7 +1778,7 @@ async def test_refresh_editor_updates_textarea_scalar(monkeypatch):
     """TextArea non-list scalar values go through load_text as plain str."""
     from textual.widgets import TextArea
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1794,7 +1796,7 @@ async def test_refresh_editor_updates_textarea_none(monkeypatch):
     """TextArea with None value loads an empty string."""
     from textual.widgets import TextArea
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1855,7 +1857,7 @@ async def test_reset_button_with_malformed_id_is_noop():
 
 async def test_reset_list_default_joins_newlines():
     """Resetting a list-valued setting stringifies via newline join."""
-    from lilbee.cli.settings_map import SettingDef, get_default
+    from lilbee.app.settings_map import SettingDef, get_default
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -1915,11 +1917,18 @@ async def test_reset_all_cancel_does_nothing():
 
 
 async def test_reset_all_confirm_batches_writes_atomically():
-    """Confirming the dialog issues a single settings.update_values batch write."""
-    from lilbee.cli.settings_map import SETTINGS_MAP
+    """Confirming the dialog issues one batched update + one batched delete to the boundary."""
+    from lilbee.app.settings import reset_settings
+    from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    writable_keys = {k for k, d in SETTINGS_MAP.items() if d.writable}
+    # The screen resets whatever the boundary accepts under skip_unresettable=True;
+    # query that set so this test stays agnostic to which keys the boundary refuses.
+    writable_keys = set(
+        reset_settings(
+            [k for k, d in SETTINGS_MAP.items() if d.writable], skip_unresettable=True
+        ).updated
+    )
     readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
     assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
 
@@ -1927,13 +1936,21 @@ async def test_reset_all_confirm_batches_writes_atomically():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch("lilbee.cli.tui.screens.settings.settings.update_values") as mock_batch:
+        with (
+            patch("lilbee.app.settings.persistent_settings.update_values") as mock_update,
+            patch("lilbee.app.settings.persistent_settings.delete_values") as mock_delete,
+        ):
             screen._on_reset_all_confirmed(True)
-        mock_batch.assert_called_once()
-        written_keys = set(mock_batch.call_args.args[1].keys())
-        # Every writable key appears in the batch; no readonly key leaks in.
-        assert written_keys == writable_keys
-        assert not written_keys & readonly_keys
+        assert mock_update.call_count <= 1
+        assert mock_delete.call_count <= 1
+        persisted: set[str] = set()
+        if mock_update.call_count:
+            persisted |= set(mock_update.call_args.args[1].keys())
+        if mock_delete.call_count:
+            persisted |= set(mock_delete.call_args.args[1])
+        # Every writable key flowed through one of the two batched calls; no readonly key leaks in.
+        assert persisted == writable_keys
+        assert not persisted & readonly_keys
 
 
 async def test_reset_all_suppresses_per_field_toasts():
@@ -1946,35 +1963,34 @@ async def test_reset_all_suppresses_per_field_toasts():
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         with (
-            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
+            patch("lilbee.app.settings.persistent_settings.update_values"),
             patch.object(screen, "notify") as mock_notify,
         ):
             screen._on_reset_all_confirmed(True)
-        # Exactly one notify call: the summary toast.
         assert mock_notify.call_count == 1
         assert mock_notify.call_args.args[0] == msg.SETTINGS_RESET_ALL_SUCCESS
 
 
 async def test_reset_all_actually_mutates_cfg():
     """Batch reset restores cfg values to pydantic defaults (not just the TOML write)."""
-    from lilbee.cli.settings_map import get_default
+    from lilbee.app.settings_map import get_default
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     default_top_k = get_default("top_k")
-    cfg.top_k = 999  # deliberately non-default
+    cfg.top_k = 999
     assert cfg.top_k == 999
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch("lilbee.cli.tui.screens.settings.settings.update_values"):
+        with patch("lilbee.app.settings.persistent_settings.update_values"):
             screen._on_reset_all_confirmed(True)
         assert cfg.top_k == default_top_k
 
 
 async def test_reset_all_rolls_back_on_disk_write_failure():
-    """If settings.update_values raises, in-memory cfg reverts so UI and disk stay in sync."""
+    """OSError from the TOML write reverts cfg so UI and disk stay in sync."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     cfg.top_k = 999
@@ -1986,80 +2002,21 @@ async def test_reset_all_rolls_back_on_disk_write_failure():
         assert isinstance(screen, SettingsScreen)
         with (
             patch(
-                "lilbee.cli.tui.screens.settings.settings.update_values",
+                "lilbee.app.settings.persistent_settings.update_values",
                 side_effect=OSError("disk full"),
             ),
             patch.object(screen, "notify") as mock_notify,
         ):
             screen._on_reset_all_confirmed(True)
-        # Rollback restored the pre-reset values.
         assert cfg.top_k == 999
         assert cfg.wiki_clusterer_k == 77
-        # User sees an error toast, not a success toast.
         assert mock_notify.called
         notify_kwargs = mock_notify.call_args.kwargs
         assert notify_kwargs.get("severity") == "error"
 
 
-async def test_reset_all_reports_skipped_keys():
-    """When setattr rejects a default, the summary toast names the skipped keys."""
-    from lilbee.cli.tui import messages as msg
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-
-        original_setattr = type(cfg).__setattr__
-
-        def rejecting_setattr(self_cfg, name, value):
-            if name == "top_k":
-                raise ValueError("rejected for test")
-            original_setattr(self_cfg, name, value)
-
-        with (
-            patch.object(type(cfg), "__setattr__", rejecting_setattr),
-            patch("lilbee.cli.tui.screens.settings.settings.update_values"),
-            patch.object(screen, "notify") as mock_notify,
-        ):
-            screen._on_reset_all_confirmed(True)
-        # Summary toast mentions the skipped key and uses warning severity.
-        summary_calls = [c for c in mock_notify.call_args_list if c.args and "top_k" in c.args[0]]
-        assert summary_calls, "expected a toast mentioning the skipped key"
-        assert summary_calls[0].args[0] == msg.SETTINGS_RESET_ALL_PARTIAL.format(skipped="top_k")
-        assert summary_calls[0].kwargs.get("severity") == "warning"
-
-
-async def test_rollback_swallows_setattr_failure():
-    """If setattr on a rollback key raises, the rollback logs and proceeds."""
-    from lilbee.cli.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-
-        original_setattr = type(cfg).__setattr__
-
-        def rejecting_setattr(self_cfg, name, value):
-            if name == "top_k" and value == "rollback-sentinel":
-                raise ValueError("rollback rejected")
-            original_setattr(self_cfg, name, value)
-
-        writable = [("top_k", SETTINGS_MAP["top_k"])]
-        with (
-            patch.object(type(cfg), "__setattr__", rejecting_setattr),
-            patch.object(screen, "_refresh_editor"),
-            patch.object(screen, "_refresh_help"),
-        ):
-            screen._rollback_batch(writable, {"top_k": "rollback-sentinel"})
-        # Passing means the except branch swallowed the ValueError; no raise.
-
-
-async def test_publish_batch_signals_on_lilbee_app():
-    """When the screen runs under LilbeeApp, signals fan out for each reset key."""
+async def test_reset_all_publishes_signals_on_lilbee_app():
+    """When the screen runs under LilbeeApp, the reset loop fans out a signal per key."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -2070,9 +2027,21 @@ async def test_publish_batch_signals_on_lilbee_app():
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        with patch.object(app.settings_changed_signal, "publish") as mock_pub:
-            screen._publish_batch_signals([("top_k", 7), ("embedding_dim", 768)])
-        assert mock_pub.call_count == 2
+        with (
+            patch("lilbee.app.settings.persistent_settings.update_values"),
+            patch.object(app.settings_changed_signal, "publish") as mock_pub,
+        ):
+            screen._on_reset_all_confirmed(True)
+        # One publish per writable setting the boundary actually resets.
+        from lilbee.app.settings import reset_settings
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        expected = len(
+            reset_settings(
+                [k for k, d in SETTINGS_MAP.items() if d.writable], skip_unresettable=True
+            ).updated
+        )
+        assert mock_pub.call_count == expected
 
 
 async def test_reset_all_action_opens_confirm_dialog():
@@ -2468,7 +2437,8 @@ async def test_app_title_has_model():
 
 
 async def test_app_cycle_theme():
-    from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
+    from lilbee.app.themes import DARK_THEMES
+    from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2482,6 +2452,19 @@ async def test_app_cycle_theme():
         for _ in range(len(DARK_THEMES)):
             app.action_cycle_theme()
         assert app.theme == DARK_THEMES[next_idx]
+
+
+async def test_app_toggle_lilbee_path_flips_setting():
+    """F4 (action_toggle_lilbee_path) flips show_lilbee_path on cfg."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        start = cfg.show_lilbee_path
+        app.action_toggle_lilbee_path()
+        assert cfg.show_lilbee_path is not start
+        app.action_toggle_lilbee_path()
+        assert cfg.show_lilbee_path is start
 
 
 async def test_app_set_theme():
@@ -2576,6 +2559,39 @@ async def test_chat_slash_unknown_command():
             app.screen._handle_slash("/bogus")
             mock_notify.assert_called_once()
             assert "Unknown command" in mock_notify.call_args[0][0]
+
+
+async def test_chat_slash_rebuild_confirms_before_running():
+    """/rebuild must push ConfirmDialog and run nothing until confirmed."""
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat_screen = app.screen
+        with patch.object(chat_screen, "_run_sync") as mock_run_sync:
+            chat_screen._handle_slash("/rebuild")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmDialog)
+            mock_run_sync.assert_not_called()
+            await pilot.press("y")
+            await pilot.pause()
+            mock_run_sync.assert_called_once_with(force_rebuild=True)
+
+
+async def test_chat_slash_rebuild_cancel_leaves_run_sync_unfired():
+    """Dismissing the rebuild dialog must not start a rebuild."""
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat_screen = app.screen
+        with patch.object(chat_screen, "_run_sync") as mock_run_sync:
+            chat_screen._handle_slash("/rebuild")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmDialog)
+            await pilot.press("n")
+            await pilot.pause()
+            mock_run_sync.assert_not_called()
 
 
 async def test_chat_current_chunk_type_reflects_scope_chip():
@@ -2675,7 +2691,7 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.core.settings.set_value"):
+        with patch("lilbee.app.settings.persistent_settings.update_values"):
             new_ref = "ollama/new-model:latest"
             app.screen._handle_slash(f"/model {new_ref}")
             await _pilot.pause()
@@ -3568,7 +3584,7 @@ async def test_command_provider_set_model():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.core.settings.set_value"):
+        with patch("lilbee.app.settings.persistent_settings.update_values"):
             provider._set_model("chat_model", "ollama/new-model:latest")
             assert cfg.chat_model == "ollama/new-model:latest"
             assert "ollama/new-model:latest" in app.title
@@ -3653,7 +3669,25 @@ async def test_command_provider_action_version():
             assert "1.0.0" in mock_notify.call_args[0][0]
 
 
-async def test_command_provider_action_noop():
+async def test_command_provider_action_reset_pushes_confirm():
+    """Palette 'Reset knowledge base' invokes ChatScreen._cmd_reset to push the ConfirmDialog."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        with patch.object(chat, "_cmd_reset") as mock_reset:
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            provider._action_reset()
+            await pilot.pause()
+            mock_reset.assert_called_once_with("")
+
+
+async def test_command_provider_action_reset_no_chat_screen():
+    """Palette reset falls back to notify when ChatScreen isn't in the stack."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3661,10 +3695,15 @@ async def test_command_provider_action_noop():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch.object(app, "notify") as mock_notify:
-            provider._action_noop()
-            mock_notify.assert_called_once()
-            assert "reset" in mock_notify.call_args[0][0].lower()
+        # Stand-in app whose screen_stack contains no ChatScreen.
+        fake_app = MagicMock()
+        fake_app.screen_stack = []
+        with patch.object(
+            LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
+        ):
+            provider._action_reset()
+        fake_app.notify.assert_called_once()
+        assert "chat" in fake_app.notify.call_args[0][0].lower()
 
 
 async def test_command_provider_model_commands():
@@ -9177,7 +9216,7 @@ async def test_setup_wizard_commit_chat_selection_writes_settings():
             installed_card = next(
                 c for c in screen.query(ModelCard) if c.row.installed and c.row.task == "chat"
             )
-            with patch("lilbee.core.settings.set_value") as mock_set:
+            with patch("lilbee.app.settings.persistent_settings.update_values") as mock_set:
                 screen._commit_selection(installed_card, "chat")
             assert mock_set.called
             assert cfg.chat_model == (installed_card.row.ref or installed_card.row.name)
@@ -9199,7 +9238,7 @@ async def test_setup_wizard_commit_embed_selection_writes_settings():
             installed_card = next(
                 c for c in screen.query(ModelCard) if c.row.installed and c.row.task == "embedding"
             )
-            with patch("lilbee.core.settings.set_value") as mock_set:
+            with patch("lilbee.app.settings.persistent_settings.update_values") as mock_set:
                 screen._commit_selection(installed_card, "embedding")
             assert mock_set.called
             assert cfg.embedding_model == (installed_card.row.ref or installed_card.row.name)
@@ -9995,7 +10034,7 @@ async def test_chat_on_chat_input_changed_completing():
 
 def test_settings_make_select_value_matches_choice():
     """make_select returns Select with value preset when it matches choices."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
@@ -10007,7 +10046,7 @@ def test_settings_make_select_value_matches_choice():
 
 def test_settings_make_select_value_no_match():
     """make_select returns Select without preset value when no match."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
@@ -10205,7 +10244,7 @@ async def test_settings_refresh_list_title_missing_swallows():
 
 async def test_settings_parse_value_nullable_none():
     """_parse_value returns None for nullable setting with 'none'."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -10220,7 +10259,7 @@ async def test_settings_parse_value_nullable_none():
 
 async def test_settings_parse_value_nullable_empty():
     """_parse_value returns None for nullable setting with empty string."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -10235,7 +10274,7 @@ async def test_settings_parse_value_nullable_empty():
 
 async def test_settings_refresh_help_exception():
     """_refresh_help suppresses exception when widget not found."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
@@ -11042,7 +11081,7 @@ def test_is_installed_no_match():
 
 def test_type_pill_with_choices():
     """type_pill returns 'select' pill when defn has choices."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import type_pill
 
     defn = SettingDef(type=str, nullable=False, group="Test", choices=("a", "b"))
@@ -11054,7 +11093,7 @@ def test_make_editor_with_choices():
     """make_editor returns a Select widget when defn has choices."""
     from textual.widgets import Select
 
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import make_editor
 
     with patch(
@@ -11823,7 +11862,7 @@ def test_settings_env_pill_when_env_set(monkeypatch):
 
 def test_settings_help_content_blank_when_no_help_text():
     """help_content returns empty Content when the setting has no help text."""
-    from lilbee.cli.settings_map import SettingDef
+    from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings_widgets import help_content
 
     defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
@@ -11833,7 +11872,7 @@ def test_settings_help_content_blank_when_no_help_text():
 
 def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
     """title_content carries the env var name when LILBEE_* is exported."""
-    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
@@ -11843,7 +11882,7 @@ def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
 
 def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
     """title_content omits the env pill when the LILBEE_* var is not set."""
-    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import title_content
 
     monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)

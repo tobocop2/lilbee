@@ -40,3 +40,21 @@ class ModelSource(StrEnum):
         except ValueError as exc:
             valid = ", ".join(s.value for s in cls)
             raise ValueError(f"invalid source {value!r}; expected one of: {valid}") from exc
+
+
+class CatalogSize(StrEnum):
+    """Size bucket for catalog filtering."""
+
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+
+class CatalogSort(StrEnum):
+    """Sort key for catalog browse results."""
+
+    FEATURED = "featured"
+    DOWNLOADS = "downloads"
+    NAME = "name"
+    SIZE_ASC = "size_asc"
+    SIZE_DESC = "size_desc"

@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic_core import PydanticUndefined
 
+from lilbee.app.settings import apply_settings_update
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
 )
@@ -15,80 +16,23 @@ from lilbee.config_meta import (
     PUBLIC_CONFIG_FIELDS as _PUBLIC_CONFIG_FIELDS,
 )
 from lilbee.config_meta import (
-    REINDEX_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
-from lilbee.core import settings
 from lilbee.core.config import Config, cfg
-from lilbee.providers.sdk_backend import API_KEY_FIELDS
-from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.models import ConfigResponse, ConfigUpdateResponse
-
-_MIN_CHUNK_SIZE = 64
-
-
-def _validate_config_updates(updates: dict[str, Any]) -> None:
-    """Reject unknown fields, null values on non-nullable fields, and invalid ranges."""
-    for key, value in updates.items():
-        if key not in WRITABLE_CONFIG_FIELDS:
-            raise ValueError(f"Unknown or read-only config field: {key}")
-        if value is None and not WRITABLE_CONFIG_FIELDS[key]:
-            raise ValueError(f"Field '{key}' does not accept null")
-    chunk_val = updates.get("chunk_size")
-    if isinstance(chunk_val, int) and chunk_val < _MIN_CHUNK_SIZE:
-        raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
-
-
-def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
-    """Apply updates to the in-memory config, rolling back on error.
-    Returns (fields_to_persist, fields_to_delete) for disk write.
-    """
-    snapshot = {k: getattr(cfg, k) for k in updates}
-    to_persist: dict[str, str] = {}
-    to_delete: list[str] = []
-    try:
-        for key, value in updates.items():
-            if value is None:
-                setattr(cfg, key, None)
-                to_delete.append(key)
-            else:
-                setattr(cfg, key, value)
-                to_persist[key] = str(getattr(cfg, key))
-    except Exception:
-        for k, v in snapshot.items():
-            setattr(cfg, k, v)
-        raise
-    return to_persist, to_delete
 
 
 async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     """Partial update of writable config fields.
-    Algorithm: validate-then-apply with rollback.
 
-    1. Validate all keys and null-acceptability upfront (no mutations yet).
-       This catches typos and bad input before anything changes.
-    2. Snapshot current values, then apply each update via setattr (pydantic's
-       validate_assignment catches type errors). If any field fails type
-       validation, roll back ALL fields from the snapshot so the config
-       stays consistent: no half-applied updates.
-    3. Persist to disk in batch (one file write for sets, one for deletes)
-       rather than per-field, avoiding partial writes on crash.
-
-    Why not just setattr-and-save per field? A multi-field PATCH like
-    {"chunk_size": 1024, "chunk_overlap": "bad"} would leave chunk_size
-    changed but chunk_overlap unchanged: the caller gets an error but
-    the config is silently modified. The snapshot/rollback prevents that.
+    Delegates validation, snapshot/rollback, persistence, and cache
+    invalidation to ``app.settings.apply_settings_update`` so HTTP, MCP,
+    CLI, and the TUI share one write boundary. Model role writes are
+    refused at this surface because PUT /api/models/<role> already
+    handles them with an install-availability check.
     """
-    _validate_config_updates(updates)
-    to_persist, to_delete = _apply_config_updates(updates)
-    if to_persist:
-        settings.update_values(cfg.data_root, to_persist)
-    if to_delete:
-        settings.delete_values(cfg.data_root, to_delete)
-    if API_KEY_FIELDS & set(updates):
-        inject_provider_keys()
-    reindex_required = bool(REINDEX_FIELDS & set(updates))
-    return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
+    result = apply_settings_update(updates, allow_model_roles=False)
+    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 
 
 async def get_config() -> ConfigResponse:

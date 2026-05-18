@@ -126,7 +126,7 @@ class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 
     def test_num_ctx_max_in_settings_map(self):
-        from lilbee.cli.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["num_ctx_max"]
         assert defn.writable is True
@@ -135,7 +135,7 @@ class TestMemoryTuningSettingsMap:
         assert get_default("num_ctx_max") == 16384
 
     def test_flash_attention_in_settings_map(self):
-        from lilbee.cli.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["flash_attention"]
         assert defn.writable is True
@@ -144,7 +144,7 @@ class TestMemoryTuningSettingsMap:
         assert get_default("flash_attention") is None
 
     def test_kv_cache_type_in_settings_map(self):
-        from lilbee.cli.settings_map import SETTINGS_MAP
+        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.core.config.enums import KvCacheType
 
         defn = SETTINGS_MAP["kv_cache_type"]
@@ -152,7 +152,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.choices == tuple(t.value for t in KvCacheType)
 
     def test_n_gpu_layers_in_settings_map(self):
-        from lilbee.cli.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["n_gpu_layers"]
         assert defn.writable is True

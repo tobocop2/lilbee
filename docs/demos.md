@@ -70,8 +70,8 @@ Crawling, API-Keys, System.
 
 ## Agent: code (lilbee talking to lilbee)
 
-The headline agent demo. An agent indexes lilbee's own source through lilbee's MCP
-server, then answers questions about how lilbee works, citing
+The headline grounding demo. An agent indexes lilbee's own source through lilbee's
+MCP server, then answers questions about how lilbee works, citing
 `src/lilbee/.../file.py:LINE` for every claim.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
@@ -89,11 +89,11 @@ These don't have a tab on the site, but they're part of the same reel.
 
 ### Agent: live indexing
 
-The smaller agent-over-MCP demo. opencode on MiniMax M2.7 indexes a Godot 4
+The smaller agent-over-MCP demo. An MCP-aware coding agent indexes a Godot 4
 pathfinding subset in a few seconds, then `lilbee_search`-es for `AStarGrid2D` and
 answers method-by-method against the local files.
 
-![opencode + cloud frontier model indexes a small local godot subset](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
+![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 ### Agent: Godot codegen against the full class reference
 

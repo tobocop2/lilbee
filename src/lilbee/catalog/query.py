@@ -9,7 +9,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import format_native_gguf_ref, hf_repo_from_ref
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -20,10 +20,10 @@ def _search_blob(m: CatalogModel) -> str:
     return f"{m.display_name}\0{m.hf_repo}\0{m.description}".lower()
 
 
-_SIZE_RANGES: dict[str, tuple[float, float]] = {
-    "small": (0.0, 3.0),
-    "medium": (3.0, 10.0),
-    "large": (10.0, float("inf")),
+_SIZE_RANGES: dict[CatalogSize, tuple[float, float]] = {
+    CatalogSize.SMALL: (0.0, 3.0),
+    CatalogSize.MEDIUM: (3.0, 10.0),
+    CatalogSize.LARGE: (10.0, float("inf")),
 }
 
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
@@ -35,10 +35,10 @@ def get_catalog(
     task: ModelTask | None = None,
     *,
     search: str = "",
-    size: str | None = None,
+    size: CatalogSize | None = None,
     installed: bool | None = None,
     featured: bool | None = None,
-    sort: str = "featured",
+    sort: CatalogSort = CatalogSort.FEATURED,
     limit: int = 20,
     offset: int = 0,
     model_manager: Any = None,
@@ -76,7 +76,7 @@ def get_catalog(
         all_models = [m for m in all_models if search_lower in _search_blob(m)]
 
     # Filter by size
-    if size and size in _SIZE_RANGES:
+    if size is not None:
         lo, hi = _SIZE_RANGES[size]
         all_models = [m for m in all_models if lo <= m.size_gb < hi]
 
@@ -141,18 +141,18 @@ def _get_installed_models(model_manager: Any) -> set[str]:
         return set()
 
 
-_SORT_KEYS: dict[str, tuple] = {
-    "downloads": (lambda m: m.downloads, True),
-    "name": (lambda m: m.display_name.lower(), False),
-    "size_asc": (lambda m: m.size_gb, False),
-    "size_desc": (lambda m: m.size_gb, True),
-    "featured": (lambda m: (not m.featured, -m.downloads), False),
+_SORT_KEYS: dict[CatalogSort, tuple] = {
+    CatalogSort.DOWNLOADS: (lambda m: m.downloads, True),
+    CatalogSort.NAME: (lambda m: m.display_name.lower(), False),
+    CatalogSort.SIZE_ASC: (lambda m: m.size_gb, False),
+    CatalogSort.SIZE_DESC: (lambda m: m.size_gb, True),
+    CatalogSort.FEATURED: (lambda m: (not m.featured, -m.downloads), False),
 }
 
 
-def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
+def _sort_models(models: list[CatalogModel], sort: CatalogSort) -> list[CatalogModel]:
     """Sort models according to the specified sort order."""
-    key_fn, reverse = _SORT_KEYS.get(sort, _SORT_KEYS["featured"])
+    key_fn, reverse = _SORT_KEYS[sort]
     return sorted(models, key=key_fn, reverse=reverse)
 
 
