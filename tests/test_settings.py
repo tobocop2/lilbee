@@ -132,7 +132,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.group == "Generation"
-        assert get_default("num_ctx_max") == 32768
+        assert get_default("num_ctx_max") == 65536
 
     def test_flash_attention_in_settings_map(self):
         from lilbee.cli.settings_map import SETTINGS_MAP, get_default

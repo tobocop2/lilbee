@@ -265,9 +265,10 @@ class Config(BaseSettings):
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the
     # model's training window; this caps it at a sane ceiling.
-    # 32K fits opencode / Claude Code-class system prompts (~25K-30K tokens)
-    # without overflow; 16K used to cap them mid-prompt.
-    num_ctx_max: int = ConfigField(default=32768, ge=512, writable=True)
+    # 64K holds a ~30K agent system prompt plus conversation headroom
+    # while keeping KV-cache memory tractable on a 16 GB machine.
+    # Override via LILBEE_NUM_CTX_MAX or the TUI Settings screen.
+    num_ctx_max: int = ConfigField(default=65536, ge=512, writable=True)
 
     # Flash attention. None (default) = on with TypeError fallback for
     # older llama-cpp-python builds, True = force on, False = off.
