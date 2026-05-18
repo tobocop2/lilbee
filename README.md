@@ -228,7 +228,17 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee plugs into any agent over MCP or a JSON CLI. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for long ops, and a reusable [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md). See [docs/agent-integration.md](docs/agent-integration.md) to wire it up.
+lilbee fits into agents two ways. Pick the one that matches what you have running.
+
+**opencode users get a one-command setup** that wires opencode to your local lilbee chat models. Pull a tool-capable chat model first (run `lilbee`, open the catalog with `/models`), then:
+
+```bash
+lilbee launch opencode
+```
+
+opencode opens with your local lilbee models in the picker and the `lilbee-mcp` skill ready to use. `lilbee launch opencode --help` for the flags.
+
+**Any other agent** (Claude Code, Cursor, Cline, custom) can use lilbee as an MCP server. Point your agent at the reusable [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md); the repo also ships a drop-in [`AGENTS.md`](demos/AGENTS.md) and a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for long indexing ops. [docs/agent-integration.md](docs/agent-integration.md) has the wire-up.
 
 Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
@@ -239,16 +249,6 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 ![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
 The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md).
-
-### Use opencode with lilbee models
-
-opencode is the supported agent integration today. Pull a chat model first via the TUI: run `lilbee`, use the catalog screen (`/models`) to browse, and pick something tool-capable. Then:
-
-```bash
-lilbee launch opencode
-```
-
-opencode opens with your local lilbee models in the picker and the `lilbee-mcp` skill ready to use. `lilbee launch opencode --help` for the flags.
 
 ## HTTP Server
 
