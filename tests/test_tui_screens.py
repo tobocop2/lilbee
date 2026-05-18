@@ -2454,6 +2454,19 @@ async def test_app_cycle_theme():
         assert app.theme == DARK_THEMES[next_idx]
 
 
+async def test_app_toggle_lilbee_path_flips_setting():
+    """Ctrl+B (action_toggle_lilbee_path) flips show_lilbee_path on cfg."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        start = cfg.show_lilbee_path
+        app.action_toggle_lilbee_path()
+        assert cfg.show_lilbee_path is not start
+        app.action_toggle_lilbee_path()
+        assert cfg.show_lilbee_path is start
+
+
 async def test_app_set_theme():
     from lilbee.cli.tui.app import LilbeeApp
 
