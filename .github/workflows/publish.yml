@@ -131,19 +131,38 @@ jobs:
         with:
           tag: ${{ inputs.tag }}
 
-  # CUDA lane runs in parallel with publish-pypi: building standalone CUDA exes
-  # has no dependency on PyPI succeeding or on Vulkan/Metal binaries. Only needs
-  # the tag verified (guard) and the GH release to exist (attach-prerelease did
-  # that during the RC run). build-cuda-executables itself watches for the
-  # cu125 Linux asset and dispatches publish-cuda-packages once it attaches.
+  # CUDA executables are built during release-candidate.yml in parallel with
+  # Vulkan/Metal. By the time publish.yml is dispatched they are normally
+  # already attached to the prerelease, so this job just waits for cu125 Linux
+  # and dispatches publish-cuda-packages.yml. Parallel to publish-pypi so PyPI
+  # flakiness can't block the lilbee-cuda fan-out.
   dispatch-cuda:
     needs: [guard]
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
     steps:
-      - name: Dispatch build-cuda-executables
+      - name: Wait for cu125 Linux on release and dispatch publish-cuda-packages
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
         run: |
-          gh workflow run build-cuda-executables.yml \
-            --repo ${{ github.repository }} \
-            -f tag=${{ inputs.tag }}
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 14400 ))
+          while true; do
+            names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
+            case " ${names} " in
+              *" lilbee-linux-x86_64-cu125 "*)
+                echo "cu125 Linux attached; dispatching publish-cuda-packages"
+                gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
+                exit 0
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::error::cu125 Linux never attached to ${TAG} within 4h; skipping publish-cuda-packages"
+              exit 1
+            fi
+            sleep 60
+          done

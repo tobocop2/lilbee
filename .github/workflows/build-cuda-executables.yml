@@ -1,9 +1,11 @@
 name: Build CUDA executables
 
-# CUDA-flavored standalone executables for an already-published release tag.
-# Runs on workflow_dispatch only. Each cell builds independently; failures
-# do not block the rest. Attaches successful builds to the release named
-# by the tag input.
+# CUDA-flavored standalone executables. Called from release-candidate.yml in
+# parallel with the Vulkan/Metal build, or dispatched standalone for an
+# already-released tag. Each cell builds independently; failures do not block
+# the rest. In workflow_call mode, run artifacts are picked up by the caller's
+# attach-prerelease step. In workflow_dispatch mode, the cell attaches directly
+# to the named release.
 
 on:
   workflow_dispatch:
@@ -15,40 +17,26 @@ on:
         description: "Build even if the smoke step fails (re-run past a known-flaky cell)."
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build at (defaults to caller's ref)."
+        type: string
+        default: ""
+      skip_tests:
+        description: "Build even if the smoke step fails."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
-  actions: write   # fanout-cuda dispatches publish-cuda-packages.yml
 
 concurrency:
-  group: build-cuda-executables-${{ inputs.tag }}
+  group: build-cuda-executables-${{ inputs.tag || inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  resolve:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.info.outputs.version }}
-      ref: ${{ steps.info.outputs.ref }}
-    steps:
-      - name: Resolve tag and ref
-        id: info
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          sha=$(gh api "repos/${REPO}/git/refs/tags/${TAG}" --jq .object.sha)
-          [ -n "$sha" ] || { echo "tag ${TAG} not found"; exit 1; }
-          {
-            echo "version=$version"
-            echo "ref=$sha"
-          } >> "$GITHUB_OUTPUT"
-
   build:
-    needs: [resolve]
     continue-on-error: true
     timeout-minutes: 360
     strategy:
@@ -83,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.resolve.outputs.ref }}
+          ref: ${{ inputs.ref || inputs.tag || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -188,42 +176,13 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
-      - name: Attach binary to release
+      # Standalone-dispatch mode: attach to the named release tag directly.
+      # workflow_call mode skips this because the caller's attach-prerelease
+      # picks up the run artifact via the lilbee-* glob.
+      - name: Attach binary to release (dispatch mode)
+        if: inputs.tag != ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
           files: dist/${{ matrix.asset_name }}
           fail_on_unmatched_files: true
-
-  # Runs in parallel with the build matrix. Polls the release for the cu125
-  # Linux asset (the only one publish-cuda-packages.yml consumes) and dispatches
-  # it as soon as that asset attaches, without waiting for Windows cu125 to
-  # finish its ~3-4h build. Fails loudly if cu125 Linux never attaches.
-  fanout-cuda:
-    needs: [resolve]
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    steps:
-      - name: Wait for cu125 Linux asset and dispatch publish-cuda-packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -uo pipefail
-          deadline=$(( $(date +%s) + 14000 ))
-          while true; do
-            names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
-            case " ${names} " in
-              *" lilbee-linux-x86_64-cu125 "*)
-                echo "cu125 Linux attached; dispatching publish-cuda-packages"
-                gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
-                exit 0
-                ;;
-            esac
-            if [ "$(date +%s)" -ge "${deadline}" ]; then
-              echo "::error::cu125 Linux never attached to ${TAG} within 4h; skipping publish-cuda-packages dispatch"
-              exit 1
-            fi
-            sleep 60
-          done

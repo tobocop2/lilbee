@@ -98,6 +98,14 @@ jobs:
       skip_tests: ${{ inputs.skip_tests || false }}
     secrets: inherit
 
+  build-cuda:
+    needs: [resolve]
+    uses: ./.github/workflows/build-cuda-executables.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+      skip_tests: ${{ inputs.skip_tests || false }}
+    secrets: inherit
+
   # Attach this run's executables AND every wheel to a GH pre-release. The
   # wheels live on the release page because GitHub Pages has a 1 GB per-deploy
   # cap that the full default + extra wheel set (~6 GB) blows through; the
@@ -106,7 +114,7 @@ jobs:
   # reversible (delete + retag) so this is safe to do eagerly; the
   # irreversible step (PyPI) waits for a human to run publish.yml.
   attach-prerelease:
-    needs: [resolve, build-default-wheels, build-extra-wheels, build-binaries]
+    needs: [resolve, build-default-wheels, build-extra-wheels, build-binaries, build-cuda]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
