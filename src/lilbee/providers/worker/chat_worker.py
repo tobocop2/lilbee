@@ -83,7 +83,7 @@ class _ChatSession:
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
-        windowed = self._window_messages(messages, options, llm)
+        windowed = self._window_messages(messages, options, llm, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
             kwargs["tools"] = tools
@@ -96,6 +96,8 @@ class _ChatSession:
         messages: list[dict[str, Any]],
         options: dict[str, Any] | None,
         llm: Any,
+        *,
+        model_ref: str | None,
     ) -> list[dict[str, Any]]:
         """Trim *messages* to fit the loaded model's context window."""
         reserved = (options or {}).get("num_predict") or _DEFAULT_RESPONSE_BUDGET
@@ -109,7 +111,7 @@ class _ChatSession:
             raise ContextWindowExceededError.from_counts(
                 requested=outcome.requested,
                 available=outcome.available,
-                model=self._model_path or "model",
+                model=model_ref or self._role_config.model_path.name,
             )
         if outcome.dropped:
             log.info(
