@@ -1,26 +1,16 @@
 """OS, environment, and platform helpers for lilbee."""
 
-import os
-import sys
 from pathlib import Path
+
+from platformdirs import user_data_dir
 
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
 LOCAL_ROOT_DIRNAME = ".lilbee"
 
 
 def default_data_dir() -> Path:
-    """Return platform-appropriate data directory.
-    - macOS:   ~/Library/Application Support/lilbee
-    - Windows: %LOCALAPPDATA%/lilbee
-    - Linux:   ~/.local/share/lilbee  (XDG_DATA_HOME)
-    """
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "lilbee"
+    """Return the per-user lilbee data directory for the current platform."""
+    return Path(user_data_dir("lilbee", appauthor=False))
 
 
 def find_local_root(start: Path | None = None) -> Path | None:

@@ -1,6 +1,6 @@
 """Tests for platform-level helpers."""
 
-import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -13,45 +13,19 @@ from lilbee.core.system import (
 
 
 class TestHelpers:
-    def test_default_data_dir_darwin(self):
-        with mock.patch("sys.platform", "darwin"):
-            result = default_data_dir()
-            assert "Application Support" in str(result)
-            assert str(result).endswith("lilbee")
+    def test_default_data_dir_ends_with_lilbee(self):
+        result = default_data_dir()
+        assert isinstance(result, Path)
+        assert result.parts[-1] == "lilbee"
 
-    def test_default_data_dir_linux(self, tmp_path):
-        with (
-            mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(tmp_path / "xdg")}, clear=False),
-            mock.patch("sys.platform", "linux"),
-        ):
+    def test_default_data_dir_delegates_to_platformdirs(self, tmp_path):
+        with mock.patch(
+            "lilbee.core.system.user_data_dir",
+            return_value=str(tmp_path / "lilbee"),
+        ) as m:
             result = default_data_dir()
-            assert result.parts[-1] == "lilbee"
-
-    def test_default_data_dir_linux_fallback(self):
-        filtered = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
-        with (
-            mock.patch.dict(os.environ, filtered, clear=True),
-            mock.patch("sys.platform", "linux"),
-        ):
-            result = default_data_dir()
-            assert result.parts[-3:] == (".local", "share", "lilbee")
-
-    def test_default_data_dir_windows(self, tmp_path):
-        with (
-            mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}, clear=False),
-            mock.patch("sys.platform", "win32"),
-        ):
-            result = default_data_dir()
-            assert str(tmp_path) in str(result)
-
-    def test_default_data_dir_windows_fallback(self):
-        filtered = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
-        with (
-            mock.patch.dict(os.environ, filtered, clear=True),
-            mock.patch("sys.platform", "win32"),
-        ):
-            result = default_data_dir()
-            assert "lilbee" in str(result)
+            assert result == tmp_path / "lilbee"
+            m.assert_called_once_with("lilbee", appauthor=False)
 
 
 class TestFindLocalRoot:
