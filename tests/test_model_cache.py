@@ -102,6 +102,45 @@ class TestComputeDynamicCtx:
         assert ctx % 256 == 0
         assert ctx <= 8192
 
+    def test_target_caps_below_ceiling_when_ram_allows_more(self) -> None:
+        """With plenty of RAM, n_ctx aims for target instead of maxing to ceiling."""
+        ctx = compute_dynamic_ctx(
+            model_bytes=1_000_000,
+            available_bytes=10_000_000_000,
+            training_ctx=40_960,
+            kv_bytes_per_tok=2048,
+            ceiling=40_960,
+            target=8192,
+        )
+        assert ctx == 8192
+
+    def test_target_clamped_down_by_host_ram(self) -> None:
+        """When RAM cannot back target, the picker scales target down to fit."""
+        ctx = compute_dynamic_ctx(
+            model_bytes=1_000_000,
+            available_bytes=10_000_000,  # ~9 MB budget after weights
+            training_ctx=40_960,
+            kv_bytes_per_tok=2048,
+            ceiling=40_960,
+            target=8192,
+            quantum=256,
+        )
+        # raw_ctx = ~4395; target=8192 too big; picker uses raw_ctx, quantized.
+        assert ctx < 8192
+        assert ctx % 256 == 0
+
+    def test_target_never_exceeds_training_ctx(self) -> None:
+        """A 32K-training model with target=64K stays at 32K."""
+        ctx = compute_dynamic_ctx(
+            model_bytes=1_000_000,
+            available_bytes=10_000_000_000,
+            training_ctx=32_768,
+            kv_bytes_per_tok=2048,
+            ceiling=131_072,
+            target=65_536,
+        )
+        assert ctx == 32_768
+
 
 class TestGetAvailableMemory:
     def test_macos_uses_psutil_total(self, monkeypatch) -> None:
