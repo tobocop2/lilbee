@@ -1,14 +1,4 @@
-"""MCP server exposing lilbee as tools for AI agents.
-
-Tool handler bodies use function-local ``from lilbee.X import ...`` to keep
-``lilbee mcp`` boot fast (the same startup discipline AGENTS.md mandates for
-Typer command bodies). Heavy chains pulled in lazily here:
-``data.ingest`` / ``wiki.*`` / ``wiki.drafts`` (spaCy via the wiki ingest
-pipeline), ``crawler`` (crawl4ai + Playwright), ``app.models`` /
-``modelhub.model_manager`` / ``catalog`` (HF discovery + `huggingface_hub`).
-``app.ingest`` / ``app.reset`` are individually light but transitively reach
-``data.ingest`` via the runtime sync handlers, so they share the policy.
-"""
+"""MCP server exposing lilbee as tools for AI agents."""
 
 from __future__ import annotations
 
@@ -23,6 +13,14 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.settings import (
+    SettingInfo,
+    apply_settings_update,
+    get_setting,
+    list_settings,
+    reset_settings,
+)
+from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
@@ -51,10 +49,12 @@ def _error(msg: str) -> dict[str, Any]:
 
 @mcp.tool()
 def search(
-    query: str, top_k: int = 5, scope: str = SearchScope.BOTH.value
+    query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Search the knowledge base for relevant document chunks.
 
+    ``top_k`` defaults to the ``top_k`` config field so ``settings_set``
+    governs the candidate count for agents that don't pass it explicitly.
     ``scope`` picks the pool: ``"raw"`` (source chunks), ``"wiki"`` (wiki
     page bodies), or ``"both"`` (default, unfiltered). Returns chunks
     sorted by relevance. No LLM call -- uses pre-computed embeddings.
@@ -65,8 +65,11 @@ def search(
         chunk_type = scope_to_chunk_type(scope)
     except ValueError as exc:
         return _error(str(exc))
+    effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
-        results = get_services().searcher.search(query, top_k=top_k, chunk_type=chunk_type)
+        results = get_services().searcher.search(
+            query, top_k=effective_top_k, chunk_type=chunk_type
+        )
         results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
     except Exception as exc:
@@ -480,6 +483,132 @@ def wiki_prune() -> dict[str, Any]:
     }
 
 
+def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
+    """Render a SettingInfo as a JSON-safe dict for the MCP wire format."""
+    return {
+        "key": info.key,
+        "value": _json_safe(info.value),
+        "default": _json_safe(info.default),
+        "type": info.type,
+        "nullable": info.nullable,
+        "group": info.group.value,
+        "help": info.help_text,
+        "choices": list(info.choices) if info.choices else None,
+        "reindex_required": info.reindex_required,
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce Path / frozenset / tuple to JSON-friendly primitives."""
+    if isinstance(value, str | int | float | bool | list | type(None)):
+        return value
+    return str(value)
+
+
+@mcp.tool()
+def settings_list(group: str = "") -> dict[str, Any]:
+    """List every writable lilbee setting with its current value and metadata.
+
+    Returns one row per setting with ``key``, ``value``, ``default``,
+    ``type`` (``int``, ``float``, ``bool``, ``str``, ``list``, or a
+    ``foo|null`` union), ``nullable``, ``group`` (Retrieval, Generation,
+    Models, Ingest, Wiki, Crawling, API-Keys, System, Display),
+    ``help`` text, ``choices`` (for enum-typed fields), and
+    ``reindex_required`` (whether changing the value invalidates the
+    persisted vector store).
+
+    Args:
+        group: Filter by group name (case-insensitive). Empty = all.
+    """
+
+    try:
+        infos = list_settings(group or None)
+    except ValueError as exc:
+        return _error(str(exc))
+    return {
+        "command": "settings_list",
+        "settings": [_setting_info_to_dict(info) for info in infos],
+        "total": len(infos),
+    }
+
+
+@mcp.tool()
+def settings_get(key: str) -> dict[str, Any]:
+    """Get the current value and metadata for a single lilbee setting.
+
+    The ``nullable`` field on the returned setting means the writer
+    accepts ``None`` to delete the persisted entry; ``vision_model`` /
+    ``reranker_model`` report ``nullable=false`` even though an empty
+    string clears them.
+
+    Args:
+        key: Setting name (e.g. ``"top_k"``, ``"chunk_size"``,
+            ``"chat_model"``). Use ``settings_list`` to discover keys.
+    """
+
+    try:
+        info = get_setting(key)
+    except KeyError as exc:
+        return _error(str(exc))
+    return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
+
+
+@mcp.tool()
+def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
+    """Update one or more writable lilbee settings atomically.
+
+    Validates every key and value upfront; if any value fails validation
+    the entire batch rolls back and nothing is persisted. Successful
+    writes flush to ``config.toml`` and invalidate the in-process model
+    architecture, provider load, and API-key caches so the next call
+    observes the new configuration.
+
+    Args:
+        updates: Map of setting key to new value. Pass ``null`` to clear
+            a nullable field (falls back to the pydantic default on next
+            process start). Numeric strings are coerced to int / float by
+            pydantic; booleans accept ``true`` / ``false`` / ``1`` / ``0``.
+
+    Returns ``updated`` (the keys persisted) and ``reindex_required``
+    (true when one of ``chunk_size`` / ``chunk_overlap`` changed; the
+    caller should run ``sync(force_rebuild=true)`` to refresh the index).
+    """
+
+    try:
+        result = apply_settings_update(updates)
+    except (ValueError, TypeError) as exc:
+        return _error(str(exc))
+    return {
+        "command": "settings_set",
+        "updated": result.updated,
+        "reindex_required": result.reindex_required,
+    }
+
+
+@mcp.tool()
+def settings_reset(keys: list[str]) -> dict[str, Any]:
+    """Reset writable settings to their built-in defaults.
+
+    Nullable fields are cleared (the next process start falls back to
+    the pydantic default); non-nullable fields are written to disk with
+    their default value. Invalidates the same caches as ``settings_set``.
+
+    Args:
+        keys: Setting keys to reset. Use ``settings_list`` to discover
+            available keys.
+    """
+
+    try:
+        result = reset_settings(keys)
+    except (ValueError, TypeError) as exc:
+        return _error(str(exc))
+    return {
+        "command": "settings_reset",
+        "updated": result.updated,
+        "reindex_required": result.reindex_required,
+    }
+
+
 @mcp.tool()
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     """List installed models across native and SDK-backend sources.
@@ -489,7 +618,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
         task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
     """
     from lilbee.app.models import list_models_data
-    from lilbee.catalog.types import ModelSource, ModelTask
+    from lilbee.catalog.types import ModelTask
 
     try:
         src = ModelSource.parse(source)
@@ -500,6 +629,87 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     except ValueError as exc:
         return _error(str(exc))
     return list_models_data(source=src, task=parsed_task).model_dump()
+
+
+@mcp.tool()
+def catalog_browse(
+    task: str = "",
+    search: str = "",
+    size: str = "",
+    installed: bool | None = None,
+    featured: bool | None = None,
+    sort: str = "featured",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Browse the lilbee model catalog (featured entries + Hugging Face).
+
+    Lets an agent discover candidates for any model role before pulling.
+    The catalog is the same one the TUI browses: a curated featured list
+    augmented with live Hugging Face results when ``featured=false``.
+
+    Args:
+        task: ``"chat"``, ``"embedding"``, ``"vision"``, ``"rerank"``, or
+            ``""`` for all.
+        search: Substring filter on name / repo / description.
+        size: ``"small"`` (<3 GB), ``"medium"`` (3-10 GB), or ``"large"``
+            (>10 GB). Empty = no size filter.
+        installed: ``true`` shows only installed repos, ``false`` only
+            uninstalled, ``null`` shows both.
+        featured: ``true`` restricts to the curated featured list,
+            ``false`` skips it (HF results only), ``null`` includes both.
+        sort: ``"featured"``, ``"downloads"``, ``"name"``,
+            ``"size_asc"``, or ``"size_desc"``.
+        limit: Page size (default 20).
+        offset: Page offset for pagination.
+
+    Returns ``{total, limit, offset, has_more, models}`` where each model
+    is ``{ref, display_name, task, size_gb, min_ram_gb, downloads,
+    featured, description}``.
+    """
+    from lilbee.catalog.query import get_catalog
+    from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
+    try:
+        parsed_task = ModelTask(task) if task else None
+        parsed_size = CatalogSize(size) if size else None
+        parsed_sort = CatalogSort(sort)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        result = get_catalog(
+            task=parsed_task,
+            search=search,
+            size=parsed_size,
+            installed=installed,
+            featured=featured,
+            sort=parsed_sort,
+            limit=limit,
+            offset=offset,
+            model_manager=get_services().model_manager,
+        )
+    except ValueError as exc:
+        return _error(str(exc))
+    return {
+        "command": "catalog_browse",
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "models": [
+            {
+                "ref": m.hf_repo,
+                "display_name": m.display_name,
+                "task": m.task.value,
+                "size_gb": m.size_gb,
+                "min_ram_gb": m.min_ram_gb,
+                "downloads": m.downloads,
+                "featured": m.featured,
+                "description": m.description,
+            }
+            for m in result.models
+        ],
+    }
 
 
 @mcp.tool()
@@ -529,7 +739,7 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
 @mcp.tool()
 async def model_pull(
     model: str,
-    source: str = "native",
+    source: str = ModelSource.NATIVE.value,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Download a model, streaming progress via MCP notifications.
@@ -541,7 +751,6 @@ async def model_pull(
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
-    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
@@ -575,7 +784,6 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         source: Restrict to "native" or "remote"; empty = both.
     """
     from lilbee.app.models import remove_model_data
-    from lilbee.catalog.types import ModelSource
 
     try:
         src = ModelSource.parse(source)

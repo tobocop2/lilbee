@@ -13,6 +13,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.mcp_server import (
     add,
+    catalog_browse,
     crawl,
     crawl_status,
     init,
@@ -21,6 +22,10 @@ from lilbee.mcp_server import (
     remove,
     reset,
     search,
+    settings_get,
+    settings_list,
+    settings_reset,
+    settings_set,
     status,
     sync,
     wiki_build,
@@ -35,6 +40,7 @@ from lilbee.mcp_server import (
     wiki_synthesize,
     wiki_update,
 )
+from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +83,7 @@ def _no_dns():
 
 
 _SYNC_NOOP = SyncResult()
+_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
 class TestSearch:
@@ -173,6 +180,13 @@ class TestSearch:
         results = search("test")
         assert len(results) == 1
         assert results[0]["source"] == "good.md"
+
+    def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
+        """settings_set top_k must govern search calls that omit the arg."""
+        cfg.top_k = 15
+        mock_svc.searcher.search.return_value = []
+        search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=15, chunk_type=None)
 
     def test_keeps_hybrid_results_without_distance(self, mock_svc):
         """Hybrid/RRF results with distance=None are not filtered."""
@@ -781,7 +795,7 @@ class TestWikiStatus:
 class TestWikiBuildTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_build() == {"error": "wiki not enabled"}
+        assert wiki_build() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -796,7 +810,7 @@ class TestWikiBuildTool:
 class TestWikiUpdateTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_update() == {"error": "wiki not enabled"}
+        assert wiki_update() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_build_summary(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -810,7 +824,7 @@ class TestWikiUpdateTool:
 class TestWikiSynthesizeTool:
     def test_wiki_disabled_returns_error(self, mock_svc, tmp_path):
         cfg.wiki = False
-        assert wiki_synthesize() == {"error": "wiki not enabled"}
+        assert wiki_synthesize() == {"error": WIKI_DISABLED_ERROR}
 
     def test_returns_synthesis_paths(self, mock_svc, tmp_path, monkeypatch):
         cfg.wiki = True
@@ -847,7 +861,7 @@ class TestWikiList:
         cfg.wiki = False
         result = wiki_list()
         assert "error" in result
-        assert result["error"] == "wiki not enabled"
+        assert result["error"] == WIKI_DISABLED_ERROR
 
     def test_empty_wiki(self, isolated_env):
         cfg.wiki = True
@@ -883,7 +897,7 @@ class TestWikiRead:
         cfg.wiki = False
         result = wiki_read("summaries/test")
         assert "error" in result
-        assert result["error"] == "wiki not enabled"
+        assert result["error"] == WIKI_DISABLED_ERROR
 
     def test_existing_page(self, isolated_env):
         cfg.wiki = True
@@ -969,3 +983,444 @@ class TestWikiDraftsMcp:
         cfg.wiki_dir = "wiki"
         result = wiki_drafts_diff("missing")
         assert "error" in result
+
+
+class TestSettingsMcp:
+    """MCP settings_* tools read and write through the canonical write boundary."""
+
+    def test_settings_list_returns_metadata(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list()
+        assert result["command"] == "settings_list"
+        assert result["total"] > 0
+        keys = {entry["key"] for entry in result["settings"]}
+        assert {"top_k", "chunk_size", "max_distance"}.issubset(keys)
+        top_k = next(e for e in result["settings"] if e["key"] == "top_k")
+        assert top_k["type"] == "int"
+        assert top_k["group"] == "Retrieval"
+        assert top_k["help"]
+        assert top_k["reindex_required"] is False
+
+    def test_settings_list_filters_by_group(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list(group="Retrieval")
+        groups = {entry["group"] for entry in result["settings"]}
+        assert groups == {"Retrieval"}
+        assert any(entry["key"] == "top_k" for entry in result["settings"])
+
+    def test_settings_get_returns_value(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 7
+        result = settings_get("top_k")
+        assert result["command"] == "settings_get"
+        assert result["setting"]["key"] == "top_k"
+        assert result["setting"]["value"] == 7
+
+    def test_settings_get_unknown_key_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_get("bogus")
+        assert "error" in result
+
+    def test_settings_set_persists_writable_ints(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"top_k": 11, "chunk_size": 256})
+        assert result["command"] == "settings_set"
+        assert set(result["updated"]) == {"top_k", "chunk_size"}
+        assert result["reindex_required"] is True
+        assert cfg.top_k == 11
+        assert cfg.chunk_size == 256
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "top_k" in persisted
+        assert "chunk_size" in persisted
+
+    def test_settings_set_pre_validates_chunk_size(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        result = settings_set({"top_k": 12, "chunk_size": 1})
+        assert "error" in result
+        assert cfg.top_k == 5
+
+    def test_settings_set_rolls_back_when_pydantic_rejects_second_field(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        cfg.temperature = 0.6
+        result = settings_set({"top_k": 9, "temperature": -1.0})
+        assert "error" in result
+        assert cfg.top_k == 5, "first field must roll back when second fails pydantic"
+        assert cfg.temperature == 0.6
+
+    def test_settings_set_rejects_unknown_key(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"not_a_real_field": 1})
+        assert "error" in result
+
+    def test_settings_set_clears_nullable_field(self, isolated_env):
+        cfg.data_root = isolated_env
+        settings_set({"max_tokens": 1024})
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "max_tokens" in persisted
+        settings_set({"max_tokens": None})
+        assert cfg.max_tokens is None
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "max_tokens" not in persisted
+
+    def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
+        cfg.data_root = isolated_env
+        with mock.patch("lilbee.modelhub.model_info.invalidate_cache") as mock_invalidate:
+            settings_set({"chat_model": _CHAT_REF})
+        mock_invalidate.assert_called_once()
+
+    def test_settings_reset_restores_default(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+        result = settings_reset(["top_k"])
+        assert result["command"] == "settings_reset"
+        assert "top_k" in result["updated"]
+        from lilbee.app.settings import get_setting
+
+        assert cfg.top_k == get_setting("top_k").default
+
+    def test_settings_reset_unknown_key_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_reset(["nope"])
+        assert "error" in result
+
+    def test_settings_reset_nullable_with_non_none_default_restores_value(self, isolated_env):
+        """A nullable field whose pydantic default is non-None resets to that value, not None."""
+        cfg.data_root = isolated_env
+        cfg.temperature = 0.9
+        result = settings_reset(["temperature"])
+        assert "error" not in result
+        from lilbee.app.settings import get_setting
+
+        assert cfg.temperature == get_setting("temperature").default
+
+    def test_settings_reset_refuses_path_sentinel_field(self, isolated_env):
+        """documents_dir has no resettable default; resetting must error instead of corrupting."""
+        cfg.data_root = isolated_env
+        result = settings_reset(["documents_dir"])
+        assert "error" in result
+        assert "documents_dir" in result["error"]
+
+    def test_settings_list_unknown_group_returns_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_list(group="not-a-group")
+        assert "error" in result
+
+    def test_settings_list_filter_is_case_insensitive(self, isolated_env):
+        cfg.data_root = isolated_env
+        lower = settings_list(group="retrieval")
+        upper = settings_list(group="Retrieval")
+        assert lower["total"] == upper["total"]
+        assert lower["total"] > 0
+
+    def test_settings_list_excludes_write_only_api_keys(self, isolated_env):
+        """API keys (write_only) must not appear in settings_list to avoid secret leak."""
+        cfg.data_root = isolated_env
+        cfg.openai_api_key = "sk-secret"
+        result = settings_list()
+        keys = {entry["key"] for entry in result["settings"]}
+        assert "openai_api_key" not in keys
+        assert "hf_token" not in keys
+
+    def test_settings_get_refuses_write_only_field(self, isolated_env):
+        """settings_get must refuse write_only fields so API keys cannot be read back."""
+        cfg.data_root = isolated_env
+        cfg.openai_api_key = "sk-secret"
+        result = settings_get("openai_api_key")
+        assert "error" in result
+        assert "write-only" in result["error"].lower()
+
+    def test_settings_set_rejects_overlap_at_or_above_chunk_size(self, isolated_env):
+        """chunk_overlap must stay below chunk_size; the boundary catches the pair upfront."""
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": 1024})
+        assert "error" in result
+
+    def test_settings_set_rejects_overlap_equal_to_chunk_size(self, isolated_env):
+        """chunk_overlap == chunk_size is also rejected (strict less-than)."""
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": 512})
+        assert "error" in result
+
+    def test_settings_set_writes_hf_token_and_keeps_it_out_of_reads(self, isolated_env):
+        """hf_token is write_only: settings_set succeeds, but it stays out of every read."""
+        cfg.data_root = isolated_env
+        result = settings_set({"hf_token": "hf_abc123"})
+        assert "command" in result and result["command"] == "settings_set"
+        assert cfg.hf_token == "hf_abc123"
+        keys = {entry["key"] for entry in settings_list()["settings"]}
+        assert "hf_token" not in keys
+        assert "error" in settings_get("hf_token")
+
+    def test_list_settings_accepts_settinggroup_enum(self, isolated_env):
+        """list_settings accepts a SettingGroup enum directly, not just a string."""
+        cfg.data_root = isolated_env
+        from lilbee.app.settings import list_settings
+        from lilbee.app.settings_map import SettingGroup
+
+        infos = list_settings(group=SettingGroup.RETRIEVAL)
+        assert infos
+        assert all(info.group == SettingGroup.RETRIEVAL for info in infos)
+
+    def test_setting_default_handles_pydantic_undefined(self, isolated_env):
+        """_setting_default returns None when the pydantic field has no default."""
+        cfg.data_root = isolated_env
+        from unittest.mock import MagicMock, patch
+
+        from pydantic_core import PydanticUndefined
+
+        from lilbee.app.settings import _setting_default
+
+        field_info = MagicMock()
+        field_info.default_factory = None
+        field_info.default = PydanticUndefined
+        with patch("lilbee.app.settings.Config.model_fields", {"top_k": field_info}):
+            assert _setting_default("top_k") is None
+
+    def test_is_nullable_returns_false_for_model_role_field(self, isolated_env):
+        """Model role fields are not in WRITABLE_CONFIG_FIELDS; _is_nullable returns False."""
+        cfg.data_root = isolated_env
+        from lilbee.app.settings import _is_nullable
+
+        assert _is_nullable("chat_model") is False
+        assert _is_nullable("embedding_model") is False
+
+    def test_settings_get_wire_format_nullable_matches_boundary(self, isolated_env):
+        """settings_get's MCP wire format reports nullable=False for model role fields."""
+        cfg.data_root = isolated_env
+        for role in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
+            result = settings_get(role)
+            assert result["setting"]["nullable"] is False, role
+
+    def test_settings_list_includes_lilbee_name_and_show_path(self, isolated_env):
+        """The two new naming knobs are reachable over MCP."""
+        cfg.data_root = isolated_env
+        keys = {entry["key"] for entry in settings_list()["settings"]}
+        assert "lilbee_name" in keys
+        assert "show_lilbee_path" in keys
+        assert settings_get("show_lilbee_path")["setting"]["type"] == "bool"
+
+    def test_settings_set_rolls_back_on_disk_failure(self, isolated_env):
+        """OSError from the TOML write reverts cfg before re-raising."""
+        from lilbee.app.settings import apply_settings_update
+
+        cfg.data_root = isolated_env
+        cfg.top_k = 5
+        with (
+            mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            apply_settings_update({"top_k": 11})
+        assert cfg.top_k == 5
+
+    def test_settings_reset_clears_nullable_with_none_default(self, isolated_env):
+        """Resetting a nullable field whose pydantic default is None clears the entry."""
+        cfg.data_root = isolated_env
+        cfg.seed = 42
+        settings_reset(["seed"])
+        assert cfg.seed is None
+
+
+class TestLilbeeLabel:
+    """app.status.lilbee_label is the friendly name the TUI status bar shows."""
+
+    def test_user_alias_wins(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = "my-project"
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "my-project"
+
+    def test_path_toggle_shows_full_absolute(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        assert lilbee_label() == str(isolated_env.resolve())
+
+    def test_project_local_label_strips_dotlilbee(self, isolated_env):
+        """A project-local ``.lilbee`` data_root labels as the project path, not '.lilbee'."""
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import LOCAL_ROOT_DIRNAME
+
+        project = isolated_env / "my-godot-game"
+        project.mkdir()
+        cfg.data_root = project / LOCAL_ROOT_DIRNAME
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert ".lilbee" not in label
+        assert "my-godot-game" in label
+
+    def test_global_data_dir_label(self, isolated_env):
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = default_data_dir()
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "global"
+
+    def test_show_path_expands_global_to_default_data_dir(self, isolated_env):
+        """F4 on global swaps 'global' for the actual platform-default path."""
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = default_data_dir()
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        assert lilbee_label() == str(default_data_dir())
+
+    def test_whitespace_alias_falls_through(self, isolated_env):
+        """A whitespace-only alias is stripped so the path chain takes over."""
+        from lilbee.app.status import lilbee_label
+
+        cfg.data_root = isolated_env
+        cfg.lilbee_name = "   "
+        cfg.show_lilbee_path = False
+        assert cfg.lilbee_name == ""
+        assert "/" in lilbee_label() or lilbee_label().startswith("~") or lilbee_label() == "global"
+
+    def test_global_label_matches_when_data_root_has_trailing_slash(self, isolated_env):
+        """A trailing-slash variant of the platform default still resolves to 'global'."""
+        from pathlib import Path
+
+        from lilbee.app.status import lilbee_label
+        from lilbee.core.system import default_data_dir
+
+        cfg.data_root = Path(f"{default_data_dir()}/")
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        assert lilbee_label() == "global"
+
+    def test_home_paths_collapse_to_tilde(self, isolated_env, tmp_path, monkeypatch):
+        """Compact labels substitute ``~`` for $HOME using the native separator."""
+        import os
+
+        from lilbee.app.status import lilbee_label
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project = tmp_path / "code" / "lilbee-mcp-settings"
+        project.mkdir(parents=True)
+        cfg.data_root = project / ".lilbee"
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert label.startswith(f"~{os.sep}")
+        assert "lilbee-mcp-settings" in label
+
+    def test_long_path_truncates_from_left(self, isolated_env):
+        """Paths over LILBEE_LABEL_MAX_LEN truncate with a leading ellipsis."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        deep = isolated_env
+        for chunk in ("aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "leaf"):
+            deep = deep / chunk
+        deep.mkdir(parents=True)
+        cfg.data_root = deep
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert label.startswith("…")
+        assert len(label) <= LILBEE_LABEL_MAX_LEN
+        assert "leaf" in label
+
+    def test_pathological_leaf_still_respects_max_len(self, isolated_env):
+        """A single huge leaf segment gets an internal ellipsis to honor the hard cap."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        # No mkdir; the label helper only reads the path, doesn't stat it.
+        cfg.data_root = isolated_env / ("z" * 500)
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = False
+        label = lilbee_label()
+        assert len(label) <= LILBEE_LABEL_MAX_LEN
+        assert "…" in label
+
+    def test_path_toggle_overrides_truncation(self, isolated_env):
+        """show_lilbee_path returns the full untruncated absolute path."""
+        from lilbee.app.status import LILBEE_LABEL_MAX_LEN, lilbee_label
+
+        deep = isolated_env
+        for chunk in ("aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "leaf"):
+            deep = deep / chunk
+        deep.mkdir(parents=True)
+        cfg.data_root = deep
+        cfg.lilbee_name = ""
+        cfg.show_lilbee_path = True
+        label = lilbee_label()
+        assert label == str(deep.resolve())
+        assert len(label) > LILBEE_LABEL_MAX_LEN
+
+    def test_compact_path_exactly_home_returns_tilde(self, tmp_path, monkeypatch):
+        """When the project path IS $HOME with no subdir, compact rendering is just '~'."""
+        from lilbee.app.status import _compact_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _compact_path(str(tmp_path)) == "~"
+
+    def test_truncate_leaf_helper_handles_tight_budget(self):
+        """``_truncate_leaf`` keeps a head + tail when budget allows, else just ellipsis."""
+        from lilbee.app.status import _truncate_leaf
+
+        assert _truncate_leaf("short", 10) == "short"
+        out = _truncate_leaf("a" * 100, 9)
+        assert len(out) == 9
+        assert "…" in out
+        assert _truncate_leaf("anything", 1) == "…"
+
+
+class TestCatalogBrowseMcp:
+    """MCP catalog_browse exposes the featured catalog + HF for any model role."""
+
+    def test_browse_returns_featured_embedding_models(self, isolated_env, mock_svc):
+        """task=embedding + featured=true returns the curated embedding catalog."""
+        # featured=True skips the live HF call; the real HfClient never runs.
+        result = catalog_browse(task="embedding", featured=True, limit=5)
+        assert result["command"] == "catalog_browse"
+        assert result["total"] >= 1
+        for entry in result["models"]:
+            assert entry["task"] == "embedding"
+            assert "ref" in entry
+            assert "size_gb" in entry
+            assert entry["featured"] is True
+
+    def test_browse_returns_featured_vision_and_rerank(self, isolated_env, mock_svc):
+        """The vision and rerank slots both have at least one curated entry."""
+        for task in ("vision", "rerank"):
+            result = catalog_browse(task=task, featured=True)
+            assert result["total"] >= 1, f"no featured models for {task}"
+
+    def test_browse_rejects_invalid_task(self, isolated_env, mock_svc):
+        """An unknown task name returns the uniform error envelope."""
+        result = catalog_browse(task="not-a-task", featured=True)
+        assert "error" in result
+
+    def test_browse_rejects_invalid_size(self, isolated_env, mock_svc):
+        """An unknown size bucket returns the uniform error envelope."""
+        result = catalog_browse(size="huge", featured=True)
+        assert "error" in result
+
+    def test_browse_rejects_invalid_sort(self, isolated_env, mock_svc):
+        """An unknown sort key returns the uniform error envelope."""
+        result = catalog_browse(sort="random", featured=True)
+        assert "error" in result
+
+    def test_browse_omits_chat_model_when_filtered_to_chat_only_role(self, isolated_env, mock_svc):
+        """task=rerank never returns chat models even with no other filters."""
+        result = catalog_browse(task="rerank", featured=True)
+        assert all(m["task"] == "rerank" for m in result["models"])
+
+    def test_browse_forwards_get_catalog_value_error(self, isolated_env, mock_svc):
+        """A ValueError from get_catalog surfaces as the uniform error envelope."""
+        with mock.patch("lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")):
+            result = catalog_browse(task="embedding", featured=True)
+        assert result == {"error": "bad filter"}

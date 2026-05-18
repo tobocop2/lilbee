@@ -523,6 +523,21 @@ class TestModelsCatalogRoute:
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
 
+    def test_invalid_sort_returns_422(self, client):
+        """An unknown sort value must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?sort=random&featured=true")
+        assert resp.status_code == 422
+
+    def test_invalid_size_returns_422(self, client):
+        """An unknown size bucket must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?size=huge&featured=true")
+        assert resp.status_code == 422
+
+    def test_invalid_task_returns_422(self, client):
+        """An unknown task must surface as 422, not 500."""
+        resp = client.get("/api/models/catalog?task=bogus&featured=true")
+        assert resp.status_code == 422
+
 
 class TestModelsInstalledRoute:
     @mock.patch(
@@ -590,7 +605,7 @@ class TestConfigDefaultsRoute:
         data = resp.json()
         # Scalar defaults present.
         assert data["chunk_size"] == 512
-        assert data["top_k"] == 8
+        assert data["top_k"] == 12
         # Nullable defaults come through as null.
         assert data["crawl_max_depth"] is None
         assert data["crawl_max_pages"] is None

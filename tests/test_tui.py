@@ -559,7 +559,7 @@ class TestCLIIntegration:
 
 class TestThemes:
     def test_dark_themes_available(self) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES
+        from lilbee.app.themes import DARK_THEMES
 
         assert "monokai" in DARK_THEMES
         assert "dracula" in DARK_THEMES
@@ -655,13 +655,13 @@ class TestThemes:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set,
-                mock.patch("lilbee.cli.tui.app.settings.delete_value") as mock_delete,
+                mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_update,
+                mock.patch("lilbee.app.settings.persistent_settings.delete_values") as mock_delete,
             ):
                 app.set_setting("seed", None)
-            mock_set.assert_not_called()
+            mock_update.assert_not_called()
             mock_delete.assert_called_once()
-            assert mock_delete.call_args.args[1] == "seed"
+            assert mock_delete.call_args.args[1] == ["seed"]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_setting_stringifies_list_for_toml(
@@ -674,10 +674,11 @@ class TestThemes:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.cli.tui.app.settings.set_value") as mock_set:
+            with mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_update:
                 app.set_setting("crawl_exclude_patterns", ["foo", "bar"])
-            mock_set.assert_called_once()
-            assert mock_set.call_args.args[2] == "foo\nbar"
+            mock_update.assert_called_once()
+            persisted = mock_update.call_args.args[1]
+            assert persisted.get("crawl_exclude_patterns") == "foo\nbar"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_invalid_theme_noop(self, mock_catalog: mock.MagicMock) -> None:
@@ -1020,7 +1021,8 @@ class TestNavBindings:
         from lilbee.cli.tui.app import LilbeeApp
 
         keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        for k in ("1", "2", "3", "4", "f2", "f3", "f4", "ctrl+n", "ctrl+s", "ctrl+e"):
+        # f4 IS bound (toggle_lilbee_path). Number keys + ctrl+n/s/e stay free.
+        for k in ("1", "2", "3", "4", "f2", "f3", "ctrl+n", "ctrl+s", "ctrl+e"):
             assert k not in keys
 
 
@@ -1249,7 +1251,7 @@ class TestSyncHint:
         observed: list[int] = []
         gate = _threading.Event()
 
-        def _do_sync_target(self_screen, reporter):
+        def _do_sync_target(self_screen, reporter, *, force_rebuild=False):
             observed.append(self_screen.app.task_bar.pending_sync_count)
             gate.set()
 

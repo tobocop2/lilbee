@@ -218,8 +218,8 @@ def _isolate_cfg(tmp_path, request):
     ``/add``-style flows can't see files left behind in the dev
     ``.lilbee/documents/`` by an earlier run; without this, overwrite
     prompts fire on phantom "existing" files. ``data_root`` is also
-    redirected so tests that exercise ``settings.set_value`` (e.g.
-    SettingsScreen persist handlers) never touch the developer's real
+    redirected so tests that persist settings via
+    ``apply_settings_update`` never touch the developer's real
     ``config.toml``.
 
     Integration tests are opted out of the ``documents_dir`` override:

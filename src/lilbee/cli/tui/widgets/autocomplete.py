@@ -14,8 +14,8 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from lilbee.app.services import get_services
-from lilbee.cli.settings_map import SETTINGS_MAP
-from lilbee.cli.tui.app import DARK_THEMES
+from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
 
 log = logging.getLogger(__name__)
