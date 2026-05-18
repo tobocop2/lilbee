@@ -26,7 +26,11 @@ _QWEN3_SCHEMA: ResponseSchema = {
         "thinking": {"type": "string", "x-regex": r"<think>\s*(.*?)\s*</think>"},
         "content": {
             "type": "string",
-            "x-regex": r"^(?:.*?</think>)?\s*((?:(?!<tool_call>).)*)",
+            "x-regex-substitutions": [
+                [r"<think>.*?</think>", ""],
+                [r"<tool_call>.*?</tool_call>", ""],
+            ],
+            "x-regex": r"^\s*(.*?)\s*$",
         },
         "tool_calls": {
             "x-regex-iterator": r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
@@ -54,7 +58,11 @@ _QWEN3_CODER_SCHEMA: ResponseSchema = {
         "thinking": {"type": "string", "x-regex": r"<think>\s*(.*?)\s*</think>"},
         "content": {
             "type": "string",
-            "x-regex": r"^(?:.*?</think>)?\s*((?:(?!<tool_call>).)*)",
+            "x-regex-substitutions": [
+                [r"<think>.*?</think>", ""],
+                [r"<tool_call>.*?</tool_call>", ""],
+            ],
+            "x-regex": r"^\s*(.*?)\s*$",
         },
         "tool_calls": {
             "x-regex-iterator": r"<tool_call>\s*(.*?)\s*</tool_call>",
@@ -142,6 +150,6 @@ SCHEMAS: dict[ModelFamily, ResponseSchema] = {
     ModelFamily.MISTRAL: _MISTRAL_SCHEMA,
     ModelFamily.GEMMA4: _GEMMA4_SCHEMA,
 }
-"""Response schemas indexed by detected model family. ``UNKNOWN`` and
-``SMOLLM`` / ``GENERIC_TOOL_CALL`` families intentionally have no entry: tool
-extraction is skipped and the model output is returned as-is."""
+"""Response schemas indexed by detected model family. ``ModelFamily.UNKNOWN``
+intentionally has no entry: when family detection cannot classify the loaded
+model's template, tool extraction is skipped and the raw output is returned."""

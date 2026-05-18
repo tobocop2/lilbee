@@ -35,14 +35,29 @@ def test_qwen3_extracts_multiple_parallel_tool_calls() -> None:
     assert [c.name for c in parsed.tool_calls] == ["a", "b"]
 
 
-def test_qwen3_handles_thinking_block() -> None:
-    """A leading ``<think>...</think>`` block is captured as thinking, not content."""
+def test_qwen3_strips_thinking_block_from_content() -> None:
+    """``<think>...</think>`` is removed from content; tool calls still extract.
+
+    ParsedResponse drops thinking entirely for Stage 1 (no ``thinking`` field
+    on the dataclass). Verifying here that the schema's ``x-regex-substitutions``
+    removes the block from the emitted content rather than letting it leak.
+    """
     text = (
         "<think>I should search.</think>"
         '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
     )
     parsed = parse_response(text, SCHEMAS[ModelFamily.QWEN3])
     assert len(parsed.tool_calls) == 1
+    assert "I should search" not in parsed.content
+
+
+def test_qwen3_preserves_content_after_tool_call() -> None:
+    """Text after ``</tool_call>`` is preserved, not silently dropped."""
+    text = 'Looking it up. <tool_call>{"name": "f", "arguments": {}}</tool_call> Done.'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.QWEN3])
+    assert len(parsed.tool_calls) == 1
+    assert "Looking it up." in parsed.content
+    assert "Done." in parsed.content
 
 
 def test_qwen3_text_only_response_returns_no_tool_calls() -> None:

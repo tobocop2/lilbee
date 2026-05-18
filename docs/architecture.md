@@ -162,7 +162,7 @@ When HuggingFace ships a `response_schema` attribute on a model's tokenizer conf
 
 ### Coverage
 
-`SCHEMAS` ships with response schemas for the families that surface most often in lilbee's featured catalog and HuggingFace's standard chat ecosystem. The `GENERIC_TOOL_CALL` schema covers any model whose template uses the `<tool_call>{json}</tool_call>` convention. Detection falls back to `UNKNOWN` for templates with no recognised markers; in that case extraction is skipped and the model output is returned as-is.
+`SCHEMAS` ships with response schemas for Qwen3, Qwen3-Coder, Mistral, and Gemma 4. The Qwen3 schema also serves as the catch-all for any model whose template uses the `<tool_call>{json}</tool_call>` convention since `detect_family` classifies that pattern as `QWEN3`. Detection falls back to `UNKNOWN` for templates with no recognised markers; in that case extraction is skipped and the model output is returned as-is.
 
 ---
 

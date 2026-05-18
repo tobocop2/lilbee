@@ -380,6 +380,70 @@ def test_non_streaming_schema_extraction_skipped_when_tools_absent() -> None:
     assert value.finish_reason == FinishReason.STOP
 
 
+def test_chat_session_caches_schema_from_template_metadata(monkeypatch, tmp_path) -> None:
+    """``_ChatSession._ensure_loaded`` reads the GGUF chat_template, classifies
+    it via ``detect_family``, and caches the matching schema on the session.
+    Tests the wiring that other tests bypass by assigning ``response_schema``
+    directly.
+    """
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+    from lilbee.providers.worker.transport import RoleConfig
+
+    fake_path = tmp_path / "fake-qwen.gguf"
+    fake_path.write_bytes(b"")
+    role_config = RoleConfig(role="chat", model_path=fake_path, mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+
+    qwen3_template = "<tool_call>{...}</tool_call>"
+
+    def _fake_load_llama(path, *, mode, abort_callback_override=None):
+        return object()
+
+    def _fake_resolve(model_override):
+        return fake_path
+
+    def _fake_metadata(path):
+        return {"chat_template": qwen3_template}
+
+    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.load_llama", _fake_load_llama)
+    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.resolve_model_path", _fake_resolve)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata", _fake_metadata
+    )
+
+    session._ensure_loaded(None)
+
+    assert session.response_schema is SCHEMAS[ModelFamily.QWEN3]
+
+
+def test_chat_session_caches_none_schema_for_unrecognised_template(monkeypatch, tmp_path) -> None:
+    """An unrecognised template caches no schema so extraction is skipped."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    fake_path = tmp_path / "fake-unknown.gguf"
+    fake_path.write_bytes(b"")
+    role_config = RoleConfig(role="chat", model_path=fake_path, mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.load_llama",
+        lambda path, *, mode, abort_callback_override=None: object(),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _m: fake_path
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata",
+        lambda _p: {"chat_template": "no recognised markers here"},
+    )
+
+    session._ensure_loaded(None)
+
+    assert session.response_schema is None
+
+
 def test_streaming_schema_extraction_emits_tool_delta_from_text_chunks() -> None:
     """A streamed sequence of text deltas containing ``<tool_call>...{json}...</tool_call>``
     surfaces a ``ToolCallDelta`` via schema extraction, with prefix text flushed first.

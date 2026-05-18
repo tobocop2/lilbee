@@ -7,8 +7,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from transformers.utils.chat_parsing_utils import recursive_parse
-
 from lilbee.providers.worker.transport import ToolCall
 
 log = logging.getLogger(__name__)
@@ -34,11 +32,21 @@ def parse_response(text: str, schema: dict[str, Any]) -> ParsedResponse:
     Returns a ``ParsedResponse`` with the schema-extracted ``content`` and any
     detected tool calls. On parse failure the original ``text`` is returned as
     content with no tool calls, so a malformed model output never raises out
-    of this layer.
+    of this layer. ``transformers`` is imported lazily: pulling it in eagerly
+    adds ~1.2s to worker subprocess boot, paid even when no chat request
+    carries tools. Deferring the import to the first parse keeps cold-start
+    fast and pays the cost only when tool extraction is actually needed.
     """
+    from transformers.utils.chat_parsing_utils import recursive_parse
+
     try:
         parsed = recursive_parse(text, schema)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ImportError) as exc:
+        # ValueError / TypeError from the schema walker on a malformed model
+        # output; ImportError from optional sub-parsers (jmespath) when a
+        # schema needs an extension package the env doesn't have. Any of
+        # them falls back to returning the raw text as content rather than
+        # propagating to the worker as a 500.
         log.debug("response schema parse failed: %s", exc)
         return ParsedResponse(content=text, tool_calls=())
     if not isinstance(parsed, dict):

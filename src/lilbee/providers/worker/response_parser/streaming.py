@@ -7,13 +7,17 @@ from typing import Any
 from lilbee.providers.worker.response_parser.parse import parse_response
 from lilbee.providers.worker.transport import ToolCallDelta
 
-_SAFE_MARGIN_CHARS = 32
-"""How many trailing characters to withhold from each content emission.
+_MARKER_OPENERS = ("<", "[")
+"""First characters of every tool-call / reasoning marker any shipped schema
+watches for (e.g., ``<tool_call>``, ``<think>``, ``[TOOL_CALLS]``)."""
 
-A partial tool-call marker (e.g., ``<tool_call`` waiting for the closing ``>``)
-at the end of the buffer would otherwise leak into the emitted content. 32
-exceeds every marker any shipped schema watches for, so a tail at the safe-
-margin boundary is never long enough to span a real marker."""
+_MARKER_PEEK_WINDOW = 16
+"""How far back from the tail to look for a marker-opener character.
+
+The longest marker any schema watches for (``<|channel>thought``, at 17 chars
+including the surrounding wraps) fits inside this window. Looking further
+back would needlessly withhold content; looking shorter would risk emitting
+a partial marker before its close arrives."""
 
 
 class StreamingResponseParser:
@@ -62,7 +66,7 @@ class StreamingResponseParser:
         if finalize or parsed.tool_calls:
             safe_end = len(parsed.content)
         else:
-            safe_end = max(0, len(parsed.content) - _SAFE_MARGIN_CHARS)
+            safe_end = _safe_emit_position(parsed.content)
 
         if safe_end > self._emitted_content_len:
             content_delta = parsed.content[self._emitted_content_len : safe_end]
@@ -71,3 +75,19 @@ class StreamingResponseParser:
             content_delta = ""
 
         return content_delta, tool_deltas
+
+
+def _safe_emit_position(content: str) -> int:
+    """Latest position safe to emit; anything beyond might be a partial marker.
+
+    Scans the trailing :data:`_MARKER_PEEK_WINDOW` characters for a marker-
+    opener character; if one is found, emission stops at that character so a
+    later chunk can complete the marker without the partial bytes leaking out
+    as text. Content with no marker-opener in the window is fully emittable.
+    """
+    end = len(content)
+    window_start = max(0, end - _MARKER_PEEK_WINDOW)
+    for i in range(window_start, end):
+        if content[i] in _MARKER_OPENERS:
+            return i
+    return end
