@@ -1021,7 +1021,8 @@ class TestNavBindings:
         from lilbee.cli.tui.app import LilbeeApp
 
         keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        for k in ("1", "2", "3", "4", "f2", "f3", "f4", "ctrl+n", "ctrl+s", "ctrl+e"):
+        # f4 IS bound (toggle_lilbee_path). Number keys + ctrl+n/s/e stay free.
+        for k in ("1", "2", "3", "4", "f2", "f3", "ctrl+n", "ctrl+s", "ctrl+e"):
             assert k not in keys
 
 

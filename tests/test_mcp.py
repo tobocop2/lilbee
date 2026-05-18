@@ -1360,6 +1360,13 @@ class TestLilbeeLabel:
         assert label == str(deep.resolve())
         assert len(label) > LILBEE_LABEL_MAX_LEN
 
+    def test_compact_path_exactly_home_returns_tilde(self, tmp_path, monkeypatch):
+        """When the project path IS $HOME with no subdir, compact rendering is just '~'."""
+        from lilbee.app.status import _compact_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _compact_path(str(tmp_path)) == "~"
+
     def test_truncate_leaf_helper_handles_tight_budget(self):
         """``_truncate_leaf`` keeps a head + tail when budget allows, else just ellipsis."""
         from lilbee.app.status import _truncate_leaf

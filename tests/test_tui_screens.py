@@ -3669,7 +3669,25 @@ async def test_command_provider_action_version():
             assert "1.0.0" in mock_notify.call_args[0][0]
 
 
-async def test_command_provider_action_noop():
+async def test_command_provider_action_reset_pushes_confirm():
+    """Palette 'Reset knowledge base' invokes ChatScreen._cmd_reset to push the ConfirmDialog."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        with patch.object(chat, "_cmd_reset") as mock_reset:
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            provider._action_reset()
+            await pilot.pause()
+            mock_reset.assert_called_once_with("")
+
+
+async def test_command_provider_action_reset_no_chat_screen():
+    """Palette reset falls back to notify when ChatScreen isn't in the stack."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3677,10 +3695,15 @@ async def test_command_provider_action_noop():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch.object(app, "notify") as mock_notify:
-            provider._action_noop()
-            mock_notify.assert_called_once()
-            assert "reset" in mock_notify.call_args[0][0].lower()
+        # Stand-in app whose screen_stack contains no ChatScreen.
+        fake_app = MagicMock()
+        fake_app.screen_stack = []
+        with patch.object(
+            LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
+        ):
+            provider._action_reset()
+        fake_app.notify.assert_called_once()
+        assert "chat" in fake_app.notify.call_args[0][0].lower()
 
 
 async def test_command_provider_model_commands():
