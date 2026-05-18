@@ -18,7 +18,7 @@ from lilbee.providers.worker.transport import (
     ToolCallDelta,
 )
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.windowing import window_messages_to_budget
+from lilbee.providers.worker.windowing import count_tools_overhead, window_messages_to_budget
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
@@ -83,7 +83,7 @@ class _ChatSession:
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
-        windowed = self._window_messages(messages, options, llm, model_ref=model)
+        windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
             kwargs["tools"] = tools
@@ -97,15 +97,29 @@ class _ChatSession:
         options: dict[str, Any] | None,
         llm: Any,
         *,
+        tools: list[dict[str, Any]] | None,
         model_ref: str | None,
     ) -> list[dict[str, Any]]:
         """Trim *messages* to fit the loaded model's context window."""
-        reserved = (options or {}).get("num_predict") or _DEFAULT_RESPONSE_BUDGET
-        budget = max(0, int(llm.n_ctx()) - int(reserved) - _CTX_SAFETY_MARGIN)
+        requested_predict = (options or {}).get("num_predict")
+        # Treat 0 / negative / missing as "no caller-supplied cap" and reserve
+        # the default. ``-1`` is the llama-cpp / Ollama "unlimited" convention;
+        # we cannot reason about an unbounded reservation so we fall back too.
+        if not isinstance(requested_predict, int) or requested_predict <= 0:
+            reserved = _DEFAULT_RESPONSE_BUDGET
+        else:
+            reserved = requested_predict
+
+        def tokenize(data: bytes) -> list[int]:
+            result: list[int] = llm.tokenize(data, add_bos=False, special=False)
+            return result
+
+        tools_overhead = count_tools_overhead(tools, tokenize)
+        budget = int(llm.n_ctx()) - reserved - _CTX_SAFETY_MARGIN - tools_overhead
         outcome = window_messages_to_budget(
             messages,
-            budget=budget,
-            tokenize=lambda data: llm.tokenize(data, add_bos=False, special=False),
+            budget=max(0, budget),
+            tokenize=tokenize,
         )
         if outcome.messages is None:
             raise ContextWindowExceededError.from_counts(

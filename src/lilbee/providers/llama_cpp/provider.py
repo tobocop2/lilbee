@@ -130,8 +130,8 @@ class LlamaCppProvider(LLMProvider):
     @staticmethod
     def _raise_chat_worker_error(exc: WorkerError) -> NoReturn:
         """Translate a worker-side chat error into the right parent-side exception."""
-        if exc.original_type == "ContextWindowExceededError":
-            raise ContextWindowExceededError(str(exc).split(": ", 1)[-1]) from exc
+        if exc.original_type == ContextWindowExceededError.__name__:
+            raise ContextWindowExceededError(exc.message) from exc
         raise ProviderError(
             LlamaCppProvider._worker_error_message("Chat", exc),
             provider="llama-cpp",

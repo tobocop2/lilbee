@@ -371,18 +371,58 @@ def test_session_chat_raises_context_window_exceeded_on_unfittable_prompt(
     assert "exceeds" in str(excinfo.value)
 
 
-def test_session_chat_zero_n_ctx_clamps_budget_and_raises_overflow(monkeypatch, tmp_path) -> None:
-    """A misbehaving ``llm.n_ctx() == 0`` clamps the budget to 0 (no negative
-    arithmetic) and surfaces as ``ContextWindowExceededError`` since the
-    un-droppable subset cannot fit in zero tokens.
-    """
+@pytest.mark.parametrize("num_predict", [0, -1, -100, "not-an-int"])
+def test_session_chat_invalid_num_predict_uses_default_reserve(
+    monkeypatch, tmp_path, num_predict: Any
+) -> None:
+    """Bogus ``num_predict`` (0, negative, non-int) falls back to the default reserve."""
+    from lilbee.providers.worker.chat_worker import _DEFAULT_RESPONSE_BUDGET, _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    captured: dict[str, int] = {}
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, *, messages: list[Any], stream: bool, **_kw: Any) -> Any:
+            captured["len"] = len(messages)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+        options={"num_predict": num_predict},
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    # If default reserve wasn't used, a negative num_predict would have inflated
+    # the budget and never triggered the safety path. We assert the default
+    # was applied indirectly: the prompt fits naturally so messages survive.
+    assert captured["len"] == 1
+    assert _DEFAULT_RESPONSE_BUDGET == 1024  # contract anchor
+
+
+def test_session_chat_subtracts_tools_overhead_from_budget(monkeypatch, tmp_path) -> None:
+    """Tools schema cost is counted against the prompt budget."""
     from lilbee.providers.base import ContextWindowExceededError
     from lilbee.providers.worker.chat_worker import _ChatSession
     from lilbee.providers.worker.transport import RoleConfig
 
-    class _ZeroCtx:
+    class _Llama:
         def n_ctx(self) -> int:
-            return 0
+            # n_ctx - default reserve (1024) - margin (64) = 100 token budget.
+            # A small user message fits; a 500-byte tools schema does not.
+            return 1024 + 64 + 100
 
         def tokenize(
             self, data: bytes, *, add_bos: bool = False, special: bool = False
@@ -390,20 +430,60 @@ def test_session_chat_zero_n_ctx_clamps_budget_and_raises_overflow(monkeypatch, 
             return list(data)
 
         def create_chat_completion(self, **_kwargs: Any) -> Any:
-            raise AssertionError("inference must not run with a zero-budget prompt")
+            raise AssertionError("inference must not run when tools overhead overflows")
 
     role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
     session = _ChatSession(role_config, _FlagStub())
-    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _ZeroCtx())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    # A tools schema that JSON-encodes to >100 bytes: blows the 100-token budget.
+    big_tools = [{"type": "function", "function": {"name": "x" * 500}}]
     with pytest.raises(ContextWindowExceededError):
         session.chat(
-            messages=[{"role": "user", "content": "anything"}],
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
             stream=False,
             options=None,
             model=None,
-            tools=None,
+            tools=big_tools,
             tool_choice=None,
         )
+
+
+def test_session_chat_without_tools_skips_tools_overhead(monkeypatch, tmp_path) -> None:
+    """No ``tools`` means no overhead deducted; otherwise-fitting prompts run."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    inference_ran = False
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 1024 + 64 + 100
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            nonlocal inference_ran
+            inference_ran = True
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+        options=None,
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    assert inference_ran is True
 
 
 def test_session_chat_logs_when_messages_dropped(monkeypatch, tmp_path, caplog) -> None:

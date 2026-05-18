@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
-_USER = "user"
-_ASSISTANT = "assistant"
-_TOOL = "tool"
+
+class ChatRole(StrEnum):
+    """Closed set of chat-message roles in the OpenAI wire format."""
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
 
 # Per-message overhead from chat-template role markers + separators.
 _PER_MESSAGE_OVERHEAD = 4
@@ -19,14 +26,7 @@ Tokenizer = Callable[[bytes], list[int]]
 
 @dataclass(frozen=True)
 class WindowingOutcome:
-    """Result of running :func:`window_messages_to_budget`.
-
-    ``messages`` is the trimmed list ready to forward to inference;
-    ``dropped`` is how many messages were removed. When the prompt cannot
-    be reduced below ``budget`` (system + last user message alone exceeds
-    it), ``messages`` is ``None`` and ``requested`` carries the smallest
-    achievable token count for the un-droppable subset.
-    """
+    """Result of running :func:`window_messages_to_budget`."""
 
     messages: list[dict[str, Any]] | None
     dropped: int
@@ -47,13 +47,7 @@ class WindowingOutcome:
 
 
 def count_message_tokens(message: dict[str, Any], tokenize: Tokenizer) -> int:
-    """Estimate the token cost of one OpenAI-wire-format chat message.
-
-    Sums the tokenised content, any tool-call JSON the assistant emitted,
-    and a fixed per-message overhead for the chat template's role markers
-    and separators. Counts on the bytes-encoded payload because llama-cpp's
-    ``tokenize`` only accepts bytes.
-    """
+    """Estimate the token cost of one OpenAI-wire-format chat message."""
     total = _PER_MESSAGE_OVERHEAD
     content = message.get("content")
     if isinstance(content, str) and content:
@@ -76,30 +70,27 @@ def count_message_tokens(message: dict[str, Any], tokenize: Tokenizer) -> int:
     return total
 
 
+def count_tools_overhead(tools: list[dict[str, Any]] | None, tokenize: Tokenizer) -> int:
+    """Estimate the tokens llama-cpp will inject for the ``tools`` schema."""
+    if not tools:
+        return 0
+    return len(tokenize(json.dumps(tools).encode("utf-8")))
+
+
 def window_messages_to_budget(
     messages: list[dict[str, Any]],
     *,
     budget: int,
     tokenize: Tokenizer,
 ) -> WindowingOutcome:
-    """Drop oldest tool-call/tool-result pairs and old turns to fit *budget*.
-
-    Drop order:
-      1. Oldest assistant tool-call message + every ``tool`` message
-         keyed to one of its ``tool_calls[*].id`` values.
-      2. Oldest non-system user/assistant exchange that is not part of
-         the in-flight turn (the trailing user message and any trailing
-         assistant message after it).
-    Returns :class:`WindowingOutcome.overflow` if the un-droppable subset
-    (system + trailing user message) alone exceeds ``budget``.
-    """
+    """Drop oldest tool-call/tool-result pairs and old turns to fit *budget*."""
     counts = [count_message_tokens(m, tokenize) for m in messages]
     total = sum(counts)
     if total <= budget:
         return WindowingOutcome.fit(messages, dropped=0, available=budget)
 
     keep: list[bool] = [True] * len(messages)
-    in_flight_user_idx = _last_role_index(messages, _USER)
+    in_flight_user_idx = _last_role_index(messages, ChatRole.USER)
     droppable_idx = _droppable_indices(messages, in_flight_user_idx=in_flight_user_idx)
 
     for idx in droppable_idx:
@@ -116,7 +107,7 @@ def window_messages_to_budget(
     return WindowingOutcome.fit(trimmed, dropped=dropped, available=budget)
 
 
-def _last_role_index(messages: list[dict[str, Any]], role: str) -> int:
+def _last_role_index(messages: list[dict[str, Any]], role: ChatRole) -> int:
     """Return the index of the last message whose role matches; -1 if absent."""
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == role:
@@ -129,12 +120,7 @@ def _droppable_indices(
     *,
     in_flight_user_idx: int,
 ) -> list[int]:
-    """Return drop priorities ordered oldest-first.
-
-    Tool-call/result pairs first (cheaper to lose: the tool already ran;
-    its result is what dominates token counts in agent loops), then non-
-    system user/assistant exchanges that are not the in-flight turn.
-    """
+    """Drop oldest tool-call/result pairs first, then oldest user/assistant exchanges."""
     tool_pair_indices: list[int] = []
     pair_call_ids: set[str] = set()
 
@@ -142,19 +128,19 @@ def _droppable_indices(
         if i >= in_flight_user_idx >= 0:
             break
         role = msg.get("role")
-        if role == _ASSISTANT:
+        if role == ChatRole.ASSISTANT:
             tool_call_ids = _collect_tool_call_ids(msg)
             if tool_call_ids:
                 tool_pair_indices.append(i)
                 pair_call_ids.update(tool_call_ids)
-        elif role == _TOOL and msg.get("tool_call_id") in pair_call_ids:
+        elif role == ChatRole.TOOL and msg.get("tool_call_id") in pair_call_ids:
             tool_pair_indices.append(i)
 
     exchange_indices: list[int] = [
         i
         for i, msg in enumerate(messages)
         if 0 <= i < in_flight_user_idx
-        and msg.get("role") in (_USER, _ASSISTANT)
+        and msg.get("role") in (ChatRole.USER, ChatRole.ASSISTANT)
         and i not in tool_pair_indices
     ]
 
