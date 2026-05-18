@@ -53,6 +53,7 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
     "numpy",
+    "transformers>=4.50.0",
 ]
 
 [project.optional-dependencies]

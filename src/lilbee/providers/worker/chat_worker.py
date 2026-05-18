@@ -7,6 +7,13 @@ import threading
 import time
 from typing import Any
 
+from lilbee.providers.worker.response_parser import (
+    SCHEMAS,
+    ResponseSchema,
+    StreamingResponseParser,
+    detect_family,
+    parse_response,
+)
 from lilbee.providers.worker.transport import (
     ChatRequest,
     ChatResult,
@@ -59,6 +66,7 @@ class _ChatSession:
         self._abort_flag = abort_flag
         self._llm: Any = None
         self._model_path: str = ""
+        self._response_schema: ResponseSchema | None = None
 
     def chat(
         self,
@@ -79,8 +87,21 @@ class _ChatSession:
             kwargs["tool_choice"] = tool_choice
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
 
+    @property
+    def response_schema(self) -> ResponseSchema | None:
+        """Cached response schema for this session's currently-loaded model.
+
+        ``None`` when the model's chat template did not match any known
+        family; in that case schema-driven tool-call extraction is skipped.
+        """
+        return self._response_schema
+
     def _ensure_loaded(self, model_override: str | None) -> Any:
-        from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
+        from lilbee.providers.llama_cpp.provider import (
+            load_llama,
+            resolve_model_path,
+            safe_read_gguf_metadata,
+        )
         from lilbee.providers.model_cache import LoaderMode
 
         target_path = (
@@ -95,6 +116,9 @@ class _ChatSession:
             # polling loop in _handle_chat_streaming.
             self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
+            metadata = safe_read_gguf_metadata(target_path) or {}
+            family = detect_family(metadata.get("chat_template", ""))
+            self._response_schema = SCHEMAS.get(family)
         return self._llm
 
     def _close_model(self) -> None:
@@ -193,17 +217,27 @@ class _TextBatchBuffer:
         self._seen_first_token = True
 
 
-def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopState) -> None:
+def _handle_chat_streaming(
+    reply: Reply,
+    response_iter: Any,
+    state: WorkerLoopState,
+    *,
+    schema: ResponseSchema | None,
+) -> None:
     """Drain *response_iter* and emit batched stream_chunk frames on the data pipe.
 
     Polls ``state.session._abort_flag`` between chunks so a cancel from the
     parent flushes a clean ``stream_end`` at the next token boundary.
     Text tokens batch through :class:`_TextBatchBuffer`; tool-call deltas
     flush any pending text first and then ride the wire unbuffered so
-    framing stays in order.
+    framing stays in order. ``schema`` is the cached response schema for
+    the loaded model; when set, accumulated text deltas are also fed through
+    :class:`StreamingResponseParser` so embedded tool calls (Qwen3-style
+    ``<tool_call>...</tool_call>`` markup) surface as structured deltas.
     """
     abort_flag = state.session._abort_flag
     text = _TextBatchBuffer(reply)
+    schema_parser = StreamingResponseParser(schema) if schema is not None else None
     completed_cleanly = False
     try:
         for raw_chunk in response_iter:
@@ -211,15 +245,22 @@ def _handle_chat_streaming(reply: Reply, response_iter: Any, state: WorkerLoopSt
                 with contextlib.suppress(Exception):
                     response_iter.close()
                 break
-            _emit_stream_chunk(reply, raw_chunk, text)
+            _emit_stream_chunk(reply, raw_chunk, text, schema_parser)
         completed_cleanly = True
     finally:
+        if schema_parser is not None:
+            _drain_schema_parser_flush(reply, text, schema_parser)
         text.flush()
     if completed_cleanly:
         reply.send(WireKind.STREAM_END, None)
 
 
-def _emit_stream_chunk(reply: Reply, raw_chunk: Any, text: _TextBatchBuffer) -> None:
+def _emit_stream_chunk(
+    reply: Reply,
+    raw_chunk: Any,
+    text: _TextBatchBuffer,
+    schema_parser: StreamingResponseParser | None,
+) -> None:
     """Dispatch one streaming chunk into tool-call frames or buffered text."""
     tool_deltas = _extract_tool_call_deltas(raw_chunk)
     if tool_deltas:
@@ -230,11 +271,47 @@ def _emit_stream_chunk(reply: Reply, raw_chunk: Any, text: _TextBatchBuffer) -> 
     content = _extract_stream_content(raw_chunk)
     if content is None:
         return
-    text.append(content)
+    if schema_parser is None:
+        text.append(content)
+        return
+    content_delta, schema_deltas = schema_parser.feed(content)
+    if content_delta:
+        text.append(content_delta)
+    if schema_deltas:
+        text.flush()
+        for delta in schema_deltas:
+            reply.send(WireKind.STREAM_CHUNK, delta)
 
 
-def _extract_non_streaming_result(response: Any) -> ChatResult:
-    """Build a ``ChatResult`` from one llama-cpp non-streaming response."""
+def _drain_schema_parser_flush(
+    reply: Reply,
+    text: _TextBatchBuffer,
+    schema_parser: StreamingResponseParser,
+) -> None:
+    """Release any content/tool-call deltas held by the schema parser's safety margin."""
+    content_delta, schema_deltas = schema_parser.flush()
+    if content_delta:
+        text.append(content_delta)
+    if schema_deltas:
+        text.flush()
+        for delta in schema_deltas:
+            reply.send(WireKind.STREAM_CHUNK, delta)
+
+
+def _extract_non_streaming_result(
+    response: Any,
+    *,
+    tools_requested: bool,
+    schema: ResponseSchema | None,
+) -> ChatResult:
+    """Build a ``ChatResult`` from one llama-cpp non-streaming response.
+
+    When llama-cpp natively populated ``message.tool_calls`` (its chat handler
+    recognised the format), those are used. Otherwise, if the request carried
+    tools and a schema is cached for the loaded model, the response text is
+    run through schema-driven extraction so embedded tool-call markup is
+    surfaced as structured calls with ``finish_reason`` remapped accordingly.
+    """
     if not isinstance(response, dict):
         raise TypeError(f"chat response must be dict, got {type(response).__name__}")
     choices = response.get("choices")
@@ -251,7 +328,16 @@ def _extract_non_streaming_result(response: Any) -> ChatResult:
     raw_calls = message.get("tool_calls") or []
     tool_calls = _coerce_tool_calls(raw_calls)
     finish_reason = _coerce_finish_reason(first.get("finish_reason"))
-    return ChatResult(text=text, tool_calls=tool_calls, finish_reason=finish_reason)
+    if tool_calls or not tools_requested or schema is None:
+        return ChatResult(text=text, tool_calls=tool_calls, finish_reason=finish_reason)
+    parsed = parse_response(text, schema)
+    if not parsed.tool_calls:
+        return ChatResult(text=text, tool_calls=tool_calls, finish_reason=finish_reason)
+    return ChatResult(
+        text=parsed.content,
+        tool_calls=parsed.tool_calls,
+        finish_reason=FinishReason.TOOL_CALLS,
+    )
 
 
 def _coerce_tool_calls(raw_calls: Any) -> tuple[ToolCall, ...]:
@@ -280,9 +366,15 @@ def _coerce_tool_calls(raw_calls: Any) -> tuple[ToolCall, ...]:
     return tuple(out)
 
 
-def _handle_chat_non_streaming(reply: Reply, response: Any) -> None:
+def _handle_chat_non_streaming(
+    reply: Reply,
+    response: Any,
+    *,
+    tools_requested: bool,
+    schema: ResponseSchema | None,
+) -> None:
     """Emit one result frame carrying the full :class:`ChatResult`."""
-    result = _extract_non_streaming_result(response)
+    result = _extract_non_streaming_result(response, tools_requested=tools_requested, schema=schema)
     reply.send(WireKind.RESULT, result)
 
 
@@ -359,11 +451,15 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
         except Exception as exc:
             reply.send(WireKind.ERROR, _serialize_exception(exc))
             return
+        tools_requested = bool(payload.tools)
+        schema = session.response_schema if tools_requested else None
         try:
             if payload.stream:
-                _handle_chat_streaming(reply, response, state)
+                _handle_chat_streaming(reply, response, state, schema=schema)
             else:
-                _handle_chat_non_streaming(reply, response)
+                _handle_chat_non_streaming(
+                    reply, response, tools_requested=tools_requested, schema=schema
+                )
         except Exception as exc:
             reply.send(WireKind.ERROR, _serialize_exception(exc))
 

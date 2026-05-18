@@ -369,6 +369,7 @@ class _StubSession:
         self._response = response
         self._exc = exc
         self._abort_flag = _FlagStub()
+        self.response_schema = None
 
     def chat(
         self,
@@ -599,27 +600,35 @@ def test_extract_non_streaming_result_walks_defensively() -> None:
 
     # Happy path.
     happy = _extract_non_streaming_result(
-        {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+        {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]},
+        tools_requested=False,
+        schema=None,
     )
     assert happy.text == "hi"
     assert happy.tool_calls == ()
     assert happy.finish_reason == FinishReason.STOP
     # None content -> empty string.
     none_content = _extract_non_streaming_result(
-        {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+        {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]},
+        tools_requested=False,
+        schema=None,
     )
     assert none_content.text == ""
     # Malformed shapes raise typed errors.
     with pytest.raises(TypeError):
-        _extract_non_streaming_result("not a dict")
+        _extract_non_streaming_result("not a dict", tools_requested=False, schema=None)
     with pytest.raises(TypeError):
-        _extract_non_streaming_result({})
+        _extract_non_streaming_result({}, tools_requested=False, schema=None)
     with pytest.raises(TypeError):
-        _extract_non_streaming_result({"choices": []})
+        _extract_non_streaming_result({"choices": []}, tools_requested=False, schema=None)
     with pytest.raises(TypeError):
-        _extract_non_streaming_result({"choices": ["not a dict"]})
+        _extract_non_streaming_result(
+            {"choices": ["not a dict"]}, tools_requested=False, schema=None
+        )
     with pytest.raises(TypeError):
-        _extract_non_streaming_result({"choices": [{"message": "not a dict"}]})
+        _extract_non_streaming_result(
+            {"choices": [{"message": "not a dict"}]}, tools_requested=False, schema=None
+        )
 
 
 def test_chat_session_close_idempotent_and_swallows() -> None:

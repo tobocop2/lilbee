@@ -122,6 +122,50 @@ flowchart TD
 
 ---
 
+## Tool-call extraction
+
+`/v1/chat/completions` returns structured `tool_calls` in the OpenAI envelope by extracting them from the model's text output. Different chat models emit tool calls in different shapes: Qwen3 wraps a JSON object in `<tool_call>...</tool_call>`, Mistral prefixes a JSON array with `[TOOL_CALLS]`, Gemma 4 uses its own bracket syntax, and so on. llama-cpp-python's chat handlers auto-extract structured `tool_calls` for some of these but not all, so lilbee runs an extraction pass on the model output when llama-cpp returned text-only.
+
+The extractor is **schema-driven**, not parser-per-family. Each model family is described by a declarative JSON schema with regex / JSON / `jmespath` operators, and one function applies that schema to the model output. The function is `transformers.utils.chat_parsing_utils.recursive_parse` from the HuggingFace `transformers` library, which is the same code path used by HuggingFace's reference `tokenizer.parse_response()` API.
+
+```mermaid
+flowchart TD
+    LOAD[Model load] --> READ[Read GGUF chat_template metadata]
+    READ --> DETECT[detect_family - scan template markers]
+    DETECT --> CACHE[Cache family + schema on chat session]
+    CACHE --> READY[Ready]
+
+    REQ[/v1/chat/completions with tools/] --> CALL[Provider chat call]
+    CALL --> NATIVE{llama-cpp returned structured tool_calls?}
+    NATIVE -->|Yes| PASS[Pass through]
+    NATIVE -->|No| EXTRACT[recursive_parse text + cached schema]
+    EXTRACT --> EXTRACTED{Parser found tool calls?}
+    EXTRACTED -->|Yes| REMAP[Remap finish_reason to tool_calls]
+    EXTRACTED -->|No| TEXT[Return content as text]
+```
+
+### Pipeline
+
+1. **At model load** (`_ChatSession._ensure_loaded`): read the GGUF's `tokenizer.chat_template` from its metadata. `detect_family` scans the template for distinctive markers (e.g., `<tool_call>` for Qwen3, `[TOOL_CALLS]` for Mistral) and returns a `ModelFamily` enum value. The matching response schema is looked up from `SCHEMAS` and cached on the session along with the family name.
+
+2. **Per non-streaming request**: if llama-cpp-python natively populated `message.tool_calls`, use those. Otherwise, if the request carried `tools`, call `recursive_parse(model_output, schema)`. If parsing surfaces tool calls, replace the content with the schema's extracted `content` field and remap `finish_reason` from `stop` to `tool_calls`.
+
+3. **Per streaming request**: a stateful `StreamingResponseParser` buffers text deltas. On each new chunk it re-runs `recursive_parse` over the full accumulated buffer and emits the deltas vs the prior parsed state: the new tail of `content` as a text delta, and any newly-completed tool calls as `ToolCallDelta` frames.
+
+4. **On parse failure**: log at debug level and fall back to returning the raw model output as text content. The request succeeds with a text-only response rather than raising.
+
+### Why this design enables low-maintenance tool-call coverage
+
+Adding support for a new model family is a small addition to `providers/worker/response_parser/schemas.py` (one JSON-shaped dict) plus an enum value and a detection marker. No Python parser code. No PEG grammar. No per-family streaming state machine. The actual parsing implementation belongs to HuggingFace, who maintains it as part of their chat infrastructure.
+
+When HuggingFace ships a `response_schema` attribute on a model's tokenizer config (already done for Gemma 4, and the documented direction), lilbee can pick it up directly from the tokenizer without any code change in this layer. The `families.py` detection becomes a fallback for models whose tokenizer doesn't ship a schema yet.
+
+### Coverage
+
+`SCHEMAS` ships with response schemas for the families that surface most often in lilbee's featured catalog and HuggingFace's standard chat ecosystem. The `GENERIC_TOOL_CALL` schema covers any model whose template uses the `<tool_call>{json}</tool_call>` convention. Detection falls back to `UNKNOWN` for templates with no recognised markers; in that case extraction is skipped and the model output is returned as-is.
+
+---
+
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.

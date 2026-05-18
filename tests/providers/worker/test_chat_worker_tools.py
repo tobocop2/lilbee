@@ -42,6 +42,7 @@ class _StubSession:
         self._response = response
         self._abort_flag = _FlagStub()
         self.calls: list[dict[str, Any]] = []
+        self.response_schema = None
 
     def chat(
         self,
@@ -311,3 +312,100 @@ def test_coerce_tool_calls_drops_malformed_entries(raw_calls: Any) -> None:
     from lilbee.providers.worker.chat_worker import _coerce_tool_calls
 
     assert _coerce_tool_calls(raw_calls) == ()
+
+
+def test_non_streaming_schema_extraction_promotes_text_to_tool_calls() -> None:
+    """When llama-cpp returns Qwen-style text containing a ``<tool_call>``,
+    schema-driven extraction promotes it to structured ``tool_calls`` and
+    remaps ``finish_reason`` from ``stop`` to ``tool_calls``.
+    """
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+
+    reply, conn = _make_reply()
+    qwen_tool_call = '<tool_call>{"name": "search", "arguments": {"q": "foo"}}</tool_call>'
+    session = _StubSession(
+        response={
+            "choices": [
+                {
+                    "message": {"content": qwen_tool_call, "tool_calls": None},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    session.response_schema = SCHEMAS[ModelFamily.QWEN3]
+    payload = ChatRequest(
+        messages=[{"role": "user", "content": "search foo"}],
+        stream=False,
+        tools=[{"type": "function", "function": {"name": "search", "parameters": {}}}],
+        tool_choice="auto",
+    )
+    _handle_chat(reply, payload, WorkerLoopState(session=session))
+    kind, value = conn.sent[0]
+    assert kind == "result"
+    assert isinstance(value, ChatResult)
+    assert len(value.tool_calls) == 1
+    assert value.tool_calls[0].name == "search"
+    assert value.finish_reason == FinishReason.TOOL_CALLS
+
+
+def test_non_streaming_schema_extraction_skipped_when_tools_absent() -> None:
+    """A text response that happens to contain ``<tool_call>`` is left alone
+    when no tools were requested. The schema-extraction path only runs when
+    the request itself carried tools.
+    """
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+
+    reply, conn = _make_reply()
+    session = _StubSession(
+        response={
+            "choices": [
+                {
+                    "message": {
+                        "content": '<tool_call>{"name":"x","arguments":{}}</tool_call>',
+                        "tool_calls": None,
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    session.response_schema = SCHEMAS[ModelFamily.QWEN3]
+    payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=False)
+    _handle_chat(reply, payload, WorkerLoopState(session=session))
+    kind, value = conn.sent[0]
+    assert kind == "result"
+    assert isinstance(value, ChatResult)
+    assert value.tool_calls == ()
+    assert value.finish_reason == FinishReason.STOP
+
+
+def test_streaming_schema_extraction_emits_tool_delta_from_text_chunks() -> None:
+    """A streamed sequence of text deltas containing ``<tool_call>...{json}...</tool_call>``
+    surfaces a ``ToolCallDelta`` via schema extraction, with prefix text flushed first.
+    """
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+
+    reply, conn = _make_reply()
+    stream = iter(
+        [
+            {"choices": [{"delta": {"content": "Looking up "}}]},
+            {"choices": [{"delta": {"content": "the weather."}}]},
+            {"choices": [{"delta": {"content": '<tool_call>{"name": "weather"'}}]},
+            {"choices": [{"delta": {"content": ', "arguments": {"city": "Paris"}}</tool_call>'}}]},
+        ]
+    )
+    session = _StubSession(response=stream)
+    session.response_schema = SCHEMAS[ModelFamily.QWEN3]
+    payload = ChatRequest(
+        messages=[{"role": "user", "content": "weather"}],
+        stream=True,
+        tools=[{"type": "function", "function": {"name": "weather", "parameters": {}}}],
+    )
+    _handle_chat(reply, payload, WorkerLoopState(session=session))
+    sent_chunks = [v for kind, v in conn.sent if kind == "stream_chunk"]
+    text_chunks = [c for c in sent_chunks if isinstance(c, str)]
+    tool_deltas = [c for c in sent_chunks if isinstance(c, ToolCallDelta)]
+    assert "Looking up the weather." in "".join(text_chunks)
+    assert len(tool_deltas) == 1
+    assert tool_deltas[0].name == "weather"

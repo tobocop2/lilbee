@@ -814,7 +814,7 @@ def load_llama(
         # ``embed_train_ctx`` value (instead of ``0`` for "use model
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
-        embed_meta = _safe_read_gguf_metadata(model_path)
+        embed_meta = safe_read_gguf_metadata(model_path)
         embed_train_ctx = train_ctx_from_meta(
             embed_meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
         )
@@ -822,7 +822,7 @@ def load_llama(
     elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
     else:
-        meta = _safe_read_gguf_metadata(model_path)
+        meta = safe_read_gguf_metadata(model_path)
         kwargs["n_ctx"] = _resolve_chat_ctx(model_path, meta)
         log.info(
             "Chat n_ctx=%d for %s (dynamic, training_ctx=%s)",
@@ -858,8 +858,13 @@ def load_llama(
     return _construct_llama(Llama, model_path, kwargs)
 
 
-def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Best-effort GGUF metadata read, returning None on any failure."""
+def safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
+    """Read GGUF metadata, returning None on any failure.
+
+    The metadata block can be unreadable on truncated or malformed GGUFs
+    even when the model itself loads, so callers that just want to read the
+    chat template or training-context length tolerate the miss.
+    """
     try:
         return read_gguf_metadata(model_path)
     except Exception:
