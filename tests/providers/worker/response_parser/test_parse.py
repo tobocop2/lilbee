@@ -232,3 +232,27 @@ def test_coerce_one_unwraps_function_nested_shape() -> None:
     assert call is not None
     assert call.name == "lookup"
     assert json.loads(call.arguments) == {"q": "foo"}
+
+
+def test_missing_transformers_utility_degrades_gracefully(monkeypatch) -> None:
+    """A transformers release without ``chat_parsing_utils`` returns the raw text.
+
+    The lazy import is wrapped so a chat without tool extraction still runs
+    when the upstream utility is missing.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "transformers.utils.chat_parsing_utils":
+            raise ImportError("simulated missing utility")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    parsed = parse_response(
+        '<tool_call>{"name": "x", "arguments": {}}</tool_call>',
+        SCHEMAS[ModelFamily.QWEN3],
+    )
+    assert parsed.tool_calls == ()
+    assert "tool_call" in parsed.content

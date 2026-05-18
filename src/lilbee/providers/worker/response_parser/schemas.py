@@ -1,12 +1,4 @@
-"""Response schemas keyed by detected ``ModelFamily``.
-
-Schemas are declarative JSON dicts consumed by HuggingFace's
-``transformers.utils.chat_parsing_utils.recursive_parse``. They describe how
-to extract content / thinking / tool_calls from a model's text output. The
-Qwen3-Coder and Gemma 4 entries are adapted from
-``tests/utils/test_chat_parsing_utils.py`` in the ``transformers`` repository
-(Apache-2.0, https://github.com/huggingface/transformers).
-"""
+"""Response schemas keyed by detected ``ModelFamily``."""
 
 from __future__ import annotations
 

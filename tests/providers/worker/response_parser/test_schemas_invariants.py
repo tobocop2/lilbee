@@ -8,7 +8,23 @@ from typing import Any
 import pytest
 
 from lilbee.providers.worker.response_parser import SCHEMAS
+from lilbee.providers.worker.response_parser.families import ModelFamily
 from lilbee.providers.worker.response_parser.streaming import _MARKER_OPENERS
+
+
+def test_schemas_registry_covers_every_known_family() -> None:
+    """Every ``ModelFamily`` except ``UNKNOWN`` has a shipped schema.
+
+    Adding a new variant without a schema would silently disable tool
+    extraction for that family; failing this invariant forces the schema
+    author to either ship the schema or document the omission deliberately.
+    """
+    expected = {f for f in ModelFamily if f is not ModelFamily.UNKNOWN}
+    assert set(SCHEMAS.keys()) == expected, (
+        f"SCHEMAS missing entries for {expected - set(SCHEMAS.keys())} or has "
+        f"extras for {set(SCHEMAS.keys()) - expected}."
+    )
+
 
 # Markers in shipped schemas look like ``<tool_call>``, ``</tool_call>``,
 # ``<|tool_call>``, ``<tool_call|>``, ``<think>``, ``</think>``, ``[TOOL_CALLS]``.

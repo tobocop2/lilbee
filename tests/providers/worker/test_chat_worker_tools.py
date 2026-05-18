@@ -169,6 +169,19 @@ def test_session_chat_drops_none_tool_fields_from_kwargs(monkeypatch, tmp_path) 
     assert "tool_choice" not in captured
 
 
+def test_close_model_resets_response_schema(tmp_path) -> None:
+    """``_close_model`` drops the cached response schema so the next load reclassifies."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+    from lilbee.providers.worker.transport import RoleConfig
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    session._response_schema = SCHEMAS[ModelFamily.QWEN3]
+    session._close_model()
+    assert session._response_schema is None
+
+
 def test_session_chat_passes_tools_when_present(monkeypatch, tmp_path) -> None:
     from lilbee.providers.worker.chat_worker import _ChatSession
     from lilbee.providers.worker.transport import RoleConfig

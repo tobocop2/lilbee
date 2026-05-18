@@ -30,8 +30,14 @@ class ParsedResponse:
 def parse_response(text: str, schema: ResponseSchema) -> ParsedResponse:
     """Extract content and structured tool calls from *text* using *schema*."""
     # transformers is heavy (~1.2s cold import); lazy so the cost only lands
-    # the first time a chat request actually carries tools.
-    from transformers.utils.chat_parsing_utils import recursive_parse
+    # the first time a chat request actually carries tools. If the utility
+    # is missing on this transformers release we fall through to the raw
+    # text so a chat without tool extraction still runs.
+    try:
+        from transformers.utils.chat_parsing_utils import recursive_parse
+    except (ImportError, AttributeError) as exc:
+        log.debug("transformers.recursive_parse unavailable: %s", exc)
+        return ParsedResponse(content=text, tool_calls=())
 
     try:
         parsed = recursive_parse(text, schema)

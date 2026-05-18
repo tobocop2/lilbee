@@ -122,6 +122,7 @@ class _ChatSession:
             with contextlib.suppress(Exception):
                 self._llm.close()
             self._llm = None
+        self._response_schema = None
 
     def close(self) -> None:
         """Release the loaded model. Idempotent."""
