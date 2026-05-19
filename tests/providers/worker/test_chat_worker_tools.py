@@ -378,7 +378,7 @@ def test_session_chat_overflow_error_includes_usable_budget_and_breakdown(
     user can see which lever to pull. With n_ctx=40960, response=1024,
     tools=25000, safety=64 the budget is 14872, and a 19737-token prompt
     must show "exceeds the usable budget of 14872 tokens" (not the
-    nonsense "exceeds the 40960-token context window"). (bb-ym4p)
+    nonsense "exceeds the 40960-token context window").
     """
     from lilbee.providers.base import ContextWindowExceededError
 
@@ -409,7 +409,7 @@ def test_session_chat_overflow_error_reports_runtime_n_ctx_not_residual_budget(
     """The error must name the model's actual ``llm.n_ctx()`` value, never the
     residual budget after reserving for the response + tools. A model loaded
     with n_ctx=7168 that overflows must say "7168-token context window", not
-    "0-token context window". (bb-x804)
+    "0-token context window".
     """
     from lilbee.providers.base import ContextWindowExceededError
     from lilbee.providers.worker.chat_worker import _ChatSession
@@ -495,7 +495,7 @@ def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch,
     ``Requested tokens (N) exceed context window`` ValueError mid-render,
     the worker translates that into our ``ContextWindowExceededError`` so
     the route layer surfaces a 400 ``context_length_exceeded`` instead of
-    a generic 500. (bb-1utt)
+    a generic 500.
     """
     from lilbee.providers.base import ContextWindowExceededError
     from lilbee.providers.worker.chat_worker import _ChatSession
@@ -533,7 +533,7 @@ def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch,
 
 class TestParseRequestedTokens:
     """Direct unit tests for ``_parse_requested_tokens`` so regex breakage on
-    an upstream llama-cpp wording change surfaces here, not in production. (bb-1utt)
+    an upstream llama-cpp wording change surfaces here, not in production.
     """
 
     def test_extracts_count_from_canonical_overflow_message(self) -> None:
@@ -583,7 +583,7 @@ def test_session_chat_streaming_catches_deferred_overflow_and_reraises_typed(
     ValueError fires on the FIRST ``next()`` after the parent starts iterating.
     The encoder must translate it into ``ContextWindowExceededError`` so the
     streaming route surfaces a 400 ``context_length_exceeded`` rather than a
-    generic worker error. (bb-1utt streaming-path follow-up)
+    generic worker error.
     """
     from lilbee.providers.base import ContextWindowExceededError
     from lilbee.providers.worker.chat_worker import _ChatSession
@@ -601,7 +601,7 @@ def test_session_chat_streaming_catches_deferred_overflow_and_reraises_typed(
 
         def create_chat_completion(self, **_kwargs: Any) -> Any:
             def _generator():
-                # llama-cpp raises here on the first __next__, exactly the bb-1utt
+                # llama-cpp raises here on the first __next__, exactly the upstream-deferred
                 # path.
                 raise ValueError("Requested tokens (18690) exceed context window of 7168")
                 yield  # unreachable: keeps this function a generator

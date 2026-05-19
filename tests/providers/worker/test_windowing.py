@@ -56,7 +56,7 @@ class TestCountToolsOverhead:
     def test_exact_formula_pins_multiplier_and_preamble(self) -> None:
         """The estimate is ``int(raw * 1.5) + 256``. An accidental tweak to
         either constant (or the formula shape) breaks this assertion, forcing
-        the change to be deliberate rather than a silent regression. (bb-1utt)
+        the change to be deliberate rather than a silent regression.
         """
         import json
 

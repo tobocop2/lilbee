@@ -248,7 +248,7 @@ class TestStreamSingleFlightGate:
         """Reset the lru_cache-backed chat_lock so each test gets a fresh lock
         bound to its own event loop. Without this the lock object outlives the
         loop that constructed it, and the next test's wait_for fails to wake
-        from a stale waiter list. (bb-2x6j follow-up)
+        from a stale waiter list.
         """
         from lilbee.server.chat_dispatch.concurrency import chat_lock
 
@@ -259,7 +259,7 @@ class TestStreamSingleFlightGate:
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_concurrent_ask_stream_returns_429_after_wait_timeout(self, mock_stream, client):
         """A second /api/ask/stream while the first holds the lock waits up to
-        the configured timeout, then returns 429 + Retry-After. (bb-2x6j)
+        the configured timeout, then returns 429 + Retry-After.
         """
         from lilbee.server.chat_dispatch import concurrency as concurrency_mod
         from lilbee.server.chat_dispatch.concurrency import chat_lock

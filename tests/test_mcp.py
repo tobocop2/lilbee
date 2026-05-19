@@ -1429,7 +1429,7 @@ class TestCatalogBrowseMcp:
 class TestToolsSchemaSize:
     """Schema budget: keep the per-request OpenAI tools schema under a ceiling
     so any model with ``n_ctx >= ~16K`` has room for system + history + content
-    after the tools schema is rendered. bb-t1tq filed a 20K-token schema on
+    after the tools schema is rendered. the original 20K-token schema on
     Qwen3-8B making 51% of the context unusable; trimming docstrings and
     gating the wiki / crawler tools dropped that significantly. A higher
     number doesn't fail builds, it forces a deliberate cap bump that

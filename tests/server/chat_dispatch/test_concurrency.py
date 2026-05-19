@@ -37,7 +37,7 @@ async def test_acquire_chat_lock_or_busy_immediate_when_free() -> None:
 
 async def test_acquire_chat_lock_or_busy_waits_then_succeeds() -> None:
     """When the lock is held but released within timeout, acquire queues and
-    proceeds; the previous immediate-429 behaviour (bb-2x6j) is gone.
+    proceeds; the previous immediate-429 behaviour is gone.
     """
     lock = chat_lock()
     await lock.acquire()

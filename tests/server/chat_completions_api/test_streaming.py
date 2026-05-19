@@ -160,7 +160,7 @@ class TestEncodeCompletionsSse:
     async def test_idle_stream_emits_keepalive_comment(self, monkeypatch) -> None:
         """When the upstream chat is slow to emit its first token, the encoder
         must yield SSE comment frames so clients (opencode) don't trip their
-        idle-stream timeout and fire a retry storm. (bb-2x6j)
+        idle-stream timeout and fire a retry storm.
         """
         from lilbee.server.chat_completions_api import streaming as streaming_mod
 

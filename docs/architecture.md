@@ -528,32 +528,18 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 
 #### Schema-size discipline
 
-Every chat request to a tool-calling agent (opencode, Claude, Cursor) ships
-the full OpenAI tools schema as part of the system prompt. Bloat there is
-a budget tax on every turn, on every model. lilbee's default schema is
-~5.7 KB of raw JSON across 17 tools (down from ~16 KB before the
-optimization pass on `fix/bb-xdic-context-window-truncation`):
+The OpenAI tools schema ships on every chat request; bloat there taxes
+every turn. lilbee's default surface is ~5.7 KB of raw JSON across 17
+tools (~10% of a 32K context, ~35% of Gemma 4's 7K).
 
-- **17-tool default surface** is the core: search, lifecycle, models,
-  settings. The wiki tools (11) and crawler tools (`crawl`,
-  `crawl_status`) are gated and don't render unless their feature is
-  enabled (`cfg.wiki`) or the extra is installed (`lilbee[crawler]`).
-- **Compact descriptions**: each tool's docstring stays at one or two
-  sentences. FastMCP turns docstrings into the per-parameter
-  `description` field on the schema, so verbose Args blocks blow the
-  budget.
-- **Auto-generated noise stripped**: a single module-level pass
-  (`_strip_schema_noise` in `mcp_server.py`) removes the
-  FastMCP/Pydantic-injected `title` keys on every input schema before
-  the tools ship on the wire. Models pick tools by name; the titles add
-  ~1 KB across the surface with zero impact on selection accuracy.
-- **Regression test**: `tests/test_mcp.py::TestToolsSchemaSize` caps the
-  default schema at 7 KB. New tools or doc bloat trip the cap and force
-  a deliberate review.
-
-At 5.7 KB the schema costs ~10% of a 32K-token context window and ~35%
-of Gemma 4's 7 KB window. Below the small-context cliff that triggered
-bb-1utt / bb-t1tq.
+- Wiki tools and crawler tools are gated off the schema unless
+  `cfg.wiki` is on or `lilbee[crawler]` is installed.
+- Tool docstrings stay at one or two sentences (FastMCP turns them
+  into per-parameter schema descriptions).
+- `_strip_schema_noise` in `mcp_server.py` drops the FastMCP/Pydantic
+  auto-generated `title` keys before the tools hit the wire.
+- `tests/test_mcp.py::TestToolsSchemaSize` caps the schema at 7 KB; new
+  tools or doc bloat trip the cap and force a deliberate review.
 
 ### Python library
 ```python
