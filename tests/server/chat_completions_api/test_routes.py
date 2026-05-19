@@ -443,8 +443,10 @@ class TestNonStreamingCompletion:
         """
         from lilbee.providers.base import ContextWindowExceededError
 
-        services_with_chat_model.provider.chat.side_effect = ContextWindowExceededError.from_counts(
-            requested=161_000, available=40_960, model=INSTALLED_REF
+        services_with_chat_model.provider.chat.side_effect = (
+            ContextWindowExceededError.from_runtime_overflow(
+                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
+            )
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
@@ -579,8 +581,10 @@ class TestStreamingCompletion:
         """
         from lilbee.providers.base import ContextWindowExceededError
 
-        services_with_chat_model.provider.chat.side_effect = ContextWindowExceededError.from_counts(
-            requested=161_000, available=40_960, model=INSTALLED_REF
+        services_with_chat_model.provider.chat.side_effect = (
+            ContextWindowExceededError.from_runtime_overflow(
+                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
+            )
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(

@@ -69,17 +69,67 @@ class ProviderError(Exception):
 class ContextWindowExceededError(ProviderError):
     """Raised when a chat prompt does not fit the loaded model's context window."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        requested: int = 0,
+        usable_budget: int = 0,
+        n_ctx: int = 0,
+    ) -> None:
         super().__init__(message, provider="llama-cpp")
+        self.requested = requested
+        self.usable_budget = usable_budget
+        self.n_ctx = n_ctx
 
     @classmethod
-    def from_counts(
-        cls, *, requested: int, available: int, model: str
+    def from_breakdown(
+        cls,
+        *,
+        requested: int,
+        n_ctx: int,
+        response_budget: int,
+        tools_overhead: int,
+        safety_margin: int,
+        model: str,
     ) -> ContextWindowExceededError:
-        """Build with the canonical user-facing message from structured token counts."""
+        """Build the error with the full budget breakdown so the user can see
+        which lever to pull (top_k / num_predict / num_ctx).
+        """
+        usable_budget = max(0, n_ctx - response_budget - tools_overhead - safety_margin)
+        message = (
+            f"Prompt of {requested} tokens exceeds the usable budget of "
+            f"{usable_budget} tokens (n_ctx={n_ctx}, response_budget="
+            f"{response_budget}, tools_schema={tools_overhead}, safety_margin="
+            f"{safety_margin}) for model {model!r}. To fit, lower the agent's "
+            f"top_k / max_distance, reduce num_predict, or load the model with "
+            f"a larger num_ctx."
+        )
         return cls(
-            f"Prompt of {requested} tokens exceeds the {available}-token "
-            f"context window of {model!r}."
+            message,
+            requested=requested,
+            usable_budget=usable_budget,
+            n_ctx=n_ctx,
+        )
+
+    @classmethod
+    def from_runtime_overflow(
+        cls, *, requested: int, n_ctx: int, model: str
+    ) -> ContextWindowExceededError:
+        """Build the error when llama-cpp raised mid-render and the breakdown
+        isn't available at the catch site (the safety-net path).
+        """
+        message = (
+            f"Prompt of {requested} tokens exceeded the {n_ctx}-token context "
+            f"window of {model!r} at render time. The pre-flight budget "
+            f"estimate undercounted; try reducing top_k / num_predict or "
+            f"loading the model with a larger num_ctx."
+        )
+        return cls(
+            message,
+            requested=requested,
+            usable_budget=n_ctx,
+            n_ctx=n_ctx,
         )
 
 
