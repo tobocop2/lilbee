@@ -1442,7 +1442,8 @@ class TestToolsSchemaSize:
         the MCP wire. Cleans up after itself so the test doesn't pollute the
         shared FastMCP server with a sentinel tool.
         """
-        from lilbee.mcp_server import _tool_if, mcp as _mcp
+        from lilbee.mcp_server import _tool_if
+        from lilbee.mcp_server import mcp as _mcp
 
         sentinel_name = "_schema_size_test_sentinel"
 
