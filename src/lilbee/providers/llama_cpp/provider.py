@@ -111,6 +111,12 @@ _MAX_OOM_RETRIES = 2
 _CTX_QUANTUM = 256
 _CTX_FLOOR = 512
 
+# Minimum usable post-load n_ctx for a chat model. Some GGUF quants ship with
+# ``<arch>.context_length`` missing or zero; llama-cpp silently falls back to
+# its own 512 default, which is too small for any real chat request. We refuse
+# to register such a model rather than failing opaquely on the first turn.
+_MIN_CHAT_CTX = 2048
+
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
 
@@ -842,8 +848,34 @@ def load_llama(
         from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
 
         with _llama_n_seq_max(EMBED_N_SEQ_MAX):
-            return _construct_llama(Llama, model_path, kwargs)
-    return _construct_llama(Llama, model_path, kwargs)
+            llm = _construct_llama(Llama, model_path, kwargs)
+    else:
+        llm = _construct_llama(Llama, model_path, kwargs)
+    if mode == LoaderMode.CHAT:
+        _validate_chat_context_window(llm, model_path)
+    return llm
+
+
+def _validate_chat_context_window(llm: Any, model_path: Path) -> None:
+    """Refuse a chat model whose post-load ``n_ctx`` is below the chat minimum.
+
+    Triggered by GGUFs that report ``context_length=0`` (broken quant metadata):
+    llama-cpp silently falls back to its 512-token default, which can't fit any
+    realistic prompt and surfaces as an opaque 500 on the first request.
+    """
+    actual = int(llm.n_ctx())
+    if actual >= _MIN_CHAT_CTX:
+        return
+    with contextlib.suppress(Exception):
+        llm.close()
+    raise ProviderError(
+        f"Chat model {model_path.name!r} loaded with n_ctx={actual}, which is below "
+        f"the {_MIN_CHAT_CTX}-token minimum for chat. This usually means the GGUF's "
+        "metadata is broken (missing or zero context_length). Try a different quant "
+        "of the model, or set 'num_ctx' (LILBEE_NUM_CTX) in lilbee config to "
+        "override.",
+        provider="llama-cpp",
+    )
 
 
 def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
