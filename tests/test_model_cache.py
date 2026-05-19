@@ -227,3 +227,26 @@ class TestTryNvidiaMemory:
         result = mock.MagicMock(returncode=returncode, stdout="")
         monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
         assert _try_nvidia_memory() is None
+
+
+def test_scaled_target_still_clamped_by_available_ram():
+    # Simulate a 32GiB host scaling to 16384, but only 2GiB of headroom
+    # at chat-worker spawn. Picker must drop below the scaled target.
+    model_bytes = 3 * 1024**3
+    available_bytes = model_bytes + 2 * 1024**3  # 2 GiB free for KV
+    kv_bytes_per_tok = 256 * 1024  # exaggerated to force a tight clamp
+    training_ctx = 128_000
+    ceiling = training_ctx
+
+    picked = compute_dynamic_ctx(
+        model_bytes=model_bytes,
+        available_bytes=available_bytes,
+        training_ctx=training_ctx,
+        kv_bytes_per_tok=kv_bytes_per_tok,
+        ceiling=ceiling,
+        target=16384,
+    )
+
+    assert picked < 16384, (
+        "scaled target must be clamped by available_bytes when KV cost exceeds budget"
+    )
