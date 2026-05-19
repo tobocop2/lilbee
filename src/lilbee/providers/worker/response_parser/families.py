@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 _QWEN3_CODER_FUNCTION_MARKER = "<function="
@@ -27,21 +28,8 @@ _GLM_ARG_VALUE = "<arg_value>"
 _GLM47_NO_NEWLINE_MARKER = "<tool_call>{function-name}<arg_key>"
 _KIMI_K2_SECTION_BEGIN = "<|tool_calls_section_begin|>"
 _KIMI_K2_ARG_BEGIN = "<|tool_call_argument_begin|>"
-_INTERNLM2_ACTION_PLUGIN = "<|action_start|><|plugin|>"
 _OLMO3_FUNCTION_CALLS_OPEN = "<function_calls>"
-_LFM2_TOOL_CALL_START = "<|tool_call_start|>"
 _LFM2_TOOL_LIST_START = "<|tool_list_start|>"
-
-# GGUF `general.architecture` values that map to a known family. Used as a
-# fallback after chat-template-marker detection, for families whose chat
-# templates use generic ChatML markers (SmolLM3 shares <tool_call> with
-# Qwen3; InternLM2's chat_template is minimal so the action-block markers
-# only appear in model output, not in the template).
-_ARCHITECTURE_TO_FAMILY: dict[str, str] = {
-    "smollm3": "smollm",
-    "internlm2": "internlm2",
-    "internlm": "internlm2",
-}
 
 
 class ModelFamily(StrEnum):
@@ -70,58 +58,81 @@ class ModelFamily(StrEnum):
     UNKNOWN = "unknown"
 
 
-# Ordered most-specific-first: families whose markers are a superset of another
-# family's (Qwen3-Coder uses both `<tool_call>` and `<function=`) must come
-# before the more-general family. Each entry needs ALL of its markers present.
-_FAMILY_DETECTORS: tuple[tuple[ModelFamily, tuple[str, ...]], ...] = (
-    (ModelFamily.COHERE, (_COHERE_START_ACTION,)),
-    (ModelFamily.GPT_OSS, (_GPT_OSS_CHANNEL, _GPT_OSS_CALL)),
-    (ModelFamily.ERNIE, (_ERNIE_BOS, _ERNIE_EOS)),
-    (ModelFamily.DEEPSEEK_V31, (_DEEPSEEK_V31_TOOL_CALLS_BEGIN,)),
-    (ModelFamily.GRANITE, (_GRANITE_ROLE_MARKER,)),
-    (ModelFamily.PHI4MINI, (_PHI4_TOOL_OPEN, _PHI4_TOOL_CLOSE)),
-    (ModelFamily.FUNCTIONARY_V3, (_FUNCTIONARY_V3_ALL,)),
-    (ModelFamily.HERMES, (_HERMES_MARKER,)),
-    (ModelFamily.LLAMA3, (_LLAMA3_PYTHON_TAG,)),
-    (ModelFamily.KIMI_K2, (_KIMI_K2_SECTION_BEGIN, _KIMI_K2_ARG_BEGIN)),
-    (ModelFamily.OLMO3, (_OLMO3_FUNCTION_CALLS_OPEN,)),
-    (ModelFamily.LFM2, (_LFM2_TOOL_LIST_START,)),
-    # GLM47 is GLM46 minus the newline after function-name; the system-prompt
+# GGUF `general.architecture` -> family fallback. Used when a chat template has
+# no marker hits (InternLM2's template is minimal) or shares generic ChatML
+# markers with another family (SmolLM3 emits the same ``<tool_call>`` blocks
+# as Qwen3 but has its own response schema).
+_ARCHITECTURE_TO_FAMILY: dict[str, ModelFamily] = {
+    "smollm3": ModelFamily.SMOLLM,
+    "internlm2": ModelFamily.INTERNLM2,
+    "internlm": ModelFamily.INTERNLM2,
+}
+
+# Families whose chat-template detection should be refined by architecture
+# (e.g. Qwen3-template + smollm3 architecture is SmolLM, not Qwen3).
+_ARCHITECTURE_REFINEMENTS: dict[ModelFamily, frozenset[ModelFamily]] = {
+    ModelFamily.QWEN3: frozenset({ModelFamily.SMOLLM}),
+}
+
+
+@dataclass(frozen=True)
+class _FamilyDetector:
+    """One family + the ALL-must-be-present marker substrings that identify it."""
+
+    family: ModelFamily
+    markers: tuple[str, ...]
+
+
+# Ordered most-specific-first: a family whose markers are a superset of another
+# family's (e.g. Qwen3-Coder uses both ``<tool_call>`` and ``<function=``) must
+# come before the more-general family so it matches first.
+_FAMILY_DETECTORS: tuple[_FamilyDetector, ...] = (
+    _FamilyDetector(ModelFamily.COHERE, (_COHERE_START_ACTION,)),
+    _FamilyDetector(ModelFamily.GPT_OSS, (_GPT_OSS_CHANNEL, _GPT_OSS_CALL)),
+    _FamilyDetector(ModelFamily.ERNIE, (_ERNIE_BOS, _ERNIE_EOS)),
+    _FamilyDetector(ModelFamily.DEEPSEEK_V31, (_DEEPSEEK_V31_TOOL_CALLS_BEGIN,)),
+    _FamilyDetector(ModelFamily.GRANITE, (_GRANITE_ROLE_MARKER,)),
+    _FamilyDetector(ModelFamily.PHI4MINI, (_PHI4_TOOL_OPEN, _PHI4_TOOL_CLOSE)),
+    _FamilyDetector(ModelFamily.FUNCTIONARY_V3, (_FUNCTIONARY_V3_ALL,)),
+    _FamilyDetector(ModelFamily.HERMES, (_HERMES_MARKER,)),
+    _FamilyDetector(ModelFamily.LLAMA3, (_LLAMA3_PYTHON_TAG,)),
+    _FamilyDetector(ModelFamily.KIMI_K2, (_KIMI_K2_SECTION_BEGIN, _KIMI_K2_ARG_BEGIN)),
+    _FamilyDetector(ModelFamily.OLMO3, (_OLMO3_FUNCTION_CALLS_OPEN,)),
+    _FamilyDetector(ModelFamily.LFM2, (_LFM2_TOOL_LIST_START,)),
+    # GLM47 is GLM46 minus the newline after the function name; the system-prompt
     # scaffolding makes the no-newline form a unique substring.
-    (ModelFamily.GLM47, (_GLM47_NO_NEWLINE_MARKER,)),
-    (ModelFamily.GLM46, (_GLM_ARG_KEY, _GLM_ARG_VALUE)),
-    (ModelFamily.QWEN3_CODER, (_QWEN3_CODER_FUNCTION_MARKER, _QWEN3_CODER_PARAMETER_MARKER)),
-    (ModelFamily.GEMMA4, (_GEMMA4_QUOTE_MARKER,)),
-    (ModelFamily.MISTRAL, (_MISTRAL_TOOL_CALLS_MARKER,)),
-    (ModelFamily.QWEN3, (_QWEN3_TOOL_CALL_OPEN, _QWEN3_TOOL_CALL_CLOSE)),
+    _FamilyDetector(ModelFamily.GLM47, (_GLM47_NO_NEWLINE_MARKER,)),
+    _FamilyDetector(ModelFamily.GLM46, (_GLM_ARG_KEY, _GLM_ARG_VALUE)),
+    _FamilyDetector(
+        ModelFamily.QWEN3_CODER,
+        (_QWEN3_CODER_FUNCTION_MARKER, _QWEN3_CODER_PARAMETER_MARKER),
+    ),
+    _FamilyDetector(ModelFamily.GEMMA4, (_GEMMA4_QUOTE_MARKER,)),
+    _FamilyDetector(ModelFamily.MISTRAL, (_MISTRAL_TOOL_CALLS_MARKER,)),
+    _FamilyDetector(ModelFamily.QWEN3, (_QWEN3_TOOL_CALL_OPEN, _QWEN3_TOOL_CALL_CLOSE)),
 )
 
 
 def detect_family(chat_template: str | None, *, architecture: str | None = None) -> ModelFamily:
-    """Classify a model by chat-template markers with an optional GGUF
-    architecture fallback for families whose templates share markers.
-    """
-    if not chat_template:
-        return _detect_from_architecture_only(architecture)
-    for family, markers in _FAMILY_DETECTORS:
-        if all(marker in chat_template for marker in markers):
-            return _apply_architecture_refinement(family, architecture)
+    """Classify a model by chat-template markers with a GGUF-architecture fallback."""
+    if chat_template:
+        for detector in _FAMILY_DETECTORS:
+            if all(marker in chat_template for marker in detector.markers):
+                return _apply_architecture_refinement(detector.family, architecture)
     return _detect_from_architecture_only(architecture)
 
 
 def _detect_from_architecture_only(architecture: str | None) -> ModelFamily:
-    """Classify via GGUF architecture when the chat template has no marker."""
-    arch_family = _ARCHITECTURE_TO_FAMILY.get((architecture or "").lower())
-    if arch_family is None:
-        return ModelFamily.UNKNOWN
-    return ModelFamily(arch_family)
+    """Classify via GGUF architecture when the chat template has no marker hit."""
+    return _ARCHITECTURE_TO_FAMILY.get((architecture or "").lower(), ModelFamily.UNKNOWN)
 
 
 def _apply_architecture_refinement(family: ModelFamily, architecture: str | None) -> ModelFamily:
-    """Override family classification when GGUF architecture disambiguates."""
-    if family is not ModelFamily.QWEN3:
+    """Override classification when architecture disambiguates a marker collision."""
+    allowed = _ARCHITECTURE_REFINEMENTS.get(family)
+    if allowed is None:
         return family
     arch_family = _ARCHITECTURE_TO_FAMILY.get((architecture or "").lower())
-    if arch_family == ModelFamily.SMOLLM.value:
-        return ModelFamily.SMOLLM
+    if arch_family is not None and arch_family in allowed:
+        return arch_family
     return family

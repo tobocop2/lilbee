@@ -160,6 +160,65 @@ autoparser (`common/chat-auto-parser.cpp`) into `llama-cpp-python`. That
 removes the per-family code entirely, regardless of whether HF tokenizer
 authors populate `response_schema`. Tracking in beads.
 
+### Design lineage
+
+The shipped design is a three-tier fall-through: try the public API
+(transformers `tokenizer.parse_response()` when the tokenizer ships a
+`response_schema`), fall back to lilbee's local schema, fall back to raw
+text. Each tier was chosen for a concrete reason.
+
+- **Parser engine**: HuggingFace's
+  [`transformers.utils.chat_parsing_utils.recursive_parse`](https://github.com/huggingface/transformers/blob/main/src/transformers/utils/chat_parsing_utils.py)
+  + the documented DSL at
+  [`docs/source/en/chat_response_parsing.md`](https://github.com/huggingface/transformers/blob/main/docs/source/en/chat_response_parsing.md).
+  Public API; declarative regex/JSON schema, no per-family Python. Engine
+  is stable across transformers 5.x; the DSL itself is mid-refactor in
+  [transformers#45847](https://github.com/huggingface/transformers/pull/45847)
+  (rename `response_schema` to `response_template`), which is why
+  transformers is pinned to `==5.8.1`.
+- **Per-family schemas**: every shipped schema is either lifted from
+  upstream's test fixtures
+  ([`tests/utils/test_chat_parsing_utils.py`](https://github.com/huggingface/transformers/blob/main/tests/utils/test_chat_parsing_utils.py))
+  or written against vLLM's per-family parsers in
+  [`vllm/tool_parsers/`](https://github.com/vllm-project/vllm/tree/main/vllm/tool_parsers).
+  vLLM was the reference for regex patterns and detection markers (Llama 3,
+  Hermes, DeepSeek V3.1, IBM Granite, Phi-4 mini, Functionary v3, GLM 4.6,
+  GLM 4.7, Kimi K2, InternLM2, OLMo 3, LFM2). Ollama's parsers in
+  [`model/parsers/`](https://github.com/ollama/ollama/tree/main/model/parsers)
+  were cross-checked when vLLM didn't cover a family.
+- **Retirement watcher**: the `tokenizer.parse_response()` /
+  `tokenizer.response_schema` plumbing landed in
+  [transformers#40894](https://github.com/huggingface/transformers/pull/40894)
+  (Sep 2025) and was de-prototyped in
+  [transformers#44674](https://github.com/huggingface/transformers/pull/44674)
+  (Mar 2026). The model side hasn't followed: no model on HuggingFace Hub
+  currently populates `response_schema` in `tokenizer_config.json`. The
+  watcher exists to surface the moment any of the 20 tracked families
+  catches up, so the local copy can be deleted in favour of the public
+  API call. The implementation lives in
+  [`tools/check_upstream_schemas.py`](../tools/check_upstream_schemas.py)
+  with the weekly cron at
+  [`.github/workflows/check-upstream-schemas.yml`](../.github/workflows/check-upstream-schemas.yml).
+- **Long-term escape**: llama.cpp's
+  [`common/chat-auto-parser.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/common/chat-auto-parser.h)
+  introspects the GGUF chat template at runtime and synthesises a PEG
+  parser, no per-family code at all. It runs inside `llama-server` today
+  but is not exposed through `llama-cpp-python`'s C ABI surface (binding
+  it requires compiling `common/chat*.cpp` + `common/minja/` into a
+  Python extension, as
+  [`intentee/llama-cpp-bindings`](https://github.com/intentee/llama-cpp-bindings)
+  did in Rust). When that lands the whole
+  `src/lilbee/providers/worker/response_parser/` package gets deleted in
+  one commit. Tracking work in
+  [abetlen/llama-cpp-python#1784](https://github.com/abetlen/llama-cpp-python/issues/1784).
+
+The shipped behaviour is the smallest hand-maintained surface that gets
+tool calls extracted today without taking a runtime quality hit (the
+alternatives are grammar-constrained decoding, which strips
+chain-of-thought before tool calls, and llama-cpp-python's generic
+`chatml-function-calling` handler, which overrides each model's native
+tool-call format and loses family-specific training).
+
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.

@@ -9,8 +9,9 @@
       "x-regex": "^(.*?)(?:<\\|python_tag\\|>|\\{\\s*\"name\"\\s*:|$)"
     },
     "tool_calls": {
-      "x-regex-iterator": "(\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\})",
+      "x-regex": "<\\|python_tag\\|>(.*?)(?:<\\|eom_id\\|>|<\\|eot_id\\|>|$)",
       "type": "array",
+      "x-regex-iterator": "(\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\})",
       "items": {
         "type": "object",
         "x-parser": "json",

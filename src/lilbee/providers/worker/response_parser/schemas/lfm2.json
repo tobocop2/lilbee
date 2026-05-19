@@ -12,8 +12,9 @@
       "x-regex": "^\\s*(.*?)\\s*$"
     },
     "tool_calls": {
-      "x-regex-iterator": "([a-zA-Z_]\\w*\\s*\\((?:[^()]|\\([^()]*\\))*\\))",
+      "x-regex": "<\\|tool_call_start\\|>\\s*\\[(.*?)\\]\\s*<\\|tool_call_end\\|>",
       "type": "array",
+      "x-regex-iterator": "([a-zA-Z_]\\w*\\s*\\((?:[^()]|\\([^()]*\\))*\\))",
       "items": {
         "type": "object",
         "properties": {

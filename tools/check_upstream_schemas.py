@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -91,6 +92,8 @@ def check_family(family: str, repo_id: str) -> FamilyCheck:
 
 def render_report(checks: list[FamilyCheck]) -> str:
     """Render a markdown retirement report grouped by status."""
+    if not checks:
+        return "# Response-schema retirement check\n\n_No families to check._\n"
     by_status: dict[RetirementStatus, list[FamilyCheck]] = {
         RetirementStatus.READY: [],
         RetirementStatus.PENDING: [],
@@ -98,32 +101,31 @@ def render_report(checks: list[FamilyCheck]) -> str:
     }
     for check in checks:
         by_status[check.status].append(check)
+    sections = [
+        _render_section("Ready to retire", by_status[RetirementStatus.READY], _render_ready_block),
+        _render_section("Pending upstream", by_status[RetirementStatus.PENDING], _render_pending),
+        _render_section("Could not check", by_status[RetirementStatus.BLOCKED], _render_blocked),
+    ]
+    body = "\n".join(section for section in sections if section)
+    return f"# Response-schema retirement check\n\n{body}".rstrip() + "\n"
 
-    lines: list[str] = ["# Response-schema retirement check", ""]
-    ready = by_status[RetirementStatus.READY]
-    if ready:
-        lines.append("## Ready to retire")
-        lines.append("")
-        for check in ready:
-            lines.append(_render_ready_block(check))
-    pending = by_status[RetirementStatus.PENDING]
-    if pending:
-        lines.append("## Pending upstream")
-        lines.append("")
-        for check in pending:
-            lines.append(f"- `{check.family}` — {check.repo_id} has no response_schema yet")
-        lines.append("")
-    blocked = by_status[RetirementStatus.BLOCKED]
-    if blocked:
-        lines.append("## Could not check")
-        lines.append("")
-        for check in blocked:
-            lines.append(f"- `{check.family}` — {check.repo_id}: {check.detail}")
-        lines.append("")
-    if not ready and not pending and not blocked:
-        lines.append("_No families to check._")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+
+def _render_section(title: str, checks: list[FamilyCheck], format_item: Callable) -> str:
+    """Render one status section, or empty string when nothing falls in it."""
+    if not checks:
+        return ""
+    items = "".join(format_item(check) for check in checks)
+    return f"## {title}\n\n{items}"
+
+
+def _render_pending(check: FamilyCheck) -> str:
+    """One bullet for a family that's still pending upstream populating."""
+    return f"- `{check.family}`: {check.repo_id} has no response_schema yet\n"
+
+
+def _render_blocked(check: FamilyCheck) -> str:
+    """One bullet for a family the watcher could not check."""
+    return f"- `{check.family}`: {check.repo_id}: {check.detail}\n"
 
 
 def _render_ready_block(check: FamilyCheck) -> str:

@@ -172,39 +172,56 @@ def test_session_chat_drops_none_tool_fields_from_kwargs(monkeypatch, tmp_path) 
 def test_session_chat_warns_once_when_tools_requested_without_schema(
     monkeypatch, tmp_path, caplog
 ) -> None:
-    """When tools are requested but no schema applies, log a clear warning once."""
+    """Loading a model whose chat template has no known marker, then sending
+    a tools= request, must log the unsupported-extraction warning exactly once
+    across repeated calls.
+
+    The whole path runs: the real ``_ensure_loaded`` reads the (stubbed) GGUF
+    chat template, ``detect_family`` returns UNKNOWN, ``_response_schema`` stays
+    None, and the per-model warning de-dupe kicks in on the second call.
+    """
     import logging
 
     from lilbee.providers.worker.chat_worker import _ChatSession
     from lilbee.providers.worker.transport import RoleConfig
 
-    class _Stub:
+    fake_path = tmp_path / "fake-unknown-family.gguf"
+    fake_path.write_bytes(b"")
+    role_config = RoleConfig(role="chat", model_path=fake_path, mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+
+    class _Llama:
         def create_chat_completion(self, **_kwargs: Any) -> Any:
             return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
 
-    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
-    session = _ChatSession(role_config, _FlagStub())
-    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
-    session._response_schema = None
-    session._model_path = str(tmp_path / "x.gguf")
+    def _fake_load_llama(path, *, mode, abort_callback_override=None):
+        return _Llama()
+
+    def _fake_resolve(model_override):
+        return fake_path
+
+    def _fake_metadata(path):
+        return {"chat_template": "no recognized markers here"}
+
+    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.load_llama", _fake_load_llama)
+    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.resolve_model_path", _fake_resolve)
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata", _fake_metadata
+    )
+
     tools = [{"type": "function", "function": {"name": "f"}}]
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.chat_worker"):
-        session.chat(
-            messages=[],
-            stream=False,
-            options=None,
-            model="Some/Model/path.gguf",
-            tools=tools,
-            tool_choice=None,
-        )
-        session.chat(
-            messages=[],
-            stream=False,
-            options=None,
-            model="Some/Model/path.gguf",
-            tools=tools,
-            tool_choice=None,
-        )
+        for _ in range(2):
+            session.chat(
+                messages=[],
+                stream=False,
+                options=None,
+                model="Some/Model/path.gguf",
+                tools=tools,
+                tool_choice=None,
+            )
+
+    assert session.response_schema is None
     warnings = [r for r in caplog.records if "Tool-call extraction not available" in r.message]
     assert len(warnings) == 1
     assert "Some/Model/path.gguf" in warnings[0].message
