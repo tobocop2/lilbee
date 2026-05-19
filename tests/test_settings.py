@@ -130,9 +130,18 @@ class TestMemoryTuningSettingsMap:
 
         defn = SETTINGS_MAP["num_ctx_max"]
         assert defn.writable is True
+        assert defn.nullable is True  # None = use model training_ctx as ceiling
+        assert defn.group == "Generation"
+        assert get_default("num_ctx_max") is None
+
+    def test_chat_n_ctx_target_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["chat_n_ctx_target"]
+        assert defn.writable is True
         assert defn.nullable is False
         assert defn.group == "Generation"
-        assert get_default("num_ctx_max") == 16384
+        assert get_default("chat_n_ctx_target") == 8192
 
     def test_flash_attention_in_settings_map(self):
         from lilbee.app.settings_map import SETTINGS_MAP, get_default

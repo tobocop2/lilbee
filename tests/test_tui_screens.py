@@ -3524,18 +3524,32 @@ async def test_chat_scroll_to_bottom():
             assert mock_end.called or log.max_scroll_y - log.scroll_y >= 5
 
 
-async def test_chat_trim_history_when_over_limit():
-    """History is trimmed when it exceeds _MAX_HISTORY_MESSAGES."""
-    from lilbee.cli.tui.screens.chat import _MAX_HISTORY_MESSAGES
+async def test_chat_trim_history_drops_oldest_pairs_over_token_budget():
+    """History windows by token budget, dropping oldest user/assistant pairs."""
+    from lilbee.core.config import cfg
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Fill history with 20 user/assistant pairs of ~400 chars each (~100 tokens).
+        # With chat_n_ctx_target = 8192 and 50% history budget = 4096 tokens, the
+        # windower should keep ~40 messages worth; far less here so it drops oldest.
+        big_content = "x" * 4096  # ~1024 tokens per message
         app.screen._history = [
-            {"role": "user", "content": f"msg-{i}"} for i in range(_MAX_HISTORY_MESSAGES + 10)
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"{i}-{big_content}"}
+            for i in range(20)
         ]
-        app.screen._trim_history()
-        assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
-        assert app.screen._history[0]["content"] == "msg-10"
+        prior_target = cfg.chat_n_ctx_target
+        cfg.chat_n_ctx_target = 8192
+        try:
+            app.screen._trim_history()
+        finally:
+            cfg.chat_n_ctx_target = prior_target
+        # Some prefix was dropped; the suffix that fits the budget is kept.
+        assert len(app.screen._history) < 20
+        # Window must start at a user message so the model anchors on a turn.
+        assert app.screen._history[0]["role"] == "user"
+        # The newest pair is always retained.
+        assert app.screen._history[-1]["content"].startswith("19-")
 
 
 async def test_command_provider_discover():

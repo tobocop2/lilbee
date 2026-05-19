@@ -3474,6 +3474,7 @@ class TestSelfCheck:
         assert set(payload["provider"]) == {
             "num_ctx",
             "num_ctx_max",
+            "chat_n_ctx_target",
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",

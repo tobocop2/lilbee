@@ -251,7 +251,14 @@ class TestStatus:
     def test_status_exposes_memory_tuning_settings(self):
         """MCP status reports the dynamic-ctx tuning knobs so clients can read them."""
         result = status()
-        for key in ("num_ctx", "num_ctx_max", "flash_attention", "kv_cache_type", "n_gpu_layers"):
+        for key in (
+            "num_ctx",
+            "num_ctx_max",
+            "chat_n_ctx_target",
+            "flash_attention",
+            "kv_cache_type",
+            "n_gpu_layers",
+        ):
             assert key in result["config"], f"missing {key} in MCP status"
         # Enum value is stringified (kv_cache_type is a StrEnum, not raw text)
         assert isinstance(result["config"]["kv_cache_type"], str)
@@ -1281,13 +1288,16 @@ class TestLilbeeLabel:
 
     def test_whitespace_alias_falls_through(self, isolated_env):
         """A whitespace-only alias is stripped so the path chain takes over."""
+        import os
+
         from lilbee.app.status import lilbee_label
 
         cfg.data_root = isolated_env
         cfg.lilbee_name = "   "
         cfg.show_lilbee_path = False
         assert cfg.lilbee_name == ""
-        assert "/" in lilbee_label() or lilbee_label().startswith("~") or lilbee_label() == "global"
+        label = lilbee_label()
+        assert os.sep in label or label.startswith("~") or label == "global"
 
     def test_global_label_matches_when_data_root_has_trailing_slash(self, isolated_env):
         """A trailing-slash variant of the platform default still resolves to 'global'."""
@@ -1304,10 +1314,13 @@ class TestLilbeeLabel:
     def test_home_paths_collapse_to_tilde(self, isolated_env, tmp_path, monkeypatch):
         """Compact labels substitute ``~`` for $HOME using the native separator."""
         import os
+        from pathlib import Path
 
         from lilbee.app.status import lilbee_label
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        # Path.home() reads HOME on POSIX and USERPROFILE on Windows; patch
+        # the resolver directly so the test works on both.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         project = tmp_path / "code" / "lilbee-mcp-settings"
         project.mkdir(parents=True)
         cfg.data_root = project / ".lilbee"
@@ -1362,9 +1375,11 @@ class TestLilbeeLabel:
 
     def test_compact_path_exactly_home_returns_tilde(self, tmp_path, monkeypatch):
         """When the project path IS $HOME with no subdir, compact rendering is just '~'."""
+        from pathlib import Path
+
         from lilbee.app.status import _compact_path
 
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         assert _compact_path(str(tmp_path)) == "~"
 
     def test_truncate_leaf_helper_handles_tight_budget(self):

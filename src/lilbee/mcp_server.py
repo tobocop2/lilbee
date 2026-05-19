@@ -91,6 +91,7 @@ def status() -> dict[str, Any]:
             "enable_ocr": cfg.enable_ocr,
             "num_ctx": cfg.num_ctx,
             "num_ctx_max": cfg.num_ctx_max,
+            "chat_n_ctx_target": cfg.chat_n_ctx_target,
             "flash_attention": cfg.flash_attention,
             "kv_cache_type": cfg.kv_cache_type.value,
             "n_gpu_layers": cfg.n_gpu_layers,
