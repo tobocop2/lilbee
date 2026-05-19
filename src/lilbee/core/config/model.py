@@ -271,10 +271,18 @@ class Config(BaseSettings):
     # ``0`` disables reaping (workers stay up until TUI exit).
     worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
-    # Upper bound for the dynamic n_ctx picker. The picker chooses the
-    # largest 256-multiple ctx that fits in available memory and the
-    # model's training window; this caps it at a sane ceiling.
-    num_ctx_max: int = ConfigField(default=16384, ge=512, writable=True)
+    # Working n_ctx the dynamic picker aims for. The picker may grow
+    # beyond this up to the model's training window when ``num_ctx_max``
+    # raises the ceiling, but on memory-constrained hosts it clamps down
+    # toward the host budget. 8192 fits a RAG turn (8 chunks of context
+    # + system prompt + reasoning headroom) with room to spare.
+    chat_n_ctx_target: int = ConfigField(default=8192, ge=512, writable=True)
+
+    # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
+    # lets the model's training_ctx from GGUF metadata be the ceiling,
+    # so a 128K-context model can reach for it on a host with the RAM
+    # to back it. Set explicitly to cap below the model's training_ctx.
+    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
     # Flash attention. None (default) = on with TypeError fallback for
     # older llama-cpp-python builds, True = force on, False = off.
@@ -282,9 +290,10 @@ class Config(BaseSettings):
     # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
     flash_attention: bool | None = ConfigField(default=None, writable=True)
 
-    # KV cache element type. q8_0 / q4_0 halve or quarter cache memory
-    # but require flash attention to be enabled.
-    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.F16, writable=True)
+    # KV cache element type. q8_0 (default) halves cache memory vs f16
+    # with no measurable quality loss for chat; q4_0 quarters it with a
+    # small quality cost. Both require flash attention to be enabled.
+    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.Q8_0, writable=True)
 
     # Number of model layers to offload to GPU. None (default) = all
     # layers, 0 = CPU only, positive int = partial offload. Useful when a
