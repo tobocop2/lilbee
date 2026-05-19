@@ -3,6 +3,36 @@
 lilbee serves as a local retrieval backend for AI coding agents. Two entry
 points are available: MCP (recommended) and JSON CLI.
 
+## Tool calling: supported model families
+
+When you point an agent at a lilbee-hosted local model (via `lilbee launch
+opencode` or the OpenAI-compatible `/v1/chat/completions` endpoint), lilbee
+extracts structured `tool_calls` from the model's text output for the
+following families. Detection is by chat-template marker, so any model in
+each family with the standard markers is covered:
+
+| Family | Markers in chat template | Example models |
+|---|---|---|
+| **Qwen3 / Qwen2.5 / Hermes** | `<tool_call>`, `</tool_call>` | Qwen3-4B/8B/14B/30B-A3B/72B, Qwen2.5-Instruct, Hermes 2 Pro, Hermes 3 |
+| **Qwen3-Coder** | `<function=`, `<parameter=` | Qwen3-Coder-30B-A3B |
+| **Mistral** | `[TOOL_CALLS]` | Mistral 7B Instruct, Mistral Small, Mistral Nemo, Mixtral |
+| **Gemma 4** | `<\|"\|>` | Gemma 4 |
+
+Models in other families (Llama 3.x, Llama 4, DeepSeek V3.x, IBM Granite,
+Phi-4, Command R, GPT-OSS, SmolLM3, and anything new) currently fall
+through with no extraction: the model's raw tool-call markup arrives as
+plain text in `message.content`, the client never invokes the tool, and a
+warning is logged on the first such request. The list of supported
+families is updated periodically as new model families are released and
+their schemas land in the upstream HuggingFace `transformers` test
+fixtures we track. The current schemas live at
+[`src/lilbee/providers/worker/response_parser/schemas/`](../src/lilbee/providers/worker/response_parser/schemas/).
+
+If you depend on tool calling, pick a model from the table above. The
+longer-term direction is to retire per-family schemas entirely once
+llama.cpp's runtime chat-template autoparser becomes reachable from
+Python; see `docs/architecture.md` for the design and the tracking issue.
+
 ## Fastest start: have the agent configure lilbee for you
 
 The shortest path from "fresh install" to "useful lilbee" is to hand the

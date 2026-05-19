@@ -169,6 +169,75 @@ def test_session_chat_drops_none_tool_fields_from_kwargs(monkeypatch, tmp_path) 
     assert "tool_choice" not in captured
 
 
+def test_session_chat_warns_once_when_tools_requested_without_schema(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """When tools are requested but no schema applies, log a clear warning once."""
+    import logging
+
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _Stub:
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
+    session._response_schema = None
+    session._model_path = str(tmp_path / "x.gguf")
+    tools = [{"type": "function", "function": {"name": "f"}}]
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.chat_worker"):
+        session.chat(
+            messages=[],
+            stream=False,
+            options=None,
+            model="Some/Model/path.gguf",
+            tools=tools,
+            tool_choice=None,
+        )
+        session.chat(
+            messages=[],
+            stream=False,
+            options=None,
+            model="Some/Model/path.gguf",
+            tools=tools,
+            tool_choice=None,
+        )
+    warnings = [r for r in caplog.records if "Tool-call extraction not available" in r.message]
+    assert len(warnings) == 1
+    assert "Some/Model/path.gguf" in warnings[0].message
+
+
+def test_session_chat_does_not_warn_when_schema_available(monkeypatch, tmp_path, caplog) -> None:
+    """When a schema applies, the unsupported-tools warning stays silent."""
+    import logging
+
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.response_parser import SCHEMAS, ModelFamily
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _Stub:
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
+    session._response_schema = SCHEMAS[ModelFamily.QWEN3]
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.chat_worker"):
+        session.chat(
+            messages=[],
+            stream=False,
+            options=None,
+            model="Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice=None,
+        )
+    assert not any("Tool-call extraction not available" in r.message for r in caplog.records)
+
+
 def test_close_model_resets_response_schema(tmp_path) -> None:
     """``_close_model`` drops the cached response schema so the next load reclassifies."""
     from lilbee.providers.worker.chat_worker import _ChatSession

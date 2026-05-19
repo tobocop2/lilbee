@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 import time
 from typing import Any
@@ -25,6 +26,8 @@ from lilbee.providers.worker.transport import (
 from lilbee.providers.worker.transport_pipe import _serialize_exception
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+
+log = logging.getLogger(__name__)
 
 _ABORT_BRIDGE_POLL_S = 0.025
 """How often the abort bridge polls the parent's mp.Value flag.
@@ -67,6 +70,7 @@ class _ChatSession:
         self._llm: Any = None
         self._model_path: str = ""
         self._response_schema: ResponseSchema | None = None
+        self._warned_unsupported_tools: set[str] = set()
 
     def chat(
         self,
@@ -80,12 +84,27 @@ class _ChatSession:
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
+        if tools and self._response_schema is None:
+            self._warn_unsupported_tool_extraction(model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
+
+    def _warn_unsupported_tool_extraction(self, model_ref: str | None) -> None:
+        """Log once per model when tools are requested but no schema applies."""
+        if self._model_path in self._warned_unsupported_tools:
+            return
+        self._warned_unsupported_tools.add(self._model_path)
+        log.warning(
+            "Tool-call extraction not available for model %r: chat template did "
+            "not match any supported family. Tool calls in responses will appear "
+            "as raw text; the client will not invoke the tool. See "
+            "docs/agent-integration.md for the supported-families list.",
+            model_ref or self._role_config.model_path.name,
+        )
 
     @property
     def response_schema(self) -> ResponseSchema | None:
