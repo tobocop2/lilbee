@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lilbee.core.system import scaled_chat_ctx_target_default
+
 from .defaults import (
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
@@ -271,12 +273,16 @@ class Config(BaseSettings):
     # ``0`` disables reaping (workers stay up until TUI exit).
     worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
-    # Working n_ctx the dynamic picker aims for. The picker may grow
-    # beyond this up to the model's training window when ``num_ctx_max``
-    # raises the ceiling, but on memory-constrained hosts it clamps down
-    # toward the host budget. 8192 fits a RAG turn (8 chunks of context
-    # + system prompt + reasoning headroom) with room to spare.
-    chat_n_ctx_target: int = ConfigField(default=8192, ge=512, writable=True)
+    # Working n_ctx the dynamic picker aims for. Default scales with
+    # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
+    # <16 GiB -> 8192, 16-32 -> 12288, 32-64 -> 16384, >=64 -> 24576.
+    # 8192 is the floor; the picker still clamps to training_ctx and
+    # host headroom.
+    chat_n_ctx_target: int = ConfigField(
+        default_factory=scaled_chat_ctx_target_default,
+        ge=512,
+        writable=True,
+    )
 
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
