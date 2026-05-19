@@ -6,8 +6,9 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -24,7 +25,7 @@ from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
-from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.wiki.shared import (
@@ -35,6 +36,27 @@ from lilbee.wiki.shared import (
 log = logging.getLogger(__name__)
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _tool_if(condition: bool) -> Callable[[_F], _F]:
+    """Register a function as an MCP tool only when *condition* is true.
+
+    The function stays importable so direct callers (tests, in-process
+    fallback) can still reach it. Whether the tool appears in the MCP
+    schema is fixed at import time; changing the gating config requires
+    a server restart.
+    """
+    if condition:
+        # mcp.tool() returns Callable[[Callable[..., Any]], Callable[..., Any]];
+        # cast to the typed-callable shape so generic call sites narrow correctly.
+        return cast("Callable[[_F], _F]", mcp.tool())
+
+    def _passthrough(fn: _F) -> _F:
+        return fn
+
+    return _passthrough
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -183,7 +205,7 @@ async def add(
     return result
 
 
-@mcp.tool()
+@_tool_if(crawler_available())
 def crawl(
     url: str,
     depth: int | None = None,
@@ -207,7 +229,7 @@ def crawl(
     return {"status": "started", "task_id": task_id, "url": url}
 
 
-@mcp.tool()
+@_tool_if(crawler_available())
 def crawl_status(task_id: str) -> dict[str, Any]:
     """Poll a crawl task by id; returns ``{status, pages, error}``."""
     task = get_task(task_id)
@@ -290,7 +312,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages; empty ``wiki_source`` lints all."""
     from lilbee.wiki.lint import lint_all, lint_wiki_page
@@ -308,7 +330,7 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_citations(wiki_source: str) -> dict[str, Any]:
     """List citations for a wiki page."""
     records = get_services().store.get_citations_for_wiki(wiki_source)
@@ -320,7 +342,7 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
@@ -345,7 +367,7 @@ def wiki_status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_list() -> dict[str, Any]:
     """List wiki pages with metadata."""
     if not cfg.wiki:
@@ -363,7 +385,7 @@ def wiki_list() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_read(slug: str) -> dict[str, Any]:
     """Read a wiki page's content + frontmatter by slug."""
     if not cfg.wiki:
@@ -379,7 +401,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
     return {"command": "wiki_read", **asdict(result)}
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_build() -> dict[str, Any]:
     """Build the concept and entity wiki across all ingested sources."""
     if not cfg.wiki:
@@ -389,7 +411,7 @@ def wiki_build() -> dict[str, Any]:
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     if not cfg.wiki:
@@ -399,7 +421,7 @@ def wiki_update() -> dict[str, Any]:
     return {"command": "wiki_update", **run_full_build(cfg)}
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
     if not cfg.wiki:
@@ -409,7 +431,7 @@ def wiki_synthesize() -> dict[str, Any]:
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
@@ -664,7 +686,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
     return remove_model_data(model, source=src).model_dump()
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_drafts_list() -> dict[str, Any]:
     """List pending wiki drafts (read-only; accept/reject are CLI-only)."""
     from lilbee.wiki.drafts import list_drafts
@@ -678,7 +700,7 @@ def wiki_drafts_list() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool_if(cfg.wiki)
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Unified diff of a draft against its published counterpart."""
     from lilbee.wiki.drafts import diff_draft

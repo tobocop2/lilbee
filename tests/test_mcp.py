@@ -1429,13 +1429,45 @@ class TestCatalogBrowseMcp:
 class TestToolsSchemaSize:
     """Schema budget: keep the per-request OpenAI tools schema under a ceiling
     so any model with ``n_ctx >= ~16K`` has room for system + history + content
-    after the tools schema is rendered. The first showstopper bug here was
-    bb-t1tq (a 20K-token schema on Qwen3-8B making 51% of the context
-    unusable). A higher number doesn't fail builds; it forces a deliberate
-    bump of the ceiling that future reviewers can scrutinise.
+    after the tools schema is rendered. bb-t1tq filed a 20K-token schema on
+    Qwen3-8B making 51% of the context unusable; trimming docstrings and
+    gating the wiki / crawler tools dropped that significantly. A higher
+    number doesn't fail builds, it forces a deliberate cap bump that
+    reviewers can scrutinise.
     """
 
-    async def test_total_tools_schema_under_budget(self) -> None:
+    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
+        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
+        returns a pass-through so the function stays importable but isn't on
+        the MCP wire.
+        """
+        from lilbee.mcp_server import _tool_if
+
+        def _f() -> None: ...
+
+        gated_off = _tool_if(False)(_f)
+        assert gated_off is _f
+
+        gated_on = _tool_if(True)(_f)
+        # mcp.tool() wraps via FastMCP; the result still callable but identity
+        # differs from the raw function (decorator installed it on the server).
+        assert callable(gated_on)
+
+    async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
+        """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
+        from lilbee.core.config import cfg as _cfg
+        from lilbee.mcp_server import mcp as _mcp
+
+        assert _cfg.wiki is False
+        tools = await _mcp.list_tools()
+        wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
+        assert wiki_tool_names == []
+
+    async def test_default_tools_schema_under_budget(self) -> None:
+        """Default schema (wiki off, crawler off unless the extra is installed)
+        must stay under 9 KB so small-context models keep room for the user's
+        actual content.
+        """
         import json as _json
 
         from lilbee.mcp_server import mcp as _mcp
@@ -1446,12 +1478,9 @@ class TestToolsSchemaSize:
             for t in tools
         ]
         total_bytes = len(_json.dumps(payload))
-        # ~10 KB today; cap at 13 KB to absorb new tools / small param edits
-        # without rubber-stamping schema bloat. Bumping the cap is a deliberate
-        # decision the reviewer should see.
-        ceiling = 13_000
+        ceiling = 9_000
         assert total_bytes <= ceiling, (
-            f"OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}. "
-            "Each MCP tool's docstring becomes the schema description; trim "
-            "verbose Args sections before bumping the cap."
+            f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
+            f"{ceiling}. Each MCP tool's docstring becomes the schema "
+            "description; trim verbose Args sections before bumping the cap."
         )
