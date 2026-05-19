@@ -1670,7 +1670,7 @@ requires-dist = [
     { name = "spacy", marker = "extra == 'graph'", specifier = ">=3.8" },
     { name = "textual", specifier = ">=0.75" },
     { name = "tiktoken" },
-    { name = "transformers", specifier = ">=5.8.1,<5.9" },
+    { name = "transformers", specifier = "==5.8.1" },
     { name = "tree-sitter-language-pack", specifier = ">=1.8.0,<2.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
