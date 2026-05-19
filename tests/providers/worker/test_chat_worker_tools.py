@@ -412,6 +412,78 @@ def test_session_chat_invalid_num_predict_uses_default_reserve(
     assert _DEFAULT_RESPONSE_BUDGET == 1024  # contract anchor
 
 
+def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch, tmp_path) -> None:
+    """When pre-flight estimates undercount and llama-cpp raises its own
+    ``Requested tokens (N) exceed context window`` ValueError mid-render,
+    the worker translates that into our ``ContextWindowExceededError`` so
+    the route layer surfaces a 400 ``context_length_exceeded`` instead of
+    a generic 500. (bb-1utt)
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _UndercountingLlama:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            # Underestimate: return one token per 10 bytes, so the pre-flight
+            # thinks even a huge system message fits the budget.
+            return list(range(len(data) // 10 + 1))
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise ValueError("Requested tokens (18690) exceed context window of 7168")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _UndercountingLlama())
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False,
+            options=None,
+            model="some/Gemma-4-26B-A4B-it-GGUF",
+            tools=None,
+            tool_choice=None,
+        )
+    assert "18690" in str(excinfo.value)
+    assert "7168" in str(excinfo.value)
+
+
+def test_session_chat_does_not_swallow_unrelated_value_errors(monkeypatch, tmp_path) -> None:
+    """A non-overflow ``ValueError`` from llama-cpp propagates unchanged."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _BrokenLlama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise ValueError("something else entirely")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _BrokenLlama())
+    with pytest.raises(ValueError, match="something else entirely"):
+        session.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False,
+            options=None,
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+
+
 def test_session_chat_subtracts_tools_overhead_from_budget(monkeypatch, tmp_path) -> None:
     """Tools schema cost is counted against the prompt budget."""
     from lilbee.providers.base import ContextWindowExceededError

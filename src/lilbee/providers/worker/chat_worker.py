@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -89,7 +90,17 @@ class _ChatSession:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
-        return llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+        try:
+            return llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+        except ValueError as exc:
+            requested = _parse_requested_tokens(str(exc))
+            if requested is None:
+                raise
+            raise ContextWindowExceededError.from_counts(
+                requested=requested,
+                available=int(llm.n_ctx()),
+                model=model or self._role_config.model_path.name,
+            ) from exc
 
     def _window_messages(
         self,
@@ -165,6 +176,20 @@ class _ChatSession:
 
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
+
+# llama-cpp raises this exact phrasing (see llama_cpp/llama.py) when the
+# rendered prompt + reserved generation budget exceeds n_ctx. Matching by the
+# numeric capture lets us re-raise as our typed exception when our pre-flight
+# estimate undercounted the chat-template inflation for tools / system.
+_CTX_OVERFLOW_PATTERN = re.compile(
+    r"[Rr]equested\s+tokens?\s*\(?(\d+)\)?\s+exceed[s]?\s+(?:the\s+)?context\s+window"
+)
+
+
+def _parse_requested_tokens(message: str) -> int | None:
+    """Extract the ``Requested tokens (N) exceed context window`` count, if any."""
+    match = _CTX_OVERFLOW_PATTERN.search(message)
+    return int(match.group(1)) if match else None
 
 
 def _coerce_finish_reason(raw: str | None) -> FinishReason:

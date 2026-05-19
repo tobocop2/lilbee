@@ -7,6 +7,7 @@ import json
 from lilbee.providers.worker.windowing import (
     WindowingOutcome,
     count_message_tokens,
+    count_tools_overhead,
     window_messages_to_budget,
 )
 
@@ -44,6 +45,28 @@ def _assistant_tool_call(call_id: str, name: str, args: dict) -> dict:
 
 def _tool_result(call_id: str, content: str) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+class TestCountToolsOverhead:
+    def test_returns_zero_when_no_tools(self) -> None:
+        """No tools means no overhead, regardless of chat template."""
+        assert count_tools_overhead(None, _bytes_tokenizer) == 0
+        assert count_tools_overhead([], _bytes_tokenizer) == 0
+
+    def test_inflates_estimate_to_account_for_template_rendering(self) -> None:
+        """The estimate is intentionally larger than the raw JSON dump to
+        cover the model chat template's Jinja boilerplate (descriptions,
+        ``<tools>`` wrapping, schema fields). Pre-flight must be conservative
+        so first-request overflow on small-context models surfaces as a
+        clean 400 instead of a llama-cpp ValueError. (bb-1utt)
+        """
+        import json
+
+        tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+        raw = len(_bytes_tokenizer(json.dumps(tools).encode("utf-8")))
+        estimate = count_tools_overhead(tools, _bytes_tokenizer)
+        assert estimate > raw, "estimate must exceed raw JSON byte-count"
+        assert estimate >= raw + 256, "estimate must include the preamble allowance"
 
 
 class TestCountMessageTokens:
