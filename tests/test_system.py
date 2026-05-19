@@ -107,17 +107,17 @@ class TestChatCtxTargetForTotalBytes:
     def test_under_16gb_stays_at_8k_floor(self):
         assert chat_ctx_target_for_total_bytes(_gib(4)) == 8192
         assert chat_ctx_target_for_total_bytes(_gib(8)) == 8192
-        assert chat_ctx_target_for_total_bytes(_gib(15.99)) == 8192
+        assert chat_ctx_target_for_total_bytes(16 * 1024**3 - 1) == 8192
 
     def test_16_to_32gb_picks_12k(self):
         assert chat_ctx_target_for_total_bytes(_gib(16)) == 12288
         assert chat_ctx_target_for_total_bytes(_gib(24)) == 12288
-        assert chat_ctx_target_for_total_bytes(_gib(31.99)) == 12288
+        assert chat_ctx_target_for_total_bytes(32 * 1024**3 - 1) == 12288
 
     def test_32_to_64gb_picks_16k(self):
         assert chat_ctx_target_for_total_bytes(_gib(32)) == 16384
         assert chat_ctx_target_for_total_bytes(_gib(48)) == 16384
-        assert chat_ctx_target_for_total_bytes(_gib(63.99)) == 16384
+        assert chat_ctx_target_for_total_bytes(64 * 1024**3 - 1) == 16384
 
     def test_64gb_and_above_picks_24k(self):
         assert chat_ctx_target_for_total_bytes(_gib(64)) == 24576
@@ -127,3 +127,4 @@ class TestChatCtxTargetForTotalBytes:
     def test_zero_or_negative_returns_floor(self):
         assert chat_ctx_target_for_total_bytes(0) == 8192
         assert chat_ctx_target_for_total_bytes(-1) == 8192
+        assert chat_ctx_target_for_total_bytes(1) == 8192
