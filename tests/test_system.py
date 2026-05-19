@@ -140,3 +140,12 @@ class TestScaledChatCtxTargetDefault:
     def test_psutil_failure_falls_back_to_floor(self):
         with mock.patch("lilbee.core.system._read_total_memory_bytes", return_value=0):
             assert scaled_chat_ctx_target_default() == 8192
+
+    def test_read_total_memory_bytes_returns_zero_on_psutil_failure(self):
+        # Drive the real except-branch in _read_total_memory_bytes: psutil.virtual_memory()
+        # raises -> wrapper returns 0 -> scaled default lands on the floor.
+        with mock.patch("psutil.virtual_memory", side_effect=RuntimeError("boom")):
+            from lilbee.core.system import _read_total_memory_bytes
+
+            assert _read_total_memory_bytes() == 0
+            assert scaled_chat_ctx_target_default() == 8192
