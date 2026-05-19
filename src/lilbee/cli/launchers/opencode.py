@@ -22,7 +22,7 @@ _PICKER_STATE_RECENT_CAP = 10
 
 
 def _opencode_config_path() -> Path:
-    """Return ``~/.config/opencode/opencode.json``, evaluated lazily for tests."""
+    """Path to opencode's persistent user config."""
     return Path.home() / ".config" / "opencode" / "opencode.json"
 
 
@@ -141,9 +141,13 @@ def _merge_lilbee_provider_into_config(
             loaded = None
         if isinstance(loaded, dict):
             existing = loaded
-    providers = existing.setdefault("provider", {})
-    if isinstance(providers, dict):
-        providers[_OPENCODE_PROVIDER_ID] = provider_block
+    providers = existing.get("provider")
+    if not isinstance(providers, dict):
+        # ``provider`` is missing or the wrong shape; reset so the merge writes
+        # a valid provider section rather than silently dropping the lilbee entry.
+        providers = {}
+        existing["provider"] = providers
+    providers[_OPENCODE_PROVIDER_ID] = provider_block
     config_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
     tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")

@@ -381,6 +381,42 @@ def test_launch_opencode_recovers_from_corrupt_existing_config(tmp_path):
     assert "lilbee" in payload["provider"]
 
 
+def test_launch_opencode_overwrites_non_dict_provider_field(tmp_path):
+    """If the existing config has ``provider`` as the wrong shape (string,
+    list, null), the merge resets it to a dict rather than silently dropping
+    the lilbee entry.
+    """
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "plugin": [],
+                "provider": "this should be a dict but isn't",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+
+    assert result.exit_code == 0
+    merged = json.loads(config_path.read_text(encoding="utf-8"))
+    assert isinstance(merged["provider"], dict)
+    assert "lilbee" in merged["provider"]
+    # Other top-level keys still survive the rewrite.
+    assert merged["plugin"] == []
+
+
 def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"

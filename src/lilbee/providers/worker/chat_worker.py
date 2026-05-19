@@ -211,13 +211,8 @@ def _translate_stream_overflow(
     model_ref: str | None,
     role_config: RoleConfig,
 ) -> Any:
-    """Wrap a llama-cpp streaming generator so the deferred overflow ``ValueError``
-    surfaces as the typed ``ContextWindowExceededError`` instead.
-
-    llama-cpp returns the chat-completion generator unadvanced; the overflow
-    check fires on the first ``next()`` call once the parent starts iterating.
-    Without this wrapper that ``ValueError`` reaches ``_handle_chat_streaming``
-    and serialises as a generic worker error (the bb-1utt 500 bug).
+    """Translate llama-cpp's deferred context-overflow ``ValueError`` from a
+    streaming generator into ``ContextWindowExceededError``.
     """
     try:
         yield from response_iter

@@ -10,7 +10,7 @@ from lilbee.server.chat_completions_api.models import (
     CompletionsStreamChunk,
     CompletionsStreamDelta,
 )
-from lilbee.server.chat_completions_api.streaming import encode_completions_sse
+from lilbee.server.chat_completions_api.streaming import _KEEPALIVE_FRAME, encode_completions_sse
 
 
 def _chunk(
@@ -176,8 +176,9 @@ class TestEncodeCompletionsSse:
             yield _chunk(delta=CompletionsStreamDelta(content="finally"))
 
         body = await _drain(encode_completions_sse(_slow_chunks()))
+        keepalive = _KEEPALIVE_FRAME.decode()
         text = body.decode()
-        assert ": keepalive\n\n" in text, "keepalive frame missing during idle gap"
-        assert text.count(": keepalive\n\n") >= 2
+        assert keepalive in text, "keepalive frame missing during idle gap"
+        assert text.count(keepalive) >= 2
         assert "finally" in text
         assert text.endswith("data: [DONE]\n\n")
