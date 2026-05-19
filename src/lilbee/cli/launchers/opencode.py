@@ -21,6 +21,11 @@ _OPENCODE_CONFIG_ENV_VAR = "OPENCODE_CONFIG_CONTENT"
 _PICKER_STATE_RECENT_CAP = 10
 
 
+def _opencode_config_path() -> Path:
+    """Return ``~/.config/opencode/opencode.json``, evaluated lazily for tests."""
+    return Path.home() / ".config" / "opencode" / "opencode.json"
+
+
 class PickerEntry(TypedDict):
     providerID: str
     modelID: str
@@ -114,6 +119,37 @@ def _atomic_write_json(path: Path, payload: PickerState) -> None:
     os.replace(tmp, path)
 
 
+def _merge_lilbee_provider_into_config(
+    *,
+    config_path: Path,
+    provider_block: dict[str, Any],
+) -> None:
+    """Write the lilbee provider into opencode's persistent config file.
+
+    Picker rendering is driven by the on-disk ``opencode.json``; the
+    env-var injection alone is not enough for opencode to render a
+    section header for our provider. Existing providers (ollama, etc.)
+    and any other top-level config keys (``plugin``, ``$schema``) are
+    preserved; only ``provider.lilbee`` is replaced. The file is created
+    if absent.
+    """
+    existing: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
+    if config_path.exists():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            existing = loaded
+    providers = existing.setdefault("provider", {})
+    if isinstance(providers, dict):
+        providers[_OPENCODE_PROVIDER_ID] = provider_block
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    os.replace(tmp, config_path)
+
+
 class OpencodeLauncher:
     """``Launcher`` implementation for opencode (https://opencode.ai/)."""
 
@@ -132,6 +168,11 @@ class OpencodeLauncher:
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,
             model_refs=model_refs,
+        )
+        provider_block = block["provider"][_OPENCODE_PROVIDER_ID]
+        _merge_lilbee_provider_into_config(
+            config_path=_opencode_config_path(),
+            provider_block=provider_block,
         )
         env = {**os.environ, _OPENCODE_CONFIG_ENV_VAR: json.dumps(block)}
         return ([], env)

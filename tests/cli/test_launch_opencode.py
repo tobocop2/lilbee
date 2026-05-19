@@ -294,6 +294,93 @@ def test_launch_opencode_picker_state_ignores_non_dict_root(tmp_path):
     assert state["recent"][0]["modelID"] == _CHAT_REF
 
 
+def test_launch_opencode_writes_lilbee_provider_to_persistent_config(tmp_path):
+    """Picker rendering needs the provider in opencode's on-disk config file,
+    not just the env var. The launcher must merge our provider into
+    ``~/.config/opencode/opencode.json`` so a "lilbee" section appears
+    alongside the user's other configured providers (ollama, etc.).
+    """
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "plugin": ["user-custom-plugin"],
+                "provider": {
+                    "ollama": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "Ollama (local)",
+                        "options": {"baseURL": "http://localhost:11434/v1"},
+                        "models": {"qwen3-coder:30b": {"name": "qwen3-coder:30b"}},
+                    }
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        runner.invoke(app, ["launch", "opencode"])
+
+    merged = json.loads(config_path.read_text(encoding="utf-8"))
+    # User's other providers and top-level settings survive.
+    assert merged["plugin"] == ["user-custom-plugin"]
+    assert merged["provider"]["ollama"]["name"] == "Ollama (local)"
+    # Lilbee section now appears with the current launch's port + token.
+    lilbee = merged["provider"]["lilbee"]
+    assert lilbee["options"]["baseURL"] == f"http://127.0.0.1:{_PORT}/v1"
+    assert lilbee["options"]["apiKey"] == _TOKEN
+    assert _CHAT_REF in lilbee["models"]
+
+
+def test_launch_opencode_creates_config_file_when_absent(tmp_path):
+    """When the user has no existing opencode.json, the launcher creates it."""
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    assert not config_path.exists()
+
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        runner.invoke(app, ["launch", "opencode"])
+
+    assert config_path.exists()
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "lilbee" in payload["provider"]
+
+
+def test_launch_opencode_recovers_from_corrupt_existing_config(tmp_path):
+    """A garbled existing opencode.json is overwritten with a minimal valid
+    config carrying the lilbee provider; the launcher doesn't crash.
+    """
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("not json", encoding="utf-8")
+
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 0
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "lilbee" in payload["provider"]
+
+
 def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
