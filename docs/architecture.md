@@ -262,6 +262,33 @@ Each active role spawns a subprocess. Memory cost: ~50 MB Python overhead per wo
 
 First-call latency per role is the spawn + model-load cost: 1–3 s on Apple Silicon, longer on cold disk. The TUI surfaces this via spawn notifications wired through `Services.add_pool_listener` (see `cli/tui/app.py`), and `cfg.worker_pool_eager_start` opts into amortizing the cost at TUI startup.
 
+### Chat context-window management
+
+The chat worker windows the request prompt to fit the loaded model's
+`n_ctx` before inference. Two estimates are subtracted from the budget:
+`_DEFAULT_RESPONSE_BUDGET` (1024 tokens for the response), and a
+chat-template-inflated tools-overhead figure.
+
+The tools-overhead figure (`count_tools_overhead`) does not tokenize the
+real rendered prompt (llama-cpp-python doesn't expose chat-template
+rendering as a tokenization step); it inflates the bare
+`json.dumps(tools)` token count by `_TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER`
+(1.5x) and adds `_TOOLS_TEMPLATE_PREAMBLE_TOKENS` (256). The multiplier
+is calibrated from observed rendering across Qwen3, Mistral, Gemma 4,
+GLM, and Llama 3 chat templates, which typically inflate the bare JSON
+by 1.3–1.7x once descriptions, `<tools>`/`# Tools` wrapping, and
+schema-field repetition are accounted for. 1.5 is the conservative
+middle. The preamble allowance covers the introductory text that most
+templates inject (e.g. "You may call one or more functions to assist
+with the user query.").
+
+The pre-flight is intentionally conservative: better to raise a clean
+400 `context_length_exceeded` than to reach llama-cpp's runtime
+`ValueError`. A safety net in `_ChatSession.chat` also catches that
+`ValueError` (matched by regex against llama-cpp's exact phrasing) and
+re-raises as `ContextWindowExceededError`, so the user-facing 400 still
+fires even when the inflated pre-flight is too optimistic.
+
 ---
 
 ## Search Pipeline

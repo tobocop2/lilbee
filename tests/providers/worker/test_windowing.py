@@ -53,20 +53,22 @@ class TestCountToolsOverhead:
         assert count_tools_overhead(None, _bytes_tokenizer) == 0
         assert count_tools_overhead([], _bytes_tokenizer) == 0
 
-    def test_inflates_estimate_to_account_for_template_rendering(self) -> None:
-        """The estimate is intentionally larger than the raw JSON dump to
-        cover the model chat template's Jinja boilerplate (descriptions,
-        ``<tools>`` wrapping, schema fields). Pre-flight must be conservative
-        so first-request overflow on small-context models surfaces as a
-        clean 400 instead of a llama-cpp ValueError. (bb-1utt)
+    def test_exact_formula_pins_multiplier_and_preamble(self) -> None:
+        """The estimate is ``int(raw * 1.5) + 256``. An accidental tweak to
+        either constant (or the formula shape) breaks this assertion, forcing
+        the change to be deliberate rather than a silent regression. (bb-1utt)
         """
         import json
 
+        from lilbee.providers.worker.windowing import (
+            _TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER,
+            _TOOLS_TEMPLATE_PREAMBLE_TOKENS,
+        )
+
         tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
         raw = len(_bytes_tokenizer(json.dumps(tools).encode("utf-8")))
-        estimate = count_tools_overhead(tools, _bytes_tokenizer)
-        assert estimate > raw, "estimate must exceed raw JSON byte-count"
-        assert estimate >= raw + 256, "estimate must include the preamble allowance"
+        expected = int(raw * _TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER) + _TOOLS_TEMPLATE_PREAMBLE_TOKENS
+        assert count_tools_overhead(tools, _bytes_tokenizer) == expected
 
 
 class TestCountMessageTokens:

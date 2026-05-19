@@ -71,20 +71,10 @@ def count_message_tokens(message: dict[str, Any], tokenize: Tokenizer) -> int:
 
 
 _TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER = 1.5
-"""Fudge factor for chat-template Jinja inflation of the tools schema.
-
-The model's chat template wraps the bare JSON tools list in family-specific
-markup (``<tools>...</tools>``, ``# Tools\n\n...``, etc.) and may inline tool
-descriptions / schema fields multiple times. Across the families lilbee
-supports, the rendered prompt is typically 1.3-1.7x the raw JSON dump. We use
-1.5 as a conservative middle and add a fixed preamble allowance so models
-with small ``n_ctx`` raise a clean 400 before the worker reaches the
-llama-cpp ``ValueError`` for over-budget prompts.
-"""
+"""Inflation factor for chat-template Jinja boilerplate around the tools schema."""
 
 _TOOLS_TEMPLATE_PREAMBLE_TOKENS = 256
-"""Fixed allowance for the chat-template's tools preamble (introductory text
-like 'You may call one or more functions to assist with the user query.')."""
+"""Fixed allowance for the chat-template's tools preamble."""
 
 
 def count_tools_overhead(tools: list[dict[str, Any]] | None, tokenize: Tokenizer) -> int:

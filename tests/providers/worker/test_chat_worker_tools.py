@@ -499,6 +499,51 @@ def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch,
     assert "7168" in str(excinfo.value)
 
 
+class TestParseRequestedTokens:
+    """Direct unit tests for ``_parse_requested_tokens`` so regex breakage on
+    an upstream llama-cpp wording change surfaces here, not in production. (bb-1utt)
+    """
+
+    def test_extracts_count_from_canonical_overflow_message(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert (
+            _parse_requested_tokens("Requested tokens (18690) exceed context window of 7168")
+            == 18690
+        )
+
+    def test_returns_none_for_unrelated_value_error(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("something else entirely") is None
+
+    def test_returns_none_for_empty_string(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("") is None
+
+    def test_does_not_match_batch_size_message(self) -> None:
+        """llama-cpp also raises ``ValueError: Requested tokens (N) exceed
+        batch size of M`` for a different upstream condition; that ValueError
+        should NOT be misclassified as context overflow.
+        """
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("Requested tokens (4096) exceed batch size of 512") is None
+
+    def test_finds_match_when_embedded_in_a_longer_traceback(self) -> None:
+        """Worker error wrappers may prepend module path / type names; the
+        regex must still find the canonical phrasing inside.
+        """
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        message = (
+            "ValueError: Requested tokens (12345) exceed context window of 4096\n"
+            "  at create_chat_completion"
+        )
+        assert _parse_requested_tokens(message) == 12345
+
+
 def test_session_chat_streaming_catches_deferred_overflow_and_reraises_typed(
     monkeypatch, tmp_path
 ) -> None:
