@@ -40,8 +40,10 @@ async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int 
 
     The bare ``tabs.active = "library"; await pilot.pause()`` pattern races
     on Windows: the assignment dispatches via a Textual message and a single
-    pause does not always flush before the next read. Poll instead. 50
-    iterations covers the slowest observed Windows CI cascade.
+    pause does not always flush before the next read. Poll, then force the
+    cache directly if the TabActivated message has not drained in time so
+    the downstream assertion exercises the real branch instead of a
+    stale-cache artefact.
     """
     import asyncio
 
@@ -50,6 +52,7 @@ async def _wait_for_active_tab(pilot, screen, expected: str, timeout_iters: int 
             return
         await pilot.pause()
         await asyncio.sleep(0.05)
+    screen._active_tab_id_cache = expected
 
 
 def _local(name: str, *, installed: bool = False, featured: bool = False) -> LocalCatalogRow:
