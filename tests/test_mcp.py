@@ -1424,3 +1424,34 @@ class TestCatalogBrowseMcp:
         with mock.patch("lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")):
             result = catalog_browse(task="embedding", featured=True)
         assert result == {"error": "bad filter"}
+
+
+class TestToolsSchemaSize:
+    """Schema budget: keep the per-request OpenAI tools schema under a ceiling
+    so any model with ``n_ctx >= ~16K`` has room for system + history + content
+    after the tools schema is rendered. The first showstopper bug here was
+    bb-t1tq (a 20K-token schema on Qwen3-8B making 51% of the context
+    unusable). A higher number doesn't fail builds; it forces a deliberate
+    bump of the ceiling that future reviewers can scrutinise.
+    """
+
+    async def test_total_tools_schema_under_budget(self) -> None:
+        import json as _json
+
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        payload = [
+            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            for t in tools
+        ]
+        total_bytes = len(_json.dumps(payload))
+        # ~10 KB today; cap at 13 KB to absorb new tools / small param edits
+        # without rubber-stamping schema bloat. Bumping the cap is a deliberate
+        # decision the reviewer should see.
+        ceiling = 13_000
+        assert total_bytes <= ceiling, (
+            f"OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}. "
+            "Each MCP tool's docstring becomes the schema description; trim "
+            "verbose Args sections before bumping the cap."
+        )
