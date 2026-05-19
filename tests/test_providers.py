@@ -584,6 +584,18 @@ class TestLlamaCppProvider:
         assert "type_k" not in kwargs
         assert "type_v" not in kwargs
 
+    def testapply_kv_cache_type_returns_early_for_f16(self) -> None:
+        """F16 is the implicit llama-cpp default; the function skips the type_k/type_v kwargs."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import _apply_kv_cache_type
+
+        kwargs: dict[str, object] = {}
+        with patch.object(cfg, "kv_cache_type", "f16"):
+            _apply_kv_cache_type(kwargs)
+        assert "type_k" not in kwargs
+        assert "type_v" not in kwargs
+
     def testload_llama_oom_retry_halves_embed_batch_sizes(self, models_dir: Path) -> None:
         """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx.
 
@@ -649,6 +661,8 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp.provider import load_llama
 
+        prior_kv = cfg.kv_cache_type
+        prior_fa = cfg.flash_attention
         cfg.num_ctx = 4096
         cfg.flash_attention = "0"
         cfg.kv_cache_type = "q8_0"
@@ -659,8 +673,8 @@ class TestLlamaCppProvider:
                 assert kwargs["type_k"] == _llc.GGML_TYPE_Q8_0
                 assert kwargs["type_v"] == _llc.GGML_TYPE_Q8_0
         finally:
-            cfg.kv_cache_type = "f16"
-            cfg.flash_attention = "auto"
+            cfg.kv_cache_type = prior_kv
+            cfg.flash_attention = prior_fa
 
     def testload_llama_unrelated_typeerror_propagates(self, models_dir: Path) -> None:
         """A TypeError that isn't about flash_attn passes through unchanged."""
@@ -1143,6 +1157,22 @@ class TestRoutingProvider:
         assert list(result) == ["hello", " world"]  # type: ignore[arg-type]
         kwargs = mock_litellm.chat.call_args.kwargs
         assert kwargs["stream"] is True
+
+    def test_remote_chat_does_not_touch_n_ctx_resolution(self) -> None:
+        """Cloud chat refs bypass ``_resolve_chat_ctx`` entirely.
+
+        n_ctx / KV-cache sizing is meaningless for SDK-backed providers;
+        if a future refactor accidentally routes a remote ref through the
+        llama-cpp ctx picker we want this test to fail.
+        """
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.chat.return_value = "ok"
+        rp._sdk_provider = mock_litellm
+
+        with mock.patch("lilbee.providers.llama_cpp.provider._resolve_chat_ctx") as resolve_ctx:
+            rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
+        resolve_ctx.assert_not_called()
 
     def test_routes_vision_ocr_to_llama_cpp_for_native_ref(self) -> None:
         """Native GGUF vision refs reach the llama-cpp vision worker pool."""
