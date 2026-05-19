@@ -59,6 +59,7 @@ from lilbee.data.store import scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
+from lilbee.retrieval.query.history_window import windowed_history
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
     EventType,
@@ -69,7 +70,15 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
 
-_MAX_HISTORY_MESSAGES = 200
+_HISTORY_TOKEN_BUDGET_FRACTION = 0.5
+"""Fraction of ``cfg.chat_n_ctx_target`` reserved for prior conversation history.
+
+The other half of the working context is for the system prompt, the current
+turn's RAG context (~8 chunks), the user question, and reasoning headroom.
+The windower drops oldest user/assistant pairs once history exceeds this
+fraction so the assembled prompt never approaches ``n_ctx`` and llama-cpp
+never errors with "Requested tokens exceed context window."
+"""
 
 # Treat the user as "still at the bottom" when within this many lines so a tiny
 # stray scroll doesn't disable auto-follow during streaming.
@@ -1155,9 +1164,14 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
-        """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
-        if len(self._history) > _MAX_HISTORY_MESSAGES:
-            self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
+        """Window history to a token budget. Caller must hold _history_lock.
+
+        The budget is a fraction of ``cfg.chat_n_ctx_target`` so the
+        assembled prompt (system + history + RAG + user) stays under the
+        loaded model's ``n_ctx`` regardless of how many turns have run.
+        """
+        budget = int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
+        self._history[:] = windowed_history(self._history, max_tokens=budget)
 
     def _scroll_to_bottom(self) -> None:
         log_widget = self._chat_log
