@@ -1439,19 +1439,25 @@ class TestToolsSchemaSize:
     def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
         """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
         returns a pass-through so the function stays importable but isn't on
-        the MCP wire.
+        the MCP wire. Cleans up after itself so the test doesn't pollute the
+        shared FastMCP server with a sentinel tool.
         """
-        from lilbee.mcp_server import _tool_if
+        from lilbee.mcp_server import _tool_if, mcp as _mcp
 
-        def _f() -> None: ...
+        sentinel_name = "_schema_size_test_sentinel"
 
-        gated_off = _tool_if(False)(_f)
-        assert gated_off is _f
+        def _schema_size_test_sentinel() -> None: ...
 
-        gated_on = _tool_if(True)(_f)
-        # mcp.tool() wraps via FastMCP; the result still callable but identity
-        # differs from the raw function (decorator installed it on the server).
-        assert callable(gated_on)
+        gated_off = _tool_if(False)(_schema_size_test_sentinel)
+        assert gated_off is _schema_size_test_sentinel
+        assert sentinel_name not in _mcp._tool_manager._tools
+
+        gated_on = _tool_if(True)(_schema_size_test_sentinel)
+        try:
+            assert callable(gated_on)
+            assert sentinel_name in _mcp._tool_manager._tools
+        finally:
+            _mcp._tool_manager._tools.pop(sentinel_name, None)
 
     async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
         """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
@@ -1465,8 +1471,9 @@ class TestToolsSchemaSize:
 
     async def test_default_tools_schema_under_budget(self) -> None:
         """Default schema (wiki off, crawler off unless the extra is installed)
-        must stay under 9 KB so small-context models keep room for the user's
-        actual content.
+        must stay under 7 KB so small-context models keep room for the user's
+        actual content. _strip_schema_noise removes auto-generated title
+        fields and dedents descriptions, hitting ~5.7 KB today.
         """
         import json as _json
 
@@ -1478,9 +1485,24 @@ class TestToolsSchemaSize:
             for t in tools
         ]
         total_bytes = len(_json.dumps(payload))
-        ceiling = 9_000
+        ceiling = 7_000
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
             f"{ceiling}. Each MCP tool's docstring becomes the schema "
             "description; trim verbose Args sections before bumping the cap."
         )
+
+    async def test_no_title_noise_in_input_schema(self) -> None:
+        """``_strip_schema_noise`` keeps FastMCP-auto-generated title fields
+        off the wire. Adding a tool whose schema contains a title fails here.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            assert "title" not in t.inputSchema, f"{t.name}: top-level title leaked into schema"
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "title" not in pdef, (
+                        f"{t.name}.{pname}: per-property title leaked into schema"
+                    )

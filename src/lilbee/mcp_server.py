@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import textwrap
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -711,6 +712,34 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     except FileNotFoundError as exc:
         return _error(str(exc))
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
+
+
+def _strip_schema_noise() -> None:
+    """Trim auto-generated noise from every registered tool's schema before
+    it ships on the OpenAI tools wire for each chat request.
+
+    Drops:
+    - FastMCP/Pydantic ``title`` keys (per-schema + per-property). Tools the
+      model picks by name don't need a separate display title.
+    - Triple-quoted docstring indentation on the tool description. The model
+      sees a flat sentence instead of multi-line text with 4-space prefixes.
+
+    Runs once after every ``@mcp.tool()`` decoration in this module has fired.
+    """
+    for info in mcp._tool_manager._tools.values():
+        params = info.parameters
+        if isinstance(params, dict):
+            params.pop("title", None)
+            properties = params.get("properties")
+            if isinstance(properties, dict):
+                for prop in properties.values():
+                    if isinstance(prop, dict):
+                        prop.pop("title", None)
+        if isinstance(info.description, str):
+            info.description = textwrap.dedent(info.description).strip()
+
+
+_strip_schema_noise()
 
 
 def main() -> None:
