@@ -508,7 +508,7 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_TOP_K_SAMPLING` | `40` | Top-k sampling |
 | `LILBEE_REPEAT_PENALTY` | `1.1` | Repetition penalty |
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
-| `LILBEE_CHAT_N_CTX_TARGET` | `8192` | Working context size the dynamic picker aims for. Fits a RAG turn (8 chunks + reasoning headroom) with room to spare; raise for long-document chat |
+| `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `≥64 GiB → 24576`. 8192 is the floor on smaller hosts. The picker still clamps the result to the model's training context and available memory at worker start, so this is an aim, not a guarantee. Set explicitly to override |
 | `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
