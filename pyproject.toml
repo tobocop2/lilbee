@@ -53,7 +53,12 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
     "numpy",
-    "transformers>=4.50.0",
+    # Pinned: HF is mid-refactor of `recursive_parse`'s schema DSL
+    # (PR huggingface/transformers#45847 renames `response_schema` →
+    # `response_template` with a new regions-of-text shape). Holding on
+    # 5.8.x until that lands so a casual minor-version bump can't break
+    # tool-call extraction.
+    "transformers>=5.8.1,<5.9",
 ]
 
 [project.optional-dependencies]

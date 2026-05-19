@@ -1,147 +1,44 @@
-"""Response schemas keyed by detected ``ModelFamily``."""
+"""Response schemas keyed by detected ``ModelFamily``.
+
+Each schema lives as a JSON file in ``schemas/`` next to this module and is
+consumed by ``transformers.utils.chat_parsing_utils.recursive_parse``. New
+families: drop a ``schemas/{family}.json`` file and add the enum value +
+detection marker. No Python edits to the schema bodies themselves.
+
+Long-term: llama.cpp's ``common/chat-auto-parser`` introspects the GGUF
+chat template and synthesises a PEG parser at runtime, so per-family
+schemas disappear entirely. That code is not reachable from
+``llama-cpp-python`` today (the autoparser lives in llama.cpp's ``common/``
+directory, outside ``libllama``'s C ABI). When a binding appears,
+``src/lilbee/providers/worker/response_parser/`` gets deleted in one
+commit. Until then we ship the small set below.
+"""
 
 from __future__ import annotations
 
+import json
+from importlib import resources
 from typing import Any
 
 from lilbee.providers.worker.response_parser.families import ModelFamily
 
 ResponseSchema = dict[str, Any]
 
-
-# Qwen3 instruct family: emits ``<tool_call>{"name":..., "arguments":...}</tool_call>``
-# blocks, optionally preceded by a ``<think>...</think>`` reasoning section.
-_QWEN3_SCHEMA: ResponseSchema = {
-    "type": "object",
-    "properties": {
-        "role": {"const": "assistant"},
-        "thinking": {"type": "string", "x-regex": r"<think>\s*(.*?)\s*</think>"},
-        "content": {
-            "type": "string",
-            "x-regex-substitutions": [
-                [r"<think>.*?</think>", ""],
-                [r"<tool_call>.*?</tool_call>", ""],
-            ],
-            "x-regex": r"^\s*(.*?)\s*$",
-        },
-        "tool_calls": {
-            "x-regex-iterator": r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
-            "type": "array",
-            "items": {
-                "type": "object",
-                "x-parser": "json",
-                "properties": {
-                    "name": {"type": "string"},
-                    "arguments": {"type": "object", "additionalProperties": True},
-                },
-            },
-        },
-    },
+_SCHEMA_FILES: dict[ModelFamily, str] = {
+    ModelFamily.QWEN3: "qwen3.json",
+    ModelFamily.QWEN3_CODER: "qwen3_coder.json",
+    ModelFamily.MISTRAL: "mistral.json",
+    ModelFamily.GEMMA4: "gemma4.json",
 }
 
 
-# Qwen3-Coder family: uses XML for the tool body. ``<tool_call><function=NAME>
-# <parameter=KEY>VALUE</parameter>...</function></tool_call>``. Adapted from
-# the upstream HuggingFace test schema (see module docstring).
-_QWEN3_CODER_SCHEMA: ResponseSchema = {
-    "type": "object",
-    "properties": {
-        "role": {"const": "assistant"},
-        "thinking": {"type": "string", "x-regex": r"<think>\s*(.*?)\s*</think>"},
-        "content": {
-            "type": "string",
-            "x-regex-substitutions": [
-                [r"<think>.*?</think>", ""],
-                [r"<tool_call>.*?</tool_call>", ""],
-            ],
-            "x-regex": r"^\s*(.*?)\s*$",
-        },
-        "tool_calls": {
-            "x-regex-iterator": r"<tool_call>\s*(.*?)\s*</tool_call>",
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "x-regex": r"<function=(\w+)>"},
-                    "arguments": {
-                        "type": "object",
-                        "x-regex-key-value": (
-                            r"<parameter=(?P<key>\w+)>\n?(?P<value>.*?)\n?</parameter>"
-                        ),
-                        "additionalProperties": {
-                            "x-parser": "json",
-                            "x-parser-args": {"allow_non_json": True},
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
+def _load(filename: str) -> ResponseSchema:
+    """Read one schema JSON file from the ``schemas/`` package directory."""
+    text = resources.files(__package__).joinpath("schemas", filename).read_text("utf-8")
+    schema: ResponseSchema = json.loads(text)
+    return schema
 
 
-# Mistral family: emits ``[TOOL_CALLS] [{"name":..., "arguments":...}]`` after
-# any text content. The tool_calls section is a single JSON array.
-_MISTRAL_SCHEMA: ResponseSchema = {
-    "type": "object",
-    "properties": {
-        "role": {"const": "assistant"},
-        "content": {"type": "string", "x-regex": r"^(.*?)(?:\[TOOL_CALLS\]|$)"},
-        "tool_calls": {
-            "type": "array",
-            "x-regex": r"\[TOOL_CALLS\]\s*(\[.*\])",
-            "x-parser": "json",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "arguments": {"type": "object", "additionalProperties": True},
-                },
-            },
-        },
-    },
-}
-
-
-# Gemma 4 family: emits ``<|tool_call>call:NAME{...}<tool_call|>`` blocks with
-# the model's custom JSON dialect. ``x-parser: "gemma4-tool-call"`` is a
-# built-in HF parser that translates the dialect to standard JSON. Adapted
-# from the upstream HuggingFace test schema (see module docstring).
-_GEMMA4_SCHEMA: ResponseSchema = {
-    "type": "object",
-    "properties": {
-        "role": {"const": "assistant"},
-        "thinking": {"type": "string", "x-regex": r"<\|channel\>thought\n(.*?)\<channel\|\>"},
-        "content": {
-            "type": "string",
-            "x-regex": r"(?:<channel\|\>)?((?:(?!<\|tool_call\>).)*)",
-        },
-        "tool_calls": {
-            "x-regex-iterator": r"<\|tool_call>(.*?)<tool_call\|>",
-            "type": "array",
-            "items": {
-                "type": "object",
-                "x-regex": r"call\:(?P<name>\w+)(?P<arguments>\{.*\})",
-                "properties": {
-                    "name": {"type": "string"},
-                    "arguments": {
-                        "type": "object",
-                        "x-parser": "gemma4-tool-call",
-                        "additionalProperties": True,
-                    },
-                },
-            },
-        },
-    },
-}
-
-
-# Response schemas indexed by detected model family. ``ModelFamily.UNKNOWN``
-# has no entry on purpose: when detection cannot classify the loaded model,
-# tool extraction is skipped and the raw output is returned as-is.
 SCHEMAS: dict[ModelFamily, ResponseSchema] = {
-    ModelFamily.QWEN3: _QWEN3_SCHEMA,
-    ModelFamily.QWEN3_CODER: _QWEN3_CODER_SCHEMA,
-    ModelFamily.MISTRAL: _MISTRAL_SCHEMA,
-    ModelFamily.GEMMA4: _GEMMA4_SCHEMA,
+    family: _load(filename) for family, filename in _SCHEMA_FILES.items()
 }

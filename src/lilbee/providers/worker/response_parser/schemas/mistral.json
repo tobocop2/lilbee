@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "content": {
+      "type": "string",
+      "x-regex": "^(.*?)(?:\\[TOOL_CALLS\\]|$)"
+    },
+    "tool_calls": {
+      "type": "array",
+      "x-regex": "\\[TOOL_CALLS\\]\\s*(\\[.*\\])",
+      "x-parser": "json",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}
