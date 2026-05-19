@@ -62,3 +62,19 @@ def chat_ctx_target_for_total_bytes(total_bytes: int) -> int:
         if total_bytes >= threshold:
             return target
     return _CTX_TIER_FLOOR
+
+
+def _read_total_memory_bytes() -> int:
+    """Total system RAM in bytes, or 0 when introspection is unavailable."""
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        # psutil import or platform read failed; the caller falls back to the floor.
+        return 0
+
+
+def scaled_chat_ctx_target_default() -> int:
+    """Pick a chat_n_ctx_target from this host's total RAM at config-load time."""
+    return chat_ctx_target_for_total_bytes(_read_total_memory_bytes())

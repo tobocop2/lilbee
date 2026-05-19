@@ -10,6 +10,7 @@ from lilbee.core.system import (
     default_data_dir,
     find_local_root,
     is_ignored_dir,
+    scaled_chat_ctx_target_default,
 )
 
 
@@ -128,3 +129,14 @@ class TestChatCtxTargetForTotalBytes:
         assert chat_ctx_target_for_total_bytes(0) == 8192
         assert chat_ctx_target_for_total_bytes(-1) == 8192
         assert chat_ctx_target_for_total_bytes(1) == 8192
+
+
+class TestScaledChatCtxTargetDefault:
+    def test_reads_total_memory_and_tiers(self):
+        # 40 GiB host -> 16384 from the tier table.
+        with mock.patch("lilbee.core.system._read_total_memory_bytes", return_value=40 * 1024**3):
+            assert scaled_chat_ctx_target_default() == 16384
+
+    def test_psutil_failure_falls_back_to_floor(self):
+        with mock.patch("lilbee.core.system._read_total_memory_bytes", return_value=0):
+            assert scaled_chat_ctx_target_default() == 8192
