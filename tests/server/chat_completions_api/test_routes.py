@@ -692,8 +692,19 @@ class TestAuth:
 
 
 class TestBusy:
-    async def test_busy_backend_returns_429(self, services_with_chat_model, _auth_token):
-        # Pre-acquire the chat lock so the second request sees it held.
+    async def test_busy_backend_returns_429_only_after_wait_timeout(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The route holds the request on the chat lock up to the configured
+        timeout before returning 429. Verifies the wait-then-429 contract that
+        replaced the immediate-bounce behaviour. (bb-2x6j)
+        """
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
+
+        # Tight timeout so the test runs fast; the production default is 60s.
+        monkeypatch.setattr(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05)
+
+        # Pre-acquire the chat lock so the route sees it held.
         lock = chat_lock()
         await lock.acquire()
         try:

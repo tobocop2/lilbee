@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 
 from lilbee.server.chat_completions_api.models import (
@@ -120,3 +121,63 @@ class TestEncodeCompletionsSse:
         )
         first_frame = body.decode().split("\n\n")[0]
         assert '"finish_reason":"stop"' in first_frame
+
+    async def test_pending_task_is_cancelled_when_consumer_closes_during_wait(
+        self, monkeypatch
+    ) -> None:
+        """The finally cleanup cancels a still-pending ``__anext__`` task when
+        the consumer closes the encoder while it's mid-wait on a slow upstream.
+        Verifies the awaitable doesn't leak on client disconnect.
+        """
+        import asyncio as _asyncio
+
+        from lilbee.server.chat_completions_api import streaming as streaming_mod
+
+        # Keepalive way longer than the test runs so the wait() block is the
+        # one suspended when we aclose.
+        monkeypatch.setattr(streaming_mod, "_KEEPALIVE_INTERVAL_S", 5.0)
+        cancelled = _asyncio.Event()
+
+        async def _never_yields() -> AsyncIterator[CompletionsStreamChunk]:
+            try:
+                await _asyncio.sleep(3600)
+            except _asyncio.CancelledError:
+                cancelled.set()
+                raise
+            yield _chunk(delta=CompletionsStreamDelta(content="never"))  # pragma: no cover
+
+        encoder = encode_completions_sse(_never_yields())
+        consumer = _asyncio.create_task(encoder.__anext__())
+        await _asyncio.sleep(0.02)  # let the encoder enqueue the pending __anext__
+        consumer.cancel()
+        with contextlib.suppress(_asyncio.CancelledError):
+            await consumer
+        await encoder.aclose()
+        # After aclose runs its finally, the pending upstream task has been
+        # cancelled and awaited; the upstream generator saw its CancelledError.
+        assert cancelled.is_set()
+
+    async def test_idle_stream_emits_keepalive_comment(self, monkeypatch) -> None:
+        """When the upstream chat is slow to emit its first token, the encoder
+        must yield SSE comment frames so clients (opencode) don't trip their
+        idle-stream timeout and fire a retry storm. (bb-2x6j)
+        """
+        from lilbee.server.chat_completions_api import streaming as streaming_mod
+
+        # Tight keepalive cadence so the test runs in milliseconds; the
+        # production constant stays at 5s.
+        monkeypatch.setattr(streaming_mod, "_KEEPALIVE_INTERVAL_S", 0.02)
+
+        import asyncio as _asyncio
+
+        async def _slow_chunks() -> AsyncIterator[CompletionsStreamChunk]:
+            # Two keepalive intervals pass before any chunk arrives.
+            await _asyncio.sleep(0.07)
+            yield _chunk(delta=CompletionsStreamDelta(content="finally"))
+
+        body = await _drain(encode_completions_sse(_slow_chunks()))
+        text = body.decode()
+        assert ": keepalive\n\n" in text, "keepalive frame missing during idle gap"
+        assert text.count(": keepalive\n\n") >= 2
+        assert "finally" in text
+        assert text.endswith("data: [DONE]\n\n")

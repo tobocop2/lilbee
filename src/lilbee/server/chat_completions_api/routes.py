@@ -36,7 +36,7 @@ from lilbee.server.chat_completions_api.translate import (
 from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
-    acquire_or_raise_busy,
+    acquire_chat_lock_or_busy,
     chat_lock,
 )
 from lilbee.server.chat_dispatch.dispatch import (
@@ -86,7 +86,7 @@ async def chat_completions_endpoint(
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
     try:
-        acquire_or_raise_busy()
+        await acquire_chat_lock_or_busy()
     except ChatBusyError:
         return _error_response(
             429,
@@ -96,7 +96,6 @@ async def chat_completions_endpoint(
         )
 
     lock = chat_lock()
-    await lock.acquire()
 
     if req.stream:
         return Stream(

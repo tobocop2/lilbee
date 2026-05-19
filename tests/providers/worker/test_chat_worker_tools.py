@@ -371,6 +371,52 @@ def test_session_chat_raises_context_window_exceeded_on_unfittable_prompt(
     assert "exceeds" in str(excinfo.value)
 
 
+def test_session_chat_overflow_error_reports_runtime_n_ctx_not_residual_budget(
+    monkeypatch, tmp_path
+) -> None:
+    """The error must name the model's actual ``llm.n_ctx()`` value, never the
+    residual budget after reserving for the response + tools. A model loaded
+    with n_ctx=7168 that overflows must say "7168-token context window", not
+    "0-token context window". (bb-x804)
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _SmallCtx:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("must not reach inference on a windowed-out prompt")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _SmallCtx())
+    # Huge tools schema + a fat system message blow the budget to zero, but the
+    # error message must still report n_ctx=7168, not "0".
+    big_tools = [{"type": "function", "function": {"name": "x" * 4000}}]
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[
+                {"role": "system", "content": "y" * 6000},
+                {"role": "user", "content": "z" * 1000},
+            ],
+            stream=False,
+            options=None,
+            model=None,
+            tools=big_tools,
+            tool_choice=None,
+        )
+    assert "7168" in str(excinfo.value)
+    assert "0-token" not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("num_predict", [0, -1, -100, "not-an-int"])
 def test_session_chat_invalid_num_predict_uses_default_reserve(
     monkeypatch, tmp_path, num_predict: Any
@@ -451,6 +497,95 @@ def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch,
         )
     assert "18690" in str(excinfo.value)
     assert "7168" in str(excinfo.value)
+
+
+def test_session_chat_streaming_catches_deferred_overflow_and_reraises_typed(
+    monkeypatch, tmp_path
+) -> None:
+    """llama-cpp returns the streaming generator unadvanced; the overflow
+    ValueError fires on the FIRST ``next()`` after the parent starts iterating.
+    The encoder must translate it into ``ContextWindowExceededError`` so the
+    streaming route surfaces a 400 ``context_length_exceeded`` rather than a
+    generic worker error. (bb-1utt streaming-path follow-up)
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _DeferredOverflowLlama:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            # Undercount so pre-flight thinks everything fits.
+            return list(range(len(data) // 10 + 1))
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            def _generator():
+                # llama-cpp raises here on the first __next__, exactly the bb-1utt
+                # path.
+                raise ValueError("Requested tokens (18690) exceed context window of 7168")
+                yield  # unreachable: keeps this function a generator
+                raise AssertionError("unreachable")
+
+            return _generator()
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _DeferredOverflowLlama())
+    iterator = session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model="some/Gemma",
+        tools=None,
+        tool_choice=None,
+    )
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        next(iter(iterator))
+    assert "18690" in str(excinfo.value)
+    assert "7168" in str(excinfo.value)
+
+
+def test_session_chat_streaming_does_not_swallow_unrelated_value_errors(
+    monkeypatch, tmp_path
+) -> None:
+    """A non-overflow ValueError from the streaming generator propagates unchanged."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _BrokenStreamLlama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            def _generator():
+                raise ValueError("some other streaming failure")
+                yield  # unreachable: keeps this function a generator
+                raise AssertionError("unreachable")
+
+            return _generator()
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _BrokenStreamLlama())
+    iterator = session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    with pytest.raises(ValueError, match="some other streaming failure"):
+        next(iter(iterator))
 
 
 def test_session_chat_does_not_swallow_unrelated_value_errors(monkeypatch, tmp_path) -> None:

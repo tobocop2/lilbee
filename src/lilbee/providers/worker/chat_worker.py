@@ -91,16 +91,28 @@ class _ChatSession:
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
         try:
-            return llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+            result = llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
         except ValueError as exc:
-            requested = _parse_requested_tokens(str(exc))
-            if requested is None:
-                raise
-            raise ContextWindowExceededError.from_counts(
-                requested=requested,
-                available=int(llm.n_ctx()),
-                model=model or self._role_config.model_path.name,
-            ) from exc
+            self._reraise_if_context_overflow(exc, llm, model)
+            raise
+        if stream:
+            return _translate_stream_overflow(result, llm, model, self._role_config)
+        return result
+
+    def _reraise_if_context_overflow(
+        self, exc: ValueError, llm: Any, model_ref: str | None
+    ) -> None:
+        """Re-raise as ``ContextWindowExceededError`` if the message matches llama-cpp's
+        overflow phrasing; otherwise return so the original exception propagates.
+        """
+        requested = _parse_requested_tokens(str(exc))
+        if requested is None:
+            return
+        raise ContextWindowExceededError.from_counts(
+            requested=requested,
+            available=int(llm.n_ctx()),
+            model=model_ref or self._role_config.model_path.name,
+        ) from exc
 
     def _window_messages(
         self,
@@ -133,9 +145,13 @@ class _ChatSession:
             tokenize=tokenize,
         )
         if outcome.messages is None:
+            # Report the model's actual context window in the user-facing error,
+            # not the residual budget after reserving for the response and
+            # tools schema. A clamped-to-zero budget would otherwise surface
+            # as "0-token context window" which reads as broken.
             raise ContextWindowExceededError.from_counts(
                 requested=outcome.requested,
-                available=outcome.available,
+                available=int(llm.n_ctx()),
                 model=model_ref or self._role_config.model_path.name,
             )
         if outcome.dropped:
@@ -177,19 +193,43 @@ class _ChatSession:
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
 
-# llama-cpp raises this exact phrasing (see llama_cpp/llama.py) when the
-# rendered prompt + reserved generation budget exceeds n_ctx. Matching by the
-# numeric capture lets us re-raise as our typed exception when our pre-flight
-# estimate undercounted the chat-template inflation for tools / system.
-_CTX_OVERFLOW_PATTERN = re.compile(
-    r"[Rr]equested\s+tokens?\s*\(?(\d+)\)?\s+exceed[s]?\s+(?:the\s+)?context\s+window"
-)
+# Mirrors llama-cpp's verbatim phrasing in `llama_cpp/llama.py::Llama._create_completion`.
+# A wording change upstream will surface as a CI failure on the typed-overflow
+# test, prompting a deliberate update here rather than silently regressing.
+_CTX_OVERFLOW_PATTERN = re.compile(r"Requested tokens \((\d+)\) exceed context window of \d+")
 
 
 def _parse_requested_tokens(message: str) -> int | None:
-    """Extract the ``Requested tokens (N) exceed context window`` count, if any."""
+    """Extract ``N`` from llama-cpp's ``Requested tokens (N) exceed context window`` text."""
     match = _CTX_OVERFLOW_PATTERN.search(message)
     return int(match.group(1)) if match else None
+
+
+def _translate_stream_overflow(
+    response_iter: Any,
+    llm: Any,
+    model_ref: str | None,
+    role_config: RoleConfig,
+) -> Any:
+    """Wrap a llama-cpp streaming generator so the deferred overflow ``ValueError``
+    surfaces as the typed ``ContextWindowExceededError`` instead.
+
+    llama-cpp returns the chat-completion generator unadvanced; the overflow
+    check fires on the first ``next()`` call once the parent starts iterating.
+    Without this wrapper that ``ValueError`` reaches ``_handle_chat_streaming``
+    and serialises as a generic worker error (the bb-1utt 500 bug).
+    """
+    try:
+        yield from response_iter
+    except ValueError as exc:
+        requested = _parse_requested_tokens(str(exc))
+        if requested is None:
+            raise
+        raise ContextWindowExceededError.from_counts(
+            requested=requested,
+            available=int(llm.n_ctx()),
+            model=model_ref or role_config.model_path.name,
+        ) from exc
 
 
 def _coerce_finish_reason(raw: str | None) -> FinishReason:
