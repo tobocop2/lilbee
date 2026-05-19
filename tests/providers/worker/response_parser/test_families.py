@@ -26,6 +26,42 @@ from lilbee.providers.worker.response_parser.families import ModelFamily, detect
             '...<|"|>some Gemma 4 quoted value<|"|>...',
             ModelFamily.GEMMA4,
         ),
+        (
+            "<|START_ACTION|>[{...}]<|END_ACTION|>",
+            ModelFamily.COHERE,
+        ),
+        (
+            "<|channel|>final<|message|>...<|call|>",
+            ModelFamily.GPT_OSS,
+        ),
+        (
+            "<|begin_of_sentence|>system<|end_of_sentence|>",
+            ModelFamily.ERNIE,
+        ),
+        (
+            "You are a function calling AI model with <tool_call> and </tool_call>",
+            ModelFamily.HERMES,
+        ),
+        (
+            "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>name<｜tool▁sep｜>{}<｜tool▁call▁end｜>",
+            ModelFamily.DEEPSEEK_V31,
+        ),
+        (
+            "<|start_of_role|>system<|end_of_role|>...<|tool_call|>[{...}]",
+            ModelFamily.GRANITE,
+        ),
+        (
+            "<|tool|>schema<|/tool|>...<|end|>",
+            ModelFamily.PHI4MINI,
+        ),
+        (
+            ">>>all\\ncontent\\n>>>name\\n{}",
+            ModelFamily.FUNCTIONARY_V3,
+        ),
+        (
+            "<|python_tag|>{...}",
+            ModelFamily.LLAMA3,
+        ),
         ("", ModelFamily.UNKNOWN),
         ("no markers here", ModelFamily.UNKNOWN),
     ],
@@ -33,6 +69,16 @@ from lilbee.providers.worker.response_parser.families import ModelFamily, detect
 def test_detect_family_classifies(template: str, expected: ModelFamily) -> None:
     """Each known family is recognised by its distinctive markers."""
     assert detect_family(template) == expected
+
+
+def test_detect_family_uses_architecture_fallback_for_smollm() -> None:
+    """SmolLM3 shares ``<tool_call>`` with Qwen3; architecture metadata
+    disambiguates so the SmolLM-specific schema is selected.
+    """
+    template = "{% for m in messages %}<|im_start|>{{ m.role }}<tool_call>x</tool_call>{% endfor %}"
+    assert detect_family(template, architecture="smollm3") == ModelFamily.SMOLLM
+    assert detect_family(template, architecture=None) == ModelFamily.QWEN3
+    assert detect_family(template, architecture="qwen3") == ModelFamily.QWEN3
 
 
 def test_detect_family_handles_none() -> None:

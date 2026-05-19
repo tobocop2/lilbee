@@ -29,6 +29,16 @@ _SCHEMA_FILES: dict[ModelFamily, str] = {
     ModelFamily.QWEN3_CODER: "qwen3_coder.json",
     ModelFamily.MISTRAL: "mistral.json",
     ModelFamily.GEMMA4: "gemma4.json",
+    ModelFamily.COHERE: "cohere.json",
+    ModelFamily.ERNIE: "ernie.json",
+    ModelFamily.GPT_OSS: "gpt_oss.json",
+    ModelFamily.SMOLLM: "smollm.json",
+    ModelFamily.HERMES: "hermes.json",
+    ModelFamily.DEEPSEEK_V31: "deepseek_v31.json",
+    ModelFamily.GRANITE: "granite.json",
+    ModelFamily.PHI4MINI: "phi4mini.json",
+    ModelFamily.FUNCTIONARY_V3: "functionary_v3.json",
+    ModelFamily.LLAMA3: "llama3.json",
 }
 
 

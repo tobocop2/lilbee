@@ -122,6 +122,44 @@ flowchart TD
 
 ---
 
+## Tool-call extraction
+
+When a chat client sends `tools=[...]`, llama-cpp-python returns the model's
+tool calls embedded in `message.content` as text markup (`<tool_call>{...}</tool_call>`,
+`[TOOL_CALLS] [{...}]`, etc.) rather than structured `tool_calls` because the upstream
+chat-handler registry doesn't cover most current model families. lilbee runs the
+text through HuggingFace's `transformers.utils.chat_parsing_utils.recursive_parse`
+with a per-family JSON schema and surfaces structured `tool_calls` in the OpenAI
+envelope.
+
+Family classification reads the loaded GGUF's chat template (and, for families
+that share generic ChatML markers, the `general.architecture` field) at model
+load, picks the matching schema once, caches it on `_ChatSession`. Schemas live
+as JSON files in `src/lilbee/providers/worker/response_parser/schemas/`. Adding
+a new family is one JSON file + one `ModelFamily` enum value + one detection
+marker. No Python parser code per family.
+
+### Schema source-of-truth
+
+The proper place for each per-family schema is in the model's own
+`tokenizer_config.json` on HuggingFace Hub, consumed via
+`tokenizer.parse_response()`. The plumbing landed in transformers; no model on
+Hub has populated `response_schema` yet. lilbee's local schemas are the gap
+fill until upstream catches up, one model at a time.
+
+`tools/check_upstream_schemas.py` watches: weekly cron (or `make
+check-upstream-schemas` on demand) fetches `tokenizer_config.json` for each
+tracked family's representative repo and reports which can be retired
+(upstream populated), which are still pending, and which could not be checked
+(gated, network). When upstream catches up for a family the workflow opens an
+issue listing the deletion checklist for that family. The script never modifies
+runtime code or the local schemas; deletion is a human decision.
+
+The longer-term escape hatch is binding llama.cpp's runtime chat-template
+autoparser (`common/chat-auto-parser.cpp`) into `llama-cpp-python`. That
+removes the per-family code entirely, regardless of whether HF tokenizer
+authors populate `response_schema`. Tracking in beads.
+
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.

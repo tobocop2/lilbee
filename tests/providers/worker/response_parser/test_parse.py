@@ -99,6 +99,107 @@ def test_mistral_keeps_prefix_content() -> None:
     assert len(parsed.tool_calls) == 1
 
 
+def test_cohere_extracts_tool_calls_from_action_block() -> None:
+    """Cohere/Command R wraps tool calls in ``<|START_ACTION|>...<|END_ACTION|>``."""
+    text = (
+        "<|START_RESPONSE|>I'll search.<|END_RESPONSE|>"
+        '<|START_ACTION|>[{"tool_name": "search", "parameters": {"q": "x"}}]<|END_ACTION|>'
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.COHERE])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_ernie_extracts_tool_calls_between_tool_call_tags() -> None:
+    """ERNIE 4.x emits ``<tool_call>{json}</tool_call>`` with content in ``<response>``."""
+    text = (
+        "<response>\nLet me search.\n</response>"
+        '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.ERNIE])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_gpt_oss_extracts_tool_calls_from_commentary_channel() -> None:
+    """GPT-OSS wraps tool calls in ``<|channel|>commentary to=functions.<name>``."""
+    text = (
+        "<|channel|>final<|message|>I'll search.<|end|>"
+        '<|channel|>commentary to=functions.search<|message|>{"q": "x"}<|call|>'
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.GPT_OSS])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_smollm_extracts_tool_call() -> None:
+    """SmolLM3 wraps tool calls in ``<tool_call>{json}</tool_call>``."""
+    text = '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.SMOLLM])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_hermes_extracts_tool_call_with_scratch_pad() -> None:
+    """Hermes uses ``<scratch_pad>`` for reasoning instead of ``<think>``."""
+    text = (
+        "<scratch_pad>Let me think.</scratch_pad>"
+        '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.HERMES])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_deepseek_v31_extracts_tool_call_with_separator() -> None:
+    """DeepSeek V3.1 uses fullwidth-pipe separator markers around name + JSON."""
+    text = (
+        "<｜tool▁calls▁begin｜>"
+        '<｜tool▁call▁begin｜>search<｜tool▁sep｜>{"q": "x"}<｜tool▁call▁end｜>'
+        "<｜tool▁calls▁end｜>"
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.DEEPSEEK_V31])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_granite_extracts_top_level_tool_call_array() -> None:
+    """IBM Granite emits a JSON array after ``<|tool_call|>`` or ``<tool_call>``."""
+    text = '<|tool_call|>[{"name": "search", "arguments": {"q": "x"}}]'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.GRANITE])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_phi4mini_extracts_functools_array() -> None:
+    """Phi-4 wraps the tool-call array in ``functools[...]``."""
+    text = 'Some reasoning. functools[{"name": "search", "arguments": {"q": "x"}}]'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.PHI4MINI])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_functionary_v3_extracts_recipient_routed_call() -> None:
+    """Functionary v3 routes tool calls via ``>>>name`` lines."""
+    text = '>>>all\nAnswer text\n>>>search\n{"q": "x"}'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.FUNCTIONARY_V3])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_llama3_extracts_python_tagged_tool_call() -> None:
+    """Llama 3.x emits ``<|python_tag|>{json}`` for tool calls."""
+    text = '<|python_tag|>{"name": "search", "arguments": {"q": "x"}}'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.LLAMA3])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
 def test_malformed_json_inside_tool_call_falls_back_to_text() -> None:
     """A ``<tool_call>`` block whose body is not JSON returns no tool calls.
 

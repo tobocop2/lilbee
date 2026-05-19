@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "content": {
+      "type": "string",
+      "x-regex": ">>>all\\s*\\n([\\s\\S]*?)(?:\\n>>>|<\\|eot_id\\|>|$)"
+    },
+    "tool_calls": {
+      "x-regex-iterator": "(>>>(?!all\\b)[a-zA-Z_][\\w]*\\s*\\n\\{[\\s\\S]*?\\})",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "x-regex": ">>>\\s*(?P<name>[a-zA-Z_][\\w]*)\\s*\\n(?P<arguments>\\{[\\s\\S]*\\})",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "x-parser": "json",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

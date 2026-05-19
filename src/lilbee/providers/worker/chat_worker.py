@@ -132,7 +132,10 @@ class _ChatSession:
             self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
             metadata = safe_read_gguf_metadata(target_path) or {}
-            family = detect_family(metadata.get("chat_template", ""))
+            family = detect_family(
+                metadata.get("chat_template", ""),
+                architecture=metadata.get("architecture"),
+            )
             self._response_schema = SCHEMAS.get(family)
         return self._llm
 
