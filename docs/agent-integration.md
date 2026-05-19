@@ -36,8 +36,9 @@ each family with the standard markers is covered:
 
 20 families. Models outside this set fall through to no extraction: the
 raw tool-call markup arrives as plain text in `message.content`, the
-client doesn't invoke the tool, and a warning is logged on the first
-such request. The list is updated periodically as new families are
+client doesn't invoke the tool, and a warning is logged (once per
+loaded model) to the chat worker log at
+`$LILBEE_DATA/logs/worker-chat.log`. The list is updated periodically as new families are
 released and their formats land in the upstream sources we track
 (HuggingFace transformers test fixtures, vLLM tool parsers). Current
 schemas live at

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from lilbee.providers.worker.response_parser.families import (
-    ModelFamily,
+    TemplateFamily,
     detect_family,
 )
 from lilbee.providers.worker.response_parser.parse import (
@@ -15,10 +15,10 @@ from lilbee.providers.worker.response_parser.streaming import StreamingResponseP
 
 __all__ = [
     "SCHEMAS",
-    "ModelFamily",
     "ParsedResponse",
     "ResponseSchema",
     "StreamingResponseParser",
+    "TemplateFamily",
     "detect_family",
     "parse_response",
 ]

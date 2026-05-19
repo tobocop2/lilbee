@@ -141,6 +141,40 @@ class TestCheckFamily:
         assert check.status is RetirementStatus.BLOCKED
         assert "parse" in check.detail
 
+    def test_blocked_on_unexpected_exception(self, monkeypatch) -> None:
+        """Unknown huggingface_hub error subclasses surface as BLOCKED, not a crash."""
+
+        class _SomeFutureHfError(Exception):
+            pass
+
+        def _raise(**_kw: Any) -> str:
+            raise _SomeFutureHfError("upstream broke a contract")
+
+        monkeypatch.setattr("tools.check_upstream_schemas.hf_hub_download", _raise)
+        check = check_family("qwen3", "Qwen/Qwen3-8B")
+        assert check.status is RetirementStatus.BLOCKED
+        assert "_SomeFutureHfError" in check.detail
+
+
+class TestLoadUpstreamReposValidation:
+    def test_rejects_non_object_root(self, tmp_path: Path) -> None:
+        path = tmp_path / "repos.json"
+        path.write_text("[]", encoding="utf-8")
+        with pytest.raises(ValueError, match="expected an object"):
+            load_upstream_repos(path)
+
+    def test_rejects_entry_missing_repo_key(self, tmp_path: Path) -> None:
+        path = tmp_path / "repos.json"
+        path.write_text(json.dumps({"qwen3": {"not_repo": "Qwen/Qwen3-8B"}}), encoding="utf-8")
+        with pytest.raises(ValueError, match=r"qwen3.*repo"):
+            load_upstream_repos(path)
+
+    def test_rejects_entry_with_non_string_repo(self, tmp_path: Path) -> None:
+        path = tmp_path / "repos.json"
+        path.write_text(json.dumps({"qwen3": {"repo": 42}}), encoding="utf-8")
+        with pytest.raises(ValueError, match=r"qwen3.*repo"):
+            load_upstream_repos(path)
+
 
 class TestRenderReport:
     def test_renders_each_status_section(self) -> None:
@@ -170,7 +204,7 @@ class TestRenderReport:
         checks = [FamilyCheck("qwen3", "Qwen/Qwen3-8B", RetirementStatus.READY)]
         report = render_report(checks)
         assert "Remove `src/lilbee/providers/worker/response_parser/schemas/qwen3.json`" in report
-        assert "Remove `ModelFamily.QWEN3`" in report
+        assert "Remove `TemplateFamily.QWEN3`" in report
         assert "test_parse.py" in report
         assert "test_families.py" in report
         assert "_upstream_repos.json" in report

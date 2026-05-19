@@ -8,22 +8,55 @@ from typing import Any
 import pytest
 
 from lilbee.providers.worker.response_parser import SCHEMAS
-from lilbee.providers.worker.response_parser.families import ModelFamily
+from lilbee.providers.worker.response_parser.families import TemplateFamily
 from lilbee.providers.worker.response_parser.streaming import _MARKER_OPENERS
 
 
 def test_schemas_registry_covers_every_known_family() -> None:
-    """Every ``ModelFamily`` except ``UNKNOWN`` has a shipped schema.
+    """Every ``TemplateFamily`` except ``UNKNOWN`` has a shipped schema.
 
     Adding a new variant without a schema would silently disable tool
     extraction for that family; failing this invariant forces the schema
     author to either ship the schema or document the omission deliberately.
     """
-    expected = {f for f in ModelFamily if f is not ModelFamily.UNKNOWN}
+    expected = {f for f in TemplateFamily if f is not TemplateFamily.UNKNOWN}
     assert set(SCHEMAS.keys()) == expected, (
         f"SCHEMAS missing entries for {expected - set(SCHEMAS.keys())} or has "
         f"extras for {set(SCHEMAS.keys()) - expected}."
     )
+
+
+def test_load_returns_none_for_missing_file(caplog) -> None:
+    """A missing schema file degrades to ``None`` instead of crashing import."""
+    import logging
+
+    from lilbee.providers.worker.response_parser.schemas import _load
+
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.response_parser.schemas"):
+        result = _load("does_not_exist.json")
+    assert result is None
+    assert any("does_not_exist" in r.message for r in caplog.records)
+
+
+def test_load_returns_none_for_invalid_json(tmp_path, monkeypatch, caplog) -> None:
+    """A schema file with malformed JSON degrades to ``None`` with a warning."""
+    import logging
+
+    from lilbee.providers.worker.response_parser import schemas as schemas_mod
+
+    bad_dir = tmp_path / "schemas"
+    bad_dir.mkdir()
+    (bad_dir / "broken.json").write_text("not json", encoding="utf-8")
+
+    class _FakeFiles:
+        def joinpath(self, *parts):
+            return bad_dir / parts[-1]
+
+    monkeypatch.setattr(schemas_mod.resources, "files", lambda _: _FakeFiles())
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.response_parser.schemas"):
+        result = schemas_mod._load("broken.json")
+    assert result is None
+    assert any("broken.json" in r.message for r in caplog.records)
 
 
 # Markers in shipped schemas look like ``<tool_call>``, ``</tool_call>``,

@@ -56,7 +56,14 @@ class FamilyCheck:
 def load_upstream_repos(path: Path) -> dict[str, str]:
     """Read the family -> repo_id mapping from disk."""
     data = json.loads(path.read_text("utf-8"))
-    return {family: entry["repo"] for family, entry in data.items()}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected an object at the top level, got {type(data).__name__}")
+    result: dict[str, str] = {}
+    for family, entry in data.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("repo"), str):
+            raise ValueError(f'{path}: entry for {family!r} must be {{"repo": "..."}}')
+        result[family] = entry["repo"]
+    return result
 
 
 def list_local_schemas(schemas_dir: Path) -> set[str]:
@@ -73,21 +80,35 @@ def check_drift(schemas_dir: Path, repo_map: dict[str, str]) -> tuple[set[str], 
 
 def check_family(family: str, repo_id: str) -> FamilyCheck:
     """Fetch one upstream ``tokenizer_config.json`` and classify retirement status."""
+    config_path, fetch_error = _download_tokenizer_config(repo_id)
+    if fetch_error is not None:
+        return FamilyCheck(family, repo_id, RetirementStatus.BLOCKED, fetch_error)
     try:
-        config_path = hf_hub_download(repo_id=repo_id, filename=TOKENIZER_CONFIG_FILE)
-    except GatedRepoError:
-        return FamilyCheck(family, repo_id, RetirementStatus.BLOCKED, "gated repo")
-    except RepositoryNotFoundError:
-        return FamilyCheck(family, repo_id, RetirementStatus.BLOCKED, "repo not found")
-    except OSError as exc:
-        return FamilyCheck(family, repo_id, RetirementStatus.BLOCKED, f"network/IO: {exc}")
-    try:
-        config = json.loads(Path(config_path).read_text("utf-8"))
+        config = json.loads(Path(config_path or "").read_text("utf-8"))
     except (OSError, ValueError) as exc:
         return FamilyCheck(family, repo_id, RetirementStatus.BLOCKED, f"parse: {exc}")
     if config.get(RESPONSE_SCHEMA_KEY):
         return FamilyCheck(family, repo_id, RetirementStatus.READY)
     return FamilyCheck(family, repo_id, RetirementStatus.PENDING)
+
+
+def _download_tokenizer_config(repo_id: str) -> tuple[str | None, str | None]:
+    """Return ``(config_path, None)`` on success, ``(None, reason)`` on any failure.
+
+    Catches every exception the HF client can raise (it has ~10 subclasses
+    and a major bump can add more): the watcher must not crash the weekly
+    cron because of an unknown error variant.
+    """
+    try:
+        return hf_hub_download(repo_id=repo_id, filename=TOKENIZER_CONFIG_FILE), None
+    except GatedRepoError:
+        return None, "gated repo"
+    except RepositoryNotFoundError:
+        return None, "repo not found"
+    except OSError as exc:
+        return None, f"network/IO: {exc}"
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 def render_report(checks: list[FamilyCheck]) -> str:
@@ -137,9 +158,9 @@ def _render_ready_block(check: FamilyCheck) -> str:
         f"To retire the local copy:\n"
         f"\n"
         f"- [ ] Remove `src/lilbee/providers/worker/response_parser/schemas/{check.family}.json`\n"
-        f"- [ ] Remove `ModelFamily.{check.family.upper()}` from `families.py` "
+        f"- [ ] Remove `TemplateFamily.{check.family.upper()}` from `families.py` "
         f"(enum, detection-marker constants, branch in `detect_family`)\n"
-        f"- [ ] Remove `ModelFamily.{check.family.upper()}` from `_SCHEMA_FILES` "
+        f"- [ ] Remove `TemplateFamily.{check.family.upper()}` from `_SCHEMA_FILES` "
         f"in `schemas.py`\n"
         f"- [ ] Remove the `{check.family}` round-trip test in "
         f"`tests/providers/worker/response_parser/test_parse.py`\n"

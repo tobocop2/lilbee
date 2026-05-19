@@ -6,8 +6,8 @@ import json
 
 from lilbee.providers.worker.response_parser import (
     SCHEMAS,
-    ModelFamily,
     StreamingResponseParser,
+    TemplateFamily,
 )
 
 
@@ -27,7 +27,7 @@ def _drain(parser: StreamingResponseParser, chunks: list[str]):
 
 def test_streaming_emits_text_only_when_no_tool_calls() -> None:
     """A plain text stream comes out as content with no tool deltas."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     content, deltas = _drain(parser, ["Hello ", "world", "!"])
     assert content == "Hello world!"
     assert deltas == []
@@ -35,7 +35,7 @@ def test_streaming_emits_text_only_when_no_tool_calls() -> None:
 
 def test_streaming_holds_partial_marker_until_complete() -> None:
     """A chunk ending mid-marker (``<tool_c``) must not leak the partial bytes."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     # After the first chunk, the trailing "<tool_c" must not be emitted yet.
     content_after_first, _ = parser.feed("Hi <tool_c")
     assert "<tool_c" not in content_after_first
@@ -49,7 +49,7 @@ def test_streaming_holds_partial_marker_until_complete() -> None:
 
 def test_streaming_emits_one_delta_per_completed_tool_call() -> None:
     """Two ``<tool_call>`` blocks across chunks emit two tool deltas."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     _, deltas = _drain(
         parser,
         [
@@ -63,7 +63,7 @@ def test_streaming_emits_one_delta_per_completed_tool_call() -> None:
 
 def test_streaming_emits_tool_call_arguments_as_json_string() -> None:
     """Arguments are serialised JSON in each ``ToolCallDelta.arguments_delta``."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     _, deltas = _drain(
         parser, ['<tool_call>{"name": "search", "arguments": {"q": "foo"}}</tool_call>']
     )
@@ -75,7 +75,7 @@ def test_streaming_emits_tool_call_arguments_as_json_string() -> None:
 
 def test_streaming_flush_releases_held_content() -> None:
     """Content held by the safety margin is released on ``flush()``."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     held, _ = parser.feed("short text")
     flushed, _ = parser.flush()
     assert held + flushed == "short text"
@@ -89,7 +89,7 @@ def test_streaming_does_not_leak_tool_call_body_across_chunks() -> None:
     ``{"name": "x",`` would be emitted as plain text, and opencode would
     render the raw JSON instead of invoking the tool.
     """
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     chunks = [
         "Before. ",
         "<tool_call>\n",
@@ -119,7 +119,7 @@ def test_streaming_does_not_leak_tool_call_body_across_chunks() -> None:
 
 def test_streaming_handles_token_sized_chunks() -> None:
     """A token-by-token stream (1 char at a time) emits no partial tool-call text."""
-    parser = StreamingResponseParser(SCHEMAS[ModelFamily.QWEN3])
+    parser = StreamingResponseParser(SCHEMAS[TemplateFamily.QWEN3])
     full = 'Answer: <tool_call>{"name": "f", "arguments": {"q": "x"}}</tool_call> done.'
     chunks = list(full)
     content, deltas = _drain(parser, chunks)
