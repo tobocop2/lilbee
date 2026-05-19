@@ -200,6 +200,74 @@ def test_llama3_extracts_python_tagged_tool_call() -> None:
     assert parsed.tool_calls[0].name == "search"
 
 
+def test_glm46_extracts_xml_arg_key_value_call() -> None:
+    """GLM 4.5/4.6 wraps calls in ``<tool_call>NAME\\n<arg_key>K</arg_key>...</tool_call>``."""
+    text = (
+        "<tool_call>get_weather\n"
+        "<arg_key>city</arg_key>\n"
+        '<arg_value>"Berlin"</arg_value>\n'
+        "</tool_call>"
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.GLM46])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
+
+
+def test_glm47_extracts_single_line_xml_call() -> None:
+    """GLM 4.7 emits the same wire format on a single line; whitespace is the only difference."""
+    text = (
+        '<tool_call>get_weather<arg_key>city</arg_key><arg_value>"Berlin"</arg_value></tool_call>'
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.GLM47])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+
+
+def test_kimi_k2_extracts_tool_call_with_functions_prefix() -> None:
+    """Kimi K2 emits ``functions.NAME:IDX`` followed by JSON args."""
+    text = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.get_weather:0<|tool_call_argument_begin|>"
+        '{"city": "Berlin"}'
+        "<|tool_call_end|>"
+        "<|tool_calls_section_end|>"
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.KIMI_K2])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
+
+
+def test_internlm2_extracts_action_plugin_call() -> None:
+    """InternLM2 wraps the JSON call in ``<|action_start|><|plugin|>`` markers."""
+    text = (
+        "I'll check.<|action_start|><|plugin|>"
+        '{"name": "get_weather", "arguments": {"city": "Berlin"}}'
+        "<|action_end|>"
+    )
+    parsed = parse_response(text, SCHEMAS[ModelFamily.INTERNLM2])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
+
+
+def test_olmo3_extracts_pythonic_function_call() -> None:
+    """OLMo 3 emits pythonic ``name(key=value)`` inside ``<function_calls>...</function_calls>``."""
+    text = '<function_calls>\nget_weather(city="Berlin")\n</function_calls>'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.OLMO3])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+
+
+def test_lfm2_extracts_pythonic_list_call() -> None:
+    """LFM2 emits ``<|tool_call_start|>[name(key=value)]<|tool_call_end|>``."""
+    text = '<|tool_call_start|>[get_weather(city="Berlin")]<|tool_call_end|>'
+    parsed = parse_response(text, SCHEMAS[ModelFamily.LFM2])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+
+
 def test_malformed_json_inside_tool_call_falls_back_to_text() -> None:
     """A ``<tool_call>`` block whose body is not JSON returns no tool calls.
 

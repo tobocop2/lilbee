@@ -62,6 +62,28 @@ from lilbee.providers.worker.response_parser.families import ModelFamily, detect
             "<|python_tag|>{...}",
             ModelFamily.LLAMA3,
         ),
+        (
+            "<tool_call>get_x\n<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>",
+            ModelFamily.GLM46,
+        ),
+        (
+            "Use <tool_call>{function-name}<arg_key>{arg-key}</arg_key>"
+            "<arg_value>{arg-value}</arg_value></tool_call>",
+            ModelFamily.GLM47,
+        ),
+        (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>x:0<|tool_call_argument_begin|>{}<|tool_call_end|>",
+            ModelFamily.KIMI_K2,
+        ),
+        (
+            "I'll check.<function_calls>\nget_weather(city='NYC')\n</function_calls>",
+            ModelFamily.OLMO3,
+        ),
+        (
+            "<|tool_list_start|>tool definitions here<|tool_list_end|>",
+            ModelFamily.LFM2,
+        ),
         ("", ModelFamily.UNKNOWN),
         ("no markers here", ModelFamily.UNKNOWN),
     ],
@@ -79,6 +101,23 @@ def test_detect_family_uses_architecture_fallback_for_smollm() -> None:
     assert detect_family(template, architecture="smollm3") == ModelFamily.SMOLLM
     assert detect_family(template, architecture=None) == ModelFamily.QWEN3
     assert detect_family(template, architecture="qwen3") == ModelFamily.QWEN3
+
+
+def test_detect_family_uses_architecture_fallback_for_internlm2() -> None:
+    """InternLM2's chat template is minimal; action-block markers only appear
+    in model output. Architecture metadata is the only reliable signal.
+    """
+    minimal_template = "{% for m in messages %}<|im_start|>{{ m.role }}<|im_end|>{% endfor %}"
+    assert detect_family(minimal_template, architecture="internlm2") == ModelFamily.INTERNLM2
+    assert detect_family(minimal_template, architecture="internlm") == ModelFamily.INTERNLM2
+    assert detect_family(minimal_template, architecture=None) == ModelFamily.UNKNOWN
+
+
+def test_detect_family_falls_back_to_architecture_with_no_template() -> None:
+    """Empty chat template + known architecture still classifies."""
+    assert detect_family(None, architecture="internlm2") == ModelFamily.INTERNLM2
+    assert detect_family("", architecture="internlm2") == ModelFamily.INTERNLM2
+    assert detect_family("", architecture="unknown_arch") == ModelFamily.UNKNOWN
 
 
 def test_detect_family_handles_none() -> None:

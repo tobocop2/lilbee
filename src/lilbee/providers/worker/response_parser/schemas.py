@@ -39,6 +39,12 @@ _SCHEMA_FILES: dict[ModelFamily, str] = {
     ModelFamily.PHI4MINI: "phi4mini.json",
     ModelFamily.FUNCTIONARY_V3: "functionary_v3.json",
     ModelFamily.LLAMA3: "llama3.json",
+    ModelFamily.GLM46: "glm46.json",
+    ModelFamily.GLM47: "glm47.json",
+    ModelFamily.KIMI_K2: "kimi_k2.json",
+    ModelFamily.INTERNLM2: "internlm2.json",
+    ModelFamily.OLMO3: "olmo3.json",
+    ModelFamily.LFM2: "lfm2.json",
 }
 
 

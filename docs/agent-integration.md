@@ -11,27 +11,49 @@ extracts structured `tool_calls` from the model's text output for the
 following families. Detection is by chat-template marker, so any model in
 each family with the standard markers is covered:
 
-| Family | Markers in chat template | Example models |
+| Family | Detection signal | Example models |
 |---|---|---|
-| **Qwen3 / Qwen2.5 / Hermes** | `<tool_call>`, `</tool_call>` | Qwen3-4B/8B/14B/30B-A3B/72B, Qwen2.5-Instruct, Hermes 2 Pro, Hermes 3 |
+| **Qwen3 / Qwen2.5** | `<tool_call>`, `</tool_call>` | Qwen3 (every size), Qwen2.5-Instruct |
 | **Qwen3-Coder** | `<function=`, `<parameter=` | Qwen3-Coder-30B-A3B |
-| **Mistral** | `[TOOL_CALLS]` | Mistral 7B Instruct, Mistral Small, Mistral Nemo, Mixtral |
+| **Mistral** | `[TOOL_CALLS]` | Mistral 7B Instruct, Mistral Small, Mistral Nemo, Mixtral, Ministral |
 | **Gemma 4** | `<\|"\|>` | Gemma 4 |
+| **Cohere Command** | `<\|START_ACTION\|>` | Cohere Command R / R+ / R7B |
+| **ERNIE** | `<\|begin_of_sentence\|>`, `<\|end_of_sentence\|>` | Baidu ERNIE 4.5 |
+| **GPT-OSS** | `<\|channel\|>`, `<\|call\|>` | OpenAI gpt-oss-20b, gpt-oss-120b |
+| **SmolLM3** | `<tool_call>` + arch `smollm3` | HuggingFaceTB/SmolLM3 |
+| **Hermes** | `"You are a function calling AI model"` | Nous Hermes 2 Pro / Hermes 3 |
+| **DeepSeek V3.1** | `<｜tool▁calls▁begin｜>` (fullwidth) | DeepSeek-V3.1 |
+| **IBM Granite** | `<\|start_of_role\|>` | Granite 3.x Instruct |
+| **Phi-4 mini** | `<\|tool\|>`, `<\|/tool\|>` | Microsoft Phi-4-mini-instruct |
+| **Functionary v3** | `>>>all` literal | meetkai/functionary-medium-v3.2 |
+| **Llama 3.x** | `<\|python_tag\|>` | Llama 3.1 / 3.2 / 3.3 Instruct |
+| **GLM 4.5 / 4.6** | `<arg_key>`, `<arg_value>` | zai-org GLM-4.5, GLM-4.6 |
+| **GLM 4.7** | single-line `<tool_call>...<arg_key>` | zai-org GLM-4.7 |
+| **Kimi K2** | `<\|tool_calls_section_begin\|>` | moonshotai/Kimi-K2-Instruct |
+| **InternLM2** | GGUF architecture `internlm2` | InternLM2 / InternLM2.5 chat |
+| **OLMo 3** | `<function_calls>...</function_calls>` | AI2 OLMo 3 Instruct |
+| **LFM2** | `<\|tool_list_start\|>` | Liquid AI LFM2 |
 
-Models in other families (Llama 3.x, Llama 4, DeepSeek V3.x, IBM Granite,
-Phi-4, Command R, GPT-OSS, SmolLM3, and anything new) currently fall
-through with no extraction: the model's raw tool-call markup arrives as
-plain text in `message.content`, the client never invokes the tool, and a
-warning is logged on the first such request. The list of supported
-families is updated periodically as new model families are released and
-their schemas land in the upstream HuggingFace `transformers` test
-fixtures we track. The current schemas live at
+20 families. Models outside this set fall through to no extraction: the
+raw tool-call markup arrives as plain text in `message.content`, the
+client doesn't invoke the tool, and a warning is logged on the first
+such request. The list is updated periodically as new families are
+released and their formats land in the upstream sources we track
+(HuggingFace transformers test fixtures, vLLM tool parsers). Current
+schemas live at
 [`src/lilbee/providers/worker/response_parser/schemas/`](../src/lilbee/providers/worker/response_parser/schemas/).
 
-If you depend on tool calling, pick a model from the table above. The
-longer-term direction is to retire per-family schemas entirely once
-llama.cpp's runtime chat-template autoparser becomes reachable from
-Python; see `docs/architecture.md` for the design and the tracking issue.
+A schema-retirement watcher checks weekly whether upstream HF model
+repos have populated `response_schema` in their `tokenizer_config.json`
+(the documented public API for tool-call parsing in transformers). When
+a repo catches up, the workflow opens an issue with the deletion
+checklist for that family; lilbee retires the local copy and the
+extraction routes through `tokenizer.parse_response()` instead.
+
+The longer-term direction is to retire per-family schemas entirely
+once llama.cpp's runtime chat-template autoparser becomes reachable
+from Python; see `docs/architecture.md` for the design and the
+tracking bead.
 
 ## Fastest start: have the agent configure lilbee for you
 
