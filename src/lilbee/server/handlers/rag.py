@@ -15,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
+from lilbee.providers.base import ContextWindowExceededError
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -54,6 +55,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _classify_stream_error(exc: BaseException) -> tuple[str | None, str]:
+    """Return ``(code, user_message)`` for an SSE error event, typed-exception aware."""
+    if isinstance(exc, ContextWindowExceededError):
+        return "context_length_exceeded", str(exc)
+    return classify_load_error(str(exc))
+
+
 async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
@@ -87,7 +95,7 @@ def _run_llm_stream(
     opts: dict[str, Any] | None,
     queue: asyncio.Queue[str | None],
     cancel: threading.Event,
-    error_holder: list[str],
+    error_holder: list[BaseException],
 ) -> None:
     """Forward tokens from the cap-aware chat orchestrator into the SSE queue."""
     try:
@@ -114,7 +122,7 @@ def _run_llm_stream(
                 kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
                 queue.put_nowait(sse_event(kind, {"token": event.content}))
     except Exception as exc:
-        error_holder.append(str(exc))
+        error_holder.append(exc)
     finally:
         queue.put_nowait(None)
 
@@ -140,7 +148,7 @@ async def _stream_rag_response(
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
     sse = SseStream()
-    error_holder: list[str] = []
+    error_holder: list[BaseException] = []
 
     executor_fut = sse.loop.run_in_executor(
         None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
@@ -150,8 +158,9 @@ async def _stream_rag_response(
         yield event
 
     if error_holder:
-        raw = error_holder[0]
-        code, user_message = classify_load_error(raw)
+        exc = error_holder[0]
+        raw = str(exc)
+        code, user_message = _classify_stream_error(exc)
         log.warning("Stream error: %s", raw)
         yield sse_error(user_message, code=code, detail=raw if code else None)
         sse.cancel.set()
@@ -228,7 +237,7 @@ async def _stream_chat_response(
             yield _sse_for_chat_event(event)
     except Exception as exc:
         raw = str(exc)
-        code, user_message = classify_load_error(raw)
+        code, user_message = _classify_stream_error(exc)
         log.warning("Stream error: %s", raw)
         yield sse_error(user_message, code=code, detail=raw if code else None)
         return

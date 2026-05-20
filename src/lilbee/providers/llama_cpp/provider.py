@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, NoReturn, cast, overload
 
 from lilbee.app.services import get_services
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
-from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import (
+    ClosableIterator,
+    ContextWindowExceededError,
+    LLMProvider,
+    ProviderError,
+    filter_options,
+)
 from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
@@ -105,6 +112,12 @@ _MAX_OOM_RETRIES = 2
 _CTX_QUANTUM = 256
 _CTX_FLOOR = 512
 
+# Minimum usable post-load n_ctx for a chat model. Some GGUF quants ship with
+# ``<arch>.context_length`` missing or zero; llama-cpp silently falls back to
+# its own 512 default, which is too small for any real chat request. We refuse
+# to register such a model rather than failing opaquely on the first turn.
+_MIN_CHAT_CTX = 2048
+
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
 
@@ -120,6 +133,16 @@ class LlamaCppProvider(LLMProvider):
     def __init__(self) -> None:
         self._pool_lock = threading.Lock()
         self._registered_roles: set[WorkerRole] = set()
+
+    @staticmethod
+    def _raise_chat_worker_error(exc: WorkerError) -> NoReturn:
+        """Translate a worker-side chat error into the right parent-side exception."""
+        if exc.original_type == ContextWindowExceededError.__name__:
+            raise ContextWindowExceededError(exc.message) from exc
+        raise ProviderError(
+            LlamaCppProvider._worker_error_message("Chat", exc),
+            provider="llama-cpp",
+        ) from exc
 
     @staticmethod
     def _worker_error_message(role_label: str, exc: WorkerError) -> str:
@@ -418,10 +441,7 @@ class LlamaCppProvider(LLMProvider):
                     "",
                 )
         except WorkerError as exc:
-            raise ProviderError(
-                self._worker_error_message("Chat", exc),
-                provider="llama-cpp",
-            ) from exc
+            self._raise_chat_worker_error(exc)
         except TimeoutError as exc:
             raise ProviderError(
                 "Chat worker timed out. Please try again.",
@@ -605,10 +625,7 @@ class _PoolChatStreamIterator:
             raise
         except WorkerError as exc:
             self._exhausted = True
-            raise ProviderError(
-                LlamaCppProvider._worker_error_message("Chat", exc),
-                provider="llama-cpp",
-            ) from exc
+            LlamaCppProvider._raise_chat_worker_error(exc)
 
     def __next__(self) -> ChatStreamItem:
         if self._exhausted:
@@ -623,13 +640,11 @@ class _PoolChatStreamIterator:
             self._exhausted = True
             raise StopIteration from None
         except WorkerError as exc:
-            # Mid-stream worker crashes propagate as ProviderError so the
-            # streaming path matches the non-streaming contract.
+            # Mid-stream worker errors translate the same way the non-stream
+            # path does: context overflow surfaces as ContextWindowExceededError,
+            # everything else as a generic ProviderError.
             self._exhausted = True
-            raise ProviderError(
-                LlamaCppProvider._worker_error_message("Chat", exc),
-                provider="llama-cpp",
-            ) from exc
+            LlamaCppProvider._raise_chat_worker_error(exc)
         except TimeoutError as exc:
             self._exhausted = True
             raise ProviderError(
@@ -834,8 +849,34 @@ def load_llama(
         from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
 
         with _llama_n_seq_max(EMBED_N_SEQ_MAX):
-            return _construct_llama(Llama, model_path, kwargs)
-    return _construct_llama(Llama, model_path, kwargs)
+            llm = _construct_llama(Llama, model_path, kwargs)
+    else:
+        llm = _construct_llama(Llama, model_path, kwargs)
+    if mode == LoaderMode.CHAT:
+        _validate_chat_context_window(llm, model_path)
+    return llm
+
+
+def _validate_chat_context_window(llm: Any, model_path: Path) -> None:
+    """Refuse a chat model whose post-load ``n_ctx`` is below the chat minimum.
+
+    Triggered by GGUFs that report ``context_length=0`` (broken quant metadata):
+    llama-cpp silently falls back to its 512-token default, which can't fit any
+    realistic prompt and surfaces as an opaque 500 on the first request.
+    """
+    actual = int(llm.n_ctx())
+    if actual >= _MIN_CHAT_CTX:
+        return
+    with contextlib.suppress(Exception):
+        llm.close()
+    raise ProviderError(
+        f"Chat model {model_path.name!r} loaded with n_ctx={actual}, which is below "
+        f"the {_MIN_CHAT_CTX}-token minimum for chat. This usually means the GGUF's "
+        "metadata is broken (missing or zero context_length). Try a different quant "
+        "of the model, or set 'num_ctx' (LILBEE_NUM_CTX) in lilbee config to "
+        "override.",
+        provider="llama-cpp",
+    )
 
 
 def _safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
@@ -1004,10 +1045,48 @@ def _is_load_oom(exc: ValueError) -> bool:
     return "llama_context" in err or "load model from file" in err
 
 
+_UNSUPPORTED_ARCH_PATTERNS = (
+    "unknown model architecture",
+    "unknown architecture",
+)
+
+# llama-cpp's "unknown architecture" messages embed the offending name in
+# one of two shapes: ``architecture: 'name'`` or ``architecture 'name'``.
+# The named group is optional; if extraction fails we still wrap the error,
+# just without the architecture label.
+_ARCH_NAME_RE = re.compile(
+    r"(?:unknown\s+(?:model\s+)?architecture)\s*[:\s]+'?([A-Za-z0-9_.\-]+)'?",
+    re.IGNORECASE,
+)
+
+
+def _wrap_unsupported_architecture(model_path: Path, exc: ValueError) -> ValueError | None:
+    """Wrap a llama-cpp ``unknown architecture`` ValueError with a usable hint."""
+    err = str(exc)
+    lower = err.lower()
+    if not any(p in lower for p in _UNSUPPORTED_ARCH_PATTERNS):
+        return None
+    match = _ARCH_NAME_RE.search(err)
+    if match:
+        arch_clause = f" architecture {match.group(1)!r}"
+        trailing = ""
+    else:
+        arch_clause = ""
+        trailing = f" (llama.cpp: {err})"
+    return ValueError(
+        f"Model {model_path.name!r} uses{arch_clause} which lilbee's native runtime "
+        "doesn't support yet. Pick a different model from the catalog, or set "
+        f"LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and select the model there.{trailing}"
+    )
+
+
 def _wrap_llama_load_error(
     model_path: Path, kwargs: dict[str, Any], exc: ValueError
 ) -> ValueError | None:
     """Diagnostic ValueError for opaque llama.cpp load failures, or None to pass through."""
+    arch_wrap = _wrap_unsupported_architecture(model_path, exc)
+    if arch_wrap is not None:
+        return arch_wrap
     err = str(exc)
     if "llama_context" not in err and "load model from file" not in err:
         return None

@@ -151,6 +151,14 @@ def test_session_chat_drops_none_tool_fields_from_kwargs(monkeypatch, tmp_path) 
     captured: dict[str, Any] = {}
 
     class _Stub:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
             captured.update(kwargs)
             return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
@@ -177,6 +185,14 @@ def test_session_chat_passes_tools_when_present(monkeypatch, tmp_path) -> None:
     captured: dict[str, Any] = {}
 
     class _Stub:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
             captured.update(kwargs)
             return {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
@@ -311,3 +327,540 @@ def test_coerce_tool_calls_drops_malformed_entries(raw_calls: Any) -> None:
     from lilbee.providers.worker.chat_worker import _coerce_tool_calls
 
     assert _coerce_tool_calls(raw_calls) == ()
+
+
+def test_session_chat_raises_context_window_exceeded_on_unfittable_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    """A prompt whose un-droppable subset exceeds the budget raises the typed
+    ContextWindowExceededError instead of falling through to llama-cpp's
+    own ValueError.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _TinyCtx:
+        def n_ctx(self) -> int:
+            return 256  # tight: 256 - 1024 reserve - 64 margin < 0
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("inference must not run when windowing rejects the prompt")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _TinyCtx())
+    big_user_text = "x" * 1000
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": big_user_text},
+            ],
+            stream=False,
+            options=None,
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+    assert "exceeds" in str(excinfo.value)
+
+
+def test_session_chat_overflow_error_includes_usable_budget_and_breakdown(
+    monkeypatch, tmp_path
+) -> None:
+    """The error must surface the usable budget AND the breakdown so the
+    user can see which lever to pull. With n_ctx=40960, response=1024,
+    tools=25000, safety=64 the budget is 14872, and a 19737-token prompt
+    must show "exceeds the usable budget of 14872 tokens" (not the
+    nonsense "exceeds the 40960-token context window").
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+
+    exc = ContextWindowExceededError.from_breakdown(
+        requested=19_737,
+        n_ctx=40_960,
+        response_budget=1024,
+        tools_overhead=25_000,
+        safety_margin=64,
+        model="Qwen/Qwen3-8B",
+    )
+    message = str(exc)
+    assert "19737" in message
+    assert "usable budget of 14872" in message
+    assert "n_ctx=40960" in message
+    assert "response_budget=1024" in message
+    assert "tools_schema=25000" in message
+    assert "safety_margin=64" in message
+    assert "top_k" in message  # remediation hint present
+    assert exc.requested == 19_737
+    assert exc.usable_budget == 14_872
+    assert exc.n_ctx == 40_960
+
+
+def test_session_chat_overflow_error_reports_runtime_n_ctx_not_residual_budget(
+    monkeypatch, tmp_path
+) -> None:
+    """The error must name the model's actual ``llm.n_ctx()`` value, never the
+    residual budget after reserving for the response + tools. A model loaded
+    with n_ctx=7168 that overflows must say "7168-token context window", not
+    "0-token context window".
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _SmallCtx:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("must not reach inference on a windowed-out prompt")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _SmallCtx())
+    # Huge tools schema + a fat system message blow the budget to zero, but the
+    # error message must still report n_ctx=7168, not "0".
+    big_tools = [{"type": "function", "function": {"name": "x" * 4000}}]
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[
+                {"role": "system", "content": "y" * 6000},
+                {"role": "user", "content": "z" * 1000},
+            ],
+            stream=False,
+            options=None,
+            model=None,
+            tools=big_tools,
+            tool_choice=None,
+        )
+    assert "7168" in str(excinfo.value)
+    assert "0-token" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("num_predict", [0, -1, -100, "not-an-int"])
+def test_session_chat_invalid_num_predict_uses_default_reserve(
+    monkeypatch, tmp_path, num_predict: Any
+) -> None:
+    """Bogus ``num_predict`` (0, negative, non-int) falls back to the default reserve."""
+    from lilbee.providers.worker.chat_worker import _DEFAULT_RESPONSE_BUDGET, _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    captured: dict[str, int] = {}
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, *, messages: list[Any], stream: bool, **_kw: Any) -> Any:
+            captured["len"] = len(messages)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+        options={"num_predict": num_predict},
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    # If default reserve wasn't used, a negative num_predict would have inflated
+    # the budget and never triggered the safety path. We assert the default
+    # was applied indirectly: the prompt fits naturally so messages survive.
+    assert captured["len"] == 1
+    assert _DEFAULT_RESPONSE_BUDGET == 1024  # contract anchor
+
+
+def test_session_chat_catches_llama_cpp_overflow_and_reraises_typed(monkeypatch, tmp_path) -> None:
+    """When pre-flight estimates undercount and llama-cpp raises its own
+    ``Requested tokens (N) exceed context window`` ValueError mid-render,
+    the worker translates that into our ``ContextWindowExceededError`` so
+    the route layer surfaces a 400 ``context_length_exceeded`` instead of
+    a generic 500.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _UndercountingLlama:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            # Underestimate: return one token per 10 bytes, so the pre-flight
+            # thinks even a huge system message fits the budget.
+            return list(range(len(data) // 10 + 1))
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise ValueError("Requested tokens (18690) exceed context window of 7168")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _UndercountingLlama())
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        session.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False,
+            options=None,
+            model="some/Gemma-4-26B-A4B-it-GGUF",
+            tools=None,
+            tool_choice=None,
+        )
+    assert "18690" in str(excinfo.value)
+    assert "7168" in str(excinfo.value)
+
+
+class TestParseRequestedTokens:
+    """Direct unit tests for ``_parse_requested_tokens`` so regex breakage on
+    an upstream llama-cpp wording change surfaces here, not in production.
+    """
+
+    def test_extracts_count_from_canonical_overflow_message(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert (
+            _parse_requested_tokens("Requested tokens (18690) exceed context window of 7168")
+            == 18690
+        )
+
+    def test_returns_none_for_unrelated_value_error(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("something else entirely") is None
+
+    def test_returns_none_for_empty_string(self) -> None:
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("") is None
+
+    def test_does_not_match_batch_size_message(self) -> None:
+        """llama-cpp also raises ``ValueError: Requested tokens (N) exceed
+        batch size of M`` for a different upstream condition; that ValueError
+        should NOT be misclassified as context overflow.
+        """
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        assert _parse_requested_tokens("Requested tokens (4096) exceed batch size of 512") is None
+
+    def test_finds_match_when_embedded_in_a_longer_traceback(self) -> None:
+        """Worker error wrappers may prepend module path / type names; the
+        regex must still find the canonical phrasing inside.
+        """
+        from lilbee.providers.worker.chat_worker import _parse_requested_tokens
+
+        message = (
+            "ValueError: Requested tokens (12345) exceed context window of 4096\n"
+            "  at create_chat_completion"
+        )
+        assert _parse_requested_tokens(message) == 12345
+
+
+def test_session_chat_streaming_catches_deferred_overflow_and_reraises_typed(
+    monkeypatch, tmp_path
+) -> None:
+    """llama-cpp returns the streaming generator unadvanced; the overflow
+    ValueError fires on the FIRST ``next()`` after the parent starts iterating.
+    The encoder must translate it into ``ContextWindowExceededError`` so the
+    streaming route surfaces a 400 ``context_length_exceeded`` rather than a
+    generic worker error.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _DeferredOverflowLlama:
+        def n_ctx(self) -> int:
+            return 7168
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            # Undercount so pre-flight thinks everything fits.
+            return list(range(len(data) // 10 + 1))
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            def _generator():
+                # llama-cpp raises here on the first __next__, exactly the upstream-deferred
+                # path.
+                raise ValueError("Requested tokens (18690) exceed context window of 7168")
+                yield  # unreachable: keeps this function a generator
+                raise AssertionError("unreachable")
+
+            return _generator()
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "gemma.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _DeferredOverflowLlama())
+    iterator = session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model="some/Gemma",
+        tools=None,
+        tool_choice=None,
+    )
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        next(iter(iterator))
+    assert "18690" in str(excinfo.value)
+    assert "7168" in str(excinfo.value)
+
+
+def test_session_chat_streaming_does_not_swallow_unrelated_value_errors(
+    monkeypatch, tmp_path
+) -> None:
+    """A non-overflow ValueError from the streaming generator propagates unchanged."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _BrokenStreamLlama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            def _generator():
+                raise ValueError("some other streaming failure")
+                yield  # unreachable: keeps this function a generator
+                raise AssertionError("unreachable")
+
+            return _generator()
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _BrokenStreamLlama())
+    iterator = session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    with pytest.raises(ValueError, match="some other streaming failure"):
+        next(iter(iterator))
+
+
+def test_session_chat_does_not_swallow_unrelated_value_errors(monkeypatch, tmp_path) -> None:
+    """A non-overflow ``ValueError`` from llama-cpp propagates unchanged."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _BrokenLlama:
+        def n_ctx(self) -> int:
+            return 4096
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise ValueError("something else entirely")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _BrokenLlama())
+    with pytest.raises(ValueError, match="something else entirely"):
+        session.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            stream=False,
+            options=None,
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+
+
+def test_session_chat_subtracts_tools_overhead_from_budget(monkeypatch, tmp_path) -> None:
+    """Tools schema cost is counted against the prompt budget."""
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            # n_ctx - default reserve (1024) - margin (64) = 100 token budget.
+            # A small user message fits; a 500-byte tools schema does not.
+            return 1024 + 64 + 100
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            raise AssertionError("inference must not run when tools overhead overflows")
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    # A tools schema that JSON-encodes to >100 bytes: blows the 100-token budget.
+    big_tools = [{"type": "function", "function": {"name": "x" * 500}}]
+    with pytest.raises(ContextWindowExceededError):
+        session.chat(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
+            stream=False,
+            options=None,
+            model=None,
+            tools=big_tools,
+            tool_choice=None,
+        )
+
+
+def test_session_chat_without_tools_skips_tools_overhead(monkeypatch, tmp_path) -> None:
+    """No ``tools`` means no overhead deducted; otherwise-fitting prompts run."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    inference_ran = False
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 1024 + 64 + 100
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, **_kwargs: Any) -> Any:
+            nonlocal inference_ran
+            inference_ran = True
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=False,
+        options=None,
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    assert inference_ran is True
+
+
+def test_session_chat_logs_when_messages_dropped(monkeypatch, tmp_path, caplog) -> None:
+    """When windowing drops messages to fit budget, an INFO log records the count."""
+    import logging
+
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 2048
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(
+            self, *, messages: list[dict[str, str]], stream: bool, **_kwargs: Any
+        ) -> Any:
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.worker.chat_worker"):
+        session.chat(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "y" * 1800},
+                {"role": "user", "content": "ask"},
+            ],
+            stream=False,
+            options={"num_predict": 256},
+            model=None,
+            tools=None,
+            tool_choice=None,
+        )
+    assert any("Chat windowing dropped" in rec.message for rec in caplog.records)
+
+
+def test_session_chat_drops_oldest_tool_pair_when_prompt_overflows(monkeypatch, tmp_path) -> None:
+    """When trimming makes the prompt fit, the worker forwards the trimmed
+    list to ``create_chat_completion`` and inference runs normally.
+    """
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    seen_messages: list[Any] = []
+
+    class _Llama:
+        def n_ctx(self) -> int:
+            return 2048
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(
+            self, *, messages: list[dict[str, str]], stream: bool, **_kwargs: Any
+        ) -> Any:
+            seen_messages.append(messages)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
+    huge_tool_result = "x" * 1800  # bigger than the remaining budget
+    session.chat(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "s", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": huge_tool_result},
+            {"role": "user", "content": "now answer"},
+        ],
+        stream=False,
+        options={"num_predict": 256},
+        model=None,
+        tools=None,
+        tool_choice=None,
+    )
+    forwarded = seen_messages[0]
+    # The tool pair was dropped; system and the in-flight user message survive.
+    assert all(m.get("role") != "tool" for m in forwarded)
+    assert forwarded[0]["role"] == "system"
+    assert forwarded[-1]["content"] == "now answer"

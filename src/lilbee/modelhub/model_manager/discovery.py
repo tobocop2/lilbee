@@ -2,6 +2,8 @@
 
 import logging
 import os
+import time
+from threading import Lock
 
 import httpx
 
@@ -9,6 +11,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.providers.model_ref import format_remote_ref
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
@@ -142,3 +145,74 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the SDK backend."""
     return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
+
+
+def gather_known_model_refs() -> set[str]:
+    """Compose canonical refs from native registry + Ollama tags + frontier APIs.
+
+    Reuses the existing primitives: ``registry.list_installed`` for native
+    GGUF installs, ``classify_remote_models`` for Ollama / OpenAI-compatible
+    local backends, and ``discover_api_models`` for frontier providers.
+    Each primitive already swallows its own failures, so a backend being
+    down contributes an empty subset rather than raising.
+    """
+    refs = {m.ref for m in get_services().registry.list_installed()}
+    for rm in classify_remote_models(cfg.remote_base_url):
+        refs.add(format_remote_ref(rm.name, rm.provider))
+    for models in discover_api_models().values():
+        for rm in models:
+            refs.add(format_remote_ref(rm.name, rm.provider))
+    return refs
+
+
+class KnownModelCache:
+    """TTL-cached union of native + remote + frontier model refs."""
+
+    DEFAULT_TTL_S = 30.0
+
+    def __init__(self, ttl_s: float = DEFAULT_TTL_S) -> None:
+        self._ttl_s = ttl_s
+        self._refs: frozenset[str] = frozenset()
+        self._expires_at: float = 0.0
+        # Bumped by every ``invalidate()`` so a refresh in flight knows
+        # whether a mutation happened during its I/O. Without this, a
+        # cold-start refresh that races with an ``invalidate()`` would
+        # extend the expiry over a result that pre-dates the mutation.
+        self._generation: int = 0
+        self._lock = Lock()
+
+    def refs(self) -> frozenset[str]:
+        """Return the cached canonical-ref set, refreshing past the TTL.
+
+        HTTP and SDK fan-out runs outside the lock so concurrent requests
+        don't serialise behind one slow refresh. If ``invalidate()`` lands
+        between the I/O and the swap, the fresh set is still stored but
+        the expiry stays at zero so the next caller re-probes.
+        """
+        with self._lock:
+            if time.monotonic() < self._expires_at:
+                return self._refs
+            captured_generation = self._generation
+        fresh = frozenset(gather_known_model_refs())
+        with self._lock:
+            self._refs = fresh
+            if self._generation == captured_generation:
+                self._expires_at = time.monotonic() + self._ttl_s
+            return self._refs
+
+    def resolve(self, model: str) -> str | None:
+        """Resolve *model* to its canonical ref, or None if unknown."""
+        refs = self.refs()
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    def invalidate(self) -> None:
+        """Force the next ``refs()`` call to re-probe."""
+        with self._lock:
+            self._expires_at = 0.0
+            self._generation += 1

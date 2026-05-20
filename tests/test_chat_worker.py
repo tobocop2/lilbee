@@ -43,6 +43,14 @@ _TEST_SHUTDOWN_TIMEOUT_S = 2.0
 
 def _stub_load_streaming(_self: _ChatSession) -> Any:
     class _StubLlama:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(
             self, *, messages: list[dict[str, str]], stream: bool, **kwargs: Any
         ) -> Any:
@@ -65,6 +73,14 @@ def _stub_load_aborts_mid_stream(_self: _ChatSession) -> Any:
     class _StubLlama:
         def __init__(self, abort_flag: Any) -> None:
             self._abort_flag = abort_flag
+
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
 
         def create_chat_completion(
             self,
@@ -116,6 +132,14 @@ def _stub_load_paced_stream(_self: _ChatSession) -> Any:
     """Stub whose stream paces itself so a mid-stream ping has time to land."""
 
     class _StubLlama:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(
             self, *, messages: list[dict[str, str]], stream: bool, **kwargs: Any
         ) -> Any:
@@ -678,6 +702,14 @@ def test_chat_session_chat_passes_options_to_llama(monkeypatch, tmp_path) -> Non
     captured: dict[str, Any] = {}
 
     class _Stub:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
             captured.update(kwargs)
             return {"choices": [{"message": {"content": "ok"}}]}

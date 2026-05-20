@@ -48,7 +48,31 @@ def _services_with(provider: MagicMock, installed: list[MagicMock]) -> Any:
 
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=installed)
+    _populate_known_models(services, installed)
     return services
+
+
+def _populate_known_models(services: Any, installed: list[MagicMock]) -> None:
+    """Mirror installed refs into the KnownModelCache mock the route consults.
+
+    Production builds compose the cache from the registry + Ollama tags +
+    frontier APIs; the route layer only sees the unified set. Route tests
+    that pre-load the registry must also pre-load the cache so resolve()
+    finds the same refs.
+    """
+    refs = {m.ref for m in installed}
+    services.known_models.refs = MagicMock(return_value=refs)
+
+    def _resolve(model: str) -> str | None:
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    services.known_models.resolve = MagicMock(side_effect=_resolve)
 
 
 @pytest.fixture
@@ -397,6 +421,73 @@ class TestNonStreamingCompletion:
         assert body["error"]["type"] == "api_error"
         assert not chat_lock().locked()
 
+    async def test_image_content_part_returns_400_with_openai_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Image content parts in a user message surface as a 400 INVALID_REQUEST.
+
+        The translate layer raises ValueError because lilbee cannot route image
+        data to a chat model yet; the route catches that and returns a clean
+        400 instead of letting it bubble up as a 500.
+        """
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "describe"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "data:image/png;base64,aGVsbG8=",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["code"] == "invalid_request"
+        assert "Image content" in body["error"]["message"]
+
+    async def test_context_window_exceeded_returns_400_with_openai_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        """When the provider raises ``ContextWindowExceededError`` (prompt
+        too large for the loaded model's context window), the wire surface
+        is a 400 with ``context_length_exceeded``, not a generic 500.
+        """
+        from lilbee.providers.base import ContextWindowExceededError
+
+        services_with_chat_model.provider.chat.side_effect = (
+            ContextWindowExceededError.from_runtime_overflow(
+                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
+            )
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "context_length_exceeded"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "161000" in body["error"]["message"]
+        assert not chat_lock().locked()
+
 
 class TestStreamingCompletion:
     async def test_stream_emits_role_content_done(self, services_with_chat_model, _auth_token):
@@ -505,6 +596,36 @@ class TestStreamingCompletion:
         assert chunks[-1] == "[DONE]"
         assert not chat_lock().locked()
 
+    async def test_stream_context_window_exceeded_emits_400_error_frame(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Mid-stream context overflow surfaces as one SSE error frame with
+        ``context_length_exceeded`` followed by ``[DONE]``, not a generic
+        ``internal_error``.
+        """
+        from lilbee.providers.base import ContextWindowExceededError
+
+        services_with_chat_model.provider.chat.side_effect = (
+            ContextWindowExceededError.from_runtime_overflow(
+                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
+            )
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": True,
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[0]["error"]["code"] == "context_length_exceeded"
+        assert chunks[0]["error"]["type"] == "invalid_request_error"
+        assert chunks[-1] == "[DONE]"
+        assert not chat_lock().locked()
+
     async def test_stream_with_tools_emits_tool_call_chunks(
         self, services_with_chat_model, _auth_token
     ):
@@ -599,8 +720,19 @@ class TestAuth:
 
 
 class TestBusy:
-    async def test_busy_backend_returns_429(self, services_with_chat_model, _auth_token):
-        # Pre-acquire the chat lock so the second request sees it held.
+    async def test_busy_backend_returns_429_only_after_wait_timeout(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The route holds the request on the chat lock up to the configured
+        timeout before returning 429. Verifies the wait-then-429 contract that
+        replaced the immediate-bounce behaviour. (bb-2x6j)
+        """
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
+
+        # Tight timeout so the test runs fast; the production default is 60s.
+        monkeypatch.setattr(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05)
+
+        # Pre-acquire the chat lock so the route sees it held.
         lock = chat_lock()
         await lock.acquire()
         try:

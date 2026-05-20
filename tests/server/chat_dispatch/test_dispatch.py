@@ -56,6 +56,24 @@ def services_with_model(monkeypatch):
     installed.ref = "vendor/model::Q4"
     services.registry.list_installed = MagicMock(return_value=[installed])
 
+    # KnownModelCache normally walks the registry + Ollama tags + frontier
+    # APIs; here we hand it a fixed set so dispatch tests don't run real
+    # discovery. The resolve() helper mirrors the production semantics:
+    # canonical match wins, then the ``ollama/<bare:tag>`` probe.
+    known = {"vendor/model::Q4", "ollama/gemma4:26b"}
+    services.known_models.refs = MagicMock(return_value=known)
+
+    def _resolve(model: str) -> str | None:
+        if model in known:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in known:
+                return prefixed
+        return None
+
+    services.known_models.resolve = MagicMock(side_effect=_resolve)
+
     set_services(services)
     yield services
     set_services(None)
@@ -169,6 +187,38 @@ class TestDispatchChat:
         with pytest.raises(ModelNotFoundError) as exc_info:
             dispatch_chat(_req(model="missing/model::Q4"))
         assert exc_info.value.model == "missing/model::Q4"
+
+    def test_remote_prefixed_ref_resolves_via_cache(self, services_with_model) -> None:
+        """A canonical ``ollama/...`` ref lands directly in the discovered set;
+        the route hands it to the provider verbatim (bb-zsnf).
+        """
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        resp = dispatch_chat(_req(model="ollama/gemma4:26b"))
+        assert resp.model == "ollama/gemma4:26b"
+        # Provider sees the canonical form, matching the cached ref.
+        assert services_with_model.provider.chat.call_args.kwargs["model"] == "ollama/gemma4:26b"
+
+    def test_bare_ollama_name_canonicalizes_via_cache(self, services_with_model) -> None:
+        """A bare ``name:tag`` resolves to the cache's ``ollama/<name:tag>`` entry
+        and the canonical form is what reaches the provider (bb-zsnf).
+        """
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        resp = dispatch_chat(_req(model="gemma4:26b"))
+        assert resp.model == "ollama/gemma4:26b"
+        assert services_with_model.provider.chat.call_args.kwargs["model"] == "ollama/gemma4:26b"
+
+    def test_bare_name_without_cache_entry_raises(self, services_with_model) -> None:
+        """A bare ``name:tag`` with no matching ``ollama/<name:tag>`` in the
+        discovered set surfaces ``ModelNotFoundError`` instead of silently
+        forwarding a guess to Ollama.
+        """
+        with pytest.raises(ModelNotFoundError) as exc_info:
+            dispatch_chat(_req(model="nonexistent:99b"))
+        assert exc_info.value.model == "nonexistent:99b"
 
     def test_tools_against_unsupported_model_raises(self, services_with_model) -> None:
         services_with_model.provider.supports_tools.return_value = False

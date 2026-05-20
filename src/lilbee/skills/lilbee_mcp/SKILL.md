@@ -70,7 +70,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
-| `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `top_k` omitted falls back to `cfg.top_k` so `settings_set` governs candidate count. `scope` = `"raw"` / `"wiki"` / `"both"` (default). No LLM call. |
+| `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `top_k` omitted falls back to `cfg.top_k` so `settings_set` governs candidate count. Cap `top_k` at ~20 for small-context chat models (Gemma 4 at `n_ctx=7168`, Qwen3 with widened retrieval); higher values can produce tool responses that exceed the next chat turn's budget. `scope` = `"raw"` / `"wiki"` / `"both"` (default). No LLM call. |
 | `lilbee_status()` | Indexed sources, total chunks, active model refs. First call of any session. |
 | `lilbee_list_documents()` | All indexed sources with chunk counts. |
 | `lilbee_init(path)` | Create a `.lilbee/` in the given dir and switch the session to it. |

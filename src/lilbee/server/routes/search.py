@@ -16,7 +16,7 @@ from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
-    acquire_or_raise_busy,
+    acquire_chat_lock_or_busy,
     chat_lock,
 )
 from lilbee.server.models import (
@@ -26,10 +26,10 @@ from lilbee.server.models import (
 )
 
 
-def _acquire_chat_lock_or_raise() -> None:
+async def _acquire_chat_lock_or_raise() -> None:
     """Translate the canonical busy signal into Litestar's HTTP 429 envelope."""
     try:
-        acquire_or_raise_busy()
+        await acquire_chat_lock_or_busy()
     except ChatBusyError as exc:
         raise HTTPException(status_code=429, headers={"Retry-After": "1"}) from exc
 
@@ -89,8 +89,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
 @post("/api/ask/stream")
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
-    _acquire_chat_lock_or_raise()
-    await chat_lock().acquire()
+    await _acquire_chat_lock_or_raise()
     return Stream(
         _gated_stream(
             handlers.ask_stream(
@@ -122,8 +121,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
 @post("/api/chat/stream")
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
-    _acquire_chat_lock_or_raise()
-    await chat_lock().acquire()
+    await _acquire_chat_lock_or_raise()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import re
 import threading
 import time
 from typing import Any
 
+from lilbee.providers.base import ContextWindowExceededError
 from lilbee.providers.worker.transport import (
     ChatRequest,
     ChatResult,
@@ -16,8 +19,17 @@ from lilbee.providers.worker.transport import (
     ToolCallDelta,
 )
 from lilbee.providers.worker.transport_pipe import _serialize_exception
+from lilbee.providers.worker.windowing import count_tools_overhead, window_messages_to_budget
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
+
+log = logging.getLogger(__name__)
+
+# Reserved tokens for the model's response when the caller omits ``num_predict``.
+_DEFAULT_RESPONSE_BUDGET = 1024
+
+# Tokenizer-drift cushion between count-time and inference-time.
+_CTX_SAFETY_MARGIN = 64
 
 _ABORT_BRIDGE_POLL_S = 0.025
 """How often the abort bridge polls the parent's mp.Value flag.
@@ -72,12 +84,83 @@ class _ChatSession:
     ) -> Any:
         """Run one chat completion and return the llama-cpp response."""
         llm = self._ensure_loaded(model)
+        windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
-        return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
+        try:
+            result = llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+        except ValueError as exc:
+            self._reraise_if_context_overflow(exc, llm, model)
+            raise
+        if stream:
+            return _translate_stream_overflow(result, llm, model, self._role_config)
+        return result
+
+    def _reraise_if_context_overflow(
+        self, exc: ValueError, llm: Any, model_ref: str | None
+    ) -> None:
+        """Re-raise as ``ContextWindowExceededError`` if the message matches llama-cpp's
+        overflow phrasing; otherwise return so the original exception propagates.
+        """
+        requested = _parse_requested_tokens(str(exc))
+        if requested is None:
+            return
+        raise ContextWindowExceededError.from_runtime_overflow(
+            requested=requested,
+            n_ctx=int(llm.n_ctx()),
+            model=model_ref or self._role_config.model_path.name,
+        ) from exc
+
+    def _window_messages(
+        self,
+        messages: list[dict[str, Any]],
+        options: dict[str, Any] | None,
+        llm: Any,
+        *,
+        tools: list[dict[str, Any]] | None,
+        model_ref: str | None,
+    ) -> list[dict[str, Any]]:
+        """Trim *messages* to fit the loaded model's context window."""
+        requested_predict = (options or {}).get("num_predict")
+        # Treat 0 / negative / missing as "no caller-supplied cap" and reserve
+        # the default. ``-1`` is the llama-cpp / Ollama "unlimited" convention;
+        # we cannot reason about an unbounded reservation so we fall back too.
+        if not isinstance(requested_predict, int) or requested_predict <= 0:
+            reserved = _DEFAULT_RESPONSE_BUDGET
+        else:
+            reserved = requested_predict
+
+        def tokenize(data: bytes) -> list[int]:
+            result: list[int] = llm.tokenize(data, add_bos=False, special=False)
+            return result
+
+        tools_overhead = count_tools_overhead(tools, tokenize)
+        n_ctx = int(llm.n_ctx())
+        budget = n_ctx - reserved - _CTX_SAFETY_MARGIN - tools_overhead
+        outcome = window_messages_to_budget(
+            messages,
+            budget=max(0, budget),
+            tokenize=tokenize,
+        )
+        if outcome.messages is None:
+            raise ContextWindowExceededError.from_breakdown(
+                requested=outcome.requested,
+                n_ctx=n_ctx,
+                response_budget=reserved,
+                tools_overhead=tools_overhead,
+                safety_margin=_CTX_SAFETY_MARGIN,
+                model=model_ref or self._role_config.model_path.name,
+            )
+        if outcome.dropped:
+            log.info(
+                "Chat windowing dropped %d messages to fit budget=%d",
+                outcome.dropped,
+                budget,
+            )
+        return outcome.messages
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
         from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
@@ -109,6 +192,39 @@ class _ChatSession:
 
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
+
+# Mirrors llama-cpp's verbatim phrasing in `llama_cpp/llama.py::Llama._create_completion`.
+# A wording change upstream will surface as a CI failure on the typed-overflow
+# test, prompting a deliberate update here rather than silently regressing.
+_CTX_OVERFLOW_PATTERN = re.compile(r"Requested tokens \((\d+)\) exceed context window of \d+")
+
+
+def _parse_requested_tokens(message: str) -> int | None:
+    """Extract ``N`` from llama-cpp's ``Requested tokens (N) exceed context window`` text."""
+    match = _CTX_OVERFLOW_PATTERN.search(message)
+    return int(match.group(1)) if match else None
+
+
+def _translate_stream_overflow(
+    response_iter: Any,
+    llm: Any,
+    model_ref: str | None,
+    role_config: RoleConfig,
+) -> Any:
+    """Translate llama-cpp's deferred context-overflow ``ValueError`` from a
+    streaming generator into ``ContextWindowExceededError``.
+    """
+    try:
+        yield from response_iter
+    except ValueError as exc:
+        requested = _parse_requested_tokens(str(exc))
+        if requested is None:
+            raise
+        raise ContextWindowExceededError.from_runtime_overflow(
+            requested=requested,
+            n_ctx=int(llm.n_ctx()),
+            model=model_ref or role_config.model_path.name,
+        ) from exc
 
 
 def _coerce_finish_reason(raw: str | None) -> FinishReason:

@@ -293,18 +293,235 @@ def test_sdk_provider_forwards_tools_and_tool_choice_when_supported() -> None:
     assert captured[0].options["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
-def test_litellm_supports_tools_false() -> None:
-    """The litellm backend reports no tool support today.
+def test_litellm_supports_tools_true_optimistic() -> None:
+    """The litellm backend reports tool support for any SDK-routed ref.
 
-    The SDK path can forward tool definitions and receive tool calls but
-    does not yet parse them out of the litellm response. Returning False
-    makes the dispatcher surface a clean ``ModelDoesNotSupportToolsError``
-    instead of silently dropping the tool calls from the response.
+    litellm forwards tool definitions to the configured backend; lilbee
+    extracts the response-side tool calls via ``_LitellmResponseView``.
+    A specific model that lacks a tool template just returns an empty
+    tool_calls list, which the dispatch handles as a normal end-of-turn.
+    A strict per-model probe would falsely block every Ollama-routed
+    chat since litellm has no Ollama-tag-level tool metadata.
     """
     from lilbee.providers.litellm_sdk import LitellmSdkBackend
 
     backend = LitellmSdkBackend()
-    assert backend.supports_tools("openai/gpt-4o") is False
+    assert backend.supports_tools("openai/gpt-4o") is True
+    assert backend.supports_tools("ollama/gemma4:26b") is True
+
+
+def test_litellm_response_view_tool_calls_empty_on_missing_pieces() -> None:
+    """Defensive null-paths in the litellm response view.
+
+    A truncated or pre-init litellm response object can carry no choices,
+    a choice with no message, or a stream chunk with no delta. The
+    extractors must return an empty tuple in each case rather than
+    raising; otherwise a transient SDK shape change would crash chat.
+    """
+    from types import SimpleNamespace
+
+    from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+    # choices=None / empty list -> no tool calls
+    no_choices = _LitellmResponseView(SimpleNamespace(choices=None))
+    assert no_choices.tool_calls == ()
+    assert no_choices.delta_tool_calls == ()
+    # choice without a message -> empty
+    no_message = _LitellmResponseView(SimpleNamespace(choices=[SimpleNamespace(message=None)]))
+    assert no_message.tool_calls == ()
+    # streaming chunk without a delta -> empty
+    no_delta = _LitellmResponseView(
+        SimpleNamespace(choices=[SimpleNamespace(delta=None, finish_reason=None)])
+    )
+    assert no_delta.delta_tool_calls == ()
+
+
+def test_litellm_complete_extracts_tool_calls(monkeypatch) -> None:
+    """``LitellmSdkBackend.complete`` surfaces tool calls from the response."""
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.model_ref import parse_model_ref
+    from lilbee.providers.sdk_backend import CompletionRequest
+
+    response = SimpleNamespace(
+        model="ollama/gemma4:26b",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="",
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call_42",
+                            function=SimpleNamespace(
+                                name="lilbee_search",
+                                arguments='{"query": "chat worker"}',
+                            ),
+                        ),
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+    )
+    fake_litellm = MagicMock()
+    fake_litellm.completion.return_value = response
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+
+    backend = LitellmSdkBackend()
+    request = CompletionRequest(
+        ref=parse_model_ref("ollama/gemma4:26b"),
+        messages=[{"role": "user", "content": "find the chat worker"}],
+        api_base="http://localhost:11434",
+    )
+    result = backend.complete(request)
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call.id == "call_42"
+    assert call.name == "lilbee_search"
+    assert call.arguments == '{"query": "chat worker"}'
+    assert result.finish_reason == "tool_calls"
+
+
+def test_litellm_stream_extracts_tool_call_deltas(monkeypatch) -> None:
+    """Streaming chunks surface ``tool_call_deltas`` so the dispatch can
+    rebuild a complete ``ToolUseBlock`` from the accumulated frames.
+    """
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.model_ref import parse_model_ref
+    from lilbee.providers.sdk_backend import CompletionRequest
+
+    chunks = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_7",
+                                function=SimpleNamespace(name="lilbee_search", arguments=""),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(name=None, arguments='{"q":"x"}'),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="", tool_calls=None),
+                    finish_reason="tool_calls",
+                )
+            ],
+        ),
+    ]
+    fake_litellm = MagicMock()
+    fake_litellm.completion.return_value = iter(chunks)
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+
+    backend = LitellmSdkBackend()
+    request = CompletionRequest(
+        ref=parse_model_ref("ollama/gemma4:26b"),
+        messages=[{"role": "user", "content": "search"}],
+        api_base="http://localhost:11434",
+    )
+    collected = list(backend.complete_stream(request))
+    # First chunk opens the tool call with id + name.
+    opener_deltas = collected[0].tool_call_deltas
+    assert opener_deltas[0].id == "call_7"
+    assert opener_deltas[0].name == "lilbee_search"
+    # Second chunk continues with argument bytes.
+    args_deltas = collected[1].tool_call_deltas
+    assert args_deltas[0].arguments_delta == '{"q":"x"}'
+    # Final chunk carries the finish reason.
+    assert collected[-1].finish_reason == "tool_calls"
+
+
+def test_sdk_provider_propagates_tool_calls_to_chat_result(monkeypatch) -> None:
+    """``SdkLLMProvider.chat`` lifts SDK tool calls into ``ChatResult.tool_calls``."""
+    from lilbee.providers.sdk_backend import CompletionResult, SdkToolCall
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    backend = _StubBackend(tools_supported=True)
+    backend.complete = MagicMock(  # type: ignore[method-assign]
+        return_value=CompletionResult(
+            content="",
+            finish_reason="tool_calls",
+            model="ollama/gemma4:26b",
+            tool_calls=(SdkToolCall(id="c1", name="lilbee_search", arguments='{"q":"x"}'),),
+        )
+    )
+    provider = SdkLLMProvider(backend=backend, base_url="http://localhost:11434")
+    result = provider.chat(
+        [{"role": "user", "content": "go"}],
+        tools=[{"type": "function", "function": {"name": "lilbee_search"}}],
+        model="ollama/gemma4:26b",
+    )
+    assert isinstance(result, ChatResult)
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "c1"
+    assert result.tool_calls[0].name == "lilbee_search"
+
+
+def test_sdk_provider_stream_yields_tool_call_deltas(monkeypatch) -> None:
+    """The streaming path yields ``ToolCallDelta`` items between content tokens."""
+    from lilbee.providers.sdk_backend import SdkToolCallDelta, StreamChunk
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+    from lilbee.providers.worker.transport import ToolCallDelta
+
+    backend = _StubBackend(tools_supported=True)
+
+    def _stream(_req):
+        yield StreamChunk(
+            content="",
+            tool_call_deltas=(SdkToolCallDelta(index=0, id="c1", name="lilbee_search"),),
+        )
+        yield StreamChunk(
+            content="",
+            tool_call_deltas=(SdkToolCallDelta(index=0, arguments_delta='{"q":"x"}'),),
+        )
+        yield StreamChunk(content="", finish_reason="tool_calls")
+
+    backend.complete_stream = MagicMock(side_effect=_stream)  # type: ignore[method-assign]
+    provider = SdkLLMProvider(backend=backend, base_url="http://localhost:11434")
+    frames = list(
+        provider.chat(
+            [{"role": "user", "content": "go"}],
+            stream=True,
+            tools=[{"type": "function", "function": {"name": "lilbee_search"}}],
+            model="ollama/gemma4:26b",
+        )
+    )
+    deltas = [f for f in frames if isinstance(f, ToolCallDelta)]
+    assert len(deltas) == 2
+    assert deltas[0].id == "c1"
+    assert deltas[1].arguments_delta == '{"q":"x"}'
 
 
 def test_routing_provider_chat_returns_chat_result() -> None:
