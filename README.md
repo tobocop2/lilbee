@@ -66,23 +66,15 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 
 ## Highlights
 
-One install gets you a TUI, a CLI, an MCP server, a [REST API](https://lilbee.sh/api/), and a Python library. No daemon, no inference server, no vector database to stand up.
-
-Compact: pip wheel is ~10-44 MB (vs the 450-600 MB bundled Electron UIs popular all-in-one desktop AI apps ship before any models load). The standalone binary that folds Python, the model runtime, OCR, the crawler, and the vector store into a single file lands around 253-365 MB across Linux, macOS, and Windows.
-
-Answers cite the source line. Click a citation, jump to the file at the exact line.
-
-Throw anything at it: PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), crawled docs sites.
-
-Pull models from Hugging Face inside the app. Pick something, it downloads, it's ready.
-
-Everything ships bundled in one process: in-process inference, a search engine, file ingestion, citations, an MCP server, and a REST API. The tradeoff is that lilbee's local model catalog tracks [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) and lags Ollama on the newest architectures. For those, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
-
-Everything stays local unless you opt into a cloud model. When you do, lilbee flags it.
-
-Run globally, or drop a `.lilbee/` next to `.git/` to keep a project's library separate from your other stuff.
-
-Agents can tune lilbee themselves over MCP — swap models, widen retrieval, rebuild the index, all without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
+- **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library, all from a single `pip install`. No daemon, no inference server, no vector database to stand up.
+- **Answers cite the source line.** Click a citation, jump to the file at the exact line.
+- **Indexes anything textual.** PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), and crawled documentation sites.
+- **Models from Hugging Face, inside the app.** Browse the catalog, pull a model, assign it to a role. No external CLI.
+- **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python), so lilbee's local catalog tracks what llama-cpp-python can load and lags Ollama on the newest architectures. For those, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
+- **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
+- **Local by default.** Everything stays on your machine unless you opt into a cloud model, and lilbee flags it when you do.
+- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
+- **Compact.** The pip wheel is 10-44 MB (vs. the 450-600 MB Electron-bundled all-in-one desktop AI apps ship before any models load). The standalone binary, which folds Python, the model runtime, OCR, the crawler, and the vector store into a single file, lands around 253-365 MB across Linux, macOS, and Windows.
 
 ## Why lilbee
 
