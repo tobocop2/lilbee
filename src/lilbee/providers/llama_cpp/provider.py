@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -1044,10 +1045,52 @@ def _is_load_oom(exc: ValueError) -> bool:
     return "llama_context" in err or "load model from file" in err
 
 
+_UNSUPPORTED_ARCH_PATTERNS = (
+    "unknown model architecture",
+    "unknown architecture",
+)
+
+# llama-cpp's "unknown architecture" messages embed the offending name in
+# one of two shapes: ``architecture: 'name'`` or ``architecture 'name'``.
+# The named group is optional; if extraction fails we still wrap the error,
+# just without the architecture label.
+_ARCH_NAME_RE = re.compile(
+    r"(?:unknown\s+(?:model\s+)?architecture)\s*[:\s]+'?([A-Za-z0-9_.\-]+)'?",
+    re.IGNORECASE,
+)
+
+
+def _wrap_unsupported_architecture(model_path: Path, exc: ValueError) -> ValueError | None:
+    """Wrap a ``ValueError`` from llama-cpp that means "I don't know this arch".
+
+    The native runtime is ``llama-cpp-python``; some GGUFs in the wild
+    declare architectures (recent Gemma 4 MoE variants, certain GLM4.7 or
+    OLMo3 quants) that the vendored ``llama.cpp`` build doesn't yet
+    implement. The wrapped message names the architecture (when parseable)
+    and points the user at the remote-backend escape hatch instead of
+    suggesting "lower n_ctx", which would do nothing here.
+    """
+    err = str(exc)
+    lower = err.lower()
+    if not any(p in lower for p in _UNSUPPORTED_ARCH_PATTERNS):
+        return None
+    match = _ARCH_NAME_RE.search(err)
+    arch_clause = f" architecture {match.group(1)!r}" if match else ""
+    return ValueError(
+        f"Model {model_path.name!r} uses{arch_clause} which lilbee's native runtime "
+        "(llama-cpp-python) doesn't support yet. Pick a different model from the "
+        "catalog, or set LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and "
+        f"select the model there. (llama.cpp: {err})"
+    )
+
+
 def _wrap_llama_load_error(
     model_path: Path, kwargs: dict[str, Any], exc: ValueError
 ) -> ValueError | None:
     """Diagnostic ValueError for opaque llama.cpp load failures, or None to pass through."""
+    arch_wrap = _wrap_unsupported_architecture(model_path, exc)
+    if arch_wrap is not None:
+        return arch_wrap
     err = str(exc)
     if "llama_context" not in err and "load model from file" not in err:
         return None

@@ -771,6 +771,55 @@ class TestLlamaCppProvider:
         finally:
             cfg.flash_attention = "auto"
 
+    def testload_llama_wraps_unsupported_architecture_with_remote_hint(
+        self, models_dir: Path, tmp_path: Path
+    ) -> None:
+        """llama-cpp ``unknown model architecture`` errors surface as a "not supported" message
+        that names the architecture and points at the remote-backend escape hatch.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        model = models_dir / "exotic.gguf"
+        model.write_bytes(b"x" * 1024)
+        with (
+            patch(
+                "llama_cpp.Llama",
+                side_effect=ValueError("unknown model architecture: 'gemma4'"),
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+        message = str(exc_info.value)
+        assert "exotic.gguf" in message
+        assert "'gemma4'" in message
+        assert "doesn't support" in message
+        assert "LILBEE_REMOTE_BASE_URL" in message
+
+    def testload_llama_wraps_unparseable_unknown_architecture(self, models_dir: Path) -> None:
+        """When the architecture name can't be parsed out, the wrap still fires
+        without the architecture clause but still names the model + escape hatch.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        model = models_dir / "weird.gguf"
+        model.write_bytes(b"x" * 1024)
+        with (
+            patch(
+                "llama_cpp.Llama",
+                side_effect=ValueError("unknown architecture"),
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+        message = str(exc_info.value)
+        assert "weird.gguf" in message
+        assert "doesn't support" in message
+        assert "LILBEE_REMOTE_BASE_URL" in message
+
     def testload_llama_oom_at_min_ctx_raises_diagnostic(self, models_dir: Path) -> None:
         """When n_ctx is already at the floor, OOM retry gives up and wraps the error."""
         from unittest.mock import patch
