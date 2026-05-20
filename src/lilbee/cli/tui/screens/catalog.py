@@ -1821,8 +1821,26 @@ class CatalogScreen(Screen[None]):
 
         The controller owns the worker thread; this screen just fires the
         request and returns. Progress is visible from every screen and
-        survives navigation.
+        survives navigation. When the row's architecture is known-unsupported,
+        confirm with a modal before enqueuing; the modal returns True to
+        proceed with ``allow_unsupported=True`` or False to cancel.
         """
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.confirm_unsupported import ConfirmUnsupportedModal
+
+        if model.compat is ModelCompat.UNSUPPORTED:
+
+            def _after_confirm(verdict: bool | None) -> None:
+                if not verdict:
+                    return
+                self.app.task_bar.start_download(model, allow_unsupported=True)
+                self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
+
+            self.app.push_screen(
+                ConfirmUnsupportedModal(architecture=model.architecture), _after_confirm
+            )
+            return
+
         self.app.task_bar.start_download(model)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
