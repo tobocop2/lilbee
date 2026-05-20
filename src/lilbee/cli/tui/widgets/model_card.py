@@ -22,6 +22,7 @@ from textual.app import ComposeResult
 from textual.content import Content
 from textual.reactive import reactive
 
+from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
@@ -104,6 +105,9 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
     pills.append(pill(row.task, bg, "$text"))
     if row.backend:
         pills.append(pill(row.backend, "$accent", "$text"))
+    compat_chip = _compat_pill(row.compat)
+    if compat_chip is not None:
+        pills.append(compat_chip)
     pill_line = Content(" ").join(pills)
     specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
@@ -124,6 +128,17 @@ def _render_frontier(row: FrontierCatalogRow) -> Content:
     pill_line = Content(" ").join([backend_pill, status_pill])
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")
     return Content("\n").join([name, pill_line, info])
+
+
+def _compat_pill(compat: ModelCompat) -> Content | None:
+    """Return the compat chip Content for non-SUPPORTED rows, or None for SUPPORTED."""
+    from lilbee.cli.tui import messages as msg
+
+    if compat is ModelCompat.SUPPORTED:
+        return None
+    if compat is ModelCompat.UNSUPPORTED:
+        return pill(msg.COMPAT_PILL_UNSUPPORTED, "$warning", "$text")
+    return pill(msg.COMPAT_PILL_UNKNOWN, "$panel", "$text-muted")
 
 
 def _key_status_pill(status: KeyStatus) -> Content:
