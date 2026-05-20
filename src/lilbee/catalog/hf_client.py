@@ -208,6 +208,8 @@ class HfClient:
 
         has_more = "next" in resp.links
 
+        from lilbee.catalog.compat import classify
+
         models: list[CatalogModel] = []
         for raw in data:
             if not raw.get("id"):
@@ -230,8 +232,11 @@ class HfClient:
                     featured=False,
                     downloads=item.downloads or 0,
                     task=task,
+                    architecture=gguf_meta.architecture,
+                    compat=classify(gguf_meta.architecture),
                 )
             )
+            self._arch_cache[item.id] = gguf_meta.architecture
         page = HfPage(models=models, has_more=has_more)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
