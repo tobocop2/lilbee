@@ -707,6 +707,8 @@ def catalog_browse(
                 "downloads": m.downloads,
                 "featured": m.featured,
                 "description": m.description,
+                "architecture": m.architecture,
+                "compat": m.compat.value,
             }
             for m in result.models
         ],
@@ -741,6 +743,7 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
 async def model_pull(
     model: str,
     source: str = ModelSource.NATIVE.value,
+    allow_unsupported: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Download a model, streaming progress via MCP notifications.
@@ -749,9 +752,13 @@ async def model_pull(
         model: Model ref to pull (e.g. "Qwen/Qwen3-0.6B-GGUF" or
             "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf").
         source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
+        allow_unsupported: Set true to pull even when the model's architecture
+            isn't supported by this lilbee build. Default refuses with a
+            structured error and the list of supported architectures.
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
+    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
 
     try:
         src = ModelSource.parse(source) or ModelSource.NATIVE
@@ -770,7 +777,21 @@ async def model_pull(
         future.add_done_callback(_log_progress_failure)
 
     try:
-        result = await asyncio.to_thread(pull_model_data, model, src, on_update=on_update)
+        result = await asyncio.to_thread(
+            pull_model_data, model, src, on_update=on_update, allow_unsupported=allow_unsupported
+        )
+    except UnsupportedArchError as exc:
+        return {
+            "ok": False,
+            "command": "model_pull",
+            "error": {
+                "code": "unsupported_arch",
+                "arch": exc.architecture,
+                "ref": exc.ref,
+                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                "total_supported": len(SUPPORTED_ARCHS),
+            },
+        }
     except (RuntimeError, PermissionError) as exc:
         return _error(str(exc))
     return result.model_dump()

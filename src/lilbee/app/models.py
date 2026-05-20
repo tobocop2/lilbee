@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 
@@ -104,6 +104,8 @@ class CatalogEntryData(BaseModel):
     task: ModelTask
     featured: bool
     recommended: bool
+    architecture: str = ""
+    compat: ModelCompat = ModelCompat.UNKNOWN
 
     @classmethod
     def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
@@ -118,6 +120,8 @@ class CatalogEntryData(BaseModel):
             task=entry.task,
             featured=entry.featured,
             recommended=entry.recommended,
+            architecture=entry.architecture,
+            compat=entry.compat,
         )
 
 
