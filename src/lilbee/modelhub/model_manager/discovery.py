@@ -166,47 +166,42 @@ def gather_known_model_refs() -> set[str]:
 
 
 class KnownModelCache:
-    """TTL-cached union of every model ref reachable by lilbee right now.
-
-    The chat-completions route consults this to validate the incoming
-    ``model`` field before forwarding. Caching keeps the per-request HTTP
-    probe of Ollama's ``/api/tags`` off the hot path; the picker UI uses
-    the same underlying primitives but renders infrequently enough to
-    skip caching.
-
-    Mutable state lives in a regular class (not a frozen dataclass)
-    because the cached set and expiry timestamp are rewritten on each
-    refresh. The instance itself is held on ``Services``.
-    """
+    """TTL-cached union of native + remote + frontier model refs."""
 
     DEFAULT_TTL_S = 30.0
 
     def __init__(self, ttl_s: float = DEFAULT_TTL_S) -> None:
         self._ttl_s = ttl_s
-        self._refs: set[str] = set()
+        self._refs: frozenset[str] = frozenset()
         self._expires_at: float = 0.0
+        # Bumped by every ``invalidate()`` so a refresh in flight knows
+        # whether a mutation happened during its I/O. Without this, a
+        # cold-start refresh that races with an ``invalidate()`` would
+        # extend the expiry over a result that pre-dates the mutation.
+        self._generation: int = 0
         self._lock = Lock()
 
-    def refs(self) -> set[str]:
-        """Return the cached canonical-ref set, refreshing past the TTL."""
+    def refs(self) -> frozenset[str]:
+        """Return the cached canonical-ref set, refreshing past the TTL.
+
+        HTTP and SDK fan-out runs outside the lock so concurrent requests
+        don't serialise behind one slow refresh. If ``invalidate()`` lands
+        between the I/O and the swap, the fresh set is still stored but
+        the expiry stays at zero so the next caller re-probes.
+        """
         with self._lock:
-            now = time.monotonic()
-            if now >= self._expires_at:
-                self._refs = gather_known_model_refs()
-                self._expires_at = now + self._ttl_s
+            if time.monotonic() < self._expires_at:
+                return self._refs
+            captured_generation = self._generation
+        fresh = frozenset(gather_known_model_refs())
+        with self._lock:
+            self._refs = fresh
+            if self._generation == captured_generation:
+                self._expires_at = time.monotonic() + self._ttl_s
             return self._refs
 
     def resolve(self, model: str) -> str | None:
-        """Resolve *model* to its canonical ref, or return None if unknown.
-
-        Direct membership wins. If the request used Ollama's bare
-        ``name:tag`` convention (no slash, has a colon) and lilbee has
-        an ``ollama/<name>`` entry in the discovered set, that canonical
-        form is returned so downstream parsing handles it like any other
-        prefixed ref. The probe is anchored in real discovery rather
-        than a parse-time shape guess, so a typo with the right shape
-        doesn't silently route anywhere.
-        """
+        """Resolve *model* to its canonical ref, or None if unknown."""
         refs = self.refs()
         if model in refs:
             return model
@@ -217,12 +212,7 @@ class KnownModelCache:
         return None
 
     def invalidate(self) -> None:
-        """Force the next ``refs()`` call to re-probe.
-
-        Wired by code paths that mutate the native registry (model pull,
-        model remove) so the cache reflects the new state without the
-        full TTL lag. Remote-side changes (``ollama pull``) we cannot
-        observe; the TTL bounds the lag in that direction.
-        """
+        """Force the next ``refs()`` call to re-probe."""
         with self._lock:
             self._expires_at = 0.0
+            self._generation += 1

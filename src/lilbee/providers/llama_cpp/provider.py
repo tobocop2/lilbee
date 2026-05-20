@@ -1061,26 +1061,22 @@ _ARCH_NAME_RE = re.compile(
 
 
 def _wrap_unsupported_architecture(model_path: Path, exc: ValueError) -> ValueError | None:
-    """Wrap a ``ValueError`` from llama-cpp that means "I don't know this arch".
-
-    The native runtime is ``llama-cpp-python``; some GGUFs in the wild
-    declare architectures (recent Gemma 4 MoE variants, certain GLM4.7 or
-    OLMo3 quants) that the vendored ``llama.cpp`` build doesn't yet
-    implement. The wrapped message names the architecture (when parseable)
-    and points the user at the remote-backend escape hatch instead of
-    suggesting "lower n_ctx", which would do nothing here.
-    """
+    """Wrap a llama-cpp ``unknown architecture`` ValueError with a usable hint."""
     err = str(exc)
     lower = err.lower()
     if not any(p in lower for p in _UNSUPPORTED_ARCH_PATTERNS):
         return None
     match = _ARCH_NAME_RE.search(err)
-    arch_clause = f" architecture {match.group(1)!r}" if match else ""
+    if match:
+        arch_clause = f" architecture {match.group(1)!r}"
+        trailing = ""
+    else:
+        arch_clause = ""
+        trailing = f" (llama.cpp: {err})"
     return ValueError(
         f"Model {model_path.name!r} uses{arch_clause} which lilbee's native runtime "
-        "(llama-cpp-python) doesn't support yet. Pick a different model from the "
-        "catalog, or set LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and "
-        f"select the model there. (llama.cpp: {err})"
+        "doesn't support yet. Pick a different model from the catalog, or set "
+        f"LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and select the model there.{trailing}"
     )
 
 

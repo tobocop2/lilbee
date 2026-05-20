@@ -355,8 +355,7 @@ def _default_known_models_mock():
     """KnownModelCache double whose ``refs`` / ``resolve`` return empty by default.
 
     Tests that need the cache to recognize specific refs override ``refs``
-    and ``resolve`` on this mock; tests that don't touch model resolution
-    fall through to the registry-only path.
+    and ``resolve`` on the returned mock.
     """
     cache = MagicMock()
     cache.refs.return_value = set()

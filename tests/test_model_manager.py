@@ -1165,3 +1165,29 @@ class TestKnownModelCache:
         assert cache.resolve("foo/bar") == "foo/bar"
         # No colon, so the bare-name auto-prefix path doesn't engage either.
         assert cache.resolve("foo") is None
+
+    def test_invalidate_during_refresh_does_not_extend_expiry(self, monkeypatch) -> None:
+        """If ``invalidate()`` lands while a refresh is mid-flight (between the
+        I/O and the lock-reacquire), the stored set updates but the expiry
+        stays at zero so the next caller re-probes. Otherwise a model pull
+        finishing during the refresh would stay invisible for a full TTL.
+        """
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        cache = KnownModelCache(ttl_s=600.0)
+
+        # Simulate invalidate() landing during gather by patching the gather
+        # function to invalidate before returning.
+        original_gather = discovery.gather_known_model_refs
+
+        def _gather_then_invalidate():
+            result = original_gather()
+            cache.invalidate()
+            return result
+
+        monkeypatch.setattr(discovery, "gather_known_model_refs", _gather_then_invalidate)
+        cache.refs()
+        # The expiry was left at zero because invalidate ran during refresh.
+        assert cache._expires_at == 0.0
