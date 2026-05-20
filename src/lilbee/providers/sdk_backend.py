@@ -37,9 +37,6 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
     ("deepseek", "deepseek_api_key", "DEEPSEEK_API_KEY", "DeepSeek"),
 )
 
-# Derived set of config field names (for checking which updates touch API keys).
-API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
-
 # Provider name -> cfg attribute holding that provider's API key.
 PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
 

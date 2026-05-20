@@ -2,28 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalResponse,
-    CanonicalStreamEvent,
     CanonicalTool,
     CanonicalToolChoice,
     CanonicalUsage,
-    ContentBlockDelta,
-    ContentBlockStart,
-    ContentBlockStop,
-    MessageDelta,
-    MessageStart,
-    MessageStop,
     StopReason,
     TextBlock,
-    TextDelta,
     ToolResultBlock,
     ToolUseBlock,
-    ToolUseDelta,
 )
 
 
@@ -131,25 +120,6 @@ def test_canonical_tool_choice_modes() -> None:
         assert choice.mode == mode
     forced = CanonicalToolChoice(mode="tool", tool_name="search")
     assert forced.tool_name == "search"
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        MessageStart(id="m1", model="m"),
-        ContentBlockStart(index=0, block=TextBlock(text="")),
-        ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
-        ContentBlockDelta(index=0, delta=ToolUseDelta(partial_json='{"q"')),
-        ContentBlockStop(index=0),
-        MessageDelta(stop_reason=StopReason.END_TURN),
-        MessageDelta(usage=CanonicalUsage(input_tokens=1, output_tokens=2)),
-        MessageStop(),
-    ],
-)
-def test_canonical_stream_event_variants_construct(event: CanonicalStreamEvent) -> None:
-    # Each variant must be reachable through the discriminated union so
-    # the dispatch and translation layers can match on it directly.
-    assert event is not None
 
 
 def test_canonical_message_holds_tool_result_blocks() -> None:

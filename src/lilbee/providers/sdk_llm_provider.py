@@ -159,9 +159,11 @@ class SdkLLMProvider(LLMProvider):
         self._ensure_initialized()
         ref = parse_model_ref(model or cfg.chat_model)
         if tools and not self.supports_tools(model or cfg.chat_model):
+            chosen = model or cfg.chat_model
             raise ProviderError(
-                f"Backend {self._backend.provider_name!r} does not support tool calls "
-                f"for model {model or cfg.chat_model!r}.",
+                f"Model {chosen!r} does not support tool calls. Pick a different "
+                f"chat model that advertises tool support, or remove tools from "
+                f"the request.",
                 provider=self._backend.provider_name,
             )
         translated = translate_options(options, ref) if options else {}

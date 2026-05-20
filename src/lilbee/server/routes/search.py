@@ -36,7 +36,7 @@ async def _acquire_chat_lock_or_raise() -> None:
     try:
         await acquire_chat_lock_or_busy()
     except ChatBusyError as exc:
-        raise HTTPException(status_code=429, headers={"Retry-After": "1"}) from exc
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"}) from exc
 
 
 async def _gated_stream(
@@ -78,6 +78,7 @@ async def search_route(
 @post("/api/ask")
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
+    await _acquire_chat_lock_or_raise()
     try:
         return await handlers.ask(
             question=data.question,
@@ -95,6 +96,8 @@ async def ask_route(data: AskRequest) -> AskResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        chat_lock().release()
 
 
 @post("/api/ask/stream")
@@ -117,6 +120,7 @@ async def ask_stream_route(data: AskRequest) -> Stream:
 @post("/api/chat")
 async def chat_route(data: ChatRequest) -> AskResponse:
     """RAG chat with conversation history, returning an answer with sources."""
+    await _acquire_chat_lock_or_raise()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
@@ -134,6 +138,8 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ContextWindowExceededError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        chat_lock().release()
 
 
 @post("/api/chat/stream")

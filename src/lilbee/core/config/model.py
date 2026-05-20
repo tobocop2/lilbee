@@ -286,7 +286,11 @@ class Config(BaseSettings):
     flash_attention: bool | None = ConfigField(default=None, writable=True)
 
     # KV cache element type. q8_0 / q4_0 halve or quarter cache memory
-    # but require flash attention to be enabled.
+    # but require flash attention to be enabled. F16 is the default
+    # because flash attention isn't reliable on every llama-cpp-python
+    # build / host (older wheels, certain GPU drivers) and a fallback
+    # to non-FA on a quantised KV cache produces wrong tokens. Users on
+    # tight VRAM can opt into q8_0 via LILBEE_KV_CACHE_TYPE.
     kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.F16, writable=True)
 
     # Number of model layers to offload to GPU. None (default) = all

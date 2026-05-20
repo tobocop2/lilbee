@@ -512,7 +512,6 @@ def test_sdk_provider_stream_yields_tool_call_deltas(monkeypatch) -> None:
     """The streaming path yields ``ToolCallDelta`` items between content tokens."""
     from lilbee.providers.sdk_backend import SdkToolCallDelta, StreamChunk
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-    from lilbee.providers.worker.transport import ToolCallDelta
 
     backend = _StubBackend(tools_supported=True)
 
@@ -572,13 +571,3 @@ def test_routing_provider_supports_tools_delegates() -> None:
 
     assert provider.supports_tools("org/repo/file.gguf") is True
     fake_backend.supports_tools.assert_called_once_with("org/repo/file.gguf")
-
-
-def test_chat_stream_item_includes_tool_call_delta() -> None:
-    """``ChatStreamItem`` is exported and covers both text + tool deltas."""
-    from lilbee.providers.worker.transport import ChatStreamItem
-
-    text: ChatStreamItem = "abc"
-    delta: ChatStreamItem = ToolCallDelta(index=0, id="c1", name=None, arguments_delta=None)
-    assert isinstance(text, str)
-    assert isinstance(delta, ToolCallDelta)

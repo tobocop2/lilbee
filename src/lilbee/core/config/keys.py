@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Keep in sync with ``providers.sdk_backend.API_KEY_FIELDS``.
+# API-key cfg field names: keep in sync with ``providers.sdk_backend.PROVIDER_KEYS``.
 PROVIDER_API_KEYS: frozenset[str] = frozenset(
     {
         "llm_api_key",
@@ -20,6 +20,8 @@ PROVIDER_API_KEYS: frozenset[str] = frozenset(
 LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
     {
         "num_ctx",
+        "num_ctx_max",
+        "kv_cache_type",
         "chat_model",
         "embedding_model",
         "vision_model",

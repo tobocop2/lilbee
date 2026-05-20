@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import re
 import threading
@@ -460,9 +461,9 @@ class LlamaCppProvider(LLMProvider):
     def supports_tools(self, model_ref: str) -> bool:
         """True iff *model_ref*'s GGUF chat template references tool tokens.
 
-        Returns False conservatively when the path can't be resolved, the
-        GGUF metadata can't be read, or the template doesn't mention any
-        of the well-known tool tokens.
+        Cached on ``(path, mtime)`` so a tool-bearing chat doesn't read the
+        GGUF header from disk on every request. A re-quantised file at the
+        same path invalidates automatically because its mtime changes.
         """
         try:
             path = resolve_model_path(model_ref)
@@ -470,16 +471,10 @@ class LlamaCppProvider(LLMProvider):
             log.debug("supports_tools: resolve_model_path failed for %s", model_ref, exc_info=True)
             return False
         try:
-            meta = read_gguf_metadata(path)
-        except (OSError, ValueError):
-            log.debug("supports_tools: read_gguf_metadata failed for %s", path, exc_info=True)
-            return False
-        if not isinstance(meta, dict):
-            return False
-        template = meta.get("chat_template")
-        if not isinstance(template, str):
-            return False
-        return _TOOL_TEMPLATE_PATTERN.search(template) is not None
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
+        return _supports_tools_cached(str(path), mtime_ns)
 
     @staticmethod
     def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -887,6 +882,26 @@ def _validate_chat_context_window(llm: Any, model_path: Path) -> None:
     )
 
 
+@functools.lru_cache(maxsize=32)
+def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
+    """Memoised tool-template probe keyed on the GGUF's path + mtime.
+
+    The mtime arg participates in the cache key only; a re-quantised file at
+    the same path invalidates automatically because its mtime changes.
+    """
+    try:
+        meta = read_gguf_metadata(Path(path_str))
+    except (OSError, ValueError):
+        log.debug("supports_tools: read_gguf_metadata failed for %s", path_str, exc_info=True)
+        return False
+    if not isinstance(meta, dict):
+        return False
+    template = meta.get("chat_template")
+    if not isinstance(template, str):
+        return False
+    return _TOOL_TEMPLATE_PATTERN.search(template) is not None
+
+
 # Capture requested / usable / n_ctx out of an overflow-error message body.
 _CTX_BREAKDOWN_RE = re.compile(
     r"Prompt of (\d+) tokens exceeds the usable budget of (\d+) tokens "
@@ -1100,16 +1115,16 @@ def _wrap_unsupported_architecture(model_path: Path, exc: ValueError) -> ValueEr
     if not any(p in lower for p in _UNSUPPORTED_ARCH_PATTERNS):
         return None
     match = _ARCH_NAME_RE.search(err)
-    if match:
-        arch_clause = f" architecture {match.group(1)!r}"
-        trailing = ""
-    else:
-        arch_clause = ""
-        trailing = f" (llama.cpp: {err})"
+    arch_clause = f" architecture {match.group(1)!r}" if match else ""
+    # When the architecture name can't be extracted we still don't leak the
+    # raw upstream string; it lives in the chained exception's __cause__ for
+    # debugging, and falls into the unfiltered log lines for ops.
+    log.warning("llama-cpp rejected load of %s: %s", model_path.name, err)
     return ValueError(
-        f"Model {model_path.name!r} uses{arch_clause} which lilbee's native runtime "
-        "doesn't support yet. Pick a different model from the catalog, or set "
-        f"LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and select the model there.{trailing}"
+        f"Model {model_path.name!r} uses{arch_clause} which lilbee's native "
+        f"runtime doesn't support yet. Pick a different model from the catalog, "
+        f"or set LILBEE_REMOTE_BASE_URL (e.g. to a running Ollama) and select "
+        f"the model there."
     )
 
 

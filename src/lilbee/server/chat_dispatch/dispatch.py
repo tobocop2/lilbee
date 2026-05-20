@@ -41,11 +41,14 @@ log = logging.getLogger(__name__)
 
 
 class ModelNotFoundError(Exception):
-    """Raised when the requested model is not present in the registry."""
+    """Raised when the requested model is not installed or reachable."""
 
     def __init__(self, model: str) -> None:
         self.model = model
-        super().__init__(f"Model {model!r} not found in registry")
+        super().__init__(
+            f"Model {model!r} is not installed. Run 'lilbee model list' to see "
+            f"installed models, or 'lilbee model pull {model}' to download it."
+        )
 
 
 class ModelDoesNotSupportToolsError(Exception):
@@ -53,7 +56,10 @@ class ModelDoesNotSupportToolsError(Exception):
 
     def __init__(self, model: str) -> None:
         self.model = model
-        super().__init__(f"Model {model!r} does not support tool calls")
+        super().__init__(
+            f"Model {model!r} does not support tool calls. Pick a chat model "
+            f"with a tool-aware chat template, or remove tools from the request."
+        )
 
 
 _FINISH_REASON_TO_STOP: dict[FinishReason, StopReason] = {

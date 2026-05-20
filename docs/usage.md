@@ -533,6 +533,8 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_KV_CACHE_TYPE` | `f16` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. Quantized variants halve or quarter cache memory but require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
+| `LILBEE_WORKER_POOL_EAGER_START` | `true` | Pre-spawn worker subprocesses at TUI mount so the first chat lands on a warm pool. Set `false` for headless scripts where mount time matters more than first-call latency |
+| `LILBEE_WORKER_POOL_MAX_IDLE_S` | `300` | Reap an idle worker after this many seconds. Lower on memory-constrained hosts; raise to keep models hot longer |
 
 ### Server
 

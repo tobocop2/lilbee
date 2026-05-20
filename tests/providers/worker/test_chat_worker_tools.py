@@ -1106,7 +1106,7 @@ def test_session_chat_without_tools_skips_tools_overhead(monkeypatch, tmp_path) 
 
 
 def test_session_chat_logs_when_messages_dropped(monkeypatch, tmp_path, caplog) -> None:
-    """When windowing drops messages to fit budget, an INFO log records the count."""
+    """When windowing drops messages to fit budget, a DEBUG log records the count."""
     import logging
 
     from lilbee.providers.worker.chat_worker import _ChatSession
@@ -1129,7 +1129,7 @@ def test_session_chat_logs_when_messages_dropped(monkeypatch, tmp_path, caplog) 
     role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
     session = _ChatSession(role_config, _FlagStub())
     monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Llama())
-    with caplog.at_level(logging.INFO, logger="lilbee.providers.worker.chat_worker"):
+    with caplog.at_level(logging.DEBUG, logger="lilbee.providers.worker.chat_worker"):
         session.chat(
             messages=[
                 {"role": "system", "content": "sys"},

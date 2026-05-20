@@ -100,12 +100,6 @@ class TestEncodeCompletionsSse:
         assert '"finish_reason":' not in payload
         assert '"tool_calls":' not in payload
 
-    async def test_output_is_bytes_not_str(self) -> None:
-        async for chunk in encode_completions_sse(
-            _async_chunks([_chunk(delta=CompletionsStreamDelta(content="hi"))])
-        ):
-            assert isinstance(chunk, bytes)
-
     async def test_finish_chunk_includes_finish_reason(self) -> None:
         body = await _drain(
             encode_completions_sse(

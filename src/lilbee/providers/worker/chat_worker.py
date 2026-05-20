@@ -148,7 +148,7 @@ class _ChatSession:
                 model=model_ref or self._role_config.model_path.name,
             )
         if outcome.dropped:
-            log.info(
+            log.debug(
                 "Chat windowing dropped %d messages to fit budget=%d",
                 outcome.dropped,
                 budget,
