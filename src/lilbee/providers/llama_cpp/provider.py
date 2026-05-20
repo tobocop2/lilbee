@@ -951,7 +951,11 @@ _EMBED_FALLBACK_CTX = 2048
 def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     """Pick the largest 256-multiple n_ctx that fits in available memory."""
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
-    ceiling = cfg.num_ctx_max
+    # cfg.num_ctx_max is the optional user-supplied cap. None means
+    # "no extra cap"; the picker still respects training_ctx and host
+    # memory inside compute_dynamic_ctx, so we just pass training_ctx
+    # as the ceiling in that case.
+    ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
 
     try:
         model_bytes = model_path.stat().st_size

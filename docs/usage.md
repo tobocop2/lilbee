@@ -530,7 +530,7 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_TOP_K_SAMPLING` | `40` | Top-k sampling |
 | `LILBEE_REPEAT_PENALTY` | `1.1` | Repetition penalty |
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically to the host's available memory, capped at `LILBEE_NUM_CTX_MAX`. Set explicitly to lock a specific value |
-| `LILBEE_NUM_CTX_MAX` | `65536` | Upper bound for the auto-sized context picker. Holds a ~30K system prompt plus conversation tail. Raise on hosts with more memory; the picker still scales down on small hosts |
+| `LILBEE_NUM_CTX_MAX` | *(none)* | Upper bound for the auto-sized context picker. Empty = no extra cap (picker stops at the model's training window). Set to a specific value to clamp lower on memory-constrained hosts |
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `f16` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. Quantized variants halve or quarter cache memory but require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |

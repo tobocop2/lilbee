@@ -273,11 +273,11 @@ class Config(BaseSettings):
 
     # Upper bound for the dynamic n_ctx picker. The picker chooses the
     # largest 256-multiple ctx that fits in available memory and the
-    # model's training window; this caps it at a sane ceiling.
-    # 64K holds a ~30K agent system prompt plus conversation headroom
-    # while keeping KV-cache memory tractable on a 16 GB machine.
-    # Override via LILBEE_NUM_CTX_MAX or the TUI Settings screen.
-    num_ctx_max: int = ConfigField(default=65536, ge=512, writable=True)
+    # model's training window. None (the default) means "no extra cap":
+    # the picker stops at the model's training window. Set to a specific
+    # int to clamp lower (useful on 16 GB hosts where a 131 K-context
+    # model's KV cache would otherwise blow memory).
+    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
     # Flash attention. None (default) = on with TypeError fallback for
     # older llama-cpp-python builds, True = force on, False = off.
@@ -896,11 +896,33 @@ class _TomlSource:
         except (ValueError, OSError):
             log.warning("Failed to read %s, ignoring", self._path)
             return {}
+        # Warn once when a persisted config still carries a key that was
+        # dropped in a prior release; without this the value gets silently
+        # ignored (``extra="ignore"``) and the user wonders why their
+        # setting has no effect.
+        for dropped in _DROPPED_SETTINGS_KEYS:
+            if dropped in data:
+                log.warning(
+                    "Persisted config %s ignores setting %r; the field was removed in "
+                    "a prior release. Delete the line from your config.toml.",
+                    self._path,
+                    dropped,
+                )
         # Empty strings represent "no persisted value" for nullable scalar
         # fields (legacy from set_setting writing "" for None). Pydantic
         # can't coerce "" to int|None, so dropping them here lets the field
         # default apply rather than crashing the whole Config load.
         return {k: str(v) for k, v in data.items() if str(v) != ""}
+
+
+# Settings that previous lilbee releases wrote to ``config.toml`` but the
+# current schema no longer accepts. Surfaced via a single ``log.warning``
+# in ``_TomlSource`` so users get a heads-up instead of a silent drop.
+_DROPPED_SETTINGS_KEYS: frozenset[str] = frozenset(
+    {
+        "chat_n_ctx_target",
+    }
+)
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

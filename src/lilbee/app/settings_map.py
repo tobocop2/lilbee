@@ -170,11 +170,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     ),
     "num_ctx_max": SettingDef(
         int,
-        nullable=False,
+        nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
             "Upper bound for the dynamic context picker when num_ctx is unset. "
-            "Higher allows more retrieval context on hosts with spare memory."
+            "Leave empty for no extra cap (picker stops at the model's training "
+            "window); set explicitly to clamp lower on memory-constrained hosts."
         ),
     ),
     "flash_attention": SettingDef(

@@ -1514,6 +1514,28 @@ class TestBuildCfgFallback:
         # Falls back to defaults: chat_model is the featured Qwen3 ref.
         assert built_cfg.chat_model.endswith(".gguf")
 
+    def test_warns_when_persisted_config_carries_dropped_key(self, tmp_path, caplog):
+        """A persisted ``chat_n_ctx_target`` from before the field was removed
+        is silently ignored by Pydantic; we surface a one-time WARNING so the
+        user knows their setting has no effect.
+        """
+        import logging
+
+        from lilbee.core.config.model import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('chat_n_ctx_target = 32768\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config.model"),
+        ):
+            _build_cfg()
+        warnings = [r.message for r in caplog.records if "chat_n_ctx_target" in r.message]
+        assert warnings
+        assert "removed" in warnings[0]
+
     def test_returns_none_error_on_clean_load(self, tmp_path):
         from lilbee.core.config.model import _build_cfg
 
