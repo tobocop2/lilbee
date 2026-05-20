@@ -60,9 +60,17 @@ def test_load_returns_none_for_invalid_json(tmp_path, monkeypatch, caplog) -> No
 
 
 # Markers in shipped schemas look like ``<tool_call>``, ``</tool_call>``,
-# ``<|tool_call>``, ``<tool_call|>``, ``<think>``, ``</think>``, ``[TOOL_CALLS]``.
-# This pattern matches that literal shape inside any regex string.
-_MARKER_PATTERN = re.compile(r"(?:</?\\?\|?[A-Za-z_/!]+\\?\|?>|\[[A-Z_]+\])")
+# ``<|tool_call>``, ``<tool_call|>``, ``<think>``, ``</think>``, ``[TOOL_CALLS]``,
+# and the bareword openers ``functools`` (Phi-4) and ``>>>`` (Functionary v3).
+# This pattern matches every shape so the safety-opener invariant catches them.
+_MARKER_PATTERN = re.compile(
+    r"(?:"
+    r"</?\\?\|?[A-Za-z_/!]+\\?\|?>"  # angle-wrapped tokens
+    r"|\[[A-Z_]+\]"  # bracketed uppercase tokens
+    r"|\bfunctools\b"  # Phi-4 marker opens with 'f'
+    r"|>>>"  # Functionary v3 marker opens with '>'
+    r")"
+)
 
 
 def _walk_regex_strings(node: Any):

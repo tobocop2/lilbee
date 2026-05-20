@@ -241,7 +241,9 @@ lilbee launch opencode
 opencode opens with your local lilbee models in the picker and the
 `lilbee-mcp` skill installed. `lilbee launch opencode --help` covers
 the flags. `lilbee agent-config opencode` prints the same config block
-if you prefer to wire opencode up yourself.
+if you prefer to wire opencode up yourself, and `lilbee agent-config
+litellm` prints a [litellm](https://docs.litellm.ai/) provider block
+for any other agent that consumes litellm-style configs.
 
 > [!CAUTION]
 > **Private data and cloud agents**

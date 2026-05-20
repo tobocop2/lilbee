@@ -128,3 +128,36 @@ def test_streaming_handles_token_sized_chunks() -> None:
     assert content.strip().split() == ["Answer:", "done."]
     assert len(deltas) == 1
     assert deltas[0].name == "f"
+
+
+def test_streaming_holds_phi4_functools_marker_until_close() -> None:
+    """Phi-4's bareword ``functools[...]`` marker streams char-by-char; the
+    parser must hold from the leading ``f`` so the marker word never reaches
+    the UI as plain text. Without ``f`` in ``_MARKER_OPENERS`` it would.
+    """
+    parser = StreamingResponseParser(get_schemas()[TemplateFamily.PHI4MINI])
+    full = 'I will help. functools[{"name": "search", "arguments": {"q":"x"}}] done.'
+    content, deltas = _drain(parser, list(full))
+    assert "functools" not in content
+    assert "{" not in content
+    assert len(deltas) == 1
+    assert deltas[0].name == "search"
+
+
+def test_streaming_buffer_caps_on_never_closing_marker() -> None:
+    """A model that emits an opener and never closes must not grow the
+    parser's internal buffer past the hard cap; otherwise an adversarial
+    stream could drive unbounded memory + O(n^2) regex cost.
+    """
+    from lilbee.providers.worker.response_parser.streaming import _BUFFER_HARD_CAP
+
+    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    # First chunk opens a never-closing tag, then a flood of bytes.
+    parser.feed("<tool_call>")
+    long_blob = "x" * (_BUFFER_HARD_CAP + 100)
+    content, _ = parser.feed(long_blob)
+    # On cap-exceed the parser finalises and releases buffered content, so
+    # subsequent feeds don't keep growing without bound.
+    assert len(parser._buffer) <= _BUFFER_HARD_CAP + len(long_blob)
+    # Content delta released at least the bulk of the input (no infinite hold).
+    assert len(content) > _BUFFER_HARD_CAP // 2

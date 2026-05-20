@@ -11,8 +11,17 @@ from lilbee.providers.worker.transport import ToolCallDelta
 # the closing marker arrives and parse_response strips the block. Benign
 # content with these characters (e.g., "5 < 10") is also held; it releases
 # on the next chunk that completes whatever the parser would otherwise
-# treat as a tool-call block, or on stream finalisation.
-_MARKER_OPENERS = ("<", "[")
+# treat as a tool-call block, or on stream finalisation. ``f`` covers
+# Phi-4's ``functools[...]`` opener and ``>`` covers Functionary v3's
+# ``>>>name`` opener; without them those bareword markers would stream
+# through to the UI as visible text.
+_MARKER_OPENERS = ("<", "[", "f", ">")
+
+# Hard cap on the held-back buffer; protects against models that emit a
+# marker opener and then never close it (the parser would otherwise hold
+# the entire remaining stream and re-run the regex over it on every chunk).
+# 64 KB is well over any realistic tool-call envelope.
+_BUFFER_HARD_CAP = 64 * 1024
 
 
 class StreamingResponseParser:
@@ -34,6 +43,10 @@ class StreamingResponseParser:
         return self._emit(finalize=True)
 
     def _emit(self, *, finalize: bool) -> tuple[str, list[ToolCallDelta]]:
+        # Hard-cap the held buffer so a never-closing opener can't drive
+        # unbounded memory or O(n^2) regex cost.
+        if not finalize and len(self._buffer) > _BUFFER_HARD_CAP:
+            finalize = True
         parsed = parse_response(self._buffer, self._schema)
 
         new_calls = parsed.tool_calls[self._emitted_tool_call_count :]
