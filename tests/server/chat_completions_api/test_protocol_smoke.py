@@ -44,6 +44,10 @@ def services_with_chat_model():
     provider.supports_tools.return_value = False
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=[_installed_chat_model()])
+    services.known_models.refs = MagicMock(return_value={_MOCK_MODEL_REF})
+    services.known_models.resolve = MagicMock(
+        side_effect=lambda model: model if model == _MOCK_MODEL_REF else None
+    )
     set_services(services)
     yield services
     set_services(None)

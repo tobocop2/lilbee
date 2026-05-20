@@ -2,6 +2,8 @@
 
 import logging
 import os
+import time
+from threading import Lock
 
 import httpx
 
@@ -9,6 +11,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.providers.model_ref import format_remote_ref
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     detect_backend_name,
@@ -142,3 +145,84 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the SDK backend."""
     return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
+
+
+def gather_known_model_refs() -> set[str]:
+    """Compose canonical refs from native registry + Ollama tags + frontier APIs.
+
+    Reuses the existing primitives: ``registry.list_installed`` for native
+    GGUF installs, ``classify_remote_models`` for Ollama / OpenAI-compatible
+    local backends, and ``discover_api_models`` for frontier providers.
+    Each primitive already swallows its own failures, so a backend being
+    down contributes an empty subset rather than raising.
+    """
+    refs = {m.ref for m in get_services().registry.list_installed()}
+    for rm in classify_remote_models(cfg.remote_base_url):
+        refs.add(format_remote_ref(rm.name, rm.provider))
+    for models in discover_api_models().values():
+        for rm in models:
+            refs.add(format_remote_ref(rm.name, rm.provider))
+    return refs
+
+
+class KnownModelCache:
+    """TTL-cached union of every model ref reachable by lilbee right now.
+
+    The chat-completions route consults this to validate the incoming
+    ``model`` field before forwarding. Caching keeps the per-request HTTP
+    probe of Ollama's ``/api/tags`` off the hot path; the picker UI uses
+    the same underlying primitives but renders infrequently enough to
+    skip caching.
+
+    Mutable state lives in a regular class (not a frozen dataclass)
+    because the cached set and expiry timestamp are rewritten on each
+    refresh. The instance itself is held on ``Services``.
+    """
+
+    DEFAULT_TTL_S = 30.0
+
+    def __init__(self, ttl_s: float = DEFAULT_TTL_S) -> None:
+        self._ttl_s = ttl_s
+        self._refs: set[str] = set()
+        self._expires_at: float = 0.0
+        self._lock = Lock()
+
+    def refs(self) -> set[str]:
+        """Return the cached canonical-ref set, refreshing past the TTL."""
+        with self._lock:
+            now = time.monotonic()
+            if now >= self._expires_at:
+                self._refs = gather_known_model_refs()
+                self._expires_at = now + self._ttl_s
+            return self._refs
+
+    def resolve(self, model: str) -> str | None:
+        """Resolve *model* to its canonical ref, or return None if unknown.
+
+        Direct membership wins. If the request used Ollama's bare
+        ``name:tag`` convention (no slash, has a colon) and lilbee has
+        an ``ollama/<name>`` entry in the discovered set, that canonical
+        form is returned so downstream parsing handles it like any other
+        prefixed ref. The probe is anchored in real discovery rather
+        than a parse-time shape guess, so a typo with the right shape
+        doesn't silently route anywhere.
+        """
+        refs = self.refs()
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    def invalidate(self) -> None:
+        """Force the next ``refs()`` call to re-probe.
+
+        Wired by code paths that mutate the native registry (model pull,
+        model remove) so the cache reflects the new state without the
+        full TTL lag. Remote-side changes (``ollama pull``) we cannot
+        observe; the TTL bounds the lag in that direction.
+        """
+        with self._lock:
+            self._expires_at = 0.0

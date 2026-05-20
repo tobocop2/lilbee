@@ -48,7 +48,31 @@ def _services_with(provider: MagicMock, installed: list[MagicMock]) -> Any:
 
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=installed)
+    _populate_known_models(services, installed)
     return services
+
+
+def _populate_known_models(services: Any, installed: list[MagicMock]) -> None:
+    """Mirror installed refs into the KnownModelCache mock the route consults.
+
+    Production builds compose the cache from the registry + Ollama tags +
+    frontier APIs; the route layer only sees the unified set. Route tests
+    that pre-load the registry must also pre-load the cache so resolve()
+    finds the same refs.
+    """
+    refs = {m.ref for m in installed}
+    services.known_models.refs = MagicMock(return_value=refs)
+
+    def _resolve(model: str) -> str | None:
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    services.known_models.resolve = MagicMock(side_effect=_resolve)
 
 
 @pytest.fixture

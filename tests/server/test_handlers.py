@@ -47,12 +47,16 @@ def mock_svc():
     embedder.validate_model.return_value = None
     services = make_mock_services(embedder=embedder)
     # /api/chat now goes through chat_dispatch, which validates the requested
-    # model against the registry. The handler always requests cfg.chat_model,
-    # so register a manifest for it.
+    # model against the KnownModelCache. Pre-load both the registry and the
+    # cache so resolve() finds cfg.chat_model.
     chat_manifest = mock.MagicMock()
     chat_manifest.ref = cfg.chat_model
     chat_manifest.task = "chat"
     services.registry.list_installed = mock.MagicMock(return_value=[chat_manifest])
+    services.known_models.refs = mock.MagicMock(return_value={cfg.chat_model})
+    services.known_models.resolve = mock.MagicMock(
+        side_effect=lambda model: model if model == cfg.chat_model else None
+    )
     set_services(services)
     yield services
     set_services(None)

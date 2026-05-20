@@ -328,6 +328,7 @@ def make_mock_services(**overrides):
     # Default to an idle ticker handle: tests that exercise the ticker
     # build a real one explicitly via start_health_ticker.
     pool_health_ticker = overrides.pop("pool_health_ticker", None) or HealthTickerHandle()
+    known_models = overrides.pop("known_models", None) or _default_known_models_mock()
 
     return Services(
         provider=provider,
@@ -346,7 +347,21 @@ def make_mock_services(**overrides):
         worker_pool=worker_pool,
         pool_runtime=pool_runtime,
         pool_health_ticker=pool_health_ticker,
+        known_models=known_models,
     )
+
+
+def _default_known_models_mock():
+    """KnownModelCache double whose ``refs`` / ``resolve`` return empty by default.
+
+    Tests that need the cache to recognize specific refs override ``refs``
+    and ``resolve`` on this mock; tests that don't touch model resolution
+    fall through to the registry-only path.
+    """
+    cache = MagicMock()
+    cache.refs.return_value = set()
+    cache.resolve.return_value = None
+    return cache
 
 
 def make_citation(

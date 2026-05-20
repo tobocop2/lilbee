@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
+    from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
@@ -77,6 +78,7 @@ class Services:
     worker_pool: WorkerPool
     pool_runtime: PoolRuntime
     pool_health_ticker: HealthTickerHandle
+    known_models: KnownModelCache
 
     def cancel_inference(self) -> None:
         """Flip the abort flag on every registered worker pool role. Idempotent."""
@@ -149,6 +151,7 @@ def get_services() -> Services:
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
+    from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
     from lilbee.providers.worker.health_ticker import start_health_ticker
@@ -185,6 +188,7 @@ def get_services() -> Services:
     pool_health_ticker: HealthTickerHandle = start_health_ticker(
         worker_pool, pool_runtime, get_loop()
     )
+    known_models = KnownModelCache()
     _svc = Services(
         provider=provider,
         store=store,
@@ -202,6 +206,7 @@ def get_services() -> Services:
         worker_pool=worker_pool,
         pool_runtime=pool_runtime,
         pool_health_ticker=pool_health_ticker,
+        known_models=known_models,
     )
     # Eager start is the default: pay 1-3 s per worker at TUI mount so the
     # first user action lands on a warm pool. Roles whose model is unset are

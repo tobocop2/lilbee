@@ -81,14 +81,14 @@ class _OpenBlockKind(StrEnum):
 
 def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
     """Run a non-streaming chat request through the provider and return canonical output."""
-    _ensure_model_known(req.model)
-    _ensure_tool_capability(req)
+    canonical_model = _resolve_canonical_model(req.model)
+    _ensure_tool_capability(req, canonical_model)
 
     provider = get_services().provider
     result = provider.chat(
         messages=_provider_messages(req),
         options=_provider_options(req),
-        model=req.model,
+        model=canonical_model,
         tools=_provider_tools(req.tools),
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
@@ -106,7 +106,7 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
 
     return CanonicalResponse(
         id=_new_message_id(),
-        model=req.model,
+        model=canonical_model,
         content=content,
         stop_reason=_FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN),
         usage=CanonicalUsage(input_tokens=0, output_tokens=0),
@@ -117,20 +117,20 @@ async def dispatch_chat_stream(
     req: CanonicalChatRequest,
 ) -> AsyncIterator[CanonicalStreamEvent]:
     """Stream a canonical event sequence by translating provider frames on the fly."""
-    _ensure_model_known(req.model)
-    _ensure_tool_capability(req)
+    canonical_model = _resolve_canonical_model(req.model)
+    _ensure_tool_capability(req, canonical_model)
 
     provider = get_services().provider
     stream = provider.chat(
         messages=_provider_messages(req),
         stream=True,
         options=_provider_options(req),
-        model=req.model,
+        model=canonical_model,
         tools=_provider_tools(req.tools),
         tool_choice=_provider_tool_choice(req.tool_choice),
     )
     try:
-        yield MessageStart(id=_new_message_id(), model=req.model)
+        yield MessageStart(id=_new_message_id(), model=canonical_model)
         state = _StreamState()
         async for frame in _async_iter_provider_stream(stream):
             for event in state.feed(frame):
@@ -239,16 +239,23 @@ class _StreamState:
             self._open = _OpenBlockKind.NONE
 
 
-def _ensure_model_known(model: str) -> None:
-    registry = get_services().registry
-    refs = {m.ref for m in registry.list_installed()}
-    if model not in refs:
+def _resolve_canonical_model(model: str) -> str:
+    """Return the canonical ref for *model*, or raise ``ModelNotFoundError``.
+
+    Consults the cached union of native + remote + frontier refs on
+    Services, so an Ollama-managed model resolves the same way a locally
+    installed GGUF does. A bare ``name:tag`` matches the corresponding
+    ``ollama/<name:tag>`` entry when one exists in the discovered set.
+    """
+    canonical = get_services().known_models.resolve(model)
+    if canonical is None:
         raise ModelNotFoundError(model)
+    return canonical
 
 
-def _ensure_tool_capability(req: CanonicalChatRequest) -> None:
-    if req.tools and not model_supports_tools(req.model):
-        raise ModelDoesNotSupportToolsError(req.model)
+def _ensure_tool_capability(req: CanonicalChatRequest, model: str) -> None:
+    if req.tools and not model_supports_tools(model):
+        raise ModelDoesNotSupportToolsError(model)
 
 
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
