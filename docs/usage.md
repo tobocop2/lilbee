@@ -712,6 +712,15 @@ remotely and routes each call to the right backend.
 while keeping embeddings local for privacy, or when you're already running
 Ollama and want to use its models.
 
+> **New models lilbee can't load natively?** lilbee's local backend is
+> [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python), which trails
+> [Ollama](https://ollama.com) by weeks-to-months on new architectures.
+> "New" here means anything released in the last ~3 months, or any architecture
+> still being patched into `ggml-org/llama.cpp` upstream (e.g. recent MoE / SWA
+> variants like Gemma 4, GLM 4.7, OLMo 3 at the time of writing). Install Ollama,
+> `ollama pull <model>`, and select it here as a remote model. lilbee catches up
+> as `llama-cpp-python` does.
+
 **Install:** `pip install --pre 'lilbee[litellm]'` or
 `uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
 adapter library name).
