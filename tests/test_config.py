@@ -38,7 +38,13 @@ _DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.
 
 class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with (
+            mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=8 * 1024**3,
+            ),
+        ):
             c = Config()
             assert c.chat_model == _DEFAULT_CHAT_REF
             assert c.embedding_model == _DEFAULT_EMBED_REF
@@ -1548,3 +1554,42 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is None
         assert built_cfg.max_tokens == 4096
+
+
+class TestChatCtxTargetDefault:
+    def test_explicit_env_var_wins_over_scaling(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["LILBEE_CHAT_N_CTX_TARGET"] = "32768"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=4 * 1024**3,  # tiny host
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 32768
+
+    def test_default_scales_with_host_ram(self, tmp_path):
+        env = _clean_env(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=48 * 1024**3,  # 32-64 GiB tier
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 16384
+
+    def test_default_floors_on_small_host(self, tmp_path):
+        env = _clean_env(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=8 * 1024**3,
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 8192
