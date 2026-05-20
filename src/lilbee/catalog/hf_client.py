@@ -12,6 +12,7 @@ import httpx
 from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
+from lilbee.catalog.compat import classify
 from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
 from lilbee.core.config import cfg
 
@@ -213,8 +214,6 @@ class HfClient:
             return _EMPTY_HF_PAGE
 
         has_more = "next" in resp.links
-
-        from lilbee.catalog.compat import classify
 
         models: list[CatalogModel] = []
         for raw in data:
