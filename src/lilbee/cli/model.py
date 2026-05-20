@@ -171,10 +171,30 @@ def _run_pull(
     ref: str,
     src: ModelSource,
     on_update: Callable[[DownloadProgress], None],
+    *,
+    allow_unsupported: bool = False,
 ) -> PullResult:
     """Invoke ``pull_model_data`` and translate known errors to typer.Exit."""
+    from lilbee.catalog.compat import UnsupportedArchError
+
     try:
-        return pull_model_data(ref, src, on_update=on_update)
+        return pull_model_data(ref, src, on_update=on_update, allow_unsupported=allow_unsupported)
+    except UnsupportedArchError as exc:
+        msg = (
+            f"Architecture {exc.architecture!r} is not supported by this lilbee build.\n"
+            "Pass --allow-unsupported to try anyway."
+        )
+        if cfg.json_mode:
+            json_output(
+                {
+                    "error": "unsupported_arch",
+                    "arch": exc.architecture,
+                    "ref": exc.ref,
+                }
+            )
+        else:
+            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {msg}")
+        raise typer.Exit(1) from None
     except (RuntimeError, PermissionError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -183,7 +203,7 @@ def _run_pull(
         raise typer.Exit(1) from None
 
 
-def _pull_json_stream(ref: str, src: ModelSource) -> None:
+def _pull_json_stream(ref: str, src: ModelSource, *, allow_unsupported: bool) -> None:
     """Emit newline-delimited JSON progress events, then the final result."""
 
     def on_update(p: DownloadProgress) -> None:
@@ -192,11 +212,11 @@ def _pull_json_stream(ref: str, src: ModelSource) -> None:
         )
         json_output(event.model_dump())
 
-    final = _run_pull(ref, src, on_update)
+    final = _run_pull(ref, src, on_update, allow_unsupported=allow_unsupported)
     json_output({**final.model_dump(), "event": PullEvent.DONE.value})
 
 
-def _pull_interactive_progress(ref: str, src: ModelSource) -> None:
+def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported: bool) -> None:
     """Drive Rich's Live progress bar during a native HuggingFace download."""
     err_console = Console(stderr=True, force_terminal=True)
     with Progress(
@@ -213,7 +233,7 @@ def _pull_interactive_progress(ref: str, src: ModelSource) -> None:
         def on_update(p: DownloadProgress) -> None:
             progress.update(task_id, completed=p.percent, detail=p.detail)
 
-        final = _run_pull(ref, src, on_update)
+        final = _run_pull(ref, src, on_update, allow_unsupported=allow_unsupported)
 
     if final.status == PullStatus.ALREADY_INSTALLED:
         console.print(f"{ref} is already installed.")
@@ -230,6 +250,11 @@ def pull_cmd(
         "-s",
         help="Pull from 'native' (HuggingFace GGUF) or 'remote' (SDK-managed).",
     ),
+    allow_unsupported: bool = typer.Option(
+        False,
+        "--allow-unsupported",
+        help="Pull even if the architecture isn't in the supported set (load may still fail).",
+    ),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -239,9 +264,9 @@ def pull_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE
     if cfg.json_mode:
-        _pull_json_stream(ref, src)
+        _pull_json_stream(ref, src, allow_unsupported=allow_unsupported)
     else:
-        _pull_interactive_progress(ref, src)
+        _pull_interactive_progress(ref, src, allow_unsupported=allow_unsupported)
 
 
 def _confirm_remove_or_exit(ref: str, yes: bool) -> None:
