@@ -213,6 +213,54 @@ def test_embed_pool_worker_error_propagates_as_provider_error(monkeypatch, tmp_p
         provider.shutdown()
 
 
+def test_chat_pool_context_overflow_reraises_as_typed_exception(monkeypatch, tmp_path) -> None:
+    """A worker reporting ``ContextWindowExceededError`` survives the wire as
+    a typed ``ContextWindowExceededError`` on the parent side, NOT as a generic
+    ``ProviderError``. The route layer relies on the typed catch to surface
+    a 400 ``context_length_exceeded`` instead of a 500.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch,
+        WorkerError(
+            "ContextWindowExceededError",
+            "Prompt of 161000 tokens exceeds the 40960-token context window of 'X'.",
+            "",
+        ),
+    )
+    try:
+        with pytest.raises(ContextWindowExceededError) as excinfo:
+            provider.chat([{"role": "user", "content": "x"}])
+        assert "161000" in str(excinfo.value)
+    finally:
+        provider.shutdown()
+
+
+def test_chat_pool_other_worker_errors_still_raise_provider_error(monkeypatch, tmp_path) -> None:
+    """Non-context-overflow ``WorkerError`` surfaces as a generic ``ProviderError``,
+    not as ``ContextWindowExceededError``.
+    """
+    from lilbee.providers.base import ContextWindowExceededError, ProviderError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    provider = _setup_provider_for_error_test(monkeypatch, tmp_path)
+    _patch_runtime_run_sync_to_raise(
+        monkeypatch, WorkerError("ValueError", "some other failure", "")
+    )
+    try:
+        with pytest.raises(ProviderError) as excinfo:
+            provider.chat([{"role": "user", "content": "x"}])
+        # The catch-all branch must NOT promote a random worker error to
+        # the typed context-window exception.
+        assert not isinstance(excinfo.value, ContextWindowExceededError)
+        assert "Chat worker" in str(excinfo.value)
+    finally:
+        provider.shutdown()
+
+
 def test_embed_pool_timeout_propagates_as_provider_error(monkeypatch, tmp_path) -> None:
     """Pool ``TimeoutError`` must surface as ProviderError instead of leaking raw."""
     from lilbee.providers.base import ProviderError
@@ -478,6 +526,14 @@ def test_rerank_pool_protocol_error_propagates_as_provider_error(monkeypatch, tm
 
 def _stub_chat_load(_self) -> Any:
     class _StubLlama:
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
         def create_chat_completion(self, *, messages, stream, **kwargs) -> Any:
             tokens = ["hi", " ", "there"]
             if stream:
@@ -644,6 +700,36 @@ def test_chat_streaming_mid_stream_worker_error_raises_provider_error(
     assert iterator._exhausted is True
     with pytest.raises(StopIteration):
         next(iter(iterator))
+
+
+def test_chat_streaming_mid_stream_context_overflow_raises_typed_exception(
+    chat_pool_provider,
+) -> None:
+    """A ``WorkerError("ContextWindowExceededError", ...)`` raised mid-stream
+    surfaces as ``ContextWindowExceededError`` (the typed subclass), not as
+    a generic ``ProviderError``. Mirrors the non-streaming-path translation.
+    """
+    from lilbee.providers.base import ContextWindowExceededError
+    from lilbee.providers.worker.transport_pipe import WorkerError
+
+    iterator = chat_pool_provider.chat(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    class _AnextOverflow:
+        async def __anext__(self):
+            raise WorkerError(
+                "ContextWindowExceededError",
+                "Prompt of 5000 tokens exceeds the 4000-token context window of 'model'.",
+                "",
+            )
+
+    iterator._async_iter = _AnextOverflow()
+    with pytest.raises(ContextWindowExceededError) as excinfo:
+        next(iter(iterator))
+    assert "5000 tokens exceeds" in str(excinfo.value)
+    assert iterator._exhausted is True
 
 
 def test_chat_streaming_mid_stream_timeout_raises_provider_error(

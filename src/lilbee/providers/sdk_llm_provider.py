@@ -34,6 +34,8 @@ from lilbee.providers.worker.transport import (
     ChatStreamItem,
     FinishReason,
     OcrBackend,
+    ToolCall,
+    ToolCallDelta,
 )
 from lilbee.vision import PageText
 
@@ -186,7 +188,9 @@ class SdkLLMProvider(LLMProvider):
             ) from exc
         return ChatResult(
             text=result.content,
-            tool_calls=(),
+            tool_calls=tuple(
+                ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in result.tool_calls
+            ),
             finish_reason=_coerce_finish_reason(result.finish_reason),
         )
 
@@ -206,6 +210,13 @@ class SdkLLMProvider(LLMProvider):
             for chunk in stream:
                 if chunk.content:
                     yield chunk.content
+                for delta in chunk.tool_call_deltas:
+                    yield ToolCallDelta(
+                        index=delta.index,
+                        id=delta.id,
+                        name=delta.name,
+                        arguments_delta=delta.arguments_delta,
+                    )
         except ProviderError:
             raise
         except Exception as exc:

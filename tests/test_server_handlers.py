@@ -2279,6 +2279,33 @@ class TestClassifyLoadError:
         assert code == "model_too_large"
 
 
+class TestClassifyStreamError:
+    def test_context_window_exception_routes_to_typed_code(self):
+        """`ContextWindowExceededError` produces the OpenAI-standard code."""
+        from lilbee.providers.base import ContextWindowExceededError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ContextWindowExceededError("Prompt of 9000 tokens exceeds 4096-token window of 'm'.")
+        code, msg = _classify_stream_error(exc)
+        assert code == "context_length_exceeded"
+        assert "9000" in msg
+
+    def test_other_exception_falls_back_to_load_error_classifier(self):
+        """Non-typed errors delegate to ``classify_load_error`` for OOM detection."""
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, _ = _classify_stream_error(RuntimeError("llama_context: failed to allocate"))
+        assert code == "model_too_large"
+
+    def test_generic_error_is_classified_as_internal(self):
+        """An unrecognised exception falls back to the generic envelope."""
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(RuntimeError("something else"))
+        assert code is None
+        assert msg == "Internal error"
+
+
 class TestResolveGenerationOptions:
     def test_with_options(self):
         result = _sse_h._resolve_generation_options({"temperature": 0.5})
@@ -2362,7 +2389,7 @@ class TestRunLlmStreamCancel:
         cancel.set()  # pre-set cancel
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
-        error_holder: list[str] = []
+        error_holder: list[BaseException] = []
 
         mock_provider = MagicMock()
         # Return some stream tokens that would normally be emitted
@@ -2415,7 +2442,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[str] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2450,7 +2477,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[str] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2490,7 +2517,7 @@ class TestReasoningCapHandling:
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
             cancel.set()
-            error_holder: list[str] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2524,7 +2551,7 @@ class TestReasoningCapHandling:
 
             mock_provider.chat.side_effect = [iter([long_reasoning]), second_pass()]
             queue: asyncio.Queue[str | None] = asyncio.Queue()
-            error_holder: list[str] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider

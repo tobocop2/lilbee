@@ -86,9 +86,16 @@ class ModelManager:
         return result
 
     def _invalidate_installed_cache(self) -> None:
-        """Drop all cached list_installed results."""
+        """Drop all cached list_installed results and the route-layer cache."""
         self._installed_cache.clear()
         self._native_identities_cache = None
+        from lilbee.app.services import peek_services
+
+        # peek_services is None for a standalone ModelManager (test setup);
+        # the route isn't running so there's nothing to invalidate.
+        services = peek_services()
+        if services is not None:
+            services.known_models.invalidate()
 
     def _list_native(self) -> list[str]:
         """List native models from the registry only."""

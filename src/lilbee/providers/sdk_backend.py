@@ -89,12 +89,37 @@ def detect_backend_name(base_url: str) -> BackendName:
 
 
 @dataclass(frozen=True)
+class SdkToolCall:
+    """One tool call extracted from a non-streaming SDK chat response."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class SdkToolCallDelta:
+    """One streaming tool-call delta from an SDK chat chunk.
+
+    ``id`` and ``name`` arrive on the opener; ``arguments_delta`` accumulates
+    across subsequent chunks at the same ``index``. Mirrors the per-frame
+    shape that the dispatch's stream translator already understands.
+    """
+
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments_delta: str | None = None
+
+
+@dataclass(frozen=True)
 class CompletionResult:
     """Single-shot chat completion result returned by a backend."""
 
     content: str
     finish_reason: str | None = None
     model: str | None = None
+    tool_calls: tuple[SdkToolCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +128,7 @@ class StreamChunk:
 
     content: str
     finish_reason: str | None = None
+    tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
 
 
 @dataclass(frozen=True)

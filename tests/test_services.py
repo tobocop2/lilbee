@@ -39,6 +39,7 @@ class TestServicesDataclass:
             worker_pool=MagicMock(),
             pool_runtime=MagicMock(),
             pool_health_ticker=HealthTickerHandle(),
+            known_models=MagicMock(),
         )
         with pytest.raises(AttributeError):
             services.clusterer = MagicMock()  # type: ignore[misc]

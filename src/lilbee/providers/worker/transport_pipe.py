@@ -50,6 +50,7 @@ class WorkerError(RuntimeError):
     def __init__(self, original_type: str, message: str, traceback_str: str) -> None:
         super().__init__(f"{original_type}: {message}")
         self.original_type = original_type
+        self.message = message
         self.traceback_str = traceback_str
 
 

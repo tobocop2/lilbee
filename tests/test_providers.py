@@ -77,6 +77,9 @@ def mock_llama_cpp() -> mock.MagicMock:
     care about Llama kwargs assert against ``mod.Llama.call_args``.
     """
     mod = mock.MagicMock()
+    # Default n_ctx large enough to pass _validate_chat_context_window; tests
+    # that exercise the broken-metadata guard override this on their own mock.
+    mod.Llama.return_value.n_ctx.return_value = 4096
 
     class _StubLlamaContext:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -356,11 +359,10 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp.provider import load_llama
 
-        with patch("llama_cpp.Llama"):
+        with patch("llama_cpp.Llama") as mock_llama_cls:
+            mock_llama_cls.return_value.n_ctx.return_value = 4096
             load_llama(models_dir / "test-model.gguf", mode="chat")
-            import llama_cpp
-
-            call_kwargs = llama_cpp.Llama.call_args[1]
+            call_kwargs = mock_llama_cls.call_args[1]
             assert "n_batch" not in call_kwargs
 
     def testload_llama_rerank_sets_pooling_type_rank(self, models_dir: Path) -> None:
@@ -402,6 +404,7 @@ class TestLlamaCppProvider:
         from lilbee.providers.llama_cpp.provider import load_llama
 
         fake_llama = mock.MagicMock()
+        fake_llama.return_value.n_ctx.return_value = 4096
         fake_module = mock.MagicMock()
         fake_module.Llama = fake_llama
         sentinel = lambda _u=None: False  # noqa: E731 -- intentional one-liner sentinel
@@ -461,6 +464,7 @@ class TestLlamaCppProvider:
         cfg.num_ctx = 4096
         cfg.flash_attention = "auto"
         with patch("llama_cpp.Llama") as mock_llama_cls:
+            mock_llama_cls.return_value.n_ctx.return_value = 4096
             load_llama(models_dir / "test-model.gguf", mode="chat")
             assert mock_llama_cls.call_args[1].get("flash_attn") is True
 
@@ -474,6 +478,7 @@ class TestLlamaCppProvider:
         cfg.flash_attention = "0"
         try:
             with patch("llama_cpp.Llama") as mock_llama_cls:
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 assert "flash_attn" not in mock_llama_cls.call_args[1]
         finally:
@@ -488,6 +493,7 @@ class TestLlamaCppProvider:
         cfg.num_ctx = 4096
         cfg.flash_attention = "auto"
         instance = MagicMock()
+        instance.n_ctx.return_value = 4096
         call_log: list[dict[str, object]] = []
 
         def fake_llama(**kwargs: object) -> object:
@@ -509,14 +515,15 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp.provider import load_llama
 
-        cfg.num_ctx = 4096
+        cfg.num_ctx = 8192
         cfg.flash_attention = "0"  # keep the call shape simple
         instance = MagicMock()
+        instance.n_ctx.return_value = 2048
         ctx_seen: list[int] = []
 
         def fake_llama(**kwargs: object) -> object:
             ctx_seen.append(int(kwargs["n_ctx"]))
-            if int(kwargs["n_ctx"]) > 1024:
+            if int(kwargs["n_ctx"]) > 2048:
                 raise ValueError("Failed to create llama_context")
             return instance
 
@@ -524,8 +531,8 @@ class TestLlamaCppProvider:
             with patch("llama_cpp.Llama", side_effect=fake_llama):
                 result = load_llama(models_dir / "test-model.gguf", mode="chat")
             assert result is instance
-            assert ctx_seen[0] == 4096
-            assert ctx_seen[-1] <= 1024
+            assert ctx_seen[0] == 8192
+            assert ctx_seen[-1] <= 2048
             assert len(ctx_seen) >= 2
         finally:
             cfg.flash_attention = "auto"
@@ -548,6 +555,7 @@ class TestLlamaCppProvider:
             for raw, expected in cases:
                 cfg.n_gpu_layers = raw
                 with patch("llama_cpp.Llama") as mock_llama_cls:
+                    mock_llama_cls.return_value.n_ctx.return_value = 4096
                     load_llama(models_dir / "test-model.gguf", mode="chat")
                     assert mock_llama_cls.call_args[1]["n_gpu_layers"] == expected
         finally:
@@ -565,11 +573,13 @@ class TestLlamaCppProvider:
         try:
             cfg.main_gpu = None
             with patch("llama_cpp.Llama") as mock_llama_cls:
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 assert "main_gpu" not in mock_llama_cls.call_args[1]
 
             cfg.main_gpu = 1
             with patch("llama_cpp.Llama") as mock_llama_cls:
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 assert mock_llama_cls.call_args[1]["main_gpu"] == 1
         finally:
@@ -661,6 +671,7 @@ class TestLlamaCppProvider:
         cfg.kv_cache_type = "q8_0"
         try:
             with patch("llama_cpp.Llama") as mock_llama_cls:
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 kwargs = mock_llama_cls.call_args[1]
                 assert kwargs["type_k"] == _llc.GGML_TYPE_Q8_0
@@ -681,6 +692,133 @@ class TestLlamaCppProvider:
             pytest.raises(TypeError, match="totally unrelated"),
         ):
             load_llama(models_dir / "test-model.gguf", mode="chat")
+
+    def testload_llama_chat_refuses_model_with_unusable_n_ctx(self, models_dir: Path) -> None:
+        """A successful load that reports ``n_ctx < _MIN_CHAT_CTX`` must be refused.
+
+        Some published GGUFs report ``context_length=0`` in their metadata; llama-cpp
+        then silently uses its 512-token default, which can't fit any realistic chat
+        prompt. Catching that at load time surfaces a clear error instead of failing
+        opaquely on the first request.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = "0"
+        instance = MagicMock()
+        instance.n_ctx.return_value = 512  # what llama-cpp falls back to
+        try:
+            with (
+                patch("llama_cpp.Llama", return_value=instance),
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value={"context_length": "0"},
+                ),
+                pytest.raises(ProviderError) as exc_info,
+            ):
+                load_llama(models_dir / "broken.gguf", mode="chat")
+            message = str(exc_info.value)
+            assert "broken.gguf" in message
+            assert "n_ctx=512" in message
+            assert "num_ctx" in message
+            # The refused model is closed so we don't leak the handle.
+            instance.close.assert_called_once()
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_chat_accepts_minimum_chat_ctx(self, models_dir: Path) -> None:
+        """A model whose post-load n_ctx is exactly the minimum loads successfully."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp.provider import _MIN_CHAT_CTX, load_llama
+
+        cfg.num_ctx = _MIN_CHAT_CTX
+        cfg.flash_attention = "0"
+        instance = MagicMock()
+        instance.n_ctx.return_value = _MIN_CHAT_CTX
+        try:
+            with patch("llama_cpp.Llama", return_value=instance):
+                result = load_llama(models_dir / "ok.gguf", mode="chat")
+            assert result is instance
+            instance.close.assert_not_called()
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_embed_skips_min_chat_ctx_guard(self, models_dir: Path) -> None:
+        """Embed loads keep using their own ctx (often < 2048 for small embedders)."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = "0"
+        instance = MagicMock()
+        instance.n_ctx.return_value = 512  # would trip the chat guard
+        try:
+            with (
+                patch("llama_cpp.Llama", return_value=instance),
+                patch(
+                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                    return_value={"context_length": "512"},
+                ),
+            ):
+                result = load_llama(models_dir / "tiny-embed.gguf", mode="embed")
+            assert result is instance
+            instance.close.assert_not_called()
+        finally:
+            cfg.flash_attention = "auto"
+
+    def testload_llama_wraps_unsupported_architecture_with_remote_hint(
+        self, models_dir: Path, tmp_path: Path
+    ) -> None:
+        """llama-cpp ``unknown model architecture`` errors surface as a "not supported" message
+        that names the architecture and points at the remote-backend escape hatch.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        model = models_dir / "exotic.gguf"
+        model.write_bytes(b"x" * 1024)
+        with (
+            patch(
+                "llama_cpp.Llama",
+                side_effect=ValueError("unknown model architecture: 'gemma4'"),
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+        message = str(exc_info.value)
+        assert "exotic.gguf" in message
+        assert "'gemma4'" in message
+        assert "doesn't support" in message
+        assert "LILBEE_REMOTE_BASE_URL" in message
+
+    def testload_llama_wraps_unparseable_unknown_architecture(self, models_dir: Path) -> None:
+        """When the architecture name can't be parsed out, the wrap still fires
+        without the architecture clause but still names the model + escape hatch.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        model = models_dir / "weird.gguf"
+        model.write_bytes(b"x" * 1024)
+        with (
+            patch(
+                "llama_cpp.Llama",
+                side_effect=ValueError("unknown architecture"),
+            ),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            load_llama(model, mode="chat")
+        message = str(exc_info.value)
+        assert "weird.gguf" in message
+        assert "doesn't support" in message
+        assert "LILBEE_REMOTE_BASE_URL" in message
 
     def testload_llama_oom_at_min_ctx_raises_diagnostic(self, models_dir: Path) -> None:
         """When n_ctx is already at the floor, OOM retry gives up and wraps the error."""
@@ -723,6 +861,7 @@ class TestLlamaCppProvider:
                     side_effect=OSError("psutil broken"),
                 ),
             ):
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 # Falls back to min(4096, DEFAULT_NUM_CTX=8192) -> 4096
                 assert mock_llama_cls.call_args[1]["n_ctx"] == 4096
@@ -754,6 +893,7 @@ class TestLlamaCppProvider:
                     return_value=64 * 1024**3,
                 ),
             ):
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 # With DEFAULT_NUM_CTX as the training fallback and 64 GB
                 # available memory, the picker is bounded by that fallback.
@@ -792,6 +932,7 @@ class TestLlamaCppProvider:
                     return_value=(8 * 1024**3),
                 ),
             ):
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 load_llama(models_dir / "test-model.gguf", mode="chat")
                 ctx_used = mock_llama_cls.call_args[1]["n_ctx"]
             assert 512 <= ctx_used <= 32768
@@ -814,7 +955,11 @@ class TestLlamaCppProvider:
         snap = log_dispatch._dispatcher.snapshot()
         log_dispatch._dispatcher.reset()
         try:
-            with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
+            with (
+                patch("llama_cpp.Llama") as mock_llama_cls,
+                patch("llama_cpp.llama_log_set") as mock_set,
+            ):
+                mock_llama_cls.return_value.n_ctx.return_value = 4096
                 provider.load_llama(models_dir / "test-model.gguf", mode="chat")
                 assert log_dispatch._dispatcher.installed is True
                 mock_set.assert_called_once()
