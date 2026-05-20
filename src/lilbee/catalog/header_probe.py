@@ -72,11 +72,11 @@ def _parse_arch(blob: bytes) -> str:
 
 
 def _read_u32(blob: bytes, cursor: int) -> int:
-    return struct.unpack_from("<I", blob, cursor)[0]
+    return int(struct.unpack_from("<I", blob, cursor)[0])
 
 
 def _read_u64(blob: bytes, cursor: int) -> int:
-    return struct.unpack_from("<Q", blob, cursor)[0]
+    return int(struct.unpack_from("<Q", blob, cursor)[0])
 
 
 def _read_string(blob: bytes, cursor: int) -> tuple[str, int]:
