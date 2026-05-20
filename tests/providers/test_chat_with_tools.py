@@ -133,6 +133,34 @@ def test_llama_cpp_chat_request_carries_tools() -> None:
     assert sent_request.tool_choice == "auto"
 
 
+def test_llama_cpp_supports_tools_memoizes_metadata_reads(monkeypatch, tmp_path) -> None:
+    """Repeated calls for the same (path, mtime) read GGUF metadata only once.
+
+    A tool-bearing chat request hits supports_tools on every call; without
+    the lru_cache, every request would re-read the GGUF header from disk.
+    """
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    real_file = tmp_path / "real.gguf"
+    real_file.write_bytes(b"x")
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: real_file,
+    )
+    calls: list[Path] = []
+
+    def _reader(path: Path) -> dict[str, str]:
+        calls.append(path)
+        return {"chat_template": "{% if tools %}{{ tools }}{% endif %}"}
+
+    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.read_gguf_metadata", _reader)
+    assert provider.supports_tools("any/model::Q4_K_M") is True
+    assert provider.supports_tools("any/model::Q4_K_M") is True
+    assert provider.supports_tools("any/model::Q4_K_M") is True
+    assert len(calls) == 1
+
+
 def test_llama_cpp_supports_tools_when_template_mentions_tools(monkeypatch) -> None:
     """``supports_tools`` returns True iff the GGUF chat template references tools."""
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider

@@ -132,12 +132,16 @@ async def chat_route(data: ChatRequest) -> AskResponse:
             options=data.options,
             chunk_type=data.chunk_type,
         )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
     except ModelNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ModelDoesNotSupportToolsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ContextWindowExceededError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
         chat_lock().release()
 

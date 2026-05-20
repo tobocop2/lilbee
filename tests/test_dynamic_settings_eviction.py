@@ -71,6 +71,31 @@ def test_load_affecting_key_evicts_cache():
         _restore_services()
 
 
+def test_num_ctx_max_change_evicts_cache():
+    """num_ctx_max participates in the dynamic context picker, so a change
+    must drop the loaded model so the next call resizes against the new cap.
+    """
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"num_ctx_max": 131072})
+        assert provider.calls == [None]
+    finally:
+        _restore_services()
+
+
+def test_kv_cache_type_change_evicts_cache():
+    """kv_cache_type is a load-time Llama() kwarg; a TUI change has no effect
+    until the worker reloads, so it must invalidate the cache."""
+    from lilbee.core.config.enums import KvCacheType
+
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"kv_cache_type": KvCacheType.Q8_0})
+        assert provider.calls == [None]
+    finally:
+        _restore_services()
+
+
 def test_non_reloadable_model_change_evicts_cache():
     """Switching embedding_model or reranker_model evicts the cache so the
     next call respawns under the new cfg. These workers do not honor a

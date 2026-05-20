@@ -39,7 +39,8 @@ async def acquire_chat_lock_or_busy(timeout: float | None = None) -> None:
     try:
         await asyncio.wait_for(chat_lock().acquire(), timeout=effective_timeout)
     except TimeoutError as exc:
+        rendered = f"{effective_timeout:.1f}s" if effective_timeout < 1 else f"{effective_timeout:.0f}s"
         raise ChatBusyError(
             f"Chat backend busy: another request held the lock for "
-            f"{effective_timeout:.0f}s. Retry shortly."
+            f"{rendered}. Retry shortly."
         ) from exc
