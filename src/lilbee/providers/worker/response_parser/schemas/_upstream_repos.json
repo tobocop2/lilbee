@@ -1,0 +1,22 @@
+{
+  "cohere": {"repo": "CohereForAI/c4ai-command-r-08-2024"},
+  "deepseek_v31": {"repo": "deepseek-ai/DeepSeek-V3.1"},
+  "ernie": {"repo": "baidu/ERNIE-4.5-VL-28B-A3B-PT"},
+  "functionary_v3": {"repo": "meetkai/functionary-medium-v3.2"},
+  "gemma4": {"repo": "google/gemma-4-9b-it"},
+  "glm46": {"repo": "zai-org/GLM-4.6"},
+  "glm47": {"repo": "zai-org/GLM-4.7"},
+  "gpt_oss": {"repo": "openai/gpt-oss-20b"},
+  "granite": {"repo": "ibm-granite/granite-3.1-8b-instruct"},
+  "hermes": {"repo": "NousResearch/Hermes-3-Llama-3.1-8B"},
+  "internlm2": {"repo": "internlm/internlm2_5-7b-chat"},
+  "kimi_k2": {"repo": "moonshotai/Kimi-K2-Instruct"},
+  "lfm2": {"repo": "LiquidAI/LFM2-1.2B"},
+  "llama3": {"repo": "meta-llama/Llama-3.1-8B-Instruct"},
+  "mistral": {"repo": "mistralai/Mistral-7B-Instruct-v0.3"},
+  "olmo3": {"repo": "allenai/OLMo-3-1125-7B-Instruct"},
+  "phi4mini": {"repo": "microsoft/Phi-4-mini-instruct"},
+  "qwen3": {"repo": "Qwen/Qwen3-8B"},
+  "qwen3_coder": {"repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+  "smollm": {"repo": "HuggingFaceTB/SmolLM3-3B"}
+}

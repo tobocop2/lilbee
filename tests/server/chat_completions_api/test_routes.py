@@ -332,6 +332,43 @@ class TestNonStreamingCompletion:
         assert body["error"]["type"] == "invalid_request_error"
         assert "temperature" in body["error"]["message"]
 
+    async def test_image_content_part_returns_400_with_openai_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Image content parts in a user message surface as a 400 INVALID_REQUEST.
+
+        The translate layer raises ValueError because lilbee cannot route image
+        data to a chat model yet; the route catches that and returns a clean
+        400 instead of letting it bubble up as a 500.
+        """
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "describe"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "data:image/png;base64,aGVsbG8=",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["code"] == "invalid_request"
+        assert "Image content" in body["error"]["message"]
+
     async def test_unknown_role_payload_returns_400(self, services_with_chat_model, _auth_token):
         # ``role`` is a Literal of four OpenAI roles; ``developer`` is rejected.
         async with AsyncTestClient(_build_app()) as client:
@@ -420,43 +457,6 @@ class TestNonStreamingCompletion:
         assert body["error"]["code"] == "internal_error"
         assert body["error"]["type"] == "api_error"
         assert not chat_lock().locked()
-
-    async def test_image_content_part_returns_400_with_openai_envelope(
-        self, services_with_chat_model, _auth_token
-    ):
-        """Image content parts in a user message surface as a 400 INVALID_REQUEST.
-
-        The translate layer raises ValueError because lilbee cannot route image
-        data to a chat model yet; the route catches that and returns a clean
-        400 instead of letting it bubble up as a 500.
-        """
-        async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post(
-                "/v1/chat/completions",
-                headers=_h(),
-                json={
-                    "model": INSTALLED_REF,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "describe"},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": "data:image/png;base64,aGVsbG8=",
-                                    },
-                                },
-                            ],
-                        }
-                    ],
-                },
-            )
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["code"] == "invalid_request"
-        assert "Image content" in body["error"]["message"]
 
     async def test_context_window_exceeded_returns_400_with_openai_envelope(
         self, services_with_chat_model, _auth_token

@@ -53,6 +53,18 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
     "numpy",
+    # Pinned exactly: only used for `recursive_parse` in the tool-call
+    # response parser, and HF is mid-refactor of the schema DSL
+    # (PR huggingface/transformers#45847 renames `response_schema` to
+    # `response_template` with a new regions-of-text shape). Bump
+    # deliberately when the schemas are re-validated against a newer
+    # release; do not let it float.
+    "transformers==5.8.1",
+    # JMESPath transforms used by Cohere, ERNIE, SmolLM, GPT-OSS response
+    # schemas to normalise extracted tool-call shapes. Optional in
+    # transformers' parser engine; required here because we ship schemas
+    # that use the `x-parser-args.transform` key.
+    "jmespath>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -151,6 +163,10 @@ select = [
     "PLR0915", # too many statements
     "PLR2004", # magic value used in comparison
 ]
+# DeepSeek V3.1's tool-call markers are intentionally fullwidth (｜ U+FF5C,
+# ▁ U+2581). These are the exact characters the model emits; substituting
+# the ASCII look-alikes would break extraction.
+allowed-confusables = ["｜", "▁"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

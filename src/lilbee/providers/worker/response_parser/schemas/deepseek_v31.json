@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "thinking": {
+      "type": "string",
+      "x-regex": "<think>\\s*(.*?)\\s*</think>"
+    },
+    "content": {
+      "type": "string",
+      "x-regex-substitutions": [
+        ["<think>.*?</think>", ""],
+        ["<｜tool▁calls▁begin｜>.*?<｜tool▁calls▁end｜>", ""],
+        ["<｜tool▁call▁begin｜>.*?<｜tool▁call▁end｜>", ""]
+      ],
+      "x-regex": "^\\s*(.*?)\\s*$"
+    },
+    "tool_calls": {
+      "x-regex-iterator": "(<｜tool▁call▁begin｜>.*?<｜tool▁call▁end｜>)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "x-regex": "<｜tool▁call▁begin｜>\\s*(?P<name>.*?)\\s*<｜tool▁sep｜>\\s*(?P<arguments>\\{.*\\})\\s*<｜tool▁call▁end｜>",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "x-parser": "json",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

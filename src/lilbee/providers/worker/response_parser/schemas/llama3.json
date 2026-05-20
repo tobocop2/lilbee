@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "content": {
+      "type": "string",
+      "x-regex": "^(.*?)(?:<\\|python_tag\\|>|\\{\\s*\"name\"\\s*:|$)"
+    },
+    "tool_calls": {
+      "x-regex": "<\\|python_tag\\|>(.*?)(?:<\\|eom_id\\|>|<\\|eot_id\\|>|$)",
+      "type": "array",
+      "x-regex-iterator": "(\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\})",
+      "items": {
+        "type": "object",
+        "x-parser": "json",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

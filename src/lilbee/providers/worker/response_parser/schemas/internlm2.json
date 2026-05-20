@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "content": {
+      "type": "string",
+      "x-regex": "^(.*?)(?:<\\|action_start\\|><\\|plugin\\|>|$)"
+    },
+    "tool_calls": {
+      "x-regex-iterator": "<\\|action_start\\|><\\|plugin\\|>\\s*(\\{.*?\\})\\s*<\\|action_end\\|>",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "x-parser": "json",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

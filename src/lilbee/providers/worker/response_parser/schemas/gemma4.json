@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
+    },
+    "thinking": {
+      "type": "string",
+      "x-regex": "<\\|channel\\>thought\\n(.*?)\\<channel\\|\\>"
+    },
+    "content": {
+      "type": "string",
+      "x-regex": "(?:<channel\\|\\>)?((?:(?!<\\|tool_call\\>).)*)"
+    },
+    "tool_calls": {
+      "x-regex-iterator": "<\\|tool_call>(.*?)<tool_call\\|>",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "x-regex": "call\\:(?P<name>\\w+)(?P<arguments>\\{.*\\})",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "x-parser": "gemma4-tool-call",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}
