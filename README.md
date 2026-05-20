@@ -74,7 +74,7 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
 - **Local by default.** Everything stays on your machine unless you opt into a cloud model, and lilbee flags it when you do.
 - **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
-- **Compact.** The pip wheel is 10-44 MB (vs. the 450-600 MB Electron-bundled all-in-one desktop AI apps ship before any models load). The standalone binary, which folds Python, the model runtime, OCR, the crawler, and the vector store into a single file, lands around 253-365 MB across Linux, macOS, and Windows.
+- **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64 (the manylinux build carries a wider CPU baseline). The single-file standalone binary, which folds Python, the model runtime, OCR, the crawler, and the vector store, lands around 253-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps typically ship several hundred megabytes of Electron and runtime before any models load.
 
 ## Why lilbee
 
