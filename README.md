@@ -76,6 +76,8 @@ Throw anything at it: PDFs, Office files, ebooks, source in 150+ languages, scan
 
 Pull models from Hugging Face inside the app. Pick something, it downloads, it's ready.
 
+Everything ships bundled in one process: in-process inference, a search engine, file ingestion, citations, an MCP server, and a REST API. The tradeoff is that lilbee's local model catalog tracks [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) and lags Ollama on the newest architectures. For those, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
+
 Everything stays local unless you opt into a cloud model. When you do, lilbee flags it.
 
 Run globally, or drop a `.lilbee/` next to `.git/` to keep a project's library separate from your other stuff.
