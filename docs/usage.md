@@ -117,10 +117,10 @@ two sub-tabs:
 
 - **Local.** Everything you can run on this machine. Native GGUF models from
   the developer's picks, the full HuggingFace catalog browsable by task and
-  size, and any locally-running SDK backend (Ollama, LM Studio, etc.) that
-  exposes models on its REST endpoint. Toggle between a card grid and a
-  dense list view; both share the same search box. Pulling a model
-  installs it; selecting an installed model assigns it to the matching role.
+  size, and any locally-running OpenAI-compatible backend that exposes models
+  on its REST endpoint. Toggle between a card grid and a dense list view;
+  both share the same search box. Pulling a model installs it; selecting an
+  installed model assigns it to the matching role.
 - **Frontier.** Cloud chat models grouped by provider (Anthropic, Gemini,
   OpenAI, and so on). Only appears when at least one provider API key is
   configured, either via the Settings screen's API-Keys tab or the
@@ -700,26 +700,16 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 
 ### Remote providers (SDK backend)
 
-Connect to hosted LLM providers instead of (or alongside) local llama-cpp
-inference.
+Connect to hosted or local OpenAI-compatible LLM backends alongside lilbee's
+native in-process inference.
 
 **What it does:** Routes chat and embedding calls to any provider reachable
-via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The
-routing provider automatically detects which models are available locally vs.
-remotely and routes each call to the right backend.
+via the SDK backend. The routing provider automatically detects which models
+are available locally vs. remotely and routes each call to the right backend.
 
-**When to use it:** When you want to use your favorite frontier model for chat
-while keeping embeddings local for privacy, or when you're already running
-Ollama and want to use its models.
-
-> **New models lilbee can't load natively?** lilbee's local backend is
-> [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python), which trails
-> [Ollama](https://ollama.com) by weeks-to-months on new architectures.
-> "New" here means anything released in the last ~3 months, or any architecture
-> still being patched into `ggml-org/llama.cpp` upstream (e.g. recent MoE / SWA
-> variants like Gemma 4, GLM 4.7, OLMo 3 at the time of writing). Install Ollama,
-> `ollama pull <model>`, and select it here as a remote model. lilbee catches up
-> as `llama-cpp-python` does.
+**When to use it:** When you want a frontier model for chat while keeping
+embeddings local for privacy, or to surface models from a local
+OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
 **Install:** `pip install --pre 'lilbee[litellm]'` or
 `uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
@@ -729,7 +719,7 @@ adapter library name).
 
 ```bash
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
-export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # Ollama default
+export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # local backend URL
 export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
@@ -858,12 +848,12 @@ lilbee runs vision OCR in one of two ways:
 
 1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
    (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly. No Ollama, no extra services. This is the recommended path and
-   supports an SSE heartbeat for long scans.
+   directly, in-process. This is the recommended path and supports an SSE
+   heartbeat for long scans.
 2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
    `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
-   model to any remote name your SDK backend understands (Ollama, OpenAI,
-   Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
+   model to any remote name your SDK backend understands. lilbee will route
+   vision calls accordingly.
 
 ```bash
 lilbee add report.pdf --vision                # prompts for model if none set
