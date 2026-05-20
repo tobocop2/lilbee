@@ -50,13 +50,7 @@ def _classify_remote_task(name: str, family: str) -> ModelTask:
 
 
 def reclassify_by_name(ref: str, declared_task: str) -> str:
-    """Override declared_task to RERANK / VISION when ref names a known role.
-
-    Defends against pre-fix manifests that stored ``task="chat"`` for
-    models whose ref obviously identifies them as rerankers (e.g.
-    ``bge-reranker-*``) or vision loaders. The model bar uses this so a
-    historical mis-tag does not surface a reranker in the chat picker.
-    """
+    """Override declared_task to RERANK / VISION when the ref names a known role."""
     name_lower = ref.lower()
     if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
         return ModelTask.RERANK
@@ -174,10 +168,9 @@ class KnownModelCache:
         self._ttl_s = ttl_s
         self._refs: frozenset[str] = frozenset()
         self._expires_at: float = 0.0
-        # Bumped by every ``invalidate()`` so a refresh in flight knows
-        # whether a mutation happened during its I/O. Without this, a
-        # cold-start refresh that races with an ``invalidate()`` would
-        # extend the expiry over a result that pre-dates the mutation.
+        # Bumped by every ``invalidate()`` so a refresh in flight can
+        # detect whether a mutation happened during its I/O and skip
+        # extending the expiry over a possibly pre-mutation result.
         self._generation: int = 0
         self._lock = Lock()
 

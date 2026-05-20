@@ -27,6 +27,7 @@ from lilbee.retrieval.reasoning import (
     strip_reasoning,
 )
 from lilbee.runtime.progress import SseEvent
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -35,6 +36,8 @@ from lilbee.server.chat_dispatch.canonical import (
     TextDelta,
 )
 from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
     dispatch_chat,
     dispatch_chat_stream,
 )
@@ -58,7 +61,11 @@ log = logging.getLogger(__name__)
 def _classify_stream_error(exc: BaseException) -> tuple[str | None, str]:
     """Return ``(code, user_message)`` for an SSE error event, typed-exception aware."""
     if isinstance(exc, ContextWindowExceededError):
-        return "context_length_exceeded", str(exc)
+        return CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED.value, str(exc)
+    if isinstance(exc, ModelNotFoundError):
+        return CompletionsErrorCode.MODEL_NOT_FOUND.value, str(exc)
+    if isinstance(exc, ModelDoesNotSupportToolsError):
+        return CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS.value, str(exc)
     return classify_load_error(str(exc))
 
 

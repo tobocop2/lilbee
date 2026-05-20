@@ -11,10 +11,10 @@ from typing import Any
 
 from lilbee.providers.base import ContextWindowExceededError
 from lilbee.providers.worker.response_parser import (
-    SCHEMAS,
     ResponseSchema,
     StreamingResponseParser,
     detect_family,
+    get_schemas,
     parse_response,
 )
 from lilbee.providers.worker.transport import (
@@ -38,32 +38,14 @@ _DEFAULT_RESPONSE_BUDGET = 1024
 # Tokenizer-drift cushion between count-time and inference-time.
 _CTX_SAFETY_MARGIN = 64
 
+# Cancel-signal polling cadence for the abort bridge (sec).
 _ABORT_BRIDGE_POLL_S = 0.025
-"""How often the abort bridge polls the parent's mp.Value flag.
 
-25 ms is the budget between the user pressing Esc and ggml's next
-abort_callback poll on a slow-token chat. Faster than this stops being
-visible to a human; slower than this leaves the user staring at an
-unresponsive UI for the duration of one stuck token.
-"""
-
+# Maximum tokens queued before a streaming-chat batch flushes.
 _STREAM_BATCH_MAX_CHUNKS = 16
-"""Flush a streaming-chat batch once this many tokens have queued.
 
-Bounded so a long answer at high tok/s doesn't grow the buffer without
-limit. Sized so each flush write batches ~16 syscalls into 1.
-"""
-
+# Maximum time between streaming-chat batch flushes (sec).
 _STREAM_BATCH_MAX_INTERVAL_S = 0.05
-"""Flush a streaming-chat batch at least this often (50 ms).
-
-The check fires only when the *next* token arrives (we never wake on a
-timer), so a generator that stalls after token N keeps token N+1's
-buffer parked until the next token lands. The eager-first-flush at
-the top of :func:`_handle_chat_streaming` guarantees the user sees
-something within the very first token, so the parked-tail case only
-delays subsequent batches, not initial output.
-"""
 
 
 class _ChatSession:
@@ -216,7 +198,7 @@ class _ChatSession:
                 metadata.get("chat_template", ""),
                 architecture=metadata.get("architecture"),
             )
-            self._response_schema = SCHEMAS.get(family)
+            self._response_schema = get_schemas().get(family)
         return self._llm
 
     def _close_model(self) -> None:
@@ -513,14 +495,9 @@ def _handle_chat_non_streaming(
 class _AbortBridge:
     """Mirror the parent's mp.Value abort flag into ggml's threading.Event.
 
-    Without this, cancel only takes effect at Python-loop boundaries
-    between yielded tokens. A token that takes 30+ seconds inside the
-    ggml decode (full context, slow GPU, big buffer) keeps generating
-    because the Python loop never gets a chance to read the flag.
-    Calling ``request_abort()`` flips the threading.Event that the
-    loaded llama's ``abort_callback`` polls inside ggml, so cancel
-    takes effect at the next ggml poll point (every few tokens) instead
-    of waiting for the next Python yield.
+    A polling thread reads the parent flag every ``_ABORT_BRIDGE_POLL_S``
+    and calls ``request_abort()`` so cancel takes effect at the next ggml
+    poll point rather than waiting for the next Python yield.
     """
 
     def __init__(self, abort_flag: Any) -> None:

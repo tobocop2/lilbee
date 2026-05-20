@@ -121,10 +121,12 @@ _MIN_CHAT_CTX = 2048
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
 
-# Tokens that appear in any GGUF chat template that knows how to render
-# OpenAI-style tool calls. Conservative: a hit is sufficient (not necessary)
-# evidence the model has been trained for tool use.
-_TOOL_TEMPLATE_TOKENS = ("tools", "tool_calls", "functions", "function_calls")
+# Jinja chat templates flag tool support by referencing one of these
+# names inside an expression / statement block. Anchoring the match to
+# the Jinja delimiters rules out incidental hits like "this template has
+# no tools" prose; the names must appear as identifiers inside ``{% ... %}``
+# or ``{{ ... }}``.
+_TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
 
 
 class LlamaCppProvider(LLMProvider):
@@ -138,7 +140,13 @@ class LlamaCppProvider(LLMProvider):
     def _raise_chat_worker_error(exc: WorkerError) -> NoReturn:
         """Translate a worker-side chat error into the right parent-side exception."""
         if exc.original_type == ContextWindowExceededError.__name__:
-            raise ContextWindowExceededError(exc.message) from exc
+            requested, usable, n_ctx = _parse_context_overflow_breakdown(exc.message)
+            raise ContextWindowExceededError(
+                exc.message,
+                requested=requested,
+                usable_budget=usable,
+                n_ctx=n_ctx,
+            ) from exc
         raise ProviderError(
             LlamaCppProvider._worker_error_message("Chat", exc),
             provider="llama-cpp",
@@ -471,7 +479,7 @@ class LlamaCppProvider(LLMProvider):
         template = meta.get("chat_template")
         if not isinstance(template, str):
             return False
-        return any(token in template for token in _TOOL_TEMPLATE_TOKENS)
+        return _TOOL_TEMPLATE_PATTERN.search(template) is not None
 
     @staticmethod
     def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -877,6 +885,26 @@ def _validate_chat_context_window(llm: Any, model_path: Path) -> None:
         "override.",
         provider="llama-cpp",
     )
+
+
+# Capture requested / usable / n_ctx out of an overflow-error message body.
+_CTX_BREAKDOWN_RE = re.compile(
+    r"Prompt of (\d+) tokens exceeds the usable budget of (\d+) tokens "
+    r"\(n_ctx=(\d+)"
+)
+_CTX_RUNTIME_RE = re.compile(r"Prompt of (\d+) tokens exceeded the (\d+)-token context window")
+
+
+def _parse_context_overflow_breakdown(message: str) -> tuple[int, int, int]:
+    """Recover ``(requested, usable_budget, n_ctx)`` from an overflow message."""
+    match = _CTX_BREAKDOWN_RE.search(message)
+    if match:
+        return int(match.group(1)), int(match.group(2)), int(match.group(3))
+    match = _CTX_RUNTIME_RE.search(message)
+    if match:
+        n_ctx = int(match.group(2))
+        return int(match.group(1)), n_ctx, n_ctx
+    return 0, 0, 0
 
 
 def safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:

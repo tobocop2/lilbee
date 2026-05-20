@@ -248,7 +248,7 @@ def test_session_chat_does_not_warn_when_schema_available(monkeypatch, tmp_path,
     import logging
 
     from lilbee.providers.worker.chat_worker import _ChatSession
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
     from lilbee.providers.worker.transport import RoleConfig
 
     class _Stub:
@@ -266,7 +266,7 @@ def test_session_chat_does_not_warn_when_schema_available(monkeypatch, tmp_path,
     role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
     session = _ChatSession(role_config, _FlagStub())
     monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
-    session._response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session._response_schema = get_schemas()[TemplateFamily.QWEN3]
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.chat_worker"):
         session.chat(
             messages=[],
@@ -282,12 +282,12 @@ def test_session_chat_does_not_warn_when_schema_available(monkeypatch, tmp_path,
 def test_close_model_resets_response_schema(tmp_path) -> None:
     """``_close_model`` drops the cached response schema so the next load reclassifies."""
     from lilbee.providers.worker.chat_worker import _ChatSession
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
     from lilbee.providers.worker.transport import RoleConfig
 
     role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
     session = _ChatSession(role_config, _FlagStub())
-    session._response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session._response_schema = get_schemas()[TemplateFamily.QWEN3]
     session._close_model()
     assert session._response_schema is None
 
@@ -450,7 +450,7 @@ def test_non_streaming_schema_extraction_promotes_text_to_tool_calls() -> None:
     schema-driven extraction promotes it to structured ``tool_calls`` and
     remaps ``finish_reason`` from ``stop`` to ``tool_calls``.
     """
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
 
     reply, conn = _make_reply()
     qwen_tool_call = '<tool_call>{"name": "search", "arguments": {"q": "foo"}}</tool_call>'
@@ -464,7 +464,7 @@ def test_non_streaming_schema_extraction_promotes_text_to_tool_calls() -> None:
             ]
         }
     )
-    session.response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session.response_schema = get_schemas()[TemplateFamily.QWEN3]
     payload = ChatRequest(
         messages=[{"role": "user", "content": "search foo"}],
         stream=False,
@@ -485,7 +485,7 @@ def test_non_streaming_schema_extraction_skipped_when_tools_absent() -> None:
     when no tools were requested. The schema-extraction path only runs when
     the request itself carried tools.
     """
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
 
     reply, conn = _make_reply()
     session = _StubSession(
@@ -501,7 +501,7 @@ def test_non_streaming_schema_extraction_skipped_when_tools_absent() -> None:
             ]
         }
     )
-    session.response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session.response_schema = get_schemas()[TemplateFamily.QWEN3]
     payload = ChatRequest(messages=[{"role": "user", "content": "hi"}], stream=False)
     _handle_chat(reply, payload, WorkerLoopState(session=session))
     kind, value = conn.sent[0]
@@ -518,7 +518,7 @@ def test_chat_session_caches_schema_from_template_metadata(monkeypatch, tmp_path
     directly.
     """
     from lilbee.providers.worker.chat_worker import _ChatSession
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
     from lilbee.providers.worker.transport import RoleConfig
 
     fake_path = tmp_path / "fake-qwen.gguf"
@@ -545,7 +545,7 @@ def test_chat_session_caches_schema_from_template_metadata(monkeypatch, tmp_path
 
     session._ensure_loaded(None)
 
-    assert session.response_schema is SCHEMAS[TemplateFamily.QWEN3]
+    assert session.response_schema is get_schemas()[TemplateFamily.QWEN3]
 
 
 def test_chat_session_caches_none_schema_for_unrecognised_template(monkeypatch, tmp_path) -> None:
@@ -579,7 +579,7 @@ def test_non_streaming_schema_extraction_skipped_when_model_emits_plain_text() -
     """When schema is cached but the model just emits text (no tool markup),
     the response passes through unchanged with finish_reason left at STOP.
     """
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
 
     reply, conn = _make_reply()
     session = _StubSession(
@@ -592,7 +592,7 @@ def test_non_streaming_schema_extraction_skipped_when_model_emits_plain_text() -
             ]
         }
     )
-    session.response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session.response_schema = get_schemas()[TemplateFamily.QWEN3]
     payload = ChatRequest(
         messages=[{"role": "user", "content": "hi"}],
         stream=False,
@@ -615,14 +615,14 @@ def test_streaming_flush_releases_held_content_via_drain() -> None:
     trailing ``<``), the end-of-stream drain releases it as a final text
     delta. Without the drain those bytes would never reach the client.
     """
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
 
     reply, conn = _make_reply()
     # Chunk ends with '<' which the safety margin holds back; no </tool_call>
     # ever arrives, so the drain on stream end must release it.
     stream = iter([{"choices": [{"delta": {"content": "hi <"}}]}])
     session = _StubSession(response=stream)
-    session.response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session.response_schema = get_schemas()[TemplateFamily.QWEN3]
     payload = ChatRequest(
         messages=[{"role": "user", "content": "hi"}],
         stream=True,
@@ -637,7 +637,7 @@ def test_streaming_schema_extraction_emits_tool_delta_from_text_chunks() -> None
     """A streamed sequence of text deltas containing ``<tool_call>...{json}...</tool_call>``
     surfaces a ``ToolCallDelta`` via schema extraction, with prefix text flushed first.
     """
-    from lilbee.providers.worker.response_parser import SCHEMAS, TemplateFamily
+    from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas
 
     reply, conn = _make_reply()
     stream = iter(
@@ -649,7 +649,7 @@ def test_streaming_schema_extraction_emits_tool_delta_from_text_chunks() -> None
         ]
     )
     session = _StubSession(response=stream)
-    session.response_schema = SCHEMAS[TemplateFamily.QWEN3]
+    session.response_schema = get_schemas()[TemplateFamily.QWEN3]
     payload = ChatRequest(
         messages=[{"role": "user", "content": "weather"}],
         stream=True,

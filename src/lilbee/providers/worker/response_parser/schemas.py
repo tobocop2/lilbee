@@ -1,21 +1,8 @@
-"""Response schemas keyed by detected ``TemplateFamily``.
-
-Each schema lives as a JSON file in ``schemas/`` next to this module and is
-consumed by ``transformers.utils.chat_parsing_utils.recursive_parse``. New
-families: drop a ``schemas/{family}.json`` file and add the enum value +
-detection marker. No Python edits to the schema bodies themselves.
-
-Long-term: llama.cpp's ``common/chat-auto-parser`` introspects the GGUF
-chat template and synthesises a PEG parser at runtime, so per-family
-schemas disappear entirely. That code is not reachable from
-``llama-cpp-python`` today (the autoparser lives in llama.cpp's ``common/``
-directory, outside ``libllama``'s C ABI). When a binding appears,
-``src/lilbee/providers/worker/response_parser/`` gets deleted in one
-commit. Until then we ship the small set below.
-"""
+"""Response schemas keyed by detected ``TemplateFamily``."""
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from importlib import resources
@@ -72,4 +59,7 @@ def _load_all() -> dict[TemplateFamily, ResponseSchema]:
     return out
 
 
-SCHEMAS: dict[TemplateFamily, ResponseSchema] = _load_all()
+@functools.cache
+def get_schemas() -> dict[TemplateFamily, ResponseSchema]:
+    """Return the per-family response schemas, loading lazily on first call."""
+    return _load_all()

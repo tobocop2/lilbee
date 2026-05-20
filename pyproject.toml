@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b477"
+version = "0.6.66b479"
 description = "A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources. Per-project libraries, semantic and hybrid search, vision OCR, auto-built wiki. CLI, TUI, MCP server, REST API, and Python library in one process; no model server, no database server."
 readme = "README.md"
 license = "Elastic-2.0"

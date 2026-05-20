@@ -2297,6 +2297,24 @@ class TestClassifyStreamError:
         code, _ = _classify_stream_error(RuntimeError("llama_context: failed to allocate"))
         assert code == "model_too_large"
 
+    def test_model_not_found_routes_to_typed_code(self):
+        """``ModelNotFoundError`` from the dispatch surfaces as a typed code."""
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(ModelNotFoundError("vendor/missing.gguf"))
+        assert code == "model_not_found"
+        assert "vendor/missing.gguf" in msg
+
+    def test_model_does_not_support_tools_routes_to_typed_code(self):
+        """``ModelDoesNotSupportToolsError`` from the dispatch surfaces as a typed code."""
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(ModelDoesNotSupportToolsError("vendor/m.gguf"))
+        assert code == "model_does_not_support_tools"
+        assert "vendor/m.gguf" in msg
+
     def test_generic_error_is_classified_as_internal(self):
         """An unrecognised exception falls back to the generic envelope."""
         from lilbee.server.handlers.rag import _classify_stream_error

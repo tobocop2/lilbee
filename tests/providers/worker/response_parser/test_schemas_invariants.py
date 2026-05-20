@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.worker.response_parser import SCHEMAS
+from lilbee.providers.worker.response_parser import get_schemas
 from lilbee.providers.worker.response_parser.families import TemplateFamily
 from lilbee.providers.worker.response_parser.streaming import _MARKER_OPENERS
 
@@ -20,9 +20,9 @@ def test_schemas_registry_covers_every_known_family() -> None:
     author to either ship the schema or document the omission deliberately.
     """
     expected = {f for f in TemplateFamily if f is not TemplateFamily.UNKNOWN}
-    assert set(SCHEMAS.keys()) == expected, (
-        f"SCHEMAS missing entries for {expected - set(SCHEMAS.keys())} or has "
-        f"extras for {set(SCHEMAS.keys()) - expected}."
+    assert set(get_schemas().keys()) == expected, (
+        f"get_schemas() missing entries for {expected - set(get_schemas().keys())} or has "
+        f"extras for {set(get_schemas().keys()) - expected}."
     )
 
 
@@ -84,7 +84,7 @@ def _walk_regex_strings(node: Any):
             yield from _walk_regex_strings(child)
 
 
-@pytest.mark.parametrize("family,schema", list(SCHEMAS.items()))
+@pytest.mark.parametrize("family,schema", list(get_schemas().items()))
 def test_every_schema_marker_opens_with_known_character(family, schema) -> None:
     """Every literal marker in shipped schemas starts with ``<`` or ``[``.
 

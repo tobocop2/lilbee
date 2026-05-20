@@ -174,6 +174,33 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "q", "chunk_type": "bogus"})
         assert resp.status_code == 400
 
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_model_not_found_returns_404(self, mock_ask, client):
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        mock_ask.side_effect = ModelNotFoundError("vendor/missing.gguf")
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 404
+        assert "vendor/missing.gguf" in resp.text
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_model_without_tool_support_returns_400(self, mock_ask, client):
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        mock_ask.side_effect = ModelDoesNotSupportToolsError("vendor/m.gguf")
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 400
+        assert "vendor/m.gguf" in resp.text
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_context_window_exceeded_returns_400(self, mock_ask, client):
+        from lilbee.providers.base import ContextWindowExceededError
+
+        mock_ask.side_effect = ContextWindowExceededError("Prompt of 9000 tokens exceeds...")
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 400
+        assert "9000" in resp.text
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")
@@ -216,6 +243,36 @@ class TestChatRoute:
         mock_chat.assert_awaited_once_with(
             question="q", history=[], top_k=0, options=None, chunk_type=None
         )
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_model_not_found_returns_404(self, mock_chat, client):
+        """Dispatch's ``ModelNotFoundError`` becomes a 404 with the model in the body."""
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        mock_chat.side_effect = ModelNotFoundError("vendor/missing.gguf")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 404
+        assert "vendor/missing.gguf" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_model_without_tool_support_returns_400(self, mock_chat, client):
+        """``ModelDoesNotSupportToolsError`` becomes a 400 with the model in the body."""
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        mock_chat.side_effect = ModelDoesNotSupportToolsError("vendor/m.gguf")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "vendor/m.gguf" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_context_window_exceeded_returns_400(self, mock_chat, client):
+        """``ContextWindowExceededError`` from the dispatch becomes a 400."""
+        from lilbee.providers.base import ContextWindowExceededError
+
+        mock_chat.side_effect = ContextWindowExceededError("Prompt of 9000 tokens exceeds...")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "9000" in resp.text
 
 
 class TestChatStreamRoute:

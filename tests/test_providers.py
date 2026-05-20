@@ -729,6 +729,34 @@ class TestLlamaCppProvider:
         finally:
             cfg.flash_attention = "auto"
 
+    def test_parse_context_overflow_breakdown_recovers_typed_fields(self) -> None:
+        """Round-trip the worker's overflow messages back into typed fields.
+
+        The worker raises ``ContextWindowExceededError`` with named factory
+        constructors; the parent receives only the rendered ``message`` text
+        across the pipe. The provider must regex the requested / usable /
+        n_ctx out of that text so telemetry and UI don't see zeros.
+        """
+        from lilbee.providers.base import ContextWindowExceededError
+        from lilbee.providers.llama_cpp.provider import _parse_context_overflow_breakdown
+
+        breakdown = ContextWindowExceededError.from_breakdown(
+            requested=200000,
+            n_ctx=40960,
+            response_budget=1024,
+            tools_overhead=512,
+            safety_margin=64,
+            model="vendor/model.gguf",
+        )
+        assert _parse_context_overflow_breakdown(str(breakdown)) == (200000, 39360, 40960)
+
+        runtime = ContextWindowExceededError.from_runtime_overflow(
+            requested=8200, n_ctx=8192, model="vendor/model.gguf"
+        )
+        assert _parse_context_overflow_breakdown(str(runtime)) == (8200, 8192, 8192)
+
+        assert _parse_context_overflow_breakdown("nothing parseable here") == (0, 0, 0)
+
     def testload_llama_chat_accepts_minimum_chat_ctx(self, models_dir: Path) -> None:
         """A model whose post-load n_ctx is exactly the minimum loads successfully."""
         from unittest.mock import MagicMock, patch

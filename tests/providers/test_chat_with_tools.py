@@ -168,6 +168,25 @@ def test_llama_cpp_supports_tools_false_when_template_text_only(monkeypatch) -> 
     assert provider.supports_tools("any/model::Q4_K_M") is False
 
 
+def test_llama_cpp_supports_tools_false_when_tool_words_only_in_prose(monkeypatch) -> None:
+    """A template that mentions tool words in literal text, not inside Jinja
+    delimiters, must not report tool support. Matching anywhere in the string
+    would route real tool requests to a model that can't render them.
+    """
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: Path("/fake/path.gguf"),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+        lambda path: {"chat_template": "{{ messages }} (this template doesn't render tools)"},
+    )
+    assert provider.supports_tools("any/model::Q4_K_M") is False
+
+
 def test_llama_cpp_supports_tools_false_when_resolve_fails(monkeypatch) -> None:
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 

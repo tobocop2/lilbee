@@ -11,6 +11,7 @@ from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import scope_to_chunk_type
+from lilbee.providers.base import ContextWindowExceededError
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -18,6 +19,10 @@ from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     acquire_chat_lock_or_busy,
     chat_lock,
+)
+from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
 )
 from lilbee.server.models import (
     AskRequest,
@@ -82,6 +87,12 @@ async def ask_route(data: AskRequest) -> AskResponse:
         )
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ModelDoesNotSupportToolsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ContextWindowExceededError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -109,13 +120,20 @@ async def chat_route(data: ChatRequest) -> AskResponse:
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
-    return await handlers.chat(
-        question=data.question,
-        history=history,
-        top_k=data.top_k,
-        options=data.options,
-        chunk_type=data.chunk_type,
-    )
+    try:
+        return await handlers.chat(
+            question=data.question,
+            history=history,
+            top_k=data.top_k,
+            options=data.options,
+            chunk_type=data.chunk_type,
+        )
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ModelDoesNotSupportToolsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ContextWindowExceededError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @post("/api/chat/stream")
