@@ -6,9 +6,11 @@ from unittest import mock
 import pytest
 
 from lilbee.core.system import (
+    chat_ctx_target_for_total_bytes,
     default_data_dir,
     find_local_root,
     is_ignored_dir,
+    scaled_chat_ctx_target_default,
 )
 
 
@@ -96,3 +98,54 @@ class TestIsIgnoredDir:
         custom = frozenset({"custom_output"})
         assert is_ignored_dir("custom_output", custom)
         assert not is_ignored_dir("src", custom)
+
+
+def _gib(n: float) -> int:
+    return int(n * 1024**3)
+
+
+class TestChatCtxTargetForTotalBytes:
+    def test_under_16gb_stays_at_8k_floor(self):
+        assert chat_ctx_target_for_total_bytes(_gib(4)) == 8192
+        assert chat_ctx_target_for_total_bytes(_gib(8)) == 8192
+        assert chat_ctx_target_for_total_bytes(16 * 1024**3 - 1) == 8192
+
+    def test_16_to_32gb_picks_12k(self):
+        assert chat_ctx_target_for_total_bytes(_gib(16)) == 12288
+        assert chat_ctx_target_for_total_bytes(_gib(24)) == 12288
+        assert chat_ctx_target_for_total_bytes(32 * 1024**3 - 1) == 12288
+
+    def test_32_to_64gb_picks_16k(self):
+        assert chat_ctx_target_for_total_bytes(_gib(32)) == 16384
+        assert chat_ctx_target_for_total_bytes(_gib(48)) == 16384
+        assert chat_ctx_target_for_total_bytes(64 * 1024**3 - 1) == 16384
+
+    def test_64gb_and_above_picks_24k(self):
+        assert chat_ctx_target_for_total_bytes(_gib(64)) == 24576
+        assert chat_ctx_target_for_total_bytes(_gib(128)) == 24576
+        assert chat_ctx_target_for_total_bytes(_gib(512)) == 24576
+
+    def test_zero_or_negative_returns_floor(self):
+        assert chat_ctx_target_for_total_bytes(0) == 8192
+        assert chat_ctx_target_for_total_bytes(-1) == 8192
+        assert chat_ctx_target_for_total_bytes(1) == 8192
+
+
+class TestScaledChatCtxTargetDefault:
+    def test_reads_total_memory_and_tiers(self):
+        # 40 GiB host -> 16384 from the tier table.
+        with mock.patch("lilbee.core.system._read_total_memory_bytes", return_value=40 * 1024**3):
+            assert scaled_chat_ctx_target_default() == 16384
+
+    def test_psutil_failure_falls_back_to_floor(self):
+        with mock.patch("lilbee.core.system._read_total_memory_bytes", return_value=0):
+            assert scaled_chat_ctx_target_default() == 8192
+
+    def test_read_total_memory_bytes_returns_zero_on_psutil_failure(self):
+        # Drive the real except-branch in _read_total_memory_bytes: psutil.virtual_memory()
+        # raises -> wrapper returns 0 -> scaled default lands on the floor.
+        with mock.patch("psutil.virtual_memory", side_effect=RuntimeError("boom")):
+            from lilbee.core.system import _read_total_memory_bytes
+
+            assert _read_total_memory_bytes() == 0
+            assert scaled_chat_ctx_target_default() == 8192
