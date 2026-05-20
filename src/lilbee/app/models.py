@@ -299,6 +299,7 @@ def pull_model_data(
     source: ModelSource,
     *,
     on_update: Callable[[DownloadProgress], None] | None = None,
+    allow_unsupported: bool = False,
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
 
@@ -312,7 +313,13 @@ def pull_model_data(
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
     dict_cb, bytes_cb = _build_pull_callbacks(on_update)
-    path = manager.pull(ref, source, on_progress=dict_cb, on_bytes=bytes_cb)
+    path = manager.pull(
+        ref,
+        source,
+        on_progress=dict_cb,
+        on_bytes=bytes_cb,
+        allow_unsupported=allow_unsupported,
+    )
     return PullResult(
         model=ref,
         source=source.value,
