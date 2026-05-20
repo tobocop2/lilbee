@@ -28,7 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
@@ -64,6 +64,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     row_delete_id,
     variant_to_row,
 )
+from lilbee.cli.tui.screens.confirm_unsupported import ConfirmUnsupportedModal
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
@@ -1825,9 +1826,6 @@ class CatalogScreen(Screen[None]):
         confirm with a modal before enqueuing; the modal returns True to
         proceed with ``allow_unsupported=True`` or False to cancel.
         """
-        from lilbee.catalog.types import ModelCompat
-        from lilbee.cli.tui.screens.confirm_unsupported import ConfirmUnsupportedModal
-
         if model.compat is ModelCompat.UNSUPPORTED:
 
             def _after_confirm(verdict: bool | None) -> None:

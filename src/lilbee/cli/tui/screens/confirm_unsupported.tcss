@@ -28,3 +28,7 @@ ConfirmUnsupportedModal {
 #confirm-unsupported-cancel {
     margin-right: 1;
 }
+
+#confirm-unsupported-confirm {
+    min-width: 14;
+}

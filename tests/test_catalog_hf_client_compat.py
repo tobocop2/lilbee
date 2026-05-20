@@ -54,7 +54,7 @@ def test_fetch_populates_arch_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([_hf_row("qwen3")]))
     client = HfClient()
     client.fetch_models()
-    assert client._arch_cache["acme/test-GGUF"] == "qwen3"
+    assert client.get_cached_arch("acme/test-GGUF") == "qwen3"
 
 
 def test_featured_catalog_models_default_to_unknown_compat() -> None:

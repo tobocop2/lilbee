@@ -15,7 +15,7 @@ def client() -> HfClient:
 
 
 def test_resolve_hits_arch_cache(client: HfClient) -> None:
-    client._arch_cache["acme/foo-GGUF"] = "llama"
+    client.cache_arch("acme/foo-GGUF", "llama")
     assert resolve_arch_for_pull("acme/foo-GGUF", client) == "llama"
 
 
@@ -36,7 +36,7 @@ def test_resolve_writes_back_to_cache(client: HfClient, monkeypatch: pytest.Monk
     monkeypatch.setattr(compat, "_resolve_blob_url", lambda _ref: "https://example.test/x.gguf")
     monkeypatch.setattr(compat, "probe_architecture", lambda _url: "gemma3")
     resolve_arch_for_pull("acme/bar-GGUF", client)
-    assert client._arch_cache["acme/bar-GGUF"] == "gemma3"
+    assert client.get_cached_arch("acme/bar-GGUF") == "gemma3"
 
 
 def test_resolve_blob_url_returns_empty_for_glob_filename() -> None:
