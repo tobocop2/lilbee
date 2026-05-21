@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from lilbee.providers.base import ContextWindowExceededError
@@ -83,11 +84,23 @@ class _ChatSession:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        # llama-cpp-python's chatml-function-calling preset (and the
+        # functionary-v1/v2 variants) refuse stream=True with tool_choice="auto"
+        # because the preset has no tool-call-delta path. When our chat_format
+        # override is active we downgrade to a non-streaming call internally
+        # and emit the single completion as a synthetic one-shot stream so
+        # the rest of the pipeline (SSE encoder, tool extractor) is unaware.
+        downgrade = stream and _chat_format_override_streaming_blocked(llm, tool_choice)
+        effective_stream = False if downgrade else stream
         try:
-            result = llm.create_chat_completion(messages=windowed, stream=stream, **kwargs)
+            result = llm.create_chat_completion(
+                messages=windowed, stream=effective_stream, **kwargs
+            )
         except ValueError as exc:
             self._reraise_if_context_overflow(exc, llm, model)
             raise
+        if downgrade:
+            return _wrap_single_completion_as_stream(result)
         if stream:
             return _translate_stream_overflow(result, llm, model, self._role_config)
         return result
@@ -226,6 +239,68 @@ class _ChatSession:
 
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
+
+# llama-cpp-python presets whose streaming path raises
+# "Automatic streaming tool choice is not supported" when tools are passed
+# without a specific function in tool_choice. When we picked the preset via
+# chat_format_override the user can't switch it, so we silently downgrade
+# the call to non-streaming and re-emit a one-shot synthetic stream.
+_STREAM_AUTO_TOOL_BLOCKED_FORMATS = frozenset(
+    {
+        "chatml-function-calling",
+        "functionary",
+        "functionary-v1",
+        "functionary-v2",
+    }
+)
+
+
+def _chat_format_override_streaming_blocked(
+    llm: Any, tool_choice: str | dict[str, Any] | None
+) -> bool:
+    """True iff llama-cpp's preset will refuse this stream+tool_choice combo."""
+    chat_format = getattr(llm, "chat_format", None)
+    if not isinstance(chat_format, str):
+        return False
+    if chat_format not in _STREAM_AUTO_TOOL_BLOCKED_FORMATS:
+        return False
+    # Specific-function tool_choice is supported on these presets even with
+    # streaming; only "auto" / None / "required" trip the gate.
+    return not isinstance(tool_choice, dict)
+
+
+def _wrap_single_completion_as_stream(completion: Any) -> Iterator[Any]:
+    """Yield a non-streaming ``create_chat_completion`` result as one stream chunk.
+
+    Reshapes the response into the same wire shape ``_emit_stream_chunk``
+    expects from a streaming generator so downstream tool-extraction and
+    text-batching keep working unchanged.
+    """
+    if not isinstance(completion, dict):
+        return
+    choices = completion.get("choices") or []
+    if not choices:
+        return
+    message = choices[0].get("message") or {}
+    chunk: dict[str, Any] = {
+        "id": completion.get("id", ""),
+        "object": "chat.completion.chunk",
+        "created": completion.get("created", 0),
+        "model": completion.get("model", ""),
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "role": message.get("role", "assistant"),
+                    "content": message.get("content"),
+                    "tool_calls": message.get("tool_calls"),
+                },
+                "finish_reason": choices[0].get("finish_reason"),
+            }
+        ],
+    }
+    yield chunk
+
 
 # Mirrors llama-cpp's verbatim phrasing in `llama_cpp/llama.py::Llama._create_completion`.
 # A wording change upstream will surface as a CI failure on the typed-overflow

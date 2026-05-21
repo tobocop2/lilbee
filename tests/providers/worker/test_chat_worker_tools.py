@@ -1199,3 +1199,111 @@ def test_session_chat_drops_oldest_tool_pair_when_prompt_overflows(monkeypatch, 
     assert all(m.get("role") != "tool" for m in forwarded)
     assert forwarded[0]["role"] == "system"
     assert forwarded[-1]["content"] == "now answer"
+
+
+def test_session_chat_downgrades_stream_for_chatml_function_calling(monkeypatch, tmp_path) -> None:
+    """When chat_format=chatml-function-calling is active and the caller asks
+    for stream=True with tool_choice=auto, llama-cpp-python's preset raises
+    'Automatic streaming tool choice is not supported'. The session swaps
+    stream=False under the hood and synthesizes a single-chunk stream so the
+    downstream pipeline keeps working.
+    """
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    captured: dict[str, Any] = {}
+
+    class _Stub:
+        chat_format = "chatml-function-calling"
+
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
+            captured["stream"] = stream
+            captured["kwargs"] = kwargs
+            return {
+                "id": "x1",
+                "created": 1,
+                "model": "hermes",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lilbee_search",
+                                        "arguments": '{"q": "x"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
+    result = session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model=None,
+        tools=[{"type": "function", "function": {"name": "lilbee_search"}}],
+        tool_choice=None,
+    )
+    # The downstream pipeline expects an iterator of chat.completion.chunk dicts.
+    chunks = list(result)
+    assert captured["stream"] is False  # internal call was downgraded
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk["object"] == "chat.completion.chunk"
+    assert chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "lilbee_search"
+    assert chunk["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_session_chat_does_not_downgrade_when_chat_format_unchanged(monkeypatch, tmp_path) -> None:
+    """Embedded-template (no override) GGUFs keep streaming as-is."""
+    from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.transport import RoleConfig
+
+    role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
+    session = _ChatSession(role_config, _FlagStub())
+    captured: dict[str, Any] = {}
+
+    class _Stub:
+        # No chat_format attribute = embedded-template path.
+
+        def n_ctx(self) -> int:
+            return 8192
+
+        def tokenize(
+            self, data: bytes, *, add_bos: bool = False, special: bool = False
+        ) -> list[int]:
+            return list(data)
+
+        def create_chat_completion(self, *, messages: Any, stream: bool, **kwargs: Any) -> Any:
+            captured["stream"] = stream
+            return iter([])  # empty stream
+
+    monkeypatch.setattr(_ChatSession, "_ensure_loaded", lambda self, _o: _Stub())
+    session.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        options=None,
+        model=None,
+        tools=[{"type": "function", "function": {"name": "lilbee_search"}}],
+        tool_choice=None,
+    )
+    assert captured["stream"] is True
