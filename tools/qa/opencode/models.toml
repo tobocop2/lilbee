@@ -24,6 +24,7 @@ skip = true  # bartowski GGUF embeds the v0.2 [INST] template, no tool markers; 
 family = "llama3"
 ref = "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 size_gb = 4.9
+skip = true  # schemas/llama3.json requires <|python_tag|>; opencode prompts for bare-JSON tool calls so extraction fails. Bead filed.
 
 [[model]]
 family = "hermes"
