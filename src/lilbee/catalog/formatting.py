@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import hf_repo_from_ref
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 
 PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
@@ -131,6 +131,8 @@ class EnrichedModel:
     quality_tier: str
     installed: bool
     source: ModelSource
+    architecture: str
+    compat: ModelCompat
 
 
 def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[EnrichedModel]:
@@ -158,6 +160,8 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 quality_tier=quant_tier(extract_quant(m.gguf_filename)),
                 installed=m.hf_repo in installed_repos,
                 source=ModelSource.NATIVE,
+                architecture=m.architecture,
+                compat=m.compat,
             )
         )
     return enriched

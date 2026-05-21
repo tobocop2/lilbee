@@ -949,15 +949,25 @@ class TestMinimalFooter:
             assert k in keys
 
     def test_catalog_bindings_minimal(self) -> None:
+        """Catalog footer shows only the always-needed actions.
+
+        Earlier the catalog row included Delete / Info / Next tab / Prev
+        tab so every action was visible at all times. That made the row
+        overflow on narrow terminals and truncate the rightmost global
+        binding mid-word (`^t Theme` -> `^t The`). Delete and Info are
+        still bound (and tab cycling still works on > / <); they're just
+        not in the always-on footer row. F1 / F2 surface them on demand.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         visible = self._visible_bindings(CatalogScreen.BINDINGS)
         assert any("Back" in d for d in visible)
         assert any("Search" in d for d in visible)
-        assert any("Delete" in d for d in visible)
-        assert any("Info" in d for d in visible)
-        # 5 baseline + 2 visible tab-cycling bindings (Next tab / Prev tab).
-        assert len(visible) <= 7
+        assert any("Grid/List" in d for d in visible)
+        assert not any("Delete" in d for d in visible)
+        assert not any(d == "Info" for d in visible)
+        assert not any("tab" in d.lower() for d in visible)
+        assert len(visible) <= 4
 
     def test_catalog_delete_bindings_cover_d_backspace_x(self) -> None:
         """D, Backspace, and the legacy X all delete an installed model.
@@ -974,10 +984,14 @@ class TestMinimalFooter:
         }
         assert delete_keys == {"d", "backspace", "x"}
 
-    def test_catalog_delete_binding_is_ungrouped(self) -> None:
-        """The D Delete entry stands alone in the footer instead of
-        collapsing into the compact Actions group, so users see a
-        labelled delete affordance at all times."""
+    def test_catalog_delete_binding_hidden_from_footer(self) -> None:
+        """The D Delete binding is bound but stays out of the footer row.
+
+        Footer was overflowing on narrow terminals; Delete is still
+        reachable via D / Backspace / X and surfaces in F2's command
+        palette. Keeping it hidden frees space for the global view-nav
+        `[ ] Navigate` binding to fit without truncation.
+        """
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         d_binding = next(
@@ -985,8 +999,7 @@ class TestMinimalFooter:
             for b in CatalogScreen.BINDINGS
             if isinstance(b, Binding) and b.key == "d" and b.action == "delete_model"
         )
-        assert d_binding.show is True
-        assert d_binding.group is None
+        assert d_binding.show is False
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
