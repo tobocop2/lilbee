@@ -30,6 +30,7 @@ skip = true  # schemas/llama3.json requires <|python_tag|>; opencode prompts for
 family = "hermes"
 ref = "bartowski/Hermes-3-Llama-3.1-8B-GGUF/Hermes-3-Llama-3.1-8B-Q4_K_M.gguf"
 size_gb = 4.9
+skip = true  # bartowski GGUF embeds bare ChatML, no tool markers; same broader GGUF-quant-strip issue as the mistral/llama3 cases
 
 [[model]]
 family = "phi4mini"
