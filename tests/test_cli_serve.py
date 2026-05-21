@@ -269,3 +269,48 @@ class TestRunServer:
         port_path.write_text("11111")
         cleanup_fn()
         assert not port_path.exists()
+
+    def test_does_not_call_shutdown_when_startup_fails(self):
+        """If `startup()` raises, `server.servers` was never assigned. Calling
+        `shutdown()` then would crash inside uvicorn (`AttributeError: 'Server'
+        object has no attribute 'servers'`) and mask the real error. We must
+        skip shutdown entirely when startup never completed."""
+        from lilbee.cli.commands.servers import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.startup = mock.AsyncMock(side_effect=RuntimeError("lifespan failed"))
+        fake_server_obj.main_loop = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        fake_config = mock.MagicMock()
+
+        with pytest.raises(RuntimeError, match="lifespan failed"):
+            asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        fake_server_obj.shutdown.assert_not_awaited()
+        fake_server_obj.main_loop.assert_not_awaited()
+
+    def test_swallows_attributeerror_from_shutdown(self):
+        """When `main_loop` raises and the subsequent `shutdown()` itself
+        raises `AttributeError` (uvicorn dereferences `self.servers` even after
+        partial bring-up), the original failure must propagate, not the
+        shutdown crash that would otherwise mask it."""
+        from lilbee.cli.commands.servers import _run_server
+
+        sock = mock.MagicMock()
+        sock.getsockname.return_value = ("127.0.0.1", 1234)
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = [mock.MagicMock(sockets=[sock])]
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.main_loop = mock.AsyncMock(side_effect=RuntimeError("real failure"))
+        fake_server_obj.shutdown = mock.AsyncMock(
+            side_effect=AttributeError("'Server' object has no attribute 'servers'")
+        )
+
+        fake_config = mock.MagicMock()
+
+        with pytest.raises(RuntimeError, match="real failure"):
+            asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        fake_server_obj.shutdown.assert_awaited_once()

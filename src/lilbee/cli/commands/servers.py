@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,18 +39,27 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     if not config.loaded:
         config.load()
     server.lifespan = config.lifespan_class(config)
-    await server.startup()
 
-    parent_pid = parse_parent_pid()
+    started = False
     parent_watcher: asyncio.Task[None] | None = None
-    if parent_pid is not None:
-
-        def _on_parent_death() -> None:
-            server.should_exit = True
-
-        parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
-
     try:
+        # `server.servers` is only assigned inside `startup()`. If startup
+        # raises (e.g. the FastAPI lifespan handler explodes because the
+        # configured data-dir is missing or unreadable), control jumps to the
+        # finally below, and we must NOT call `server.shutdown()` there.
+        # uvicorn dereferences `self.servers` in shutdown and would crash with
+        # AttributeError, masking the real error the user needs to see.
+        await server.startup()
+        started = True
+
+        parent_pid = parse_parent_pid()
+        if parent_pid is not None:
+
+            def _on_parent_death() -> None:
+                server.should_exit = True
+
+            parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
+
         if server.servers:
             sock = server.servers[0].sockets[0]
             actual_port = sock.getsockname()[1]
@@ -62,7 +72,12 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()
         port_path.unlink(missing_ok=True)
-        await server.shutdown()
+        if started:
+            # uvicorn occasionally dereferences `self.servers` during shutdown
+            # even after partial startup; swallow so the original exception
+            # surfaces unchanged.
+            with contextlib.suppress(AttributeError):
+                await server.shutdown()
 
 
 def serve(
