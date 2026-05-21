@@ -140,14 +140,14 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         name="S2 multi-tool turn",
-        prompt="find the dispatch layer docs and then summarize how it routes models",
+        prompt="use lilbee_search to find dispatch.md in the indexed docs, then summarize how it routes models",
         expected=("lilbee_search", "dispatch", "KnownModelCache"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
     ),
     Scenario(
         name="S3 streaming visible",
-        prompt="give me a verbose three-paragraph overview of how tool extraction works",
+        prompt="use lilbee_search to find tool_extraction.md in the indexed docs, then quote the recursive_parse and schemas details",
         expected=("recursive_parse", "schemas"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
