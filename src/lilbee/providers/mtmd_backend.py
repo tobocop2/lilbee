@@ -10,6 +10,7 @@ from typing import Any
 
 from gguf import GGUFReader
 
+from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.core.config import cfg
 from lilbee.providers.llama_cpp.abort_signal import abort_callback
 from lilbee.providers.llama_cpp.gguf_meta import (
@@ -163,7 +164,7 @@ def load_vision_llama(
         model_path.name,
         mmproj_path.name,
         n_ctx,
-        metadata.get("general.architecture", "?"),
+        metadata.get(GGUF_ARCH_KEY, "?"),
     )
     return llama
 

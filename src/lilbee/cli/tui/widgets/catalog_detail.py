@@ -17,6 +17,7 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Static
 
+from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
@@ -54,6 +55,7 @@ class CatalogDetailDrawer(Vertical):
         yield Static("", id="catalog-detail-fit", classes="catalog-detail-fit")
         yield Static("", id="catalog-detail-sizes", classes="catalog-detail-sizes")
         yield Static("", id="catalog-detail-license", classes="catalog-detail-license")
+        yield Static("", id="catalog-detail-compat", classes="catalog-detail-compat")
         yield Static("", id="catalog-detail-description", classes="catalog-detail-description")
 
     def update_for_row(self, row: CatalogRow | None) -> None:
@@ -72,6 +74,7 @@ class CatalogDetailDrawer(Vertical):
             "#catalog-detail-fit",
             "#catalog-detail-sizes",
             "#catalog-detail-license",
+            "#catalog-detail-compat",
             "#catalog-detail-description",
         ):
             self.query_one(selector, Static).update("")
@@ -87,6 +90,8 @@ class CatalogDetailDrawer(Vertical):
         sizes.update(_render_sizes_block(row.size_variants))
         license_widget = self.query_one("#catalog-detail-license", Static)
         license_widget.update(_license_text(row))
+        compat_widget = self.query_one("#catalog-detail-compat", Static)
+        compat_widget.update(_compat_sentence(row))
         description = self.query_one("#catalog-detail-description", Static)
         description.update(_description_text(row))
 
@@ -95,6 +100,7 @@ class CatalogDetailDrawer(Vertical):
         self.query_one("#catalog-detail-fit", Static).update("")
         self.query_one("#catalog-detail-sizes", Static).update("")
         self.query_one("#catalog-detail-license", Static).update(f"Provider  {row.provider}")
+        self.query_one("#catalog-detail-compat", Static).update("")
         self.query_one("#catalog-detail-description", Static).update(
             f"Cloud model accessed via the {row.provider} API."
         )
@@ -136,6 +142,20 @@ def _license_text(_row: LocalCatalogRow) -> str:
     fill this in without touching the drawer's render path.
     """
     return ""
+
+
+def _compat_sentence(row: LocalCatalogRow) -> str:
+    """Build the architecture-compatibility sentence for the detail drawer."""
+    from lilbee.cli.tui import messages as msg
+
+    arch = row.catalog_model.architecture if row.catalog_model is not None else ""
+    arch_label = arch or "unknown"
+    template = {
+        ModelCompat.SUPPORTED: msg.COMPAT_DETAIL_SENTENCE_SUPPORTED,
+        ModelCompat.UNSUPPORTED: msg.COMPAT_DETAIL_SENTENCE_UNSUPPORTED,
+        ModelCompat.UNKNOWN: msg.COMPAT_DETAIL_SENTENCE_UNKNOWN,
+    }[row.compat]
+    return template.format(arch=arch_label) if "{arch}" in template else template
 
 
 def _description_text(row: LocalCatalogRow) -> str:

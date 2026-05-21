@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.data.store import SearchScope
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
@@ -271,6 +271,8 @@ class CatalogEntryResponse(BaseModel):
     source: ModelSource
     fit: FitLevel | None = None
     size_variants: list[SizeVariantInfo] = []
+    architecture: str = ""
+    compat: ModelCompat = ModelCompat.UNKNOWN
 
 
 class ModelsCatalogResponse(BaseModel):

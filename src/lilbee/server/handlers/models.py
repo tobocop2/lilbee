@@ -311,6 +311,8 @@ def _build_catalog_entry(
         source=enriched.source,
         fit=_row_fit(enriched, available_bytes),
         size_variants=_row_size_variants(enriched, families_by_repo),
+        architecture=enriched.architecture,
+        compat=enriched.compat,
     )
 
 
@@ -373,12 +375,38 @@ async def models_installed() -> ModelsInstalledResponse:
     return ModelsInstalledResponse(models=models)
 
 
-async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
+async def models_pull(
+    model: str, *, source: str = "native", allow_unsupported: bool = False
+) -> AsyncGenerator[str, None]:
     """Yield SSE progress events while pulling a model in real time.
     Sets a cancel event on client disconnect so the pull stops.
+
+    Pre-checks architecture compatibility BEFORE opening the SSE stream so
+    refusals surface as an HTTP 409 from the route, not an in-stream error.
     """
+    from litestar.exceptions import HTTPException
+
+    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
+
     manager = get_services().model_manager
     src = _parse_source(source)
+
+    if src is ModelSource.NATIVE and not allow_unsupported:
+        try:
+            await asyncio.to_thread(manager._enforce_arch_compat, model)
+        except UnsupportedArchError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="unsupported_arch",
+                extra={
+                    "code": "unsupported_arch",
+                    "arch": exc.architecture,
+                    "ref": exc.ref,
+                    "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                    "total_supported": len(SUPPORTED_ARCHS),
+                },
+            ) from exc
+
     sse = SseStream()
 
     def _pull_blocking() -> None:
@@ -395,7 +423,13 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
         try:
-            manager.pull(model, src, on_progress=_on_progress, on_bytes=_on_bytes)
+            manager.pull(
+                model,
+                src,
+                on_progress=_on_progress,
+                on_bytes=_on_bytes,
+                allow_unsupported=allow_unsupported,
+            )
         except Exception as exc:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:

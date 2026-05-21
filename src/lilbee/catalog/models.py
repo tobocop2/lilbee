@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 
 
 class HfGgufMeta(BaseModel):
@@ -45,6 +45,8 @@ class CatalogModel:
     downloads: int
     task: ModelTask
     recommended: bool = False
+    architecture: str = ""
+    compat: ModelCompat = ModelCompat.UNKNOWN
 
     @property
     def ref(self) -> str:

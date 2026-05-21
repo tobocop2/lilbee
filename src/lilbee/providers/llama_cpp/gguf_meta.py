@@ -8,6 +8,7 @@ from typing import Any
 
 from gguf import GGUFReader, GGUFValueType
 
+from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.providers.base import ProviderError
 from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.log_dispatch import (
@@ -88,9 +89,9 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     try:
         raw = llm.metadata or {}
         result: dict[str, str] = {}
-        if "general.architecture" in raw:
-            result["architecture"] = str(raw["general.architecture"])
-        arch = raw.get("general.architecture", "llama")
+        if GGUF_ARCH_KEY in raw:
+            result["architecture"] = str(raw[GGUF_ARCH_KEY])
+        arch = raw.get(GGUF_ARCH_KEY, "llama")
         ctx_key = f"{arch}.context_length"
         if ctx_key in raw:
             result["context_length"] = str(raw[ctx_key])

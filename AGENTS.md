@@ -219,6 +219,7 @@ Other rules:
 - **CSS class/ID sync** — every CSS class or ID in a `.tcss` file must have a matching widget in the `.py` file and vice versa
 - **TUI tests use `pilot.press()`** — not `action_*()` method calls. `Button.press()` is acceptable since it's a public widget API, not an action bypass.
 - **All user-facing text in `messages.py`** — inline strings in screens and widgets are forbidden
+- **Confirmation modals reuse `ConfirmDialog`; never roll a new yes/no screen with `textual.widgets.Button`.** The TUI's two-way pickers (`ConfirmDialog`, `ChatModeToggle`, the catalog grid/list toggle) are all built from focusable `Static` pills with `Binding("enter"/"space", "select")`. They share the project's pill aesthetic and stay readable inside narrow modal panes. The Textual `Button` widget brings chunky framework chrome that fights the rest of the surface and collapses cards / modal headers. If you need a yes/no modal, compose `ConfirmDialog(title, message)`. If you need a custom pill picker, follow the `Static, can_focus=True` + bindings pattern in `widgets/confirm_dialog.py` / `widgets/model_bar.py::ChatModePill`. A new `from textual.widgets import Button` in a screen module is a code-review red flag.
 
 ### Tests Before Deletion
 - When removing code, first make existing tests pass with the new implementation, then delete redundant tests

@@ -28,7 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
 from lilbee.cli.tui.screens.catalog_grouping import (
@@ -67,6 +67,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -173,18 +174,19 @@ class CatalogScreen(Screen[None]):
         Binding("escape", "dismiss_filter", "", show=False),
         # Surfaced outside _ACTION_GROUP so the "Grid/List" affordance prints
         # in full in the footer instead of collapsing into the compact pill.
-        # The "(faster)" tag tells users list view paginates without the
-        # card layout overhead.
-        Binding("v", "toggle_view", "Grid/List (faster)", show=True),
+        # Keep the label terse; the row of bindings runs out of space on
+        # narrow terminals and truncates the rightmost item mid-word
+        # (`^t Theme` -> `^t The`) when this one carried an `(faster)` tag.
+        Binding("v", "toggle_view", "Grid/List", show=True),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
-        # Delete sits outside _ACTION_GROUP so the footer renders it as
-        # its own "D Delete" entry rather than collapsing it into the
-        # compact "qv/di Actions" pill. Removing an installed model
-        # needs to be obvious, not buried.
-        Binding("d", "delete_model", "Delete", show=True),
+        # `d` / `i` are bound but hidden from the footer. The catalog row
+        # was overflowing on narrow terminals and truncating the rightmost
+        # global binding (`[ ] Navigate`) mid-word. Both stay discoverable
+        # via F2 (command palette) and F1 (help overlay).
+        Binding("d", "delete_model", "Delete", show=False),
         Binding("backspace", "delete_model", "Delete", show=False),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("i", "show_info", "Info", show=True, group=_ACTION_GROUP),
+        Binding("i", "show_info", "Info", show=False, group=_ACTION_GROUP),
         Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
         Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
         # Arrows move the card cursor too (auto-scrolls into view) so
@@ -218,13 +220,14 @@ class CatalogScreen(Screen[None]):
         Binding("4", "select_tab(3)", "Vision", show=False, priority=True),
         Binding("5", "select_tab(4)", "Rerank", show=False, priority=True),
         Binding("6", "select_tab(5)", "Library", show=False, priority=True),
-        # Discoverable tab cycling. The numeric jumps (1-6) above are quick
-        # but hidden; > / < show in the footer so users learn the affordance.
-        # ctrl+arrow conflicts with macOS desktop-space shortcuts, hence
-        # vim-style angle brackets. priority=True so the active ModelGrid's
-        # own focus cycling doesn't swallow them.
-        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=True, priority=True),
-        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=True, priority=True),
+        # Tab cycling. Hidden from the footer so the catalog row of
+        # bindings doesn't truncate the rightmost item mid-word; the tab
+        # strip at the top already shows the available tabs, and F1 / F2
+        # surface the shortcuts. ctrl+arrow conflicts with macOS desktop-
+        # space shortcuts, hence vim-style angle brackets. priority=True
+        # so the active ModelGrid's own focus cycling doesn't swallow them.
+        Binding("greater_than_sign", "cycle_tab(1)", "Next tab", show=False, priority=True),
+        Binding("less_than_sign", "cycle_tab(-1)", "Prev tab", show=False, priority=True),
     ]
 
     _search_input = getters.query_one("#catalog-search", Input)
@@ -1821,8 +1824,27 @@ class CatalogScreen(Screen[None]):
 
         The controller owns the worker thread; this screen just fires the
         request and returns. Progress is visible from every screen and
-        survives navigation.
+        survives navigation. When the row's architecture is known-unsupported,
+        confirm with a modal before enqueuing; the modal returns True to
+        proceed with ``allow_unsupported=True`` or False to cancel.
         """
+        if model.compat is ModelCompat.UNSUPPORTED:
+
+            def _after_confirm(verdict: bool | None) -> None:
+                if not verdict:
+                    return
+                self.app.task_bar.start_download(model, allow_unsupported=True)
+                self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.COMPAT_MODAL_TITLE,
+                    msg.COMPAT_MODAL_BODY.format(arch=model.architecture or "unknown"),
+                ),
+                _after_confirm,
+            )
+            return
+
         self.app.task_bar.start_download(model)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
