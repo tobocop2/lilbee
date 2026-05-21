@@ -7,14 +7,15 @@ Run before tagging. Not for CI. ``--families <list>`` narrows the matrix;
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
-import os
 import shutil
 import socket
 import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -48,6 +49,60 @@ _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.
 _LILBEE_PROVIDER_ID = "lilbee"
 
 _RAW_MARKER_FORBIDDEN = ("<tool_call>", "[TOOL_CALLS]", "functools[", "Error:", "Traceback")
+_SUSPENDED_SUFFIX = ".qa-suspended"
+
+
+def _models_manifests_dir() -> Path:
+    """Locate lilbee's chat-manifests directory via cfg."""
+    from lilbee.core.config import cfg
+
+    return Path(cfg.models_dir) / "manifests"
+
+
+def _list_chat_manifests() -> list[Path]:
+    manifests_dir = _models_manifests_dir()
+    if not manifests_dir.exists():
+        return []
+    chats: list[Path] = []
+    for path in manifests_dir.rglob("*.gguf.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("task") == "chat":
+            chats.append(path)
+    return chats
+
+
+def _ref_for_manifest(path: Path) -> str:
+    """Convert a manifest path back to its canonical HF ref."""
+    repo = path.parent.name.replace("--", "/")
+    filename = path.name.removesuffix(".json")
+    return f"{repo}/{filename}"
+
+
+@contextlib.contextmanager
+def suspend_other_chat_manifests(target_ref: str) -> Iterator[None]:
+    """Move every chat manifest except *target_ref* out of the registry.
+
+    The launcher's ``_update_opencode_picker_state`` prepends every entry of
+    ``sorted(installed_chat_model_refs())`` to opencode's recent list, so
+    whichever ref sorts first wins ``recent[0]``. To pin a specific model
+    per cell we suspend the others for the duration of the cell.
+    """
+    suspended: list[tuple[Path, Path]] = []
+    try:
+        for path in _list_chat_manifests():
+            if _ref_for_manifest(path) == target_ref:
+                continue
+            suspended_path = path.with_name(path.name + _SUSPENDED_SUFFIX)
+            path.rename(suspended_path)
+            suspended.append((path, suspended_path))
+        yield
+    finally:
+        for original, suspended_path in suspended:
+            if suspended_path.exists():
+                suspended_path.rename(original)
 
 
 class ScenarioStatus(StrEnum):
@@ -86,7 +141,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S3 streaming visible",
         prompt="give me a verbose three-paragraph overview of how tool extraction works",
-        expected=("tool",),
+        expected=("recursive_parse", "schemas"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -184,9 +239,9 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
             shutil.copy(src, workspace / src.name)
     config_dir = workspace / ".lilbee"
     config_dir.mkdir(exist_ok=True)
+    embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
     (config_dir / "config.toml").write_text(
-        f'chat_model = "{model_ref}"\n'
-        f'embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"\n'
+        f'chat_model = "{model_ref}"\nembedding_model = "{embed_ref}"\n'
     )
     return workspace
 
@@ -202,13 +257,15 @@ def pin_opencode_default_model(model_ref: str) -> None:
     _OPENCODE_PICKER_STATE.parent.mkdir(parents=True, exist_ok=True)
     state: dict = {"recent": [], "favorite": [], "variant": {}}
     if _OPENCODE_PICKER_STATE.exists():
-        try:
+        with contextlib.suppress(OSError, json.JSONDecodeError):
             state = json.loads(_OPENCODE_PICKER_STATE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
     recent = [e for e in state.get("recent", []) if isinstance(e, dict)]
     target_entry = {"providerID": _LILBEE_PROVIDER_ID, "modelID": model_ref}
-    recent = [e for e in recent if not (e.get("modelID") == model_ref and e.get("providerID") == _LILBEE_PROVIDER_ID)]
+    recent = [
+        e
+        for e in recent
+        if not (e.get("modelID") == model_ref and e.get("providerID") == _LILBEE_PROVIDER_ID)
+    ]
     recent.insert(0, target_entry)
     state["recent"] = recent
     _OPENCODE_PICKER_STATE.write_text(json.dumps(state, indent=2))
@@ -296,9 +353,17 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     tmux_kill(session)
     subprocess.run(
         [
-            "tmux", "new-session", "-d", "-s", session,
-            "-x", str(_TMUX_WINDOW_COLS), "-y", str(_TMUX_WINDOW_ROWS),
-            "bash", "-lc",
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-x",
+            str(_TMUX_WINDOW_COLS),
+            "-y",
+            str(_TMUX_WINDOW_ROWS),
+            "bash",
+            "-lc",
             f"cd {workspace} && exec uv run lilbee launch opencode",
         ],
         check=True,
@@ -344,7 +409,9 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
     )
 
 
-def setup_cell(cell: ModelCell, args: argparse.Namespace, log_path: Path) -> tuple[Path, int, subprocess.Popen[bytes]]:
+def setup_cell(
+    cell: ModelCell, args: argparse.Namespace, log_path: Path
+) -> tuple[Path, int, subprocess.Popen[bytes]]:
     """Pull, seed, index, pin opencode default, boot serve."""
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     port = free_port()
@@ -391,9 +458,10 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     try:
         workspace, _port, serve_proc = setup_cell(cell, args, log_path)
         try:
-            print(f"[{cell.family}] launching opencode in tmux session {session}")
-            launch_opencode_in_tmux(workspace, session)
-            result.scenarios = run_smoke_scenarios(cell.family, session)
+            with suspend_other_chat_manifests(cell.ref):
+                print(f"[{cell.family}] launching opencode in tmux session {session}")
+                launch_opencode_in_tmux(workspace, session)
+                result.scenarios = run_smoke_scenarios(cell.family, session)
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)
@@ -417,9 +485,7 @@ def render_report(results: list[CellResult]) -> str:
         if r.setup_error:
             cells = f"setup: {r.setup_error}"
         else:
-            cells = ", ".join(
-                f"{s.name.split()[0]}={s.status.value}" for s in r.scenarios
-            )
+            cells = ", ".join(f"{s.name.split()[0]}={s.status.value}" for s in r.scenarios)
         lines.append(f"| {r.family} | `{r.ref}` | {status} | {cells} |")
     lines.append("")
     for r in results:
