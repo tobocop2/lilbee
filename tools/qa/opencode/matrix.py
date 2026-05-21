@@ -83,6 +83,11 @@ def _ref_for_manifest(path: Path) -> str:
     return f"{repo}/{filename}"
 
 
+def _pull_ref_for(model_ref: str) -> str:
+    """Strip the trailing ``/<file>.gguf`` so ``lilbee model pull`` accepts it."""
+    return model_ref.rsplit("/", 1)[0] if model_ref.endswith(".gguf") else model_ref
+
+
 @contextlib.contextmanager
 def suspend_other_chat_manifests(target_ref: str) -> Iterator[None]:
     """Move every chat manifest except *target_ref* out of the registry.
@@ -420,9 +425,10 @@ def setup_cell(
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     port = free_port()
     if not args.no_pull:
-        print(f"[{cell.family}] pulling {cell.ref}")
+        pull_ref = _pull_ref_for(cell.ref)
+        print(f"[{cell.family}] pulling {pull_ref}")
         subprocess.run(
-            ["uv", "run", "lilbee", "model", "pull", cell.ref],
+            ["uv", "run", "lilbee", "model", "pull", pull_ref],
             cwd=REPO_ROOT,
             timeout=_MODEL_PULL_TIMEOUT_S,
             check=False,
