@@ -116,19 +116,19 @@ MCP server, then answers questions about how lilbee works, citing
   an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations
 </video>
 
-## Agent: code self-tune (outline → source)
+## Agent fine-tunes lilbee mid-conversation
 
 A two-turn variant of the above. Turn 1 asks how `lilbee_search` works end to end;
 the agent at the OLD retrieval defaults answers with a structured ten-step outline
 that names real lilbee methods but doesn't pull in source. Turn 2 asks for the
-actual code: the agent calls `lilbee_settings_set` to widen retrieval, re-runs
-`lilbee_search` against the richer pool, and answers with full function bodies
-pasted inline, each followed by a `file.py:L<start>-L<end>` citation. The whole
-self-tune loop runs end-to-end on a local 8B model.
+actual code: the agent fine-tunes lilbee's retrieval knobs through MCP, re-runs
+the search against the richer pool, and answers with full function bodies pasted
+inline, each followed by a `file.py:L<start>-L<end>` citation. The whole
+fine-tune loop runs end-to-end on a local 8B model.
 
 <video controls muted playsinline width="100%" preload="metadata">
   <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.mp4" type="video/mp4">
-  agent self-tunes lilbee mid-conversation: outline → settings_set → re-search → source with file:line citations
+  agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations
 </video>
 
 ## Agent: PDF

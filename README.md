@@ -107,9 +107,9 @@ lilbee stays the local part: your files, the search index, and the embeddings ne
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
-When the first answer is thin, the agent widens its retrieval settings and re-answers with full function bodies, file:line included.
+When the first answer is thin, the agent fine-tunes lilbee mid-conversation, then re-answers with full function bodies, file:line included.
 
-![agent self-tunes lilbee mid-conversation: outline → settings_set → re-search → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
+![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
 ### Offline copies of websites
 
