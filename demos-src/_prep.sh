@@ -36,7 +36,7 @@ readonly SEEDED_TAPES=(tui-chat tui-catalog tui-settings tui-tour tui-palette)
 # Tapes that start from a clean slate (the recording does its own ingest).
 readonly FRESH_TAPES=(tui-setup tui-add tui-crawl)
 # opencode demo dirs.
-readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual opencode-self-tune opencode-pdf-self-tune)
+readonly OPENCODE_TAPES=(opencode-godot opencode-godot-search opencode-manual opencode-self-tune opencode-pdf-self-tune opencode-code-self-tune)
 # Subset of godot-classes used by the small live-indexing demo. Six
 # files = ~110 KB; indexes in seconds. Keeps mcp-godot-search.tape from
 # stalling on indexing dead air.
@@ -214,15 +214,22 @@ JSON
 }
 
 seed_pdf_self_tune_corpus() {
-    # Stage the Crown Vic owner's manual PDF into opencode-pdf-self-tune
-    # and index it. The tape asks 'why does my steering wheel shake' twice,
-    # once at the previous defaults (top_k=8, max_distance=0.65) and once
-    # after tuning to the new shipped defaults. With old values lilbee
-    # returns ~2 pages and the agent falls back to general automotive
-    # knowledge; with new defaults the same query surfaces 10+ entries
-    # across 5 pages, sourced entirely from the manual.
+    # Stage the Crown Vic owner's manual PDF into opencode-pdf-self-tune,
+    # index it, and pin .lilbee/config.toml to the OLD pre-rebalance
+    # defaults (top_k=8, max_distance=0.65, diversity_max_per_source=3).
+    # The tape doesn't touch settings up front; the user just asks a
+    # natural question and reacts to the thin answer. The agent widens
+    # retrieval on its own in turn 2 via lilbee_settings_set.
     local dir="$ROOT/opencode-pdf-self-tune"
     cp -f "$CV_MANUAL" "$dir/cv-manual.pdf"
+    mkdir -p "$dir/.lilbee"
+    cat >"$dir/.lilbee/config.toml" <<TOML
+top_k = "8"
+max_distance = "0.65"
+diversity_max_per_source = "3"
+max_context_sources = "6"
+mmr_lambda = "0.2"
+TOML
     cat >"$dir/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -254,6 +261,68 @@ JSON
     fi
     log "indexing cv-manual.pdf into $dir"
     ( cd "$dir" && "$LILBEE" add ./cv-manual.pdf )
+}
+
+seed_code_self_tune_corpus() {
+    # Stage lilbee's own src/ into opencode-code-self-tune, index it,
+    # and pin .lilbee/config.toml to the OLD pre-rebalance defaults
+    # (top_k=8, max_distance=0.65, diversity_max_per_source=3). The
+    # tape (mcp-code-self-tune.tape) asks "how does lilbee handle
+    # context-window overflow?" twice -- once at OLD defaults, once
+    # after the agent self-tunes via lilbee_settings_set. The second
+    # answer pulls in chat_worker.py:_window_messages,
+    # ContextWindowExceededError, the chat_completions_api 4xx path,
+    # and the llama_cpp provider re-raise site.
+    #
+    # opencode.json points at the local Qwen3-8B Q4_K_M served by
+    # lilbee. The model is ~5GB Q4 and takes ~60s to first-load on
+    # M1; subsequent turns are ~4-6 min each. See the tape header
+    # for the prompt note on why Qwen3-8B needs the explicit
+    # lilbee_settings_set cue (a larger model would self-tune on a
+    # fully natural "be exhaustive" prompt).
+    local dir="$ROOT/opencode-code-self-tune"
+    rm -rf "$dir/src"
+    cp -R "$REPO_DIR/src" "$dir/src"
+    mkdir -p "$dir/.lilbee"
+    cat >"$dir/.lilbee/config.toml" <<TOML
+top_k = "8"
+max_distance = "0.65"
+diversity_max_per_source = "3"
+max_context_sources = "6"
+mmr_lambda = "0.2"
+chat_model = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+TOML
+    cat >"$dir/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "lilbee/Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+  "permission": {
+    "codesearch": "deny",
+    "websearch": "deny",
+    "webfetch": "deny",
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lilbee_*": "allow"
+  },
+  "mcp": {
+    "lilbee": {
+      "type": "local",
+      "command": ["$LILBEE", "mcp"],
+      "timeout": 900000
+    }
+  }
+}
+JSON
+    if ( cd "$dir" && "$LILBEE" status 2>/dev/null ) | grep -q "Documents:.*[1-9]"; then
+        return 0
+    fi
+    log "indexing lilbee src/ into $dir (~1 min on M1)"
+    ( cd "$dir" && "$LILBEE" add ./src )
 }
 
 preindex_godot_corpus() {
@@ -310,6 +379,7 @@ main() {
     preindex_godot_corpus
     seed_self_tune_corpus
     seed_pdf_self_tune_corpus
+    seed_code_self_tune_corpus
 
     log "prep done. $ROOT is ready."
 }
