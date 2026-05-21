@@ -35,8 +35,8 @@ from lilbee.runtime.hardware import FitChip, FitLevel
 
 _CSS_FILE = Path(__file__).parent / "model_grid.tcss"
 
-_CARD_BODY_HEIGHT = 5
-"""Body lines emitted per card: name / pills / specs / status / hint."""
+_CARD_BODY_HEIGHT = 6
+"""Body lines per card: name / primary pills / secondary pills / specs / status / hint."""
 
 _BORDER_RESERVED_LINES = 2
 """Top + bottom border slots; reserved on every card so layout stays stable."""
@@ -418,24 +418,30 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
 
     bg = TASK_COLORS.get(row.task, "$primary")
     name = Content.styled(_truncate_name(row.name), "bold")
-    pills: list[Content] = []
+    # Two pill rows so wide secondary chips (fit + 'unsupported') don't push
+    # the card border out of alignment on narrow grid columns.
+    primary_pills: list[Content] = []
     if row.featured:
-        pills.append(pill("pick", "$warning", "$text"))
-    pills.append(pill(row.task, bg, "$text"))
-    if row.fit is not None:
-        # Card uses the compact 'fits' / 'tight' / "won't run" label only;
-        # the headroom GB lives in the detail drawer where the wider pane
-        # can render it without competing for card width.
-        pills.append(_fit_pill_compact(row.fit))
+        primary_pills.append(pill("pick", "$warning", "$text"))
+    primary_pills.append(pill(row.task, bg, "$text"))
     # Drop the 'native' backend pill on cards to free horizontal space; the
     # backend is implied for local models. Remote backends (ollama, etc.)
     # still surface their pill since that's a meaningful distinction.
     if row.backend and row.backend != "native":
-        pills.append(pill(row.backend, "$accent", "$text"))
+        primary_pills.append(pill(row.backend, "$accent", "$text"))
+    primary_line = Content(" ").join(primary_pills)
+
+    secondary_pills: list[Content] = []
+    if row.fit is not None:
+        # Card uses the compact 'fits' / 'tight' / "won't run" label only;
+        # the headroom GB lives in the detail drawer where the wider pane
+        # can render it without competing for card width.
+        secondary_pills.append(_fit_pill_compact(row.fit))
     compat_chip = _compat_pill(row.compat)
     if compat_chip is not None:
-        pills.append(compat_chip)
-    pill_line = Content(" ").join(pills)
+        secondary_pills.append(compat_chip)
+    secondary_line = Content(" ").join(secondary_pills) if secondary_pills else Content("")
+
     # Family card with multiple quants: replace the simple specs line
     # with an inline chip strip so the user sees every available size
     # at a glance without expanding into the drawer.
@@ -444,7 +450,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     else:
         specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
-    lines: list[Content] = [name, pill_line, specs]
+    lines: list[Content] = [name, primary_line, secondary_line, specs]
     lines.append(status if status is not None else Content(""))
     if selected:
         hint = msg.INSTALLED_CARD_HINT if row.installed else msg.SETUP_CARD_HINT
@@ -472,7 +478,9 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
         [pill(row.provider, "$accent", "$text"), _key_status_pill(row.key_status)]
     )
     info = Content.styled(f"Cloud via {row.provider} API", "$text-muted")
-    return [name, pill_line, info, Content(""), Content("")]
+    # Frontier cards have no secondary pill line, but pad to _CARD_BODY_HEIGHT
+    # so they align with local cards in the same grid row.
+    return [name, pill_line, Content(""), info, Content(""), Content("")]
 
 
 _FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {

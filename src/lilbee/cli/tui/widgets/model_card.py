@@ -99,20 +99,24 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
 
     bg = TASK_COLORS.get(row.task, "$primary")
     name = Content.styled(_truncate_name(row.name), "bold")
-    pills: list[Content] = []
+    primary_pills: list[Content] = []
     if row.featured:
-        pills.append(pill("pick", "$warning", "$text"))
-    pills.append(pill(row.task, bg, "$text"))
+        primary_pills.append(pill("pick", "$warning", "$text"))
+    primary_pills.append(pill(row.task, bg, "$text"))
     if row.backend:
-        pills.append(pill(row.backend, "$accent", "$text"))
+        primary_pills.append(pill(row.backend, "$accent", "$text"))
+    primary_line = Content(" ").join(primary_pills)
+
     compat_chip = _compat_pill(row.compat)
-    if compat_chip is not None:
-        pills.append(compat_chip)
-    pill_line = Content(" ").join(pills)
+    secondary_line = compat_chip if compat_chip is not None else None
+
     specs = _build_specs(row.params, row.quant, row.size)
     status = _build_local_status(row)
 
-    parts: list[Content] = [name, pill_line, specs]
+    parts: list[Content] = [name, primary_line]
+    if secondary_line is not None:
+        parts.append(secondary_line)
+    parts.append(specs)
     if status is not None:
         parts.append(status)
     if selected:
