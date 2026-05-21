@@ -314,10 +314,8 @@ COMPAT_DETAIL_SENTENCE_UNKNOWN = (
 COMPAT_MODAL_TITLE = "Architecture not supported"
 COMPAT_MODAL_BODY = (
     "This model uses architecture {arch}. Your lilbee build doesn't support it, "
-    "so loading after download will probably fail."
+    "so loading after download will probably fail. Pull anyway?"
 )
-COMPAT_MODAL_CONFIRM = "Pull anyway"
-COMPAT_MODAL_CANCEL = "Cancel"
 CATALOG_HIDE_UNSUPPORTED_TOGGLED = "Hide unsupported: {state}"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")

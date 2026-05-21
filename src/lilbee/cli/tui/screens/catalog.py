@@ -64,10 +64,10 @@ from lilbee.cli.tui.screens.catalog_utils import (
     row_delete_id,
     variant_to_row,
 )
-from lilbee.cli.tui.screens.confirm_unsupported import ConfirmUnsupportedModal
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -1859,7 +1859,11 @@ class CatalogScreen(Screen[None]):
                 self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
             self.app.push_screen(
-                ConfirmUnsupportedModal(architecture=model.architecture), _after_confirm
+                ConfirmDialog(
+                    msg.COMPAT_MODAL_TITLE,
+                    msg.COMPAT_MODAL_BODY.format(arch=model.architecture or "unknown"),
+                ),
+                _after_confirm,
             )
             return
 

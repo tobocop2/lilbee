@@ -61,37 +61,3 @@ def test_download_target_translates_unsupported_arch_to_runtime_error() -> None:
         pytest.raises(RuntimeError, match="kimi_k2"),
     ):
         _download_target(_Reporter(), model)
-
-
-async def test_confirm_unsupported_modal_button_press_dismisses_with_verdict() -> None:
-    """Pressing each button dismisses with the correct verdict (covers on_button_pressed)."""
-    from textual.app import ComposeResult
-    from textual.widgets import Button, Static
-
-    from lilbee.cli.tui.screens.confirm_unsupported import ConfirmUnsupportedModal
-    from tests._lilbee_app_test_host import LilbeeAppHost
-
-    class _App(LilbeeAppHost):
-        def compose(self) -> ComposeResult:
-            yield Static("host")
-
-    async def _exercise(button_id: str, expected: bool) -> None:
-        async with _App().run_test(size=(120, 40)) as pilot:
-            verdicts: list[bool] = []
-
-            async def _await_modal() -> None:
-                verdicts.append(
-                    await pilot.app.push_screen_wait(
-                        ConfirmUnsupportedModal(architecture="kimi_k2")
-                    )
-                )
-
-            worker = pilot.app.run_worker(_await_modal())
-            await pilot.pause()
-            button = pilot.app.screen.query_one(f"#{button_id}", Button)
-            button.press()
-            await worker.wait()
-            assert verdicts == [expected]
-
-    await _exercise("confirm-unsupported-confirm", True)
-    await _exercise("confirm-unsupported-cancel", False)
