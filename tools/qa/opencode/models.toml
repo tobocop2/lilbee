@@ -33,6 +33,7 @@ size_gb = 4.9
 family = "phi4mini"
 ref = "bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
 size_gb = 2.4
+skip = true  # worker SIGABRTs on load (bb-bug); skip until upstream llama-cpp fix
 
 [[model]]
 family = "gemma2"
