@@ -505,9 +505,13 @@ class TestLlamaCppProvider:
         with patch("llama_cpp.Llama", side_effect=fake_llama):
             result = load_llama(models_dir / "test-model.gguf", mode="chat")
         assert result is instance
-        assert len(call_log) == 2
-        assert call_log[0].get("flash_attn") is True
-        assert "flash_attn" not in call_log[1]
+        # Filter out vocab-only metadata reads (a separate construction the
+        # chat_format-override resolver makes before the real load); we only
+        # care about the actual model-load attempts here.
+        load_attempts = [c for c in call_log if not c.get("vocab_only")]
+        assert len(load_attempts) == 2
+        assert load_attempts[0].get("flash_attn") is True
+        assert "flash_attn" not in load_attempts[1]
 
     def testload_llama_retries_with_halved_ctx_on_oom(self, models_dir: Path) -> None:
         """A llama_context load failure halves n_ctx and retries before wrapping the error."""
@@ -781,8 +785,17 @@ class TestLlamaCppProvider:
         cfg.flash_attention = "0"
         instance = MagicMock()
         instance.n_ctx.return_value = _MIN_CHAT_CTX
+
+        # Two distinct mocks: vocab-only metadata reads close their handle
+        # by design (that's how read_gguf_metadata releases the Llama);
+        # only the real model-load mock must not be closed.
+        def fake_llama(**kwargs):
+            if kwargs.get("vocab_only"):
+                return MagicMock(metadata={})
+            return instance
+
         try:
-            with patch("llama_cpp.Llama", return_value=instance):
+            with patch("llama_cpp.Llama", side_effect=fake_llama):
                 result = load_llama(models_dir / "ok.gguf", mode="chat")
             assert result is instance
             instance.close.assert_not_called()

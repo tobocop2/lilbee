@@ -46,6 +46,12 @@ S4 (long-history windowing), S5 (mid-stream cancellation), S6 (backpressure 429 
 
 ## Findings to date
 
-- **qwen3** (Qwen/Qwen3-4B-GGUF) — S1 + S2 pass. S3 hits multi-turn context overflow; bb-xdic windowing plan addresses it.
-- **gemma4** (unsloth/gemma-4-E2B-it-GGUF) — S1 passes. S2 paraphrases the rare-class quote; S3 same context overflow as qwen3.
-- **Skipped families** — gemma2, mistral, llama3, hermes, phi4mini, qwen3-coder. Reasons captured inline in `models.toml`; the recurring root cause is that community-quantized GGUFs drop the tool-aware portion of the chat template, so lilbee's `supports_tools` probe correctly rejects them. The Qwen org's official GGUFs and the unsloth gemma-4 build keep the tool template, which is why they pass.
+After the integration fixes on `fix/opencode-integration-findings`:
+
+- **qwen3** (Qwen/Qwen3-4B-GGUF) — 3/3 PASS. The schema-slim fix freed enough context budget that S3 no longer hits overflow.
+- **gemma4** (unsloth/gemma-4-E2B-it-GGUF) — S1 PASS. S2/S3 model-behavior: gemma4 paraphrases the rare-class quote and tries the built-in `webfetch` tool on open-ended prompts.
+- **hermes** (bartowski/Hermes-3-Llama-3.1-8B-GGUF) — S1 PASS, newly enabled by `chat_format_override` + stream-downgrade. S2/S3 model-behavior: Hermes-3 8B drifts to opencode's built-in `read` tool on multi-turn prompts.
+- **llama3** (bartowski/Meta-Llama-3.1-8B-Instruct-GGUF) — S1 PASS, newly enabled by the bare-JSON parser fix in `schemas/llama3.json`. S2/S3 hit multi-turn context overflow.
+- **Skipped:** mistral v0.3 (base model not trained for tool calling; prefer Mistral-Nemo / Mistral-Small), phi4mini (llama-cpp-python wheel CPU-feature SIGABRT on M1 Pro; environment fix), gemma2 (no tool template), qwen3-coder (17 GB MoE, opt-in only).
+
+S1 validates the integration end-to-end across four chat templates: Qwen ChatML+tool_call, Gemma-4 native, ChatML-function-calling (via override), and Llama-3.1 bare-JSON. S2/S3 timeouts on non-qwen3 cells reflect model capability rather than integration breakage.

@@ -803,6 +803,12 @@ def load_llama(
     if cfg.main_gpu is not None:
         kwargs["main_gpu"] = cfg.main_gpu
 
+    # Read GGUF metadata at most once and share it across all the kwargs
+    # builders that need it (n_ctx resolution + chat_format override).
+    # Each call constructs a Llama(vocab_only=True), so caching here keeps
+    # the load path to one metadata pass instead of two.
+    meta: dict[str, str] | None = None
+
     if embedding:
         # Embedding/rerank uses the model's training context unconditionally.
         # cfg.num_ctx is a chat-tuned setting; propagating it here used to
@@ -812,9 +818,9 @@ def load_llama(
         # ``embed_train_ctx`` value (instead of ``0`` for "use model
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
-        embed_meta = safe_read_gguf_metadata(model_path)
+        meta = safe_read_gguf_metadata(model_path)
         embed_train_ctx = train_ctx_from_meta(
-            embed_meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
+            meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
         )
         kwargs["n_ctx"] = embed_train_ctx
     elif cfg.num_ctx is not None:
@@ -844,7 +850,8 @@ def load_llama(
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
-        _apply_chat_format_override(kwargs, model_path)
+        chat_meta = meta if meta is not None else safe_read_gguf_metadata(model_path)
+        _apply_chat_format_override(kwargs, model_path, chat_meta)
 
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
@@ -1022,7 +1029,9 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     kwargs["type_v"] = ggml_type
 
 
-def _apply_chat_format_override(kwargs: dict[str, Any], model_path: Path) -> None:
+def _apply_chat_format_override(
+    kwargs: dict[str, Any], model_path: Path, meta: dict[str, str] | None
+) -> None:
     """Swap the GGUF's embedded chat template for a known-good llama-cpp preset.
 
     Community quanters routinely drop the ``{% if tools %}`` blocks from the
@@ -1030,13 +1039,14 @@ def _apply_chat_format_override(kwargs: dict[str, Any], model_path: Path) -> Non
     on Qwen / Gemma-4 etc. quants whose template survived intact. The
     override resolver consults GGUF ``general.name`` (stable across
     quantizers) and returns a chat_format preset only for models whose
-    output format matches one of lilbee's response schemas.
+    output format matches one of lilbee's response schemas. *meta* is the
+    same metadata dict the caller already read; passing it through avoids
+    re-constructing ``Llama(vocab_only=True)``.
     """
     from lilbee.providers.llama_cpp.chat_format_override import (
         resolve_chat_format_override,
     )
 
-    meta = safe_read_gguf_metadata(model_path)
     override = resolve_chat_format_override(meta)
     if override is not None:
         kwargs["chat_format"] = override
