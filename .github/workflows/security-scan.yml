@@ -101,6 +101,14 @@ jobs:
           #   `POST /guardrails/test_custom_code` endpoint. Needs a proxy-admin
           #   credential and a running proxy; lilbee uses the SDK only. Patched
           #   in 1.83.10/1.83.11; same click pin issue blocks the bump.
+          # - PYSEC-2025-183: DISPUTED weak-encryption finding in pyjwt
+          #   (CVE-2025-45768). Upstream rejects: HMAC key length is the
+          #   application's choice, not the library's; no fixed version. pyjwt
+          #   is transitive via mcp; lilbee never imports it.
+          # - PYSEC-2024-277: DISPUTED unpickling finding in joblib
+          #   (CVE-2024-34997). NumpyArrayWrapper only reads joblib-produced
+          #   cache files (trusted content). joblib is transitive via nltk via
+          #   crawl4ai (`crawler` extra); lilbee never imports it.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
@@ -109,6 +117,8 @@ jobs:
             GHSA-r75f-5x8p-qvmc
             GHSA-v4p8-mg3p-g94g
             GHSA-wxxx-gvqv-xp7p
+            PYSEC-2025-183
+            PYSEC-2024-277
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)

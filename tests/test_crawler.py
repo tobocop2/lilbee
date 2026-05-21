@@ -939,13 +939,14 @@ class TestPlaywrightBrowserCheck:
         assert not chromium_installed()
 
     def test_detects_installed_chromium(self, tmp_path, monkeypatch):
-        """A chromium-* subdirectory counts as installed."""
+        """When the expected revision is unknown, any chromium-* subdirectory counts."""
         from lilbee.crawler.bootstrap import chromium_installed
 
         browsers = tmp_path / "ms-playwright"
         browsers.mkdir()
         (browsers / "chromium-1234").mkdir()
         monkeypatch.setattr("lilbee.crawler.bootstrap._browsers_cache_path", lambda: browsers)
+        monkeypatch.setattr("lilbee.crawler.bootstrap._expected_chromium_revision", lambda: None)
         assert chromium_installed()
 
     def test_path_respects_env_override(self, tmp_path, monkeypatch):
