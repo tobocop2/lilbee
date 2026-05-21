@@ -43,3 +43,9 @@ Forbidden in every scenario: `<tool_call>`, `[TOOL_CALLS]`, `functools[`, `Error
 ## Deferred
 
 S4 (long-history windowing), S5 (mid-stream cancellation), S6 (backpressure 429 surfacing) are designed but not yet implemented. They will run only on the named happy-path family (qwen3) once added (bead bb-m8fi tracks follow-up).
+
+## Findings to date
+
+- **qwen3** (Qwen/Qwen3-4B-GGUF) — S1 + S2 pass. S3 hits multi-turn context overflow; bb-xdic windowing plan addresses it.
+- **gemma4** (unsloth/gemma-4-E2B-it-GGUF) — S1 passes. S2 paraphrases the rare-class quote; S3 same context overflow as qwen3.
+- **Skipped families** — gemma2, mistral, llama3, hermes, phi4mini, qwen3-coder. Reasons captured inline in `models.toml`; the recurring root cause is that community-quantized GGUFs drop the tool-aware portion of the chat template, so lilbee's `supports_tools` probe correctly rejects them. The Qwen org's official GGUFs and the unsloth gemma-4 build keep the tool template, which is why they pass.
