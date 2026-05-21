@@ -62,3 +62,28 @@ def test_render_local_omits_compat_pill_for_supported() -> None:
     rendered = _render_local(_row(ModelCompat.SUPPORTED), selected=False)
     assert COMPAT_PILL_UNSUPPORTED not in rendered.plain
     assert COMPAT_PILL_UNKNOWN not in rendered.plain
+
+
+@pytest.mark.parametrize(
+    "compat,expected",
+    [
+        (ModelCompat.UNSUPPORTED, COMPAT_PILL_UNSUPPORTED),
+        (ModelCompat.UNKNOWN, COMPAT_PILL_UNKNOWN),
+    ],
+)
+def test_grid_card_lines_include_compat_pill(compat: ModelCompat, expected: str) -> None:
+    """The grid view's _local_lines path also renders the compat chip."""
+    from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+    lines = _local_lines(_row(compat), selected=False)
+    joined = "\n".join(line.plain for line in lines)
+    assert expected in joined
+
+
+def test_grid_card_lines_omit_compat_pill_for_supported() -> None:
+    from lilbee.cli.tui.widgets.model_grid import _local_lines
+
+    lines = _local_lines(_row(ModelCompat.SUPPORTED), selected=False)
+    joined = "\n".join(line.plain for line in lines)
+    assert COMPAT_PILL_UNSUPPORTED not in joined
+    assert COMPAT_PILL_UNKNOWN not in joined

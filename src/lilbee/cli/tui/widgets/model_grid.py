@@ -414,6 +414,7 @@ def _pad_line(content: Content, width: int) -> Content:
 
 def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.model_card import _compat_pill
 
     bg = TASK_COLORS.get(row.task, "$primary")
     name = Content.styled(_truncate_name(row.name), "bold")
@@ -431,6 +432,9 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     # still surface their pill since that's a meaningful distinction.
     if row.backend and row.backend != "native":
         pills.append(pill(row.backend, "$accent", "$text"))
+    compat_chip = _compat_pill(row.compat)
+    if compat_chip is not None:
+        pills.append(compat_chip)
     pill_line = Content(" ").join(pills)
     # Family card with multiple quants: replace the simple specs line
     # with an inline chip strip so the user sees every available size
