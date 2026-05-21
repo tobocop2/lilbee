@@ -29,6 +29,8 @@ Point it at your files, notes, and code and ask questions in plain English; ever
 
 It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
+> **Tutorial reel:** every demo on this page (and the extras) lives in the [**tutorial reel**](docs/tutorial-reel.md) as embedded videos instead of looping GIFs, with long-form captions explaining what's happening on screen.
+
 > ## ⚠️ Beta software
 >
 > lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome; that's the whole point of the beta.
@@ -38,6 +40,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 ---
 
 - [Quick start](#quick-start)
+- [Tutorial reel](docs/tutorial-reel.md) (long-form videos)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
 - [What you can do with it](#what-you-can-do-with-it)
@@ -104,6 +107,10 @@ lilbee stays the local part: your files, the search index, and the embeddings ne
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
+When the first answer is an outline without enough source, the user asks for the actual code. The agent calls `lilbee_settings_set` to widen retrieval, re-runs `lilbee_search` against the richer pool, and answers the second time with full function bodies pasted inline, each followed by a `file.py:L<start>-L<end>` citation. The whole self-tune loop runs end-to-end on a local 8B model.
+
+![agent self-tunes lilbee mid-conversation: outline → settings_set → re-search → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
+
 ### Offline copies of websites
 
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
@@ -137,6 +144,12 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
+### See when a model won't load before you download it
+
+Hugging Face has thousands of GGUFs but the bundled llama.cpp build only supports a subset of architectures; brand-new ones land upstream first and take time to reach the pinned runtime. lilbee reads `general.architecture` from the Hub for every catalog row and tags unsupported ones with an `unsupported` pill on the card and an italic tag in the list view. Trying to install one opens a confirm dialog ("pull anyway?") so you can override when you know better, otherwise pulls are refused before the multi-GB download.
+
+![search HF Hub for gemma-4, see the unsupported pill, toggle f to hide them](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.gif)
+
 ### Cloud models, when you want them
 
 lilbee runs entirely on your machine by default. There are two ways to use cloud models when you want to:
@@ -156,7 +169,7 @@ Either way your files and the index never leave the machine; only the queries an
 
 ![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
 
-The full demo reel (every screen and the MCP integration too) lives in [`docs/demos.md`](docs/demos.md). The tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
+Every GIF on this page (plus the extras that don't fit here) is also in the [**tutorial reel**](docs/tutorial-reel.md) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## Hardware requirements
 
@@ -262,7 +275,7 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 ![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
-The full reel (every TUI screen and the agent demos) is in [`docs/demos.md`](docs/demos.md).
+Every GIF on this page (plus the extras) lives in the [tutorial reel](docs/tutorial-reel.md) as a video with a longer caption.
 
 ## HTTP Server
 
