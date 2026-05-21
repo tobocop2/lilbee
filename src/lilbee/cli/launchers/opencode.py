@@ -19,6 +19,7 @@ _SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
 _OPENCODE_PROVIDER_ID = "lilbee"
 _OPENCODE_CONFIG_ENV_VAR = "OPENCODE_CONFIG_CONTENT"
 _PICKER_STATE_RECENT_CAP = 10
+_MCP_COMMAND = ["lilbee", "mcp"]
 
 
 def _opencode_config_path() -> Path:
@@ -172,6 +173,7 @@ class OpencodeLauncher:
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,
             model_refs=model_refs,
+            mcp_command=_MCP_COMMAND,
         )
         provider_block = block["provider"][_OPENCODE_PROVIDER_ID]
         _merge_lilbee_provider_into_config(

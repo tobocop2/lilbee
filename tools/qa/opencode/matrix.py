@@ -37,12 +37,13 @@ _POST_SEND_SLEEP_S = 0.1
 
 _SERVE_BOOT_TIMEOUT_S = 30.0
 _SERVE_TERMINATE_TIMEOUT_S = 10.0
-_OPENCODE_BOOT_SETTLE_S = 15.0  # opencode 1.15.5 needs ~10s on Apple Silicon
+_OPENCODE_BOOT_SETTLE_S = 30.0  # boot + first-prompt prefill warmup
 _INDEX_TIMEOUT_S = 120.0
 _MODEL_PULL_TIMEOUT_S = 900.0
 _POLL_INTERVAL_S = 2.0
-_SCENARIO_TIMEOUT_S = 90.0
-_MULTI_TOOL_TIMEOUT_S = 135.0
+_SCENARIO_TIMEOUT_S = 300.0  # 4B on Apple Silicon w/ 32K KV cache is slow
+_MULTI_TOOL_TIMEOUT_S = 420.0
+_INTER_SCENARIO_SETTLE_S = 15.0  # let opencode finish the prior turn before queuing the next
 
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
@@ -437,11 +438,13 @@ def setup_cell(
 
 def run_smoke_scenarios(family: str, session: str) -> list[ScenarioResult]:
     results: list[ScenarioResult] = []
-    for scen in SMOKE_SCENARIOS:
+    for i, scen in enumerate(SMOKE_SCENARIOS):
         print(f"[{family}] running {scen.name}")
         result = run_scenario(session, scen)
         results.append(result)
         print(f"[{family}]   -> {result.status.value} ({result.elapsed_s:.1f}s) {result.detail}")
+        if i < len(SMOKE_SCENARIOS) - 1:
+            time.sleep(_INTER_SCENARIO_SETTLE_S)
     return results
 
 
