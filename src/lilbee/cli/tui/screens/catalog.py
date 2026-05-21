@@ -127,6 +127,11 @@ class _RowCacheEntry:
     rows: list[LocalCatalogRow]
 
 
+def _is_unsupported_local_row(row: CatalogRow) -> bool:
+    """True only for local rows the bundled llama.cpp can't load."""
+    return row.kind == CatalogRowKind.LOCAL and row.compat is ModelCompat.UNSUPPORTED
+
+
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
@@ -208,6 +213,9 @@ class CatalogScreen(Screen[None]):
         Binding("s", "cycle_sort", "Sort", show=False, group=_ACTION_GROUP),
         Binding("ctrl+b", "toggle_drawer", "Detail", show=False, group=_ACTION_GROUP),
         Binding("c", "cycle_source", "Source", show=False, group=_ACTION_GROUP),
+        Binding(
+            "f", "toggle_hide_unsupported", "Hide unsupported", show=False, group=_ACTION_GROUP
+        ),
         # Numeric tab shortcuts; 1-6 jump to the corresponding tab in
         # ALL_TAB_IDS order (Discover, Chat, Embed, Vision, Rerank, Library).
         # priority=True so they win against any focused-widget binding that
@@ -285,6 +293,9 @@ class CatalogScreen(Screen[None]):
         self._source_modes: dict[str, SourceMode] = {
             tab_id: SourceMode.LOCAL for tab_id in TASK_TAB_IDS
         }
+        # When True, hide rows whose architecture isn't supported by the
+        # bundled llama.cpp build. Toggled via the 'f' keybinding.
+        self._hide_unsupported: bool = False
         # Hardware-fit baseline. Captured once at construction so the
         # cached row-build path can stamp each row's fit chip without
         # re-probing on every refresh.
@@ -1124,6 +1135,8 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._build_remote_rows(search)
         hf_rows = self._build_hf_rows(search) if self._hf_fetched_any() else []
         all_rows = family_rows + remote_rows + hf_rows
+        if self._hide_unsupported:
+            all_rows = [r for r in all_rows if not _is_unsupported_local_row(r)]
         active_tab = self._active_tab_id_cache
         tab_rows = self._rows_for_active_tab(all_rows, active_tab)
         # Keep self._rows in sync (locals-only) so the toolbar sort-label
@@ -1423,6 +1436,17 @@ class CatalogScreen(Screen[None]):
             current = 0
         next_index = (current + delta) % len(ALL_TAB_IDS)
         self.action_select_tab(next_index)
+
+    def action_toggle_hide_unsupported(self) -> None:
+        """Toggle hiding rows whose architecture isn't supported by this lilbee build."""
+        if self._search_focused:
+            return
+        self._hide_unsupported = not self._hide_unsupported
+        self._grid_cache_keys.clear()
+        self._list_cache_keys.clear()
+        self._refresh_view()
+        state = "on" if self._hide_unsupported else "off"
+        self.notify(msg.CATALOG_HIDE_UNSUPPORTED_TOGGLED.format(state=state))
 
     def action_cycle_source(self) -> None:
         """Cycle the active task tab's source mode: LOCAL -> CLOUD -> BOTH.

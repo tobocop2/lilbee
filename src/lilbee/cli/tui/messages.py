@@ -318,6 +318,7 @@ COMPAT_MODAL_BODY = (
 )
 COMPAT_MODAL_CONFIRM = "Pull anyway"
 COMPAT_MODAL_CANCEL = "Cancel"
+CATALOG_HIDE_UNSUPPORTED_TOGGLED = "Hide unsupported: {state}"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 
