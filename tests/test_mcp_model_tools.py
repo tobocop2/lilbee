@@ -107,7 +107,7 @@ class TestMcpPull:
         ctx = self._fake_ctx()
         final = PullResult(model="qwen3:0.6b", source="native", status=PullStatus.OK)
 
-        def fake_pull(model, source, *, on_update):
+        def fake_pull(model, source, *, on_update, allow_unsupported=False):
             on_update(DownloadProgress(percent=10, detail="10 MB", is_cache_hit=False))
             on_update(DownloadProgress(percent=50, detail="50 MB", is_cache_hit=False))
             return final
@@ -130,7 +130,7 @@ class TestMcpPull:
     async def test_pull_without_ctx_does_not_report_progress(self):
         final = PullResult(model="qwen3:0.6b", source="native", status=PullStatus.OK)
 
-        def fake_pull(model, source, *, on_update):
+        def fake_pull(model, source, *, on_update, allow_unsupported=False):
             on_update(DownloadProgress(percent=30, detail="", is_cache_hit=False))
             return final
 
@@ -143,7 +143,7 @@ class TestMcpPull:
         captured: list[ModelSource] = []
         final = PullResult(model="llama3:latest", source="remote", status=PullStatus.OK)
 
-        def fake_pull(model, source, *, on_update):
+        def fake_pull(model, source, *, on_update, allow_unsupported=False):
             captured.append(source)
             return final
 

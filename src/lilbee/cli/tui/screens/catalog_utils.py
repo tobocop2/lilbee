@@ -18,7 +18,7 @@ from enum import Enum, StrEnum
 from typing import Any, Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
@@ -158,6 +158,7 @@ class LocalCatalogRow:
     remote_model: RemoteModel | None = None
     size_variants: list[SizeVariant] = field(default_factory=list)
     fit: FitChip | None = None
+    compat: ModelCompat = ModelCompat.UNKNOWN
     kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
 
 
@@ -297,6 +298,7 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
         ref=m.ref,
         backend="native",
         catalog_model=m,
+        compat=m.compat,
     )
 
 
