@@ -28,6 +28,41 @@ size_gb = 4.9
 # OpenAI-compatible clients elicit (no <|python_tag|> hint needed).
 
 [[model]]
+family = "smollm"
+ref = "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF/HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf"
+size_gb = 2.0
+
+[[model]]
+family = "functionary"
+ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q4_0.gguf"
+size_gb = 4.5
+skip = true  # pending pull
+
+[[model]]
+family = "granite"
+ref = "ibm-granite/granite-3.3-8b-instruct-GGUF/granite-3.3-8b-instruct-Q4_K_M.gguf"
+size_gb = 4.8
+skip = true  # pending pull
+
+[[model]]
+family = "cohere"
+ref = "bartowski/c4ai-command-r7b-12-2024-GGUF/c4ai-command-r7b-12-2024-Q4_K_M.gguf"
+size_gb = 4.4
+skip = true  # pending pull
+
+[[model]]
+family = "mistral-nemo"
+ref = "bartowski/Mistral-Nemo-Instruct-2407-GGUF/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
+size_gb = 7.0
+skip = true  # pending pull
+
+[[model]]
+family = "glm-air"
+ref = "unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+size_gb = 6.5
+skip = true  # multi-part GGUF; pending pull
+
+[[model]]
 family = "qwen3-coder"
 ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 size_gb = 17.0

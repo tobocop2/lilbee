@@ -61,6 +61,19 @@ _OVERRIDES: tuple[_ChatFormatOverride, ...] = (
         ),
     ),
     _ChatFormatOverride(
+        name_pattern=re.compile(r"smollm[\s\-_]?3", re.IGNORECASE),
+        chat_format="chatml-function-calling",
+        family=TemplateFamily.SMOLLM,
+        reason=(
+            "SmolLM3 GGUFs embed a chat template that uses the {% generation %}"
+            " Jinja tag, which llama-cpp-python's bundled Jinja parser does "
+            "not recognize and rejects with TemplateSyntaxError before any "
+            "inference runs. chatml-function-calling renders the prompt with "
+            "the ChatML markers SmolLM3 was trained on and emits <tool_call> "
+            "wrappers compatible with response_parser/schemas/smollm.json."
+        ),
+    ),
+    _ChatFormatOverride(
         name_pattern=re.compile(r"functionary[\s\-_]?v1", re.IGNORECASE),
         chat_format="functionary-v1",
         family=TemplateFamily.FUNCTIONARY_V3,

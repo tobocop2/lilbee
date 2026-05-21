@@ -35,3 +35,15 @@ def test_resolve_returns_none_for_non_string_name() -> None:
     """A malformed GGUF whose name field isn't a string must not raise."""
     assert resolve_chat_format_override({"name": 42}) is None
     assert resolve_chat_format_override({"name": None}) is None
+
+
+def test_smollm3_override_targets_chatml_function_calling() -> None:
+    from lilbee.providers.llama_cpp.chat_format_override import (
+        resolve_chat_format_override,
+        resolve_override_family,
+    )
+    from lilbee.providers.worker.response_parser.families import TemplateFamily
+
+    meta = {"name": "SmolLM3 3B"}
+    assert resolve_chat_format_override(meta) == "chatml-function-calling"
+    assert resolve_override_family(meta) is TemplateFamily.SMOLLM
