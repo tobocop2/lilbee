@@ -148,7 +148,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 Hugging Face has thousands of GGUFs but the bundled llama.cpp build only supports a subset of architectures; brand-new ones land upstream first and take time to reach the pinned runtime. lilbee reads `general.architecture` from the Hub for every catalog row and tags unsupported ones with an `unsupported` pill on the card and an italic tag in the list view. Trying to install one opens a confirm dialog ("pull anyway?") so you can override when you know better, otherwise pulls are refused before the multi-GB download.
 
-![search HF Hub for gemma-4, see the unsupported pill, toggle f to hide them](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.gif)
+![search HF Hub for gemma-4, see the unsupported pill in grid and list view](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.gif)
 
 ### Cloud models, when you want them
 
