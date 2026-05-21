@@ -18,6 +18,7 @@ skip = true  # 17 GB sparse MoE; opt in via removing this flag
 family = "mistral"
 ref = "bartowski/Mistral-7B-Instruct-v0.3-GGUF/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
 size_gb = 4.4
+skip = true  # bartowski GGUF embeds the v0.2 [INST] template, no tool markers; pick a tool-aware mistral build to validate the family
 
 [[model]]
 family = "llama3"
