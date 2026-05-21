@@ -528,9 +528,16 @@ class TestStreamingCompletion:
         assert resp.content
         assert not chat_lock().locked()
 
-    async def test_stream_unknown_model_emits_error_frame_then_done(
+    async def test_stream_unknown_model_returns_404_preflush(
         self, services_with_chat_model, _auth_token
     ):
+        """Pre-flush validation surfaces unknown-model as a real 404, not a 200 SSE body.
+
+        Once headers flush at 200, downstream errors only travel via SSE
+        frames; clients that don't parse OpenAI's chunk-shape (or that
+        treat unknown chunks as transport failures) end up in retry loops.
+        Returning 404 here keeps the path debuggable for every client.
+        """
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
                 "/v1/chat/completions",
@@ -541,16 +548,15 @@ class TestStreamingCompletion:
                     "stream": True,
                 },
             )
-        assert resp.status_code == 200
-        chunks = _sse_to_chunks(resp.content)
-        # Single error frame followed by [DONE].
-        assert chunks[0]["error"]["code"] == "model_not_found"
-        assert chunks[-1] == "[DONE]"
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["error"]["code"] == "model_not_found"
         assert not chat_lock().locked()
 
-    async def test_stream_tools_against_non_tool_model_emits_error_frame(
+    async def test_stream_tools_against_non_tool_model_returns_400_preflush(
         self, services_with_chat_model, _auth_token
     ):
+        """Pre-flush validation surfaces tool-incapable model as 400 instead of SSE body."""
         services_with_chat_model.provider.supports_tools.return_value = False
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
@@ -572,9 +578,10 @@ class TestStreamingCompletion:
                     "stream": True,
                 },
             )
-        chunks = _sse_to_chunks(resp.content)
-        assert chunks[0]["error"]["code"] == "model_does_not_support_tools"
-        assert chunks[-1] == "[DONE]"
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "model_does_not_support_tools"
+        assert not chat_lock().locked()
 
     async def test_stream_provider_exception_emits_internal_error_frame(
         self, services_with_chat_model, _auth_token
@@ -621,8 +628,15 @@ class TestStreamingCompletion:
                 },
             )
         chunks = _sse_to_chunks(resp.content)
-        assert chunks[0]["error"]["code"] == "context_length_exceeded"
-        assert chunks[0]["error"]["type"] == "invalid_request_error"
+        # The error chunk follows OpenAI's chat.completion.chunk shape so the
+        # opencode / aider / ai-sdk family of clients can parse it cleanly
+        # instead of seeing a bare {"error": ...} frame and entering a
+        # reconnect/retry loop.
+        chunk = chunks[0]
+        assert chunk["object"] == "chat.completion.chunk"
+        assert chunk["choices"][0]["finish_reason"] == "length"
+        assert chunk["error"]["code"] == "context_length_exceeded"
+        assert chunk["error"]["type"] == "invalid_request_error"
         assert chunks[-1] == "[DONE]"
         assert not chat_lock().locked()
 
