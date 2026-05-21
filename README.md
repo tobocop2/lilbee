@@ -85,7 +85,7 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
+> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you'd build for yourself, over your files, your code, even the web pages you save. Read it in plain English, or have it read for you by your coding agent.
 
 ## What you can do with it
 
