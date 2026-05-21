@@ -200,6 +200,21 @@ def test_llama3_extracts_python_tagged_tool_call() -> None:
     assert parsed.tool_calls[0].name == "search"
 
 
+def test_llama3_extracts_bare_json_tool_call() -> None:
+    """OpenAI-style clients prompt llama-3 without the python_tag hint, so the model emits bare JSON."""
+    text = '{"name": "search", "arguments": {"q": "x"}}'
+    parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_llama3_bare_json_leaves_no_content_leak() -> None:
+    """Bare-JSON tool call must not also surface in content; matches the python_tag arm."""
+    text = '{"name": "search", "arguments": {"q": "x"}}'
+    parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
+    assert parsed.content == ""
+
+
 def test_glm46_extracts_xml_arg_key_value_call() -> None:
     """GLM 4.5/4.6 wraps calls in ``<tool_call>NAME\\n<arg_key>K</arg_key>...</tool_call>``."""
     text = (
