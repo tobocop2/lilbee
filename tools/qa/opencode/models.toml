@@ -1,0 +1,52 @@
+# QA matrix model list. Local-only; not pulled in by CI.
+#
+# Each entry is one cell. The smoke tier (S1+S2+S3) runs on every model.
+# Set ``skip = true`` to keep an entry around but skip it on the next run.
+
+[[model]]
+family = "qwen3"
+ref = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+size_gb = 2.5
+
+[[model]]
+family = "gemma4"
+ref = "unsloth/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf"
+size_gb = 3.0
+
+[[model]]
+family = "hermes"
+ref = "bartowski/Hermes-3-Llama-3.1-8B-GGUF/Hermes-3-Llama-3.1-8B-Q4_K_M.gguf"
+size_gb = 4.9
+# Re-enabled: chat_format_override now swaps the stripped embedded template
+# for chatml-function-calling, so the model sees tools again.
+
+[[model]]
+family = "llama3"
+ref = "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+size_gb = 4.9
+# Re-enabled: llama3.json now accepts the bare-JSON tool-call form that
+# OpenAI-compatible clients elicit (no <|python_tag|> hint needed).
+
+[[model]]
+family = "qwen3-coder"
+ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+size_gb = 17.0
+skip = true  # 17 GB sparse MoE; opt in via removing this flag
+
+[[model]]
+family = "mistral"
+ref = "bartowski/Mistral-7B-Instruct-v0.3-GGUF/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+size_gb = 4.4
+skip = true  # v0.3 base isn't trained for tool calling; prefer Mistral-Nemo or Mistral-Small builds
+
+[[model]]
+family = "phi4mini"
+ref = "bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
+size_gb = 2.4
+skip = true  # llama-cpp-python wheel CPU-feature SIGABRT on M1 Pro; rebuild with explicit AVX/NEON baseline (reference_ci_cmake_baseline)
+
+[[model]]
+family = "gemma2"
+ref = "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q4_K_M.gguf"
+size_gb = 1.6
+skip = true  # gemma-2 isn't trained for tool calling
