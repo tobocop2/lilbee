@@ -38,7 +38,13 @@ _DEFAULT_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.
 
 class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with (
+            mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=8 * 1024**3,
+            ),
+        ):
             c = Config()
             assert c.chat_model == _DEFAULT_CHAT_REF
             assert c.embedding_model == _DEFAULT_EMBED_REF
@@ -49,6 +55,15 @@ class TestFromEnvDefaults:
             assert c.top_k == 12
             assert c.max_distance == 0.75
             assert c.json_mode is False
+            # Memory-budget defaults: q8_0 KV halves per-token cost vs f16,
+            # 8K target keeps the working window inside chat-with-RAG needs,
+            # and ``None`` num_ctx_max lets the model's training_ctx be the
+            # only ceiling on hosts with the RAM to back it.
+            from lilbee.core.config.enums import KvCacheType
+
+            assert c.kv_cache_type is KvCacheType.Q8_0
+            assert c.chat_n_ctx_target == 8192
+            assert c.num_ctx_max is None
             # Wiki is opt-in: the Wiki view tab and the chat ModelBar's
             # scope picker only appear when the user explicitly enables it.
             assert c.wiki is False
@@ -1514,28 +1529,6 @@ class TestBuildCfgFallback:
         # Falls back to defaults: chat_model is the featured Qwen3 ref.
         assert built_cfg.chat_model.endswith(".gguf")
 
-    def test_warns_when_persisted_config_carries_dropped_key(self, tmp_path, caplog):
-        """A persisted ``chat_n_ctx_target`` from before the field was removed
-        is silently ignored by Pydantic; we surface a one-time WARNING so the
-        user knows their setting has no effect.
-        """
-        import logging
-
-        from lilbee.core.config.model import _build_cfg
-
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text('chat_n_ctx_target = 32768\n')
-        env = _clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            caplog.at_level(logging.WARNING, logger="lilbee.core.config.model"),
-        ):
-            _build_cfg()
-        warnings = [r.message for r in caplog.records if "chat_n_ctx_target" in r.message]
-        assert warnings
-        assert "removed" in warnings[0]
-
     def test_returns_none_error_on_clean_load(self, tmp_path):
         from lilbee.core.config.model import _build_cfg
 
@@ -1561,3 +1554,42 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is None
         assert built_cfg.max_tokens == 4096
+
+
+class TestChatCtxTargetDefault:
+    def test_explicit_env_var_wins_over_scaling(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["LILBEE_CHAT_N_CTX_TARGET"] = "32768"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=4 * 1024**3,  # tiny host
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 32768
+
+    def test_default_scales_with_host_ram(self, tmp_path):
+        env = _clean_env(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=48 * 1024**3,  # 32-64 GiB tier
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 16384
+
+    def test_default_floors_on_small_host(self, tmp_path):
+        env = _clean_env(tmp_path)
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "lilbee.core.system._read_total_memory_bytes",
+                return_value=8 * 1024**3,
+            ),
+        ):
+            c = Config()
+        assert c.chat_n_ctx_target == 8192

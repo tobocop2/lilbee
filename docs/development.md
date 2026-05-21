@@ -23,7 +23,7 @@ make format     # Auto-format code
 |-----------|------|
 | Language | Python 3.11+ |
 | Package manager | uv |
-| LLM runtime | Ollama (local, any model) |
+| LLM runtime | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (in-process; native GGUF) |
 | Embeddings | nomic-embed-text (configurable) |
 | Vector DB | LanceDB (embedded, Rust-based) |
 | PDF extraction | pymupdf4llm |
@@ -43,14 +43,14 @@ make format     # Auto-format code
 | `store.py` | LanceDB operations |
 | `chunker.py` | Text chunking (token-based recursive) |
 | `code_chunker.py` | Code chunking (tree-sitter AST) |
-| `embedder.py` | Ollama embedding wrapper |
+| `embedder.py` | Thin wrapper around the LLM provider's embeddings API |
 | `cli.py` | Typer CLI with --model, --data-dir, and --json flags |
 
 ## Testing
 
 ```bash
-make test       # Unit tests (no Ollama needed)
-uv run pytest   # Full suite including RAG accuracy (requires Ollama)
+make test       # Unit tests
+uv run pytest   # Full suite including RAG accuracy
 ```
 
 - **100% coverage required** — enforced by `pytest-cov` with `fail_under = 100`
@@ -63,7 +63,7 @@ uv run pytest   # Full suite including RAG accuracy (requires Ollama)
 - Type checking: `mypy` with strict settings
 - Type hints on all public functions
 - Lazy imports in CLI callbacks
-- No LangChain — raw Ollama SDK
+- No LangChain or other agent frameworks; direct provider calls only
 
 ## License
 

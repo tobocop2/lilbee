@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lilbee.core.system import scaled_chat_ctx_target_default
+
 from .defaults import (
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
@@ -271,12 +273,21 @@ class Config(BaseSettings):
     # ``0`` disables reaping (workers stay up until TUI exit).
     worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
-    # Upper bound for the dynamic n_ctx picker. The picker chooses the
-    # largest 256-multiple ctx that fits in available memory and the
-    # model's training window. None (the default) means "no extra cap":
-    # the picker stops at the model's training window. Set to a specific
-    # int to clamp lower (useful on 16 GB hosts where a 131 K-context
-    # model's KV cache would otherwise blow memory).
+    # Working n_ctx the dynamic picker aims for. Default scales with
+    # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
+    # <16 GiB -> 8192, 16-32 -> 12288, 32-64 -> 16384, >=64 -> 24576.
+    # 8192 is the floor; the picker still clamps to training_ctx and
+    # host headroom.
+    chat_n_ctx_target: int = ConfigField(
+        default_factory=scaled_chat_ctx_target_default,
+        ge=512,
+        writable=True,
+    )
+
+    # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
+    # lets the model's training_ctx from GGUF metadata be the ceiling,
+    # so a 128K-context model can reach for it on a host with the RAM
+    # to back it. Set explicitly to cap below the model's training_ctx.
     num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
     # Flash attention. None (default) = on with TypeError fallback for
@@ -285,13 +296,10 @@ class Config(BaseSettings):
     # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
     flash_attention: bool | None = ConfigField(default=None, writable=True)
 
-    # KV cache element type. q8_0 / q4_0 halve or quarter cache memory
-    # but require flash attention to be enabled. F16 is the default
-    # because flash attention isn't reliable on every llama-cpp-python
-    # build / host (older wheels, certain GPU drivers) and a fallback
-    # to non-FA on a quantised KV cache produces wrong tokens. Users on
-    # tight VRAM can opt into q8_0 via LILBEE_KV_CACHE_TYPE.
-    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.F16, writable=True)
+    # KV cache element type. q8_0 (default) halves cache memory vs f16
+    # with no measurable quality loss for chat; q4_0 quarters it with a
+    # small quality cost. Both require flash attention to be enabled.
+    kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.Q8_0, writable=True)
 
     # Number of model layers to offload to GPU. None (default) = all
     # layers, 0 = CPU only, positive int = partial offload. Useful when a
@@ -896,33 +904,11 @@ class _TomlSource:
         except (ValueError, OSError):
             log.warning("Failed to read %s, ignoring", self._path)
             return {}
-        # Warn once when a persisted config still carries a key that was
-        # dropped in a prior release; without this the value gets silently
-        # ignored (``extra="ignore"``) and the user wonders why their
-        # setting has no effect.
-        for dropped in _DROPPED_SETTINGS_KEYS:
-            if dropped in data:
-                log.warning(
-                    "Persisted config %s ignores setting %r; the field was removed in "
-                    "a prior release. Delete the line from your config.toml.",
-                    self._path,
-                    dropped,
-                )
         # Empty strings represent "no persisted value" for nullable scalar
         # fields (legacy from set_setting writing "" for None). Pydantic
         # can't coerce "" to int|None, so dropping them here lets the field
         # default apply rather than crashing the whole Config load.
         return {k: str(v) for k, v in data.items() if str(v) != ""}
-
-
-# Settings that previous lilbee releases wrote to ``config.toml`` but the
-# current schema no longer accepts. Surfaced via a single ``log.warning``
-# in ``_TomlSource`` so users get a heads-up instead of a silent drop.
-_DROPPED_SETTINGS_KEYS: frozenset[str] = frozenset(
-    {
-        "chat_n_ctx_target",
-    }
-)
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

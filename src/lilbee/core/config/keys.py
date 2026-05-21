@@ -21,6 +21,7 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
     {
         "num_ctx",
         "num_ctx_max",
+        "chat_n_ctx_target",
         "kv_cache_type",
         "chat_model",
         "embedding_model",

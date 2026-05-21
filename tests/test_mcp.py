@@ -251,7 +251,14 @@ class TestStatus:
     def test_status_exposes_memory_tuning_settings(self):
         """MCP status reports the dynamic-ctx tuning knobs so clients can read them."""
         result = status()
-        for key in ("num_ctx", "num_ctx_max", "flash_attention", "kv_cache_type", "n_gpu_layers"):
+        for key in (
+            "num_ctx",
+            "num_ctx_max",
+            "chat_n_ctx_target",
+            "flash_attention",
+            "kv_cache_type",
+            "n_gpu_layers",
+        ):
             assert key in result["config"], f"missing {key} in MCP status"
         # Enum value is stringified (kv_cache_type is a StrEnum, not raw text)
         assert isinstance(result["config"]["kv_cache_type"], str)
@@ -1311,9 +1318,9 @@ class TestLilbeeLabel:
 
         from lilbee.app.status import lilbee_label
 
-        # Path.home() reads HOME on POSIX and USERPROFILE on Windows; patch the
-        # function directly so the test is platform-agnostic.
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(str(tmp_path))))
+        # Path.home() reads HOME on POSIX and USERPROFILE on Windows; patch
+        # the resolver directly so the test works on both.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         project = tmp_path / "code" / "lilbee-mcp-settings"
         project.mkdir(parents=True)
         cfg.data_root = project / ".lilbee"
@@ -1372,8 +1379,7 @@ class TestLilbeeLabel:
 
         from lilbee.app.status import _compact_path
 
-        # Patch Path.home directly: HOME only governs the POSIX implementation.
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(str(tmp_path))))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         assert _compact_path(str(tmp_path)) == "~"
 
     def test_truncate_leaf_helper_handles_tight_budget(self):

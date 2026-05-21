@@ -117,10 +117,10 @@ two sub-tabs:
 
 - **Local.** Everything you can run on this machine. Native GGUF models from
   the developer's picks, the full HuggingFace catalog browsable by task and
-  size, and any locally-running SDK backend (Ollama, LM Studio, etc.) that
-  exposes models on its REST endpoint. Toggle between a card grid and a
-  dense list view; both share the same search box. Pulling a model
-  installs it; selecting an installed model assigns it to the matching role.
+  size, and any locally-running OpenAI-compatible backend that exposes models
+  on its REST endpoint. Toggle between a card grid and a dense list view;
+  both share the same search box. Pulling a model installs it; selecting an
+  installed model assigns it to the matching role.
 - **Frontier.** Cloud chat models grouped by provider (Anthropic, Gemini,
   OpenAI, and so on). Only appears when at least one provider API key is
   configured, either via the Settings screen's API-Keys tab or the
@@ -529,10 +529,11 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_TOP_P` | `0.9` | Nucleus sampling threshold |
 | `LILBEE_TOP_K_SAMPLING` | `40` | Top-k sampling |
 | `LILBEE_REPEAT_PENALTY` | `1.1` | Repetition penalty |
-| `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically to the host's available memory, capped at `LILBEE_NUM_CTX_MAX`. Set explicitly to lock a specific value |
-| `LILBEE_NUM_CTX_MAX` | *(none)* | Upper bound for the auto-sized context picker. Empty = no extra cap (picker stops at the model's training window). Set to a specific value to clamp lower on memory-constrained hosts |
+| `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
+| `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `≥64 GiB → 24576`. 8192 is the floor on smaller hosts. The picker still clamps the result to the model's training context and available memory at worker start. Set explicitly to override |
+| `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
-| `LILBEE_KV_CACHE_TYPE` | `f16` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. Quantized variants halve or quarter cache memory but require flash attention to be enabled |
+| `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 | `LILBEE_WORKER_POOL_EAGER_START` | `true` | Pre-spawn worker subprocesses at TUI mount so the first chat lands on a warm pool. Set `false` for headless scripts where mount time matters more than first-call latency |
@@ -723,17 +724,16 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 
 ### Remote providers (SDK backend)
 
-Connect to hosted LLM providers instead of (or alongside) local llama-cpp
-inference.
+Connect to hosted or local OpenAI-compatible LLM backends alongside lilbee's
+native in-process inference.
 
 **What it does:** Routes chat and embedding calls to any provider reachable
-via the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and many more). The
-routing provider automatically detects which models are available locally vs.
-remotely and routes each call to the right backend.
+via the SDK backend. The routing provider automatically detects which models
+are available locally vs. remotely and routes each call to the right backend.
 
-**When to use it:** When you want to use your favorite frontier model for chat
-while keeping embeddings local for privacy, or when you're already running
-Ollama and want to use its models.
+**When to use it:** When you want a frontier model for chat while keeping
+embeddings local for privacy, or to surface models from a local
+OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
 **Install:** `pip install --pre 'lilbee[litellm]'` or
 `uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
@@ -743,7 +743,7 @@ adapter library name).
 
 ```bash
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
-export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # Ollama default
+export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # local backend URL
 export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
@@ -872,12 +872,12 @@ lilbee runs vision OCR in one of two ways:
 
 1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
    (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly. No Ollama, no extra services. This is the recommended path and
-   supports an SSE heartbeat for long scans.
+   directly, in-process. This is the recommended path and supports an SSE
+   heartbeat for long scans.
 2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
    `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
-   model to any remote name your SDK backend understands (Ollama, OpenAI,
-   Anthropic, Gemini, etc.). lilbee will route vision calls accordingly.
+   model to any remote name your SDK backend understands. lilbee will route
+   vision calls accordingly.
 
 ```bash
 lilbee add report.pdf --vision                # prompts for model if none set

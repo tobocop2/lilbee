@@ -83,24 +83,37 @@ def compute_dynamic_ctx(
     training_ctx: int,
     kv_bytes_per_tok: int,
     ceiling: int,
+    target: int | None = None,
     floor: int = _DYNAMIC_CTX_FLOOR,
     quantum: int = _DYNAMIC_CTX_QUANTUM,
 ) -> int:
-    """Pick the largest n_ctx that fits in available memory.
+    """Pick the n_ctx that best fits target, ceiling, and host RAM.
 
-    Subtracts model weights and a 10% buffer overhead from ``available_bytes``,
-    then divides the remainder by ``kv_bytes_per_tok``. Clamps to
-    ``[floor, min(training_ctx, ceiling)]`` and rounds down to ``quantum``.
+    Selection rule, in order:
+
+    1. ``upper = min(training_ctx, ceiling)`` is the hard upper bound; the
+       model cannot exceed its training window and the caller may cap below it.
+    2. If ``target`` is provided, prefer it (clamped to ``[floor, upper]``)
+       so a 40K-context model still loads at 8K when chat doesn't need more,
+       rather than maximising n_ctx just because RAM allows it.
+    3. ``raw_ctx = budget // kv_bytes_per_tok`` is the largest n_ctx the host
+       can physically back. The result is clamped to ``raw_ctx`` so we never
+       over-allocate on memory-constrained boxes.
+    4. Result is quantized down to ``quantum`` and floored at ``floor``.
     """
+    upper = min(training_ctx, ceiling)
     if kv_bytes_per_tok <= 0:
-        return min(training_ctx, ceiling)
+        if target is not None:
+            return max(floor, min(target, upper))
+        return upper
     overhead = int(model_bytes * _BUFFER_OVERHEAD_FRACTION)
     budget = available_bytes - model_bytes - overhead
     if budget <= 0:
         return floor
     raw_ctx = budget // kv_bytes_per_tok
-    upper = min(training_ctx, ceiling)
-    bounded = max(floor, min(raw_ctx, upper))
+    # Aim for target when set, but never above what host RAM or model training_ctx permit.
+    desired = min(target, raw_ctx, upper) if target is not None else min(raw_ctx, upper)
+    bounded = max(floor, desired)
     quantized = (bounded // quantum) * quantum
     return max(floor, quantized)
 

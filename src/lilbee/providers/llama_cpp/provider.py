@@ -949,12 +949,14 @@ _EMBED_FALLBACK_CTX = 2048
 
 
 def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
-    """Pick the largest 256-multiple n_ctx that fits in available memory."""
+    """Pick n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
+
+    When ``cfg.num_ctx_max`` is ``None`` the model's training_ctx is the only
+    ceiling, so a long-context model can grow past the target if the host
+    has the RAM to back it. Setting ``num_ctx_max`` explicitly caps below
+    training_ctx for per-host policy reasons.
+    """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
-    # cfg.num_ctx_max is the optional user-supplied cap. None means
-    # "no extra cap"; the picker still respects training_ctx and host
-    # memory inside compute_dynamic_ctx, so we just pass training_ctx
-    # as the ceiling in that case.
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
 
     try:
@@ -967,10 +969,11 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
             training_ctx=training_ctx,
             kv_bytes_per_tok=kv_per_tok,
             ceiling=ceiling,
+            target=cfg.chat_n_ctx_target,
         )
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
-        return min(training_ctx, DEFAULT_NUM_CTX)
+        return min(training_ctx, cfg.chat_n_ctx_target)
 
 
 def _kv_elem_bytes_for_cfg() -> int:

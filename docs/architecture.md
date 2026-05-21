@@ -81,7 +81,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Structured files.** kreuzberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
 - **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via kreuzberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
-- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol (Ollama, OpenAI, Gemini, etc.) when `pip install lilbee[litellm]` is available.
+- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
@@ -104,7 +104,7 @@ flowchart TD
 ```
 
 - **auto** (default). `RoutingProvider` checks if the SDK backend is installed and the requested model is available via its API. If so, routes through the SDK; otherwise falls back to local GGUF via llama-cpp.
-- **remote**. Force all calls through the SDK backend (Ollama, OpenAI, Anthropic, Gemini, and anything else litellm reaches). Requires `pip install lilbee[litellm]`.
+- **remote**. Force all calls through the SDK backend (anything litellm reaches). Requires `pip install lilbee[litellm]`.
 - **llama-cpp**. Force local GGUF inference via llama-cpp-python (always available).
 
 **Model roles** (`lilbee model list --task <role>`):
@@ -118,7 +118,7 @@ flowchart TD
 
 `validate_model_task_assignment` (invoked at config write time) rejects assignments where the model's capability declaration doesn't match the role, so you can't accidentally wire a pure-chat model into the vision slot.
 
-**Model management.** Native GGUF pulls come from HuggingFace via the catalog (`lilbee model pull`, `/models` in the TUI). Featured picks per role live in `src/lilbee/featured_models.toml`; the catalog view additionally exposes the full HuggingFace GGUF search. External models managed by the SDK backend (e.g., Ollama's own registry) are used for inference when available but are not managed by lilbee.
+**Model management.** Native GGUF support tracks [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) 1:1, so any GGUF that loads there loads in lilbee. Pulls come from HuggingFace via the catalog (`lilbee model pull`, `/models` in the TUI). Featured picks per role live in `src/lilbee/featured_models.toml`; the catalog view additionally exposes the full HuggingFace GGUF search. External models reached via the SDK backend are used for inference when available but are not managed by lilbee.
 
 ---
 

@@ -165,7 +165,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text=(
             "Context window size in tokens. Leave empty to size automatically "
-            "to the host's available memory (capped at num_ctx_max)."
+            "(aims for chat_n_ctx_target, ceiling at num_ctx_max or training_ctx)."
         ),
     ),
     "num_ctx_max": SettingDef(
@@ -173,9 +173,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Upper bound for the dynamic context picker when num_ctx is unset. "
-            "Leave empty for no extra cap (picker stops at the model's training "
-            "window); set explicitly to clamp lower on memory-constrained hosts."
+            "Explicit ceiling for the dynamic context picker. Leave empty to "
+            "use the model's training_ctx from GGUF metadata as the only "
+            "ceiling. Set to cap below training_ctx (saves KV memory)."
+        ),
+    ),
+    "chat_n_ctx_target": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Working context the dynamic picker aims for. Fits a RAG turn "
+            "with reasoning headroom; raise for long-document chat."
         ),
     ),
     "flash_attention": SettingDef(
