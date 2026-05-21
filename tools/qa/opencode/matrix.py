@@ -141,7 +141,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S2 multi-tool turn",
         prompt=(
-            "search the indexed docs about the dispatch layer with lilbee_search, "
+            "use lilbee_search to find information about the dispatch layer, "
             "then quote the named class that resolves the model"
         ),
         expected=("lilbee_search", "KnownModelCache"),
@@ -151,7 +151,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S3 streaming visible",
         prompt=(
-            "search the indexed docs about tool extraction with lilbee_search, "
+            "use lilbee_search to find information about tool extraction, "
             "then describe the parsing library and schema location"
         ),
         expected=("recursive_parse", "schemas"),

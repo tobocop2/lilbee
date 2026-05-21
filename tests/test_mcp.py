@@ -143,10 +143,22 @@ class TestSearch:
         search("q", top_k=3, scope="both")
         mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
 
-    def test_invalid_scope_returns_error(self, mock_svc):
-        result = search("q", top_k=3, scope="bogus")
-        assert "error" in result
-        mock_svc.searcher.search.assert_not_called()
+    def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
+        """Smaller models echo prose like 'indexed docs' back as scope; we
+        warn and run the search against the default scope instead of
+        hard-erroring, so the model's intent ('do a search') still resolves.
+        """
+        import logging
+
+        mock_svc.searcher.search.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
+            result = search("q", top_k=3, scope="bogus")
+        assert result == []
+        mock_svc.searcher.search.assert_called_once()
+        # chunk_type=None means "both" -> no filter at the data layer.
+        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        assert call_kwargs["chunk_type"] is None
+        assert any("unknown scope" in record.message for record in caplog.records)
 
     def test_filters_irrelevant_results(self, mock_svc):
         """Results with distance > max_distance are excluded."""

@@ -83,8 +83,12 @@ def search(
         return _error("query must not be empty")
     try:
         chunk_type = scope_to_chunk_type(scope)
-    except ValueError as exc:
-        return _error(str(exc))
+    except ValueError:
+        # Smaller models routinely echo prose like "indexed docs" or "all"
+        # back as the scope value. Treat unrecognised scopes as the default
+        # "both" rather than a hard failure so the request still does work.
+        log.warning("lilbee_search: unknown scope %r, falling back to %r", scope, SearchScope.BOTH)
+        chunk_type = scope_to_chunk_type(SearchScope.BOTH.value)
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
         results = get_services().searcher.search(
