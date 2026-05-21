@@ -201,7 +201,7 @@ def test_llama3_extracts_python_tagged_tool_call() -> None:
 
 
 def test_llama3_extracts_bare_json_tool_call() -> None:
-    """OpenAI-style clients prompt llama-3 without the python_tag hint, so the model emits bare JSON."""
+    """Llama-3 prompted via OpenAI 'tools' parameter emits bare JSON, not <|python_tag|>."""
     text = '{"name": "search", "arguments": {"q": "x"}}'
     parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
     assert len(parsed.tool_calls) == 1

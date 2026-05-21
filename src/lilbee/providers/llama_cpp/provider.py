@@ -844,6 +844,7 @@ def load_llama(
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
+        _apply_chat_format_override(kwargs, model_path)
 
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
@@ -889,6 +890,10 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at
     the same path invalidates automatically because its mtime changes.
     """
+    from lilbee.providers.llama_cpp.chat_format_override import (
+        resolve_chat_format_override,
+    )
+
     try:
         meta = read_gguf_metadata(Path(path_str))
     except (OSError, ValueError):
@@ -896,6 +901,11 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
         return False
     if not isinstance(meta, dict):
         return False
+    # A chat_format override means lilbee will replace the embedded template
+    # with a llama-cpp preset that does iterate tools; treat such a model as
+    # tool-capable even if its bundled template was stripped.
+    if resolve_chat_format_override(meta) is not None:
+        return True
     template = meta.get("chat_template")
     if not isinstance(template, str):
         return False
@@ -1010,6 +1020,27 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
         return
     kwargs["type_k"] = ggml_type
     kwargs["type_v"] = ggml_type
+
+
+def _apply_chat_format_override(kwargs: dict[str, Any], model_path: Path) -> None:
+    """Swap the GGUF's embedded chat template for a known-good llama-cpp preset.
+
+    Community quanters routinely drop the ``{% if tools %}`` blocks from the
+    embedded template; without this override lilbee can only do tool calling
+    on Qwen / Gemma-4 etc. quants whose template survived intact. The
+    override resolver consults GGUF ``general.name`` (stable across
+    quantizers) and returns a chat_format preset only for models whose
+    output format matches one of lilbee's response schemas.
+    """
+    from lilbee.providers.llama_cpp.chat_format_override import (
+        resolve_chat_format_override,
+    )
+
+    meta = safe_read_gguf_metadata(model_path)
+    override = resolve_chat_format_override(meta)
+    if override is not None:
+        kwargs["chat_format"] = override
+        log.info("Chat format override for %s: %s", model_path.name, override)
 
 
 def _ggml_type_map() -> dict[KvCacheType, Any] | None:
