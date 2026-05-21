@@ -1487,9 +1487,10 @@ class TestToolsSchemaSize:
 
     async def test_default_tools_schema_under_budget(self) -> None:
         """Default schema (wiki off, crawler off unless the extra is installed)
-        must stay under 7 KB so small-context models keep room for the user's
-        actual content. _strip_schema_noise removes auto-generated title
-        fields and dedents descriptions, hitting ~5.7 KB today.
+        must stay under 6 KB so small-context (16K) chat models keep room
+        for the user's actual content. _strip_schema_noise removes title /
+        default / null-arm-anyOf / additionalProperties=true noise, hitting
+        ~5.2 KB today.
         """
         import json as _json
 
@@ -1501,7 +1502,7 @@ class TestToolsSchemaSize:
             for t in tools
         ]
         total_bytes = len(_json.dumps(payload))
-        ceiling = 7_000
+        ceiling = 6_000
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
             f"{ceiling}. Each MCP tool's docstring becomes the schema "
@@ -1521,4 +1522,54 @@ class TestToolsSchemaSize:
                 if isinstance(pdef, dict):
                     assert "title" not in pdef, (
                         f"{t.name}.{pname}: per-property title leaked into schema"
+                    )
+
+    async def test_no_default_value_noise_in_input_schema(self) -> None:
+        """The model picks tools from name + description; ``default`` values
+        on properties are server-side trivia that cost tokens at every dispatch.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "default" not in pdef, (
+                        f"{t.name}.{pname}: default leaked into schema; "
+                        "remove via _strip_property_noise"
+                    )
+
+    async def test_nullable_anyof_collapsed_in_input_schema(self) -> None:
+        """``T | None`` should serialize as ``{type: T}``, not a two-arm
+        ``anyOf`` with a null branch the model gains nothing from.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    arms = pdef.get("anyOf")
+                    if isinstance(arms, list):
+                        null_arms = [
+                            a for a in arms if isinstance(a, dict) and a.get("type") == "null"
+                        ]
+                        assert not null_arms, (
+                            f"{t.name}.{pname}: nullable anyOf branch leaked "
+                            "into schema; collapse via _strip_property_noise"
+                        )
+
+    async def test_no_redundant_additional_properties_true(self) -> None:
+        """``additionalProperties: true`` is JSON Schema's default; serializing
+        it explicitly is bytes for nothing.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert pdef.get("additionalProperties") is not True, (
+                        f"{t.name}.{pname}: additionalProperties=true leaked "
+                        "into schema; remove via _strip_property_noise"
                     )
