@@ -29,7 +29,7 @@ Point it at your files, notes, and code and ask questions in plain English; ever
 
 It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
-> **Tutorial reel:** every demo on this page (and the extras) lives in the [**tutorial reel**](docs/tutorial-reel.md) as embedded videos instead of looping GIFs, with long-form captions explaining what's happening on screen.
+> **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html).
 
 > ## ⚠️ Beta software
 >
@@ -40,7 +40,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 ---
 
 - [Quick start](#quick-start)
-- [Tutorial reel](docs/tutorial-reel.md) (long-form videos)
+- [Tutorial reel](https://lilbee.sh/tutorial.html) (long-form videos)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
 - [What you can do with it](#what-you-can-do-with-it)
@@ -169,7 +169,7 @@ Either way your files and the index never leave the machine; only the queries an
 
 ![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
 
-Every GIF on this page (plus the extras that don't fit here) is also in the [**tutorial reel**](docs/tutorial-reel.md) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
+Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## Hardware requirements
 
@@ -275,7 +275,7 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 ![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
-Every GIF on this page (plus the extras) lives in the [tutorial reel](docs/tutorial-reel.md) as a video with a longer caption.
+Every GIF on this page (plus the extras) is at [lilbee.sh/tutorial.html](https://lilbee.sh/tutorial.html) as a video with a longer caption.
 
 ## HTTP Server
 

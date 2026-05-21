@@ -1,9 +1,8 @@
-# Tutorial reel
+# The full reel
 
-Every GIF in the [README](../README.md) (plus the extras that don't fit there) as
-an embedded video, with long-form captions. Same demos as the
-[lilbee.sh/](https://lilbee.sh/) reel; the captions here are tutorial-shaped
-(what you're seeing, why it matters) rather than the website's one-liners.
+Same demos as on [lilbee.sh/](https://lilbee.sh/),
+with the captions long-form and a handful of extras that don't fit in the site's
+tab list.
 
 The nine that match the site reel, in order:
 
@@ -24,19 +23,13 @@ Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen agai
 First-launch wizard. Pick a chat model and an embedding model from the curated list;
 both download in parallel and you can keep working while they pull.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" type="video/mp4">
-  first-run wizard
-</video>
+![first-run wizard](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.gif)
 
 ## TUI tour
 
 A quick sweep through every screen.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.mp4" type="video/mp4">
-  tour
-</video>
+![tour](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
 
 ## Chat with cited answers
 
@@ -44,30 +37,21 @@ Ask the Crown Victoria owner's manual; every answer points back to the page. Inl
 `[N]` markers are clickable in mouse-supporting terminals to open a source preview
 at the exact passage.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4" type="video/mp4">
-  chat with cited answers
-</video>
+![chat with cited answers](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
 ## Add files
 
 `/add <path>` copies the file into your library and embeds it. Switching to the Task
 Center mid-ingest shows the live progress bar; once it lands you can ask away.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.mp4" type="video/mp4">
-  add and task center
-</video>
+![add and task center](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
 ## Crawl a URL
 
 `/crawl <url>` fetches a page (or a small site) into your library, then you can ask
 questions against it with the same cited-answer flow.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4" type="video/mp4">
-  crawl Wikipedia + cited answer
-</video>
+![crawl Wikipedia + cited answer](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
 
 ## Model catalog
 
@@ -75,35 +59,14 @@ Browse models from Hugging Face Hub. Cycle the inner tabs (Discover / Chat / Emb
 Vision / Rerank / Library), toggle grid / list, scroll for more, search the picks,
 open model info, pull a tiny model live.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4" type="video/mp4">
-  model catalog
-</video>
-
-## Unsupported architectures, surfaced before the download
-
-Hugging Face has thousands of GGUFs but the bundled llama.cpp build only supports a
-subset of architectures. The catalog reads `general.architecture` from the Hub for
-every row and tags ones that the runtime can't load with an `unsupported` pill on
-the card and an italic tag in the list view. The clip searches HF Hub for
-`gemma-4` (an architecture upstream hasn't shipped yet) and shows the rows
-surfacing with the pill in both grid and list view. Trying to install one opens a
-confirm dialog ("pull anyway?") so a heavy download never starts by accident.
-
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.mp4" type="video/mp4">
-  unsupported architectures
-</video>
+![model catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
 ## Settings
 
 Tabbed editor for every knob: Models, Ingest, Generation, Retrieval, Display,
 Crawling, API-Keys, System.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4" type="video/mp4">
-  settings
-</video>
+![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
 
 ## Agent: code (lilbee talking to lilbee)
 
@@ -111,35 +74,14 @@ The headline grounding demo. An agent indexes lilbee's own source through lilbee
 MCP server, then answers questions about how lilbee works, citing
 `src/lilbee/.../file.py:LINE` for every claim.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4" type="video/mp4">
-  an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations
-</video>
-
-## Agent fine-tunes lilbee mid-conversation
-
-A two-turn variant of the above. Turn 1 asks how `lilbee_search` works end to end;
-the agent at the OLD retrieval defaults answers with a structured ten-step outline
-that names real lilbee methods but doesn't pull in source. Turn 2 asks for the
-actual code: the agent fine-tunes lilbee's retrieval knobs through MCP, re-runs
-the search against the richer pool, and answers with full function bodies pasted
-inline, each followed by a `file.py:L<start>-L<end>` citation. The whole
-fine-tune loop runs end-to-end on a local 8B model.
-
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.mp4" type="video/mp4">
-  agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations
-</video>
+![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
 ## Agent: PDF
 
 The agent finds `cv-manual.pdf` in the project, delegates the index to
 `lilbee-worker`, then `lilbee_search`-es and returns a page-cited answer.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4" type="video/mp4">
-  mcp + manual
-</video>
+![mcp + manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif)
 
 ## Extras
 
@@ -151,10 +93,7 @@ The smaller agent-over-MCP demo. An MCP-aware coding agent indexes a Godot 4
 pathfinding subset in a few seconds, then `lilbee_search`-es for `AStarGrid2D` and
 answers method-by-method against the local files.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4" type="video/mp4">
-  an MCP-driven coding agent indexes a small local godot subset and answers with cited methods
-</video>
+![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
 ### Agent: Godot codegen against the full class reference
 
@@ -167,20 +106,14 @@ procedural level generator. Every API call is backed by a
 for the side-by-side against a no-RAG baseline (4 hallucinated APIs without
 lilbee, 0 with).
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" type="video/mp4">
-  mcp + godot class reference
-</video>
+![mcp + godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
 ### Command surface
 
 `Ctrl+P` opens the Textual command palette; `?` toggles the keybinding cheat
 sheet; `/help` opens the searchable slash-command catalog.
 
-<video controls muted playsinline width="100%" preload="metadata">
-  <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.mp4" type="video/mp4">
-  command palette + help + slash catalog
-</video>
+![command palette + help + slash catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
 
 ## Agent setup
 
