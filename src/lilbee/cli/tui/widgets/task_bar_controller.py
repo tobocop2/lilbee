@@ -421,31 +421,48 @@ class TaskBarController:
                 break
 
     def start_download(
-        self, model: CatalogModel, *, on_success: Callable[[], None] | None = None
+        self,
+        model: CatalogModel,
+        *,
+        allow_unsupported: bool = False,
+        on_success: Callable[[], None] | None = None,
     ) -> str:
         """Enqueue a download; ``on_success`` runs on the worker thread once the file is on disk."""
         return self.start_task(
             model.display_name,
             TaskType.DOWNLOAD,
-            lambda reporter: _download_target(reporter, model),
+            lambda reporter: _download_target(reporter, model, allow_unsupported=allow_unsupported),
             on_success=on_success,
         )
 
 
-def _download_target(reporter: ProgressReporter, model: CatalogModel) -> None:
+def _download_target(
+    reporter: ProgressReporter, model: CatalogModel, *, allow_unsupported: bool = False
+) -> None:
     """``start_task`` target for a HuggingFace model download.
 
-    Translates ``PermissionError`` into the gated-repo friendly message so
-    every call site (wizard, catalog, chat) gets consistent error UX.
+    Translates ``PermissionError`` into the gated-repo friendly message and
+    ``UnsupportedArchError`` into a user-facing arch-mismatch message so
+    every call site gets consistent error UX.
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
+    from lilbee.catalog.compat import UnsupportedArchError
     from lilbee.catalog.types import ModelSource
 
     def _on_progress(p: DownloadProgress) -> None:
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
     try:
-        pull_model_data(model.ref, ModelSource.NATIVE, on_update=_on_progress)
+        pull_model_data(
+            model.ref,
+            ModelSource.NATIVE,
+            on_update=_on_progress,
+            allow_unsupported=allow_unsupported,
+        )
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
+    except UnsupportedArchError as exc:
+        raise RuntimeError(
+            f"Architecture {exc.architecture!r} not supported by this lilbee build."
+        ) from exc

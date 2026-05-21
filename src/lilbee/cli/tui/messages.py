@@ -297,6 +297,25 @@ SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"
 SETUP_RETURN_HINT = "Your existing models are ready  ·  Esc to return"
 SETUP_CARD_HINT = "↵ Enter to install"
 INSTALLED_CARD_HINT = "D / ⌫ to delete"
+
+# Architecture compatibility pill labels (catalog row).
+# SUPPORTED renders nothing to keep the row visually quiet for the common case.
+COMPAT_PILL_UNSUPPORTED = "unsupported"
+COMPAT_PILL_UNKNOWN = "?"
+
+# Architecture compatibility copy for the catalog detail view + confirm modal.
+COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your llama.cpp build."
+COMPAT_DETAIL_SENTENCE_UNSUPPORTED = (
+    "Architecture {arch} is not in the supported set. Pull may fail at load."
+)
+COMPAT_DETAIL_SENTENCE_UNKNOWN = (
+    "Architecture unknown until download. Pull will probe the header first."
+)
+COMPAT_MODAL_TITLE = "Architecture not supported"
+COMPAT_MODAL_BODY = (
+    "This model uses architecture {arch}. Your lilbee build doesn't support it, "
+    "so loading after download will probably fail. Pull anyway?"
+)
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 

@@ -58,3 +58,11 @@ class CatalogSort(StrEnum):
     NAME = "name"
     SIZE_ASC = "size_asc"
     SIZE_DESC = "size_desc"
+
+
+class ModelCompat(StrEnum):
+    """Whether the bundled llama.cpp runtime supports a model's architecture."""
+
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"

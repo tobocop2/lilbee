@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 
@@ -104,6 +104,8 @@ class CatalogEntryData(BaseModel):
     task: ModelTask
     featured: bool
     recommended: bool
+    architecture: str = ""
+    compat: ModelCompat = ModelCompat.UNKNOWN
 
     @classmethod
     def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
@@ -118,6 +120,8 @@ class CatalogEntryData(BaseModel):
             task=entry.task,
             featured=entry.featured,
             recommended=entry.recommended,
+            architecture=entry.architecture,
+            compat=entry.compat,
         )
 
 
@@ -299,6 +303,7 @@ def pull_model_data(
     source: ModelSource,
     *,
     on_update: Callable[[DownloadProgress], None] | None = None,
+    allow_unsupported: bool = False,
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
 
@@ -312,7 +317,13 @@ def pull_model_data(
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
     dict_cb, bytes_cb = _build_pull_callbacks(on_update)
-    path = manager.pull(ref, source, on_progress=dict_cb, on_bytes=bytes_cb)
+    path = manager.pull(
+        ref,
+        source,
+        on_progress=dict_cb,
+        on_bytes=bytes_cb,
+        allow_unsupported=allow_unsupported,
+    )
     return PullResult(
         model=ref,
         source=source.value,

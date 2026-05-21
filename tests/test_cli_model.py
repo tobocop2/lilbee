@@ -47,6 +47,8 @@ def _remote(name: str, task: str, parameter_size: str = "8B") -> MagicMock:
 
 
 def _catalog_model(*, hf_repo: str = "Qwen/Qwen3-0.6B-GGUF", task: str = "chat") -> MagicMock:
+    from lilbee.catalog.types import ModelCompat
+
     entry = MagicMock()
     entry.ref = hf_repo
     entry.display_name = "Qwen3 0.6B"
@@ -58,6 +60,8 @@ def _catalog_model(*, hf_repo: str = "Qwen/Qwen3-0.6B-GGUF", task: str = "chat")
     entry.task = task
     entry.featured = True
     entry.recommended = True
+    entry.architecture = ""
+    entry.compat = ModelCompat.UNKNOWN
     return entry
 
 
@@ -103,7 +107,7 @@ class _FakeManager:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_progress=None, on_bytes=None):
+    def pull(self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
         self.pull_calls.append((model, source))
         if on_bytes is not None:
             on_bytes(50, 100)
@@ -397,7 +401,9 @@ class TestPullModelData:
         events = []
 
         class _Litellm(_FakeManager):
-            def pull(self, model, source, *, on_progress=None, on_bytes=None):
+            def pull(
+                self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
+            ):
                 self.pull_calls.append((model, source))
                 if on_progress is not None:
                     on_progress({"status": "pulling", "completed": 25, "total": 100})

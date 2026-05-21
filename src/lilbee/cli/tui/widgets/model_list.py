@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
+from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     CatalogRowKind,
@@ -27,6 +28,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 from lilbee.modelhub.models import FEATURED_STAR
+from lilbee.runtime.hardware import FitChip, FitLevel
 
 _CSS_FILE = Path(__file__).parent / "model_list.tcss"
 
@@ -156,7 +158,31 @@ def _render_local_headline(row: LocalCatalogRow) -> list[Content]:
     ]
     if row.installed:
         parts.append(Content.styled("    installed", "$success italic"))
+    parts.extend(_fit_tag(row.fit))
+    parts.extend(_compat_tag(row.compat))
     return parts
+
+
+def _fit_tag(fit: FitChip | None) -> list[Content]:
+    """List-style fit indicator (italic colored text), matching the grid card chip set."""
+    if fit is None:
+        return []
+    if fit.level is FitLevel.FITS:
+        return [Content.styled("    fits", "$success italic")]
+    if fit.level is FitLevel.TIGHT:
+        return [Content.styled("    tight", "$warning italic")]
+    return [Content.styled("    won't run", "$error italic")]
+
+
+def _compat_tag(compat: ModelCompat) -> list[Content]:
+    """List-style compat indicator. Empty for SUPPORTED to keep the row visually quiet."""
+    from lilbee.cli.tui import messages as msg
+
+    if compat is ModelCompat.SUPPORTED:
+        return []
+    if compat is ModelCompat.UNSUPPORTED:
+        return [Content.styled(f"    {msg.COMPAT_PILL_UNSUPPORTED}", "$warning italic")]
+    return [Content.styled(f"    {msg.COMPAT_PILL_UNKNOWN}", "$text-muted italic")]
 
 
 def _render_local_meta(row: LocalCatalogRow) -> list[Content]:
