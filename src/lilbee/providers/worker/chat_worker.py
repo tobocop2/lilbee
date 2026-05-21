@@ -194,10 +194,22 @@ class _ChatSession:
             self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
             metadata = safe_read_gguf_metadata(target_path) or {}
-            family = detect_family(
-                metadata.get("chat_template", ""),
-                architecture=metadata.get("architecture"),
+            # When the loader swapped in a chat_format preset, lock the
+            # response parser to the matching family so output extraction
+            # follows the preset's wire shape instead of the (stripped)
+            # embedded template's.
+            from lilbee.providers.llama_cpp.chat_format_override import (
+                resolve_override_family,
             )
+
+            override_family = resolve_override_family(metadata)
+            if override_family is not None:
+                family = override_family
+            else:
+                family = detect_family(
+                    metadata.get("chat_template", ""),
+                    architecture=metadata.get("architecture"),
+                )
             self._response_schema = get_schemas().get(family)
         return self._llm
 
