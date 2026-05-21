@@ -50,6 +50,7 @@ _LILBEE_PROVIDER_ID = "lilbee"
 
 _RAW_MARKER_FORBIDDEN = ("<tool_call>", "[TOOL_CALLS]", "functools[", "Error:", "Traceback")
 _SUSPENDED_SUFFIX = ".qa-suspended"
+_CHAT_CTX_TARGET = 32768  # opencode's default system prompt is ~14K tokens, plus tools schema ~10K
 
 
 def _models_manifests_dir() -> Path:
@@ -241,7 +242,9 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     config_dir.mkdir(exist_ok=True)
     embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
     (config_dir / "config.toml").write_text(
-        f'chat_model = "{model_ref}"\nembedding_model = "{embed_ref}"\n'
+        f'chat_model = "{model_ref}"\n'
+        f'embedding_model = "{embed_ref}"\n'
+        f"chat_n_ctx_target = {_CHAT_CTX_TARGET}\n"
     )
     return workspace
 
