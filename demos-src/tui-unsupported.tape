@@ -2,7 +2,7 @@ Source "_shared.tape"
 Output "_out/tui-unsupported.gif"
 Output "_out/tui-unsupported.mp4"
 
-# Architecture-compatibility demo: search HF Hub for "gemma-4" (an arch
+# Architecture-compatibility demo: search HF Hub for "deepseek-v4" (an arch
 # that isn't in the bundled llama.cpp build's MODEL_ARCH_NAMES) and
 # show the rows surfacing with the `unsupported` pill in both grid
 # and list view. Trying to pull one opens the ConfirmDialog gate.
@@ -12,10 +12,10 @@ Env LILBEE_THEME "rose-pine"
 Env LILBEE_SKIP_TOML_CONFIG "1"
 Env LILBEE_NO_SPLASH "1"
 
-Type "uv run --directory /Users/tobias/projects/lilbee/.worktrees/feat-model-arch-compat lilbee"
+Type "lilbee"
 Sleep 300ms
 Enter
-Sleep 4500ms
+Sleep 2500ms
 
 Escape
 Sleep 1s
@@ -28,20 +28,20 @@ Sleep 1500ms
 Type "2"
 Sleep 1500ms
 
-# Open the filter, type "gemma-4", trigger the HF round-trip.
+# Open the filter, type "deepseek-v4", trigger the HF round-trip.
 Type "/"
 Sleep 400ms
-Type "gemma-4"
+Type "deepseek-v4"
 Sleep 1500ms
 Enter
 Sleep 12s
 
-# Grid view shows the gemma-4 rows, each with `unsupported` on the
+# Grid view shows the deepseek-v4 rows, each with `unsupported` on the
 # secondary pill row.
 Screenshot "_out/tui-unsupported-grid.png"
 
 # Switch to list view -- secondary pills become italic tags after the
-# row name; "unsupported" still surfaces on every gemma-4 row.
+# row name; "unsupported" still surfaces on every deepseek-v4 row.
 Escape
 Sleep 400ms
 Type "v"
