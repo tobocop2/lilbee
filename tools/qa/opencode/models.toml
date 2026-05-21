@@ -1,0 +1,39 @@
+# QA matrix model list. Local-only; not pulled in by CI.
+#
+# Each entry is one cell. The smoke tier (S1+S2+S3) runs on every model.
+# Set ``skip = true`` to keep an entry around but skip it on the next run.
+
+[[model]]
+family = "qwen3"
+ref = "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf"
+size_gb = 2.5
+
+[[model]]
+family = "qwen3-coder"
+ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+size_gb = 17.0
+
+[[model]]
+family = "mistral"
+ref = "bartowski/Mistral-7B-Instruct-v0.3-GGUF/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
+size_gb = 4.4
+
+[[model]]
+family = "llama3"
+ref = "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+size_gb = 4.9
+
+[[model]]
+family = "hermes"
+ref = "bartowski/Hermes-3-Llama-3.1-8B-GGUF/Hermes-3-Llama-3.1-8B-Q4_K_M.gguf"
+size_gb = 4.9
+
+[[model]]
+family = "phi4mini"
+ref = "bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
+size_gb = 2.4
+
+[[model]]
+family = "gemma4"
+ref = "ggml-org/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+size_gb = 5.3
