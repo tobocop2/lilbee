@@ -12,6 +12,7 @@ size_gb = 2.5
 family = "qwen3-coder"
 ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 size_gb = 17.0
+skip = true  # 17 GB sparse MoE; opt in via removing this flag
 
 [[model]]
 family = "mistral"
@@ -34,6 +35,7 @@ ref = "bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruc
 size_gb = 2.4
 
 [[model]]
-family = "gemma4"
-ref = "ggml-org/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
-size_gb = 5.3
+family = "gemma2"
+ref = "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q4_K_M.gguf"
+size_gb = 1.6
+skip = true  # gemma-2 chat template is not tool-aware; lilbee correctly rejects tool requests
