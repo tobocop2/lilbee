@@ -9,12 +9,6 @@ from typing import Any
 from gguf import GGUFReader, GGUFValueType
 
 from lilbee.providers.base import ProviderError
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
-from lilbee.providers.llama_cpp.log_dispatch import (
-    import_llama_cpp,
-    install_llama_log_handler,
-    suppress_native_stderr,
-)
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +57,15 @@ def train_ctx_from_meta(
 
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read metadata from a GGUF file's headers via llama-cpp-python.
+    """Read metadata from a GGUF file's headers via the gguf-package reader.
+
+    Reading via ``gguf.GGUFReader`` (pure-Python binary parser) instead of
+    ``Llama(vocab_only=True)`` keeps the metadata pass robust against GGUFs
+    whose embedded Jinja chat template uses tags llama-cpp-python's bundled
+    Jinja can't compile (e.g. SmolLM3's ``{% generation %}``). Loading the
+    actual model would still trip the same parse error, but the metadata is
+    exactly what we need to consult before deciding whether to override the
+    chat template at load time.
 
     Returns a dict with keys like ``architecture``, ``context_length``,
     ``embedding_length``, ``chat_template``, ``file_type``, plus the
@@ -71,50 +73,34 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
     against host memory.
     """
-    Llama = import_llama_cpp().Llama  # noqa: N806
+    from gguf import GGUFReader
 
-    # Fresh abort flag: a prior request_abort() must not latch and break
-    # this metadata read, which is on the path of every model swap.
-    clear_abort()
-    install_llama_log_handler()
-    kwargs: dict[str, Any] = {
-        "model_path": str(model_path),
-        "vocab_only": True,
-        "verbose": False,
-        "n_gpu_layers": 0,
-    }
-    kwargs.setdefault("abort_callback", abort_callback)
-    llm = suppress_native_stderr(Llama, **kwargs)
-    try:
-        raw = llm.metadata or {}
-        result: dict[str, str] = {}
-        if "general.architecture" in raw:
-            result["architecture"] = str(raw["general.architecture"])
-        arch = raw.get("general.architecture", "llama")
-        ctx_key = f"{arch}.context_length"
-        if ctx_key in raw:
-            result["context_length"] = str(raw[ctx_key])
-        emb_key = f"{arch}.embedding_length"
-        if emb_key in raw:
-            result["embedding_length"] = str(raw[emb_key])
-        for arch_key, out_key in (
-            (f"{arch}.block_count", "block_count"),
-            (f"{arch}.attention.head_count_kv", "head_count_kv"),
-            (f"{arch}.attention.head_count", "head_count"),
-            (f"{arch}.attention.key_length", "key_length"),
-            (f"{arch}.attention.value_length", "value_length"),
-        ):
-            if arch_key in raw:
-                result[out_key] = str(raw[arch_key])
-        if "tokenizer.chat_template" in raw:
-            result["chat_template"] = str(raw["tokenizer.chat_template"])
-        if "general.file_type" in raw:
-            result["file_type"] = str(raw["general.file_type"])
-        if "general.name" in raw:
-            result["name"] = str(raw["general.name"])
-        return result or None
-    finally:
-        llm.close()
+    reader = GGUFReader(str(model_path))
+
+    def field_value(name: str) -> Any:
+        field = reader.fields.get(name)
+        return field.contents() if field is not None else None
+
+    arch = field_value("general.architecture") or "llama"
+    fields_we_want: tuple[tuple[str, str], ...] = (
+        ("general.architecture", "architecture"),
+        ("general.file_type", "file_type"),
+        ("general.name", "name"),
+        ("tokenizer.chat_template", "chat_template"),
+        (f"{arch}.context_length", "context_length"),
+        (f"{arch}.embedding_length", "embedding_length"),
+        (f"{arch}.block_count", "block_count"),
+        (f"{arch}.attention.head_count_kv", "head_count_kv"),
+        (f"{arch}.attention.head_count", "head_count"),
+        (f"{arch}.attention.key_length", "key_length"),
+        (f"{arch}.attention.value_length", "value_length"),
+    )
+    result: dict[str, str] = {}
+    for gguf_key, out_key in fields_we_want:
+        value = field_value(gguf_key)
+        if value is not None:
+            result[out_key] = str(value)
+    return result or None
 
 
 def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
