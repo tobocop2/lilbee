@@ -40,15 +40,12 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         config.load()
     server.lifespan = config.lifespan_class(config)
 
+    # `server.servers` is set inside `startup()`. The finally below must skip
+    # `shutdown()` when startup never ran: uvicorn dereferences `self.servers`
+    # there and the resulting AttributeError would mask the original failure.
     started = False
     parent_watcher: asyncio.Task[None] | None = None
     try:
-        # `server.servers` is only assigned inside `startup()`. If startup
-        # raises (e.g. the FastAPI lifespan handler explodes because the
-        # configured data-dir is missing or unreadable), control jumps to the
-        # finally below, and we must NOT call `server.shutdown()` there.
-        # uvicorn dereferences `self.servers` in shutdown and would crash with
-        # AttributeError, masking the real error the user needs to see.
         await server.startup()
         started = True
 
@@ -73,9 +70,8 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             parent_watcher.cancel()
         port_path.unlink(missing_ok=True)
         if started:
-            # uvicorn occasionally dereferences `self.servers` during shutdown
-            # even after partial startup; swallow so the original exception
-            # surfaces unchanged.
+            # Suppress AttributeError from a partial uvicorn bring-up so any
+            # original exception from main_loop reaches the caller intact.
             with contextlib.suppress(AttributeError):
                 await server.shutdown()
 
