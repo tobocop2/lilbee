@@ -50,7 +50,8 @@ def main() -> None:
         lines.append("")
     p.write_text("\n".join(lines))
 
-    print(f"reordered; {len([m for m in data['model'] if not m.get('skip')])} active cells in run order:")
+    active = [m for m in data["model"] if not m.get("skip")]
+    print(f"reordered; {len(active)} active cells in run order:")
     for entry in data["model"]:
         flag = "  [SKIP]" if entry.get("skip") else ""
         print(f"  {entry['family']:<15} {entry['size_gb']:>5}GB{flag}")
