@@ -48,6 +48,7 @@ def _parse_arch(blob: bytes) -> str:
     with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
         f.write(bytes(patched))
         tmp = Path(f.name)
+    reader: GGUFReader | None = None
     try:
         reader = GGUFReader(str(tmp))
         field = reader.fields.get(GGUF_ARCH_KEY)
@@ -60,4 +61,8 @@ def _parse_arch(blob: bytes) -> str:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
+        # ``GGUFReader`` mmaps the file via numpy; on Windows the handle blocks
+        # unlink unless the memmap is released before the unlink call.
+        if reader is not None and hasattr(reader, "data"):
+            del reader.data
         tmp.unlink(missing_ok=True)

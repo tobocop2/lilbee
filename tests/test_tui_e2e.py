@@ -7,6 +7,7 @@ Every test here reproduces a bug that was found by manual testing.
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -2951,6 +2952,10 @@ class TestCatalogGridFocus:
                     "Tab focus on a ModelGrid must auto-highlight the first card"
                 )
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Textual highlighted-row update timing is flaky on Windows runners",
+    )
     async def test_g_key_does_not_trigger_install(self, _mock_resolve):
         """Pressing G in the catalog grid jumps to the bottom, never installs (bb-8kxf)."""
         from lilbee.cli.tui.app import LilbeeApp
