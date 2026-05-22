@@ -100,7 +100,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 ### Opencode integration (coming)
 
-First-class lilbee support for [opencode](https://opencode.ai) is coming in [#267](https://github.com/tobocop2/lilbee/pull/267). The demo below shows a small local model (Qwen) walked through an explicit instruction: when the first answer is thin, fine-tune retrieval mid-conversation, then re-answer with full function bodies, file:line included. A more capable model would do the same from a generic prompt like "fill this in." The point of the demo is that even small models can improve their own search results when you teach them how. Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach yours.
+First-class lilbee support for [opencode](https://opencode.ai) is coming in [#267](https://github.com/tobocop2/lilbee/pull/267). The demo below shows a small local model (Qwen) walked through an explicit instruction: when the first answer is thin, fine-tune retrieval mid-conversation, then re-answer with full function bodies, file:line included. A more capable model would do the same from a higher-level prompt like "improve your search results." The point of the demo is that even small models can improve their own search results when you teach them how. Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach yours.
 
 ![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
