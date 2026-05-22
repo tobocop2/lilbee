@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Install a lilbee wheel and run --version, --help, and --json self-check.
+# Install a lilbee wheel and verify --version and --help on the installed CLI.
 # Usage: bash smoke_wheel_full.sh <wheel-glob>
 
 set -euxo pipefail
 
 wheel_glob="${1:?wheel glob required (e.g. 'dist/*.whl')}"
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Pre-seed an old typer to verify the wheel's >=0.12 pin actually upgrades it.
 pip install 'typer==0.9.4'
@@ -43,12 +42,3 @@ lilbee --help >/dev/null 2>"$stderr_file"
 if grep -qE "No such option|Type not yet supported|RuntimeError" "$stderr_file"; then
   cat "$stderr_file"; exit 1
 fi
-
-export HF_HUB_DISABLE_PROGRESS_BARS=1
-out_file=$(mktemp)
-rc=0
-lilbee --json self-check > "$out_file" 2>&1 || rc=$?
-echo "=== self-check (exit=${rc}) ==="
-cat "$out_file"
-[ "${rc}" = "0" ]
-python "${script_dir}/parse_self_check.py" "$out_file"

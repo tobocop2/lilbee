@@ -242,7 +242,6 @@ lilbee --json topics "auth"                    # concept-graph view of a query
 lilbee --json model list                       # installed models
 lilbee --json model show <ref>                 # catalog + installed metadata for a model
 lilbee --json version
-lilbee --json self-check                       # runtime + model self-check
 ```
 
 **Write (LLM calls or long ops):**

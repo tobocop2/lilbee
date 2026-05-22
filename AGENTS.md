@@ -189,7 +189,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
 
-Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras (`cli/commands/setup.py`'s `self_check_extras_cmd`) likewise dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
+Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
 
 Other rules:
 

@@ -14,7 +14,7 @@ behavior, so a developer can reproduce a CI build off-runner.
   macOS where Metal ships with the OS).
 - `install_gpu_runtime.sh` — installs only the runtime loader needed to
   `import llama_cpp` (Vulkan loader, CUDA driver shim). Used by the
-  verify-pypi job and self-check smoke.
+  verify-pypi job.
 - `build_llama_cpp.sh` — runs `pip wheel llama-cpp-python==<version>` from
   source with the right `CMAKE_ARGS` for the requested backend. Output goes
   to `${LLAMA_BUILD_DIR}` (defaults to `/tmp/llama-build`).

@@ -2,9 +2,8 @@
 # Install only the runtime loader needed to import a GPU-built llama_cpp.
 #
 # Used on the verify-pypi runner (which doesn't build anything but does
-# import the published wheel) and on any developer box that wants to
-# `lilbee self-check` against a CPU/GPU wheel without a GPU driver
-# installed.
+# import the published wheel) and on any developer box importing a CPU/GPU
+# wheel without a GPU driver installed.
 #
 # CPU-only headless boxes (cloud servers, containers, bare WSL) will fail
 # to import a Vulkan-built wheel without libvulkan1 present. This script
