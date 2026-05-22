@@ -23,7 +23,7 @@
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total" alt="GitHub release downloads"></a>
 </p>
 
-Point it at your files, notes, and code and ask questions in plain English; every answer links back to the file and line it came from. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key, and an MCP server so any agent that speaks MCP can drive it.
+Point it at your files, notes, and code and ask questions in plain English. Every answer links back to the file and line it came from. Point it at nothing and you've still got a clean local-AI chat with the model catalog wired up, cloud models if you bring an API key, and an MCP server so any agent can drive it.
 
 ![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
@@ -51,6 +51,7 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 - [HTTP Server](#http-server) · [REST API reference](https://lilbee.sh/api/)
 - [Supported formats](#supported-formats)
 - [Experimental](#experimental)
+- [Built on](#built-on)
 
 ---
 
@@ -59,13 +60,11 @@ It's all one program: a full-screen terminal app, a command-line tool, a Model C
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
-- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also *fine-tune lilbee on the fly* via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface — every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
+- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also *fine-tune lilbee on the fly* via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
 
-**Fine-tuning is a first-class capability.** Defaults are sane and balanced for the common cases: chatting with your code, with code documentation, with crawled websites, and with long-form PDFs (manuals, ebooks, research papers). Every retrieval setting is writable — through the TUI Settings screen, `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When the answer feels thin (or noisy), the right knob to move is usually `top_k`, `max_distance`, or `diversity_max_per_source`. The agent integration above lets a coding agent move them for you while you stay in chat.
+Defaults are sane for chatting with code, documentation, crawled sites, and long PDFs. Every retrieval setting is writable from the TUI Settings screen, the `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When answers feel thin or noisy, the usual knobs are `top_k`, `max_distance`, or `diversity_max_per_source`.
 
-CLI commands, the HTTP API, environment variables, and `config.toml` are also there as reference for scripting, headless runs, and custom integrations; you should not need them for everyday use. See the [usage guide](docs/usage.md).
-
-All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR, Docker, Nix, a standalone binary (no Python), CUDA wheels, or from source. Optional extras (`[crawler]`, `[litellm]`, `[graph]`) are there too.
+CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless runs, and custom integrations. See the [usage guide](docs/usage.md).
 
 ## Highlights
 
@@ -73,15 +72,15 @@ All the install options are in [Install](#install) below: pip, uv, Homebrew, AUR
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line.
 - **Indexes anything textual.** PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), and crawled documentation sites.
 - **Models from Hugging Face, inside the app.** Browse the catalog, pull a model, assign it to a role. No external CLI.
-- **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python), so lilbee's local catalog tracks what llama-cpp-python can load and lags Ollama on the newest architectures. For those, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
+- **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python). For brand-new architectures that haven't reached the bundled runtime yet, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
-- **Local by default.** Everything stays on your machine unless you opt into a cloud model, and lilbee flags it when you do.
-- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
-- **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64 (the manylinux build carries a wider CPU baseline). The single-file standalone binary, which folds Python, the model runtime, OCR, the crawler, and the vector store, lands around 253-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps typically ship several hundred megabytes of Electron and runtime before any models load.
+- **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
+- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
+- **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. The single-file standalone binary, which bundles Python, the model runtime, OCR, the crawler, and the vector store, lands around 250-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps that bundle a browser engine for their UI typically ship several hundred MB of runtime before loading any models.
 
 ## Why lilbee
 
-The first evening with a local model is fun. What makes it more than a novelty is grounding: the model needs context from your notes, your files, your code, or it runs out of places to go. lilbee pairs the chat with a real search engine over a set of documents you choose, so a local model can reason over your world and answer with citations you can click back to the source.
+The first evening with a local model is fun. What makes it more than a novelty is grounding: the model needs context from your notes, your files, your code. lilbee pairs the chat with a real search engine over documents you choose, so a local model can reason over your world and answer with citations you can click back to the source.
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
@@ -95,15 +94,15 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
-### Let the agent set up lilbee for you
+### Already using an MCP-aware agent? Hand setup to it.
 
-The fastest path to a useful lilbee install is to hand it to an MCP-aware agent and let it do the setup. `lilbee_catalog_browse` lets the agent see what's available, `lilbee_model_pull` installs picks, and `lilbee_settings_set` wires them into the embedding / reranker / vision roles and tunes the retrieval knobs for the library and question style you actually care about. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
+If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
 
 ### Grounding for AI agents
 
 Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library.
 
-lilbee stays the local part: your files, the search index, and the embeddings never leave your machine. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
+Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
@@ -117,47 +116,36 @@ Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor'
 
 ![/crawl a Wikipedia page, then ask a cited question against it](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
 
-### How it's built
-
-lilbee stands on established open-source projects, all embedded in one process:
-
-- [Kreuzberg] parses documents
-- [LanceDB] is the embedded search layer
-- [tree-sitter] chunks code
-- [llama-cpp][llama-cpp-python] runs models locally
-- [crawl4ai] and [Playwright] crawl the web
-- [Textual] draws the terminal
-
 ### Documents, code, and scanned images
 
-Most retrieval tools throw your files at a PDF extractor and call it done. lilbee splits the work by what's being indexed:
+lilbee splits indexing by what's being read:
 
-- **Prose and structured documents** (90+ formats: PDFs, Office files, ebooks, HTML, and more) go through [Kreuzberg]'s extraction pipeline with heading-aware chunking, so each chunk keeps its section context.
-- **Code** goes through [tree-sitter]'s AST-aware splitter across [150+ languages](https://github.com/Goldziher/tree-sitter-language-pack), so chunks map to real functions, classes, and modules instead of arbitrary line ranges.
-- **Scanned PDFs and photos** go through OCR: Tesseract for plain text, a local GGUF vision model that keeps tables and layout as markdown, or a remote vision model.
+- **Prose and structured documents** (PDFs, Office files, ebooks, HTML, 90+ formats) go through [Kreuzberg] with heading-aware chunking, so each chunk keeps its section context.
+- **Code** goes through [tree-sitter]'s AST-aware splitter across [150+ languages](https://github.com/Goldziher/tree-sitter-language-pack), so chunks map to functions, classes, and modules instead of arbitrary line ranges.
+- **Scanned PDFs and photos** go through OCR: Tesseract for plain text, or a local / remote vision model that keeps tables and layout as markdown.
 
 Retrieval returns things that make sense on their own, not fragments cut through an argument or a function signature.
 
 ### Pick and tune your models
 
-Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, a second-pass re-scorer, how much weight topic relationships carry), edited from the TUI, environment variables, or a project-local config file. Sane defaults out of the box.
+Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
 ### See when a model won't load before you download it
 
-Hugging Face has thousands of GGUFs but the bundled llama.cpp build only supports a subset of architectures; brand-new ones land upstream first and take time to reach the pinned runtime. lilbee reads `general.architecture` from the Hub for every catalog row and tags unsupported ones with an `unsupported` pill on the card and an italic tag in the list view. Trying to install one opens a confirm dialog ("pull anyway?") so you can override when you know better, otherwise pulls are refused before the multi-GB download.
+Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a subset of architectures and brand-new ones take time to reach the pinned runtime. lilbee tags incompatible models in the catalog and refuses the download (with an override confirm), so you don't wait through a multi-GB pull only to hit "unsupported architecture" at load.
 
 ![search HF Hub for deepseek-v4, see the unsupported pill in grid and list view](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.gif)
 
 ### Cloud models, when you want them
 
-lilbee runs entirely on your machine by default. There are two ways to use cloud models when you want to:
+lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
 
-- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add an API key, then point the chat / embedding / vision / rerank role at a cloud model from the same model catalog. The TUI shows a persistent warning whenever a cloud role is active, so it's clear when chunks are leaving the machine.
-- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part: your files, the embeddings, the search index. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets. The Godot demo above is exactly this shape: a cloud-hosted coding agent on top of opencode, with the indexed Godot 4 reference and the search both running locally.
+- **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
+- **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
-Either way your files and the index never leave the machine; only the queries and the snippets the model needs to answer cross the wire when you opt in.
+Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
 
 ## TUI
 
@@ -173,26 +161,25 @@ Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/
 
 ## Hardware requirements
 
-Standalone mode runs entirely on your machine. No cloud required.
+Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+, or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
 
-### Supported platforms
+<details>
+<summary>Full platform and resource breakdown</summary>
 
-| Platform           | Minimum                                                                                                                                                                                                                                                                                                                | Recommended                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| **Linux x86_64**   | A 64-bit Intel or AMD CPU from **2013 or newer**: Intel Core i3/i5/i7 4th-gen (Haswell), Intel Xeon E3-12xx v3 / E5-26xx v3, AMD FX-95xx (Steamroller) or any AMD Zen-based chip. Anything corresponding to the [`x86-64-v3` microarchitecture level](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels). | A modern Intel Core / Xeon / AMD Ryzen / EPYC + an NVIDIA, AMD, or Intel Arc GPU |
-| **macOS arm64**    | Any Apple Silicon Mac (M1 or newer) running macOS 11+                                                                                                                                                                                                                                                                  | M-series Pro / Max / Ultra                                                       |
-| **Windows x86_64** | A 64-bit Intel or AMD CPU from **2013 or newer** (same generations as Linux above), Windows 10/11                                                                                                                                                                                                                      | Modern desktop / workstation CPU + GPU                                           |
-| **Linux ARM64**    | ARMv8 (NEON-capable): Raspberry Pi 4+, AWS Graviton, Ampere Altra, etc.                                                                                                                                                                                                                                                | Modern ARM server with 16+ GB RAM                                                |
+| Platform | Minimum | Recommended |
+| --- | --- | --- |
+| **macOS arm64** | Apple Silicon (M1 or newer), macOS 11+ | M-series Pro / Max / Ultra |
+| **Linux x86_64** | 64-bit Intel/AMD from 2013+ ([`x86-64-v3`](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels)) | Modern Intel/AMD CPU + an NVIDIA, AMD, or Intel Arc GPU |
+| **Windows x86_64** | 64-bit Intel/AMD from 2013+ (`x86-64-v3`), Windows 10/11 | Modern desktop / workstation CPU + GPU |
+| **Linux ARM64** | ARMv8 NEON-capable (Raspberry Pi 4+, AWS Graviton, Ampere Altra) | Modern ARM server with 16+ GB RAM |
 
-### Resources
+| Resource | Minimum | Recommended |
+| --- | --- | --- |
+| **RAM** | 8 GB | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
+| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA + CUDA toolkit (opt-in CUDA wheels, see [Install](#install)) |
+| **Disk** | 2 GB | 10+ GB for multiple models |
 
-| Resource              | Minimum                                                  | Recommended                                                                                                                                                 |
-| --------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **RAM**               | 8 GB                                                     | 16 to 32 GB if you load several local models at once (chat + embed + rerank + vision); the actual footprint scales with the size and quantization you pick |
-| **GPU / Accelerator** | none required (CPU-only inference works)                 | Apple Silicon (Metal) · any NVIDIA / AMD / Intel Arc GPU (Vulkan) · NVIDIA GPU + matching CUDA toolkit (opt-in CUDA-native wheels, see [Install](#install)) |
-| **Disk**              | 2 GB (models + data)                                     | 10+ GB if you load multiple models                                                                                                                          |
-
-Each active inference role (chat, embed, rerank, vision) runs in its own subprocess to keep the TUI responsive, so the memory you need follows the size of the models you keep warm.
+</details>
 
 ## Install
 
@@ -218,7 +205,7 @@ No external services either way; lilbee downloads and runs models locally. Optio
 
 ### On NVIDIA hardware
 
-The default Vulkan build works on NVIDIA cards, but there is a dedicated CUDA build that links straight against `libcuda.so.1` from your driver. It sidesteps the iGPU + dGPU Vulkan-loader crash that bites NVIDIA-on-Windows setups and is the faster path on any box where you would otherwise rely on Vulkan over an NVIDIA card.
+The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA build that's faster on NVIDIA hardware and sidesteps the iGPU + dGPU Vulkan-loader crash on Windows.
 
 | | Command |
 | --- | --- |
@@ -228,7 +215,7 @@ The default Vulkan build works on NVIDIA cards, but there is a dedicated CUDA bu
 | **Nix** | `nix run github:tobocop2/lilbee#lilbee-cuda` |
 | **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 
-Same `lilbee` command after install. The CUDA runtime (`cudart`, `cublas`) is bundled inside the binary; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically (it `conflicts_with` / `provides` lilbee); on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
+Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
 Then check it runs and pick a model:
 
@@ -237,7 +224,7 @@ lilbee self-check    # ~90 MB download; runs an inference + an embedding; "SELF-
 lilbee               # launch the terminal app; pick a chat + embedding model on the welcome screen
 ```
 
-Everything past that lives in the [usage guide](docs/usage.md): the TUI tour at the top (welcome wizard, search/chat toggle, model bar, catalog, settings, slash commands, wiki), then a reference section for users driving lilbee from outside the TUI (CLI commands, HTTP server, MCP integration, env vars, `config.toml`, optional extras).
+The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, CLI, HTTP server, MCP, env vars, and `config.toml`.
 
 ### Linux runtime requirements
 
@@ -249,8 +236,8 @@ These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `p
 
 | Extra | What it adds |
 | --- | --- |
-| `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline. Recursive crawl with Playwright, live progress, cancel, change detection, SSRF guards, rate limits. |
-| `[litellm]` | Bridge to popular hosted model providers for chat, vision, or embeddings while other roles stay local. You provide the key; the TUI flags whenever a hosted model is active, and chunks sent to it leave your machine. |
+| `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline. |
+| `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active. |
 | `[graph]` | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
@@ -265,7 +252,7 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 ## Agent integration
 
-lilbee plugs into any agent over MCP or a JSON CLI. The repo ships a drop-in [`AGENTS.md`](demos/AGENTS.md), a [`lilbee-worker` subagent](demos/.opencode/agents/lilbee-worker.md) for long ops, and a reusable [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md). See [docs/agent-integration.md](docs/agent-integration.md) to wire it up.
+Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
 Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
@@ -275,44 +262,25 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 ![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
-Every GIF on this page (plus the extras) is at [lilbee.sh/tutorial.html](https://lilbee.sh/tutorial.html) as a video with a longer caption.
-
 ## HTTP Server
 
-`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md#http-server) for invocation options. (These are HTTP server / REST docs; a Python-library reference is still in progress.)
+The HTTP server exposes a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) and the [usage guide](docs/usage.md#http-server) for setup.
 
-The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ### Running as a service (optional)
 
-If you keep the Obsidian plugin or an MCP client open all day, your OS launcher can keep `lilbee serve` warm in the background so HTTP requests skip the cold-start. `lilbee chat`, the TUI, and other CLI commands always cold-start their own process, so they are unaffected.
+For tools that talk to lilbee's HTTP REST API (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep the HTTP server warm so requests skip the cold-start.
 
-Before enabling, pull at least one chat and embedding model with `lilbee model pull <name>`. The daemon will start either way, but requests fail until a model is available.
+This is the only lilbee surface that benefits from a system daemon. The TUI, `lilbee chat`, the MCP server, and the rest of the CLI are designed to load on demand and exit when you close them. There's no always-on process to babysit, which is uncommon in this corner of the local-AI ecosystem.
 
-All three recipes pin the server to `127.0.0.1:42697`.
+Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:42697`.
 
-**macOS (Homebrew):**
-
-```bash
-brew services start lilbee
-```
-
-**Linux (Arch / AUR):**
-
-```bash
-systemctl --user enable --now lilbee
-```
-
-On a headless server (no graphical login session), also run `loginctl enable-linger $USER` so the service survives logout.
-
-**NixOS:** add the module to your `configuration.nix`:
-
-```nix
-{
-  imports = [ lilbee.nixosModules.lilbee ];
-  services.lilbee.enable = true;
-}
-```
+| Platform | Command |
+| --- | --- |
+| **macOS (Homebrew)** | `brew services start lilbee` |
+| **Linux (Arch / AUR)** | `systemctl --user enable --now lilbee` (add `loginctl enable-linger $USER` on headless servers) |
+| **NixOS** | Import `lilbee.nixosModules.lilbee`, set `services.lilbee.enable = true;` |
 
 ## Supported formats
 
@@ -337,9 +305,7 @@ Two opt-in features that work but are still finding their final shape. Generatio
 
 ### Wiki
 
-lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources instead of being one-per-document, so concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Pages live under `$LILBEE_DATA/wiki/`, grouped into `concepts/`, `entities/`, and a `drafts/` queue when confidence is low. An `index.md` tracks them all and `log.md` records every build, ingest, and prune.
-
-Every section is citation-verified against the source chunks and scored for embedding faithfulness before publish. Plain-text concept slugs inside page bodies are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Some pages will land in `drafts/` for human review rather than publish direct.
+lilbee analyzes the documents you've indexed and writes a wiki about them. Pages compound across sources: concepts and entities that show up repeatedly get their own page with citations from every source that mentions them. Sections are citation-verified before publish, and plain-text concept references are rewritten to `[[wiki link]]` form so graph-style markdown viewers can render the connections. Lower-confidence pages land in a `drafts/` queue for review rather than publishing direct.
 
 See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full command list and configuration.
 
@@ -348,6 +314,17 @@ See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full comma
 A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy collections like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
 
 See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
+
+## Built on
+
+lilbee stands on established open-source projects, all embedded in one process:
+
+- [Kreuzberg] parses documents
+- [LanceDB] is the embedded search layer
+- [tree-sitter] chunks code
+- [llama-cpp][llama-cpp-python] runs models locally
+- [crawl4ai] and [Playwright] crawl the web
+- [Textual] draws the terminal
 
 ## License
 
