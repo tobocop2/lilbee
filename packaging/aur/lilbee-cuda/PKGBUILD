@@ -1,6 +1,6 @@
 # Maintainer: tobocop <tobias.perelstein@gmail.com>
 pkgname=lilbee-cuda
-pkgver=0.6.66b456
+pkgver=0.6.66b481
 pkgrel=1
 pkgdesc="Local search engine and personal encyclopedia for your notes, code, and PDFs (CUDA build)"
 arch=('x86_64')
