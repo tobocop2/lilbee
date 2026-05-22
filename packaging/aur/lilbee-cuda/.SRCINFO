@@ -9,6 +9,8 @@ pkgbase = lilbee-cuda
 	conflicts = lilbee
 	options = !strip
 	options = !debug
+	source = lilbee.service::https://github.com/tobocop2/lilbee/raw/v0.6.66b456/packaging/systemd/lilbee.service
+	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
 	source_x86_64 = lilbee-0.6.66b456-cu125::https://github.com/tobocop2/lilbee/releases/download/v0.6.66b456/lilbee-linux-x86_64-cu125
 	sha256sums_x86_64 = 0000000000000000000000000000000000000000000000000000000000000000
 
