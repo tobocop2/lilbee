@@ -151,16 +151,25 @@ class ModelManager:
         *,
         on_progress: Callable[[dict], None] | None = None,
         on_bytes: Callable[[int, int], None] | None = None,
+        allow_unsupported: bool = False,
     ) -> Path | None:
         """Pull/download model to specified source.
 
         Returns the Path for native downloads, None for backend-managed pulls.
+
+        Native pulls of architectures the bundled llama.cpp doesn't support
+        are refused with ``UnsupportedArchError`` unless *allow_unsupported*
+        is True. SDK-backed (REMOTE) pulls are not gated here: the remote
+        runtime owns the arch verdict.
 
         *on_progress* receives dict events from the SDK backend.
         *on_bytes* receives (downloaded_bytes, total_bytes) from native
         HuggingFace downloads. The two sources report progress in different
         shapes, so callers pass whichever matches the chosen source.
         """
+        if source is ModelSource.NATIVE and not allow_unsupported:
+            self._enforce_arch_compat(model)
+
         try:
             if source is ModelSource.NATIVE:
                 return self._pull_native(model, on_bytes=on_bytes)
@@ -168,6 +177,20 @@ class ModelManager:
             return None
         finally:
             self._invalidate_installed_cache()
+
+    def _enforce_arch_compat(self, ref: str) -> None:
+        """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set."""
+        from lilbee.app.services import get_services
+        from lilbee.catalog.compat import (
+            ModelCompat,
+            UnsupportedArchError,
+            classify,
+            resolve_arch_for_pull,
+        )
+
+        arch = resolve_arch_for_pull(ref, get_services().hf_client)
+        if classify(arch) is ModelCompat.UNSUPPORTED:
+            raise UnsupportedArchError(ref, arch)
 
     def _pull_native(
         self,

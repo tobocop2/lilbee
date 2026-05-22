@@ -132,5 +132,45 @@ jobs:
   # with this run's id passed as wheel_run_id / binary_run_id) when you want
   # to validate a candidate against the full QA grid.
 
-  # PyPI publish is intentionally NOT here. Run publish.yml manually after
-  # reviewing the pre-release -- it just downloads this run's artifacts.
+  # Auto-dispatch publish.yml the moment default wheels + sdist are built.
+  dispatch-publish:
+    needs: [resolve, build-default-wheels]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run publish.yml --repo "${REPO}" -f tag="${TAG}"
+
+  # Auto-dispatch Docker / Homebrew / AUR / Nix once executables + wheels are
+  # on the GH pre-release.
+  dispatch-fanout:
+    needs: [resolve, attach-prerelease]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/fanout-packaging
+        with:
+          tag: ${{ needs.resolve.outputs.tag }}
+
+  # Auto-dispatch the CUDA packaging fan-out once cu125 is on the release.
+  dispatch-cuda:
+    needs: [resolve, attach-prerelease]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"

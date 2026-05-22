@@ -8,6 +8,7 @@ from typing import Any
 
 from gguf import GGUFReader, GGUFValueType
 
+from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.providers.base import ProviderError
 
 log = logging.getLogger(__name__)
@@ -73,17 +74,15 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
     against host memory.
     """
-    from gguf import GGUFReader
-
     reader = GGUFReader(str(model_path))
 
     def field_value(name: str) -> Any:
         field = reader.fields.get(name)
         return field.contents() if field is not None else None
 
-    arch = field_value("general.architecture") or "llama"
+    arch = field_value(GGUF_ARCH_KEY) or "llama"
     fields_we_want: tuple[tuple[str, str], ...] = (
-        ("general.architecture", "architecture"),
+        (GGUF_ARCH_KEY, "architecture"),
         ("general.file_type", "file_type"),
         ("general.name", "name"),
         ("tokenizer.chat_template", "chat_template"),

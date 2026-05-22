@@ -45,3 +45,15 @@ reason = "ReDoS in pygments lexers (CVE-2022-40896 / GHSA-mrwq-x4v8-fh7p). pygme
 [[IgnoredVulns]]
 id = "GHSA-5239-wwwm-4pmq"
 reason = "ReDoS in pygments GUID matching (CVE-2026-4539). pygments is only resolved transitively under tools/qa/requirements.txt, the QA-matrix runner venv, which is never shipped. The dev and runtime environments pin pygments 2.20.0 (patched) via uv.lock."
+
+[[IgnoredVulns]]
+id = "PYSEC-2025-183"
+reason = "DISPUTED weak-encryption finding in pyjwt (CVE-2025-45768). Upstream's response: HMAC key length is chosen by the application, not the library; pyjwt has no plan to enforce a minimum and there is no fixed version. pyjwt is pulled in transitively by mcp 1.26.0; lilbee never imports pyjwt or calls jwt.encode/decode with caller-controlled key material. Revisit if a real (non-disputed) advisory ships or if mcp drops the dependency."
+
+[[IgnoredVulns]]
+id = "PYSEC-2024-277"
+reason = "DISPUTED deserialization finding in joblib.numpy_pickle.NumpyArrayWrapper.read_array (CVE-2024-34997). Upstream's response: NumpyArrayWrapper is only invoked when reading joblib-produced cache files, i.e. trusted content the same process wrote earlier. joblib is pulled in transitively by nltk via crawl4ai and is only installed with the `crawler` extra; lilbee never calls joblib directly. No upstream fix is planned."
+
+[[IgnoredVulns]]
+id = "GHSA-h8wq-7xc4-p3qx"
+reason = "False positive against nltk 3.9.4. OSV advisory CVE-2026-0846 fixes the issue in nltk 3.9.3 (affected versions enumerate up to 3.9.2 only); uv.lock pins 3.9.4, which is already past the fix. osv-scanner's range comparison still flags it; suppression is a guard until the scanner refreshes. nltk is pulled in transitively by crawl4ai under the `crawler` extra and lilbee never imports it. Remove this entry once osv-scanner stops emitting the alert."

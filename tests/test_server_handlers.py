@@ -1410,7 +1410,7 @@ class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -1430,7 +1430,7 @@ class TestModelsPull:
         """Litellm pulls use on_progress (dict), not on_bytes (int, int)."""
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
             if on_progress:
                 on_progress({"status": "downloading"})
                 on_progress({"status": "success"})
@@ -1464,7 +1464,9 @@ class TestModelsPull:
         barrier = threading.Event()
         mock_manager = MagicMock()
 
-        def blocking_pull(model, source, *, on_progress=None, on_bytes=None):
+        def blocking_pull(
+            model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
+        ):
             if on_bytes:
                 on_bytes(100, 1000)
             barrier.wait(timeout=2)
@@ -2645,7 +2647,7 @@ class TestModelPullProgressCancel:
         mock_manager = MagicMock()
         progress_called = threading.Event()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 # All progress calls should see cancel already set
                 on_bytes(500, 1000)
@@ -2684,7 +2686,7 @@ class TestModelPullProgressCancel:
         mock_manager = MagicMock()
         progress_called = threading.Event()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
             if on_progress:
                 on_progress({"status": "should_be_suppressed"})
                 progress_called.set()

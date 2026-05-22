@@ -12,6 +12,7 @@ import httpx
 from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
+from lilbee.catalog.compat import classify
 from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
 from lilbee.core.config import cfg
 
@@ -146,9 +147,18 @@ class HfClient:
     def __init__(self) -> None:
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
+        self._arch_cache: dict[str, str] = {}
         # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
         # smaller than the window, which would push the first failure to DEBUG.
         self._last_fetch_failure_warn: float = float("-inf")
+
+    def get_cached_arch(self, ref: str) -> str | None:
+        """Return the cached `general.architecture` for *ref*, or None if not cached."""
+        return self._arch_cache.get(ref)
+
+    def cache_arch(self, ref: str, architecture: str) -> None:
+        """Record *architecture* for *ref* in the per-instance cache."""
+        self._arch_cache[ref] = architecture
 
     def fetch_models(
         self,
@@ -227,8 +237,11 @@ class HfClient:
                     featured=False,
                     downloads=item.downloads or 0,
                     task=task,
+                    architecture=gguf_meta.architecture,
+                    compat=classify(gguf_meta.architecture),
                 )
             )
+            self.cache_arch(item.id, gguf_meta.architecture)
         page = HfPage(models=models, has_more=has_more)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)

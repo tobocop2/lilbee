@@ -35,6 +35,7 @@ class PullRequest(BaseModel):
 
     model: str
     source: str = "native"
+    allow_unsupported: bool = False
 
 
 @get("/api/models")
@@ -124,7 +125,9 @@ async def models_installed_route() -> ModelsInstalledResponse:
 async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
     return Stream(
-        handlers.models_pull(data.model, source=data.source),
+        handlers.models_pull(
+            data.model, source=data.source, allow_unsupported=data.allow_unsupported
+        ),
         media_type="text/event-stream",
     )
 

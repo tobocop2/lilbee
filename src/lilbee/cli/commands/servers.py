@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -39,18 +40,24 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     if not config.loaded:
         config.load()
     server.lifespan = config.lifespan_class(config)
-    await server.startup()
 
-    parent_pid = parse_parent_pid()
+    # `server.servers` is set inside `startup()`. The finally below must skip
+    # `shutdown()` when startup never ran: uvicorn dereferences `self.servers`
+    # there and the resulting AttributeError would mask the original failure.
+    started = False
     parent_watcher: asyncio.Task[None] | None = None
-    if parent_pid is not None:
-
-        def _on_parent_death() -> None:
-            server.should_exit = True
-
-        parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
-
     try:
+        await server.startup()
+        started = True
+
+        parent_pid = parse_parent_pid()
+        if parent_pid is not None:
+
+            def _on_parent_death() -> None:
+                server.should_exit = True
+
+            parent_watcher = asyncio.create_task(watch_parent_async(parent_pid, _on_parent_death))
+
         if server.servers:
             sock = server.servers[0].sockets[0]
             actual_port = sock.getsockname()[1]
@@ -63,7 +70,11 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()
         port_path.unlink(missing_ok=True)
-        await server.shutdown()
+        if started:
+            # Suppress AttributeError from a partial uvicorn bring-up so any
+            # original exception from main_loop reaches the caller intact.
+            with contextlib.suppress(AttributeError):
+                await server.shutdown()
 
 
 def serve(

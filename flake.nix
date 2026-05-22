@@ -158,5 +158,41 @@
       });
 
       formatter = forAllSystems (system: (mkPkgs system).nixfmt-rfc-style);
+
+      nixosModules.lilbee =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.services.lilbee;
+        in
+        {
+          options.services.lilbee = {
+            enable = lib.mkEnableOption "lilbee HTTP server as a user-level systemd service";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.system}.default;
+              defaultText = lib.literalExpression "lilbee.packages.\${pkgs.system}.default";
+              description = "lilbee package to run.";
+            };
+          };
+          config = lib.mkIf cfg.enable {
+            systemd.user.services.lilbee = {
+              description = "lilbee HTTP server";
+              after = [ "network-online.target" ];
+              wants = [ "network-online.target" ];
+              wantedBy = [ "default.target" ];
+              serviceConfig = {
+                Type = "simple";
+                ExecStart = "${cfg.package}/bin/lilbee serve --host 127.0.0.1 --port 42697";
+                Restart = "on-failure";
+                RestartSec = 5;
+              };
+            };
+          };
+        };
     };
 }
