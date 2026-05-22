@@ -498,8 +498,16 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     time.sleep(_OPENCODE_BOOT_SETTLE_S)
 
 
-def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
-    """Send the prompt and poll the pane until expected/forbidden/idle settle."""
+def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioResult:
+    """Send the prompt and poll until a FRESH tool dispatch lands or idle/timeout.
+
+    PASS requires both the gear-glyph dispatch marker in the pane AND a new
+    ``POST /v1/chat/completions 200`` in the launcher log since this scenario
+    started. The count delta defeats the stale-glyph trap: opencode keeps the
+    prior turn's transcript visible, so a later scenario would otherwise match
+    an earlier scenario's gear without driving its own opencode -> lilbee turn.
+    """
+    baseline_calls = _count_ok_chat_completions(workspace)
     tmux_send(session, scenario.prompt)
     start = time.time()
     deadline = start + scenario.timeout_s
@@ -533,20 +541,26 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
                 elapsed_s=time.time() - start,
             )
         missing = [s for s in scenario.expected if s.lower() not in pane_lower]
-        if not missing:
+        fresh_call = _count_ok_chat_completions(workspace) > baseline_calls
+        if not missing and fresh_call:
             return ScenarioResult(
                 name=scenario.name,
                 status=ScenarioStatus.PASS,
-                detail="all expected substrings present",
+                detail="gear dispatch + fresh chat completion",
                 pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
                 elapsed_s=time.time() - start,
             )
         idle_for = time.time() - last_change_at
         if idle_for > _PANE_IDLE_TIMEOUT_S and time.time() - start > _OPENCODE_BOOT_SETTLE_S:
+            detail = (
+                f"pane idle {idle_for:.0f}s; missing {missing}"
+                if missing
+                else f"pane idle {idle_for:.0f}s; gear seen but no fresh chat completion"
+            )
             return ScenarioResult(
                 name=scenario.name,
                 status=ScenarioStatus.TIMEOUT,
-                detail=f"pane idle {idle_for:.0f}s; missing {missing}",
+                detail=detail,
                 pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
                 elapsed_s=time.time() - start,
             )
@@ -655,11 +669,11 @@ def setup_cell(
     return workspace, port, None
 
 
-def run_smoke_scenarios(family: str, session: str) -> list[ScenarioResult]:
+def run_smoke_scenarios(family: str, session: str, workspace: Path) -> list[ScenarioResult]:
     results: list[ScenarioResult] = []
     for i, scen in enumerate(SMOKE_SCENARIOS):
         print(f"[{family}] running {scen.name}")
-        result = run_scenario(session, scen)
+        result = run_scenario(session, scen, workspace)
         results.append(result)
         print(f"[{family}]   -> {result.status.value} ({result.elapsed_s:.1f}s) {result.detail}")
         if i < len(SMOKE_SCENARIOS) - 1:
@@ -761,7 +775,7 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
             with suspend_other_chat_manifests(cell.ref):
                 print(f"[{cell.family}] launching opencode in tmux session {session}")
                 launch_opencode_in_tmux(workspace, session)
-                result.scenarios = run_smoke_scenarios(cell.family, session)
+                result.scenarios = run_smoke_scenarios(cell.family, session, workspace)
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)
