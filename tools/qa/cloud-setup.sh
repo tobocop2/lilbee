@@ -47,9 +47,19 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
-# 5. Install lilbee with the [remote] + [crawler] + [graph] extras and CUDA wheel
-uv sync --extra remote --extra crawler --extra graph \
-  --extra-index-url "https://abetlen.github.io/llama-cpp-python/whl/${CUDA}/"
+# 5. Install lilbee with the [remote] + [crawler] + [graph] extras + CUDA wheel.
+# Sync via PyPI first (resolves the dep tree), then force-reinstall the GPU
+# build of llama-cpp-python from abetlen's CUDA-specific index. The two-step
+# is required because passing the CUDA URL as ``--extra-index-url`` only
+# ranks it BELOW PyPI; uv would still pick PyPI's CPU wheel for the same
+# version. ``--index-url`` (primary) on the second call forces the GPU build.
+uv sync --extra remote --extra crawler --extra graph
+uv pip install --reinstall-package llama-cpp-python --no-cache \
+  --index-url "https://abetlen.github.io/llama-cpp-python/whl/${CUDA}/" \
+  llama-cpp-python
+
+# Sanity-check: confirm GPU offload is actually compiled in.
+uv run python -c "from llama_cpp.llama_cpp import llama_supports_gpu_offload; assert llama_supports_gpu_offload(), 'CUDA wheel missing -- llama_cpp built without GPU offload'; print('GPU offload OK')"
 
 # 6. Unskip the GPU-enabled cells (these were skipped on the user's M1 Pro)
 uv run python - <<'PYEOF'

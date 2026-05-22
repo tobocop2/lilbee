@@ -15,8 +15,13 @@ WORK_DIR="${HOME}/lilbee"
 cd "${WORK_DIR}"
 git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
-uv sync --extra remote --extra crawler --extra graph \
-  --extra-index-url "https://abetlen.github.io/llama-cpp-python/whl/${LLAMA_CUDA:-cu124}/"
+uv sync --extra remote --extra crawler --extra graph
+# Same two-step as cloud-setup.sh: PyPI for the resolver, then force-reinstall
+# the GPU-built llama-cpp-python from abetlen's CUDA index so a code change
+# can't accidentally downgrade you back to the CPU wheel.
+uv pip install --reinstall-package llama-cpp-python --no-cache \
+  --index-url "https://abetlen.github.io/llama-cpp-python/whl/${LLAMA_CUDA:-cu124}/" \
+  llama-cpp-python
 
 # Drop any stale matrix process / tmux session from the previous run
 tmux kill-session -t lilbee-matrix 2>/dev/null || true
