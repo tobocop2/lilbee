@@ -256,14 +256,22 @@ def seed_shared_workspace() -> Path:
 
 
 def write_per_cell_workspace(family: str, model_ref: str) -> Path:
-    """Per-cell workspace dir seeded from the shared fixtures."""
+    """Per-cell workspace dir seeded from the shared fixtures.
+
+    Wipes any prior ``.lilbee/`` state from previous cells so the lancedb
+    + documents fingerprints start fresh; otherwise `lilbee add` reports the
+    fixtures as "Unchanged" against a stale chunk index and indexing silently
+    no-ops.
+    """
     workspace = WORKSPACE_DIR / family
     workspace.mkdir(parents=True, exist_ok=True)
+    config_dir = workspace / ".lilbee"
+    if config_dir.exists():
+        shutil.rmtree(config_dir)
     for src in seed_shared_workspace().iterdir():
         if src.is_file():
             shutil.copy(src, workspace / src.name)
-    config_dir = workspace / ".lilbee"
-    config_dir.mkdir(exist_ok=True)
+    config_dir.mkdir()
     embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
     (config_dir / "config.toml").write_text(
         f'chat_model = "{model_ref}"\n'
@@ -299,11 +307,19 @@ def pin_opencode_default_model(model_ref: str) -> None:
 
 
 def index_workspace(workspace: Path, log_path: Path) -> None:
-    """Run lilbee add on each fixture so lilbee_search has content."""
+    """Run lilbee add on each fixture so lilbee_search has content.
+
+    Sets ``LILBEE_DATA`` explicitly so the `lilbee add` subprocess writes
+    into the workspace lancedb. matrix.py inherits a polluted ``LILBEE_DATA``
+    pointing at the global data root via ``lilbee.core.config``'s module-import
+    side effect, so without this override the fixtures index into the wrong
+    lancedb and `lilbee_search` calls return empty in opencode.
+    """
     import os
 
     env = os.environ.copy()
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    env["LILBEE_DATA"] = str(workspace / ".lilbee")
     with log_path.open("a") as log:
         log.write("=== lilbee add ===\n")
         log.flush()
