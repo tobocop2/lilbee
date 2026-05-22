@@ -553,12 +553,19 @@ def cleanup_cell_model(cell: ModelCell) -> None:
     from lilbee.core.config import cfg
 
     repo = _pull_ref_for(cell.ref)
-    cache_dir_name = "models--" + repo.replace("/", "--")
+    # HF-cache directories ("models--Qwen--Qwen3-4B-GGUF") use the ``models--``
+    # prefix; lilbee's manifests dir ("Qwen--Qwen3-4B-GGUF") does NOT. Cleaning
+    # only the prefixed paths left stale manifests behind, which then convinced
+    # the next pull that the model was cached and convinced lilbee's registry
+    # the install was complete -- both inconsistent with the missing blob,
+    # which surfaced to opencode as a 404 model_not_found at chat time.
+    hf_cache_dir = "models--" + repo.replace("/", "--")
+    manifest_dir = repo.replace("/", "--")
     models_root = Path(cfg.models_dir)
     for target in (
-        models_root / cache_dir_name,
-        models_root / ".locks" / cache_dir_name,
-        models_root / "manifests" / cache_dir_name,
+        models_root / hf_cache_dir,
+        models_root / ".locks" / hf_cache_dir,
+        models_root / "manifests" / manifest_dir,
     ):
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
