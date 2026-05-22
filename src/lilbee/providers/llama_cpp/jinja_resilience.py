@@ -17,6 +17,22 @@ the original exception fires there instead, where it's actionable.
 This file applies the patch at import time. Importing it from
 ``lilbee.providers.llama_cpp`` keeps the patch in scope for every load
 path without callers having to remember.
+
+Regression coverage
+-------------------
+This is a monkey-patch on a third-party library; it can silently no-op if
+upstream changes its API. The safety net is two test modules:
+
+- ``tests/providers/llama_cpp/test_jinja_resilience.py`` exercises the
+  patched behavior (bad-template input does not raise at construction,
+  valid templates still compile, deferred failure fires at render time).
+- ``tests/providers/llama_cpp/test_jinja_resilience_upstream_api.py``
+  asserts the upstream class still exists, still has the
+  ``from_string(template)`` eager-compile call site we patch, and still
+  exposes the ``__init__`` signature we patched. If upstream renames the
+  class, drops the eager compile, or changes ``__init__`` parameters,
+  the upstream-api test fails loudly so the monkey-patch can be
+  re-evaluated rather than silently going stale.
 """
 
 from __future__ import annotations
