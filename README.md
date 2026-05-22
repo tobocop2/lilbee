@@ -143,9 +143,9 @@ Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a s
 lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
 
 - **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a persistent warning whenever a cloud role is active.
-- **Pair lilbee with a cloud agent over MCP.** lilbee stays the local part: your files, the embeddings, the index. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
+- **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
-Either way your files and the index never leave the machine. Only the queries and the snippets the model needs to answer cross the wire when you opt in.
+Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
 
 ## TUI
 
