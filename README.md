@@ -85,7 +85,7 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, from your own files, shaped to your needs.
+> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you'd build for yourself, over your files, your code, even the web pages you save. Read it in plain English, or have it read for you by your coding agent.
 
 ## What you can do with it
 
@@ -282,6 +282,37 @@ Every GIF on this page (plus the extras) is at [lilbee.sh/tutorial.html](https:/
 `lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) for the OpenAPI schema and the [usage guide](docs/usage.md#http-server) for invocation options. (These are HTTP server / REST docs; a Python-library reference is still in progress.)
 
 The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+
+### Running as a service (optional)
+
+If you keep the Obsidian plugin or an MCP client open all day, your OS launcher can keep `lilbee serve` warm in the background so HTTP requests skip the cold-start. `lilbee chat`, the TUI, and other CLI commands always cold-start their own process, so they are unaffected.
+
+Before enabling, pull at least one chat and embedding model with `lilbee model pull <name>`. The daemon will start either way, but requests fail until a model is available.
+
+All three recipes pin the server to `127.0.0.1:42697`.
+
+**macOS (Homebrew):**
+
+```bash
+brew services start lilbee
+```
+
+**Linux (Arch / AUR):**
+
+```bash
+systemctl --user enable --now lilbee
+```
+
+On a headless server (no graphical login session), also run `loginctl enable-linger $USER` so the service survives logout.
+
+**NixOS:** add the module to your `configuration.nix`:
+
+```nix
+{
+  imports = [ lilbee.nixosModules.lilbee ];
+  services.lilbee.enable = true;
+}
+```
 
 ## Supported formats
 
