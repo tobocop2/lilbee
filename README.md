@@ -76,7 +76,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
 - **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
 - **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
-- **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. The single-file standalone binary, which bundles Python, the model runtime, OCR, the crawler, and the vector store, lands around 250-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps that bundle a browser engine for their UI typically ship several hundred MB of runtime before loading any models.
+- **Compact at the base.** If you already have Python, the lilbee wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. That's the base, without the optional extras. The extras add real weight: `[crawler]` brings Playwright in (and Chromium downloads ~150 MB on first crawl) so you can index websites; `[litellm]` adds the fan-out of cloud-provider SDKs; `[graph]` adds spaCy. The single-file standalone binary bundles all of these along with Python, the model runtime, OCR, and the vector store, and lands at 250-365 MB. Even loaded, that's in the same range as all-in-one desktop AI apps that bundle a browser engine for their UI alone, before any models are loaded.
 
 ## Why lilbee
 
@@ -100,7 +100,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 ### Opencode integration (coming)
 
-First-class lilbee support for [opencode](https://opencode.ai) is coming in [#267](https://github.com/tobocop2/lilbee/pull/267). The demo below previews one thing it unlocks: when the first answer is thin, the agent fine-tunes retrieval mid-conversation and re-answers with full function bodies, file:line included.
+First-class lilbee support for [opencode](https://opencode.ai) is coming in [#267](https://github.com/tobocop2/lilbee/pull/267). The demo below shows a small local model (Qwen) walked through an explicit instruction: when the first answer is thin, fine-tune retrieval mid-conversation, then re-answer with full function bodies, file:line included. A more capable model would do the same from a generic prompt like "fill this in." The point of the demo is that even small models can improve their own search results when you teach them how. Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach yours.
 
 ![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
