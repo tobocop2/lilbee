@@ -1,5 +1,5 @@
 {
-  "version": "0.6.66b481",
+  "version": "0.6.66b480",
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-linux-x86_64",
