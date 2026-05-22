@@ -164,11 +164,25 @@ class Scenario:
     timeout_s: float
 
 
+_TOOL_DISPATCH_MARKER = "⚙ lilbee_search"
+"""Glyph opencode renders ONLY when it dispatches a parsed tool call.
+
+opencode draws U+2699 GEAR before the tool name once it has extracted a
+structured ``tool_calls`` payload from lilbee's response and is invoking the
+MCP tool. A model that emits raw ``{"name":"lilbee_search",...}`` JSON, a
+model that never loads, or a serve that 500s never reaches this render path,
+so the glyph cleanly separates real end-to-end dispatch from opencode chrome
+(autocomplete hints, the MCP status panel, the picker badge) that merely
+mentions the tool name. Cross-checked against the launcher-serve.log chat-
+completion count so a stale pane can't carry a prior cell's glyph.
+"""
+
+
 SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S1 single tool call",
         prompt="search the indexed docs for the chat worker file",
-        expected=(),  # Signal comes from opencode session DB, not pane substrings.
+        expected=(_TOOL_DISPATCH_MARKER,),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -178,7 +192,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about the dispatch layer, "
             "then quote the named class that resolves the model"
         ),
-        expected=(),
+        expected=(_TOOL_DISPATCH_MARKER,),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
     ),
@@ -188,7 +202,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about tool extraction, "
             "then describe the parsing library and schema location"
         ),
-        expected=(),
+        expected=(_TOOL_DISPATCH_MARKER,),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -223,12 +237,18 @@ class CellResult:
     Non-empty means the chat or embed worker raised an exception during the
     cell, so even an all-green substring check downgrades to FAIL.
     """
+    chat_completions_ok: int = 0
+    """Count of ``POST /v1/chat/completions ... 200`` lines in launcher-serve.log.
+    Zero means opencode never got a successful chat back (model failed to load,
+    or every turn 500'd), so the cell cannot be a real PASS regardless of pane.
+    """
 
     @property
     def passed(self) -> bool:
         return (
             not self.setup_error
             and not self.serve_errors
+            and self.chat_completions_ok >= len(self.scenarios)
             and bool(self.scenarios)
             and all(s.status is ScenarioStatus.PASS for s in self.scenarios)
         )
@@ -711,6 +731,26 @@ def _scrape_serve_errors(workspace: Path) -> str:
     return "\n".join(hits[-8:]) if hits else ""
 
 
+def _count_ok_chat_completions(workspace: Path) -> int:
+    """Count successful ``POST /v1/chat/completions`` responses in launcher-serve.log.
+
+    uvicorn logs each request as ``... "POST /v1/chat/completions HTTP/1.1" 200 OK``.
+    A cell where opencode never received a 200 chat back (model never loaded,
+    every turn 500'd) has a count of zero and cannot be a real PASS. Paired
+    with :func:`_scrape_serve_errors`, this catches the SSE-200-then-crash case
+    too: the header logs 200 but the mid-stream exception lands in serve_errors.
+    """
+    log_file = workspace / ".lilbee" / "data" / "logs" / "launcher-serve.log"
+    if not log_file.exists():
+        return 0
+    text = log_file.read_text(encoding="utf-8", errors="replace")
+    return sum(
+        1
+        for line in text.splitlines()
+        if 'POST /v1/chat/completions HTTP/1.1" 200' in line
+    )
+
+
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     """Orchestrate one matrix cell: setup, scenarios, teardown, cleanup."""
     result = CellResult(family=cell.family, ref=cell.ref)
@@ -735,6 +775,8 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
         log_path.write_text(f"setup_error: {result.setup_error}\n")
     if workspace is not None:
         result.serve_errors = _scrape_serve_errors(workspace)
+        result.chat_completions_ok = _count_ok_chat_completions(workspace)
+        print(f"[{cell.family}] {result.chat_completions_ok} successful chat completion(s)")
         if result.serve_errors:
             print(f"[{cell.family}] serve errors detected, downgrading to FAIL")
     if not args.keep_models:
@@ -749,8 +791,8 @@ def render_report(results: list[CellResult]) -> str:
         "",
         f"Run at: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
-        "| Family | Ref | Status | Scenarios |",
-        "|--------|-----|--------|-----------|",
+        "| Family | Ref | Status | Chat 200s | Scenarios |",
+        "|--------|-----|--------|-----------|-----------|",
     ]
     for r in results:
         status = "PASS" if r.passed else "FAIL"
@@ -758,7 +800,7 @@ def render_report(results: list[CellResult]) -> str:
             cells = f"setup: {r.setup_error}"
         else:
             cells = ", ".join(f"{s.name.split()[0]}={s.status.value}" for s in r.scenarios)
-        lines.append(f"| {r.family} | `{r.ref}` | {status} | {cells} |")
+        lines.append(f"| {r.family} | `{r.ref}` | {status} | {r.chat_completions_ok} | {cells} |")
     lines.append("")
     for r in results:
         lines.append(f"## {r.family} ({r.ref})")
