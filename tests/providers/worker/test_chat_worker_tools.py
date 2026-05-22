@@ -1320,3 +1320,52 @@ def test_wrap_single_completion_as_stream_handles_malformed_completions() -> Non
 
     assert list(_wrap_single_completion_as_stream("not a dict")) == []
     assert list(_wrap_single_completion_as_stream({"choices": []})) == []
+
+
+def test_normalize_tool_call_arguments_parses_json_string_to_dict() -> None:
+    """OpenAI-format string arguments become dicts so HF jinja templates render.
+
+    Qwen3-Coder's GGUF template iterates ``tool_call.arguments|items`` and
+    raises ``TypeError: Can only get item pairs from a mapping`` when handed
+    the OpenAI wire-format JSON string. The normalizer parses it to a dict.
+    """
+    from lilbee.providers.worker.chat_worker import _normalize_tool_call_arguments
+
+    messages = [
+        {"role": "user", "content": "search"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lilbee_search", "arguments": '{"query": "chat worker"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+    ]
+    out = _normalize_tool_call_arguments(messages)
+    assert out[1]["tool_calls"][0]["function"]["arguments"] == {"query": "chat worker"}
+    # User and tool messages pass through untouched.
+    assert out[0] is messages[0]
+    assert out[2] is messages[2]
+
+
+def test_normalize_tool_call_arguments_leaves_dicts_and_bad_json_untouched() -> None:
+    """Already-dict arguments and non-JSON strings are not mangled."""
+    from lilbee.providers.worker.chat_worker import _normalize_tool_call_arguments
+
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": "a", "arguments": {"already": "dict"}}},
+                {"function": {"name": "b", "arguments": "not json{"}},
+            ],
+        },
+    ]
+    out = _normalize_tool_call_arguments(messages)
+    assert out[0]["tool_calls"][0]["function"]["arguments"] == {"already": "dict"}
+    assert out[0]["tool_calls"][1]["function"]["arguments"] == "not json{"

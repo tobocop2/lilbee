@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import re
 import threading
@@ -51,6 +52,46 @@ _STREAM_BATCH_MAX_CHUNKS = 16
 _STREAM_BATCH_MAX_INTERVAL_S = 0.05
 
 
+def _normalize_tool_call_arguments(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Parse assistant ``tool_calls[].function.arguments`` JSON strings into dicts.
+
+    GGUF chat templates are exported from HuggingFace models, where
+    ``apply_chat_template`` receives prior tool calls with ``arguments`` as a
+    parsed object. Their jinja bodies iterate it with the ``|items`` filter or
+    serialize it with ``|tojson`` -- both assume a mapping. The OpenAI wire
+    format that opencode (and every OpenAI-compatible client) sends encodes
+    ``arguments`` as a JSON-encoded string. Feeding that string straight into
+    the template raises ``TypeError: Can only get item pairs from a mapping``
+    on the first follow-up turn that carries a tool call in its history, which
+    surfaces to the client as a mid-stream 500.
+
+    Parsing the string back to a dict here bridges the two conventions for
+    every family without a per-template special case. Non-JSON argument
+    strings (rare, malformed clients) are left untouched.
+    """
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        tool_calls = message.get("tool_calls")
+        if message.get("role") != "assistant" or not tool_calls:
+            normalized.append(message)
+            continue
+        new_calls = []
+        for call in tool_calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                except (ValueError, TypeError):
+                    new_calls.append(call)
+                    continue
+                new_calls.append({**call, "function": {**fn, "arguments": parsed}})
+            else:
+                new_calls.append(call)
+        normalized.append({**message, "tool_calls": new_calls})
+    return normalized
+
+
 class _ChatSession:
     """Lazy-loaded Llama chat handle, kept alive for the worker's lifetime.
 
@@ -82,6 +123,7 @@ class _ChatSession:
         llm = self._ensure_loaded(model)
         if tools and self._response_schema is None:
             self._warn_unsupported_tool_extraction(model)
+        messages = _normalize_tool_call_arguments(messages)
         windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:

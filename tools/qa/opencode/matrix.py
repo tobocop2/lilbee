@@ -164,21 +164,11 @@ class Scenario:
     timeout_s: float
 
 
-_OPENCODE_TOOL_DISPATCH_MARKER = "lilbee_search [query="
-"""Substring opencode prints ONLY when it has dispatched a tool call.
-
-A model that emits the raw ``{"name":"lilbee_search","parameters":{"query":...}}``
-JSON instead of using opencode's tool-call channel never produces this exact
-bracket form. Requiring it in the expected set rules out the false-PASS
-where the model's raw-JSON output still happens to contain the tool name.
-"""
-
-
 SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S1 single tool call",
         prompt="search the indexed docs for the chat worker file",
-        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "chat worker"),
+        expected=(),  # Signal comes from opencode session DB, not pane substrings.
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -188,7 +178,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about the dispatch layer, "
             "then quote the named class that resolves the model"
         ),
-        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "KnownModelCache"),
+        expected=(),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
     ),
@@ -198,7 +188,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about tool extraction, "
             "then describe the parsing library and schema location"
         ),
-        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "recursive_parse", "schemas"),
+        expected=(),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -551,23 +541,30 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
 
 
 def reset_opencode_session_state() -> None:
-    """Wipe opencode's per-user session DB so the prior cell's history can't
-    bleed into the new cell's pane.
+    """Wipe opencode's per-user state so the prior cell can't bleed into the new pane.
 
-    opencode persists conversation history under ``~/.local/share/opencode/``
-    (sqlite + JSON storage). When matrix.py runs cell N+1's smoke, opencode
-    boots with the recent-sessions panel populated by cell N's transcripts,
-    which contained tokens like ``KnownModelCache`` / ``recursive_parse`` /
-    ``schemas`` -- exactly the substrings the next cell's smoke scenarios
-    look for. Without this scrub the matrix reports false PASSes for cells
-    whose models never even loaded.
+    Two persistence locations need scrubbing:
 
-    The picker state (``~/.local/state/opencode/model.json``) is preserved
-    because that's where :func:`pin_opencode_default_model` writes the
-    per-cell model pin.
+    1. ``~/.local/share/opencode/`` -- session DB + storage. Holds the prior
+       cell's conversation transcripts. Without the wipe opencode's recent-
+       sessions panel surfaces tokens from the previous PASS (e.g.
+       ``KnownModelCache``) and the next cell's smoke matches them without
+       its own model ever loading.
+
+    2. ``~/.local/state/opencode/model.json`` -- the picker state. Opencode
+       picks the first installed model in ``recent[]`` as its default. If
+       the previous cell pinned a model that's still installed (e.g.
+       ``Qwen3-8B`` left from the qwen3 cell), opencode silently falls back
+       to it for the next cell whose own ref isn't pulled yet -- and the
+       smoke ends up testing the WRONG model with a fake PASS.
+
+    :func:`pin_opencode_default_model` rewrites the picker after this scrub
+    so the cell's intended model wins the default.
     """
     if _OPENCODE_SHARE_DIR.exists():
         shutil.rmtree(_OPENCODE_SHARE_DIR)
+    if _OPENCODE_PICKER_STATE.exists():
+        _OPENCODE_PICKER_STATE.unlink()
 
 
 def ensure_embedding_model_pulled() -> None:
@@ -764,8 +761,6 @@ def render_report(results: list[CellResult]) -> str:
         lines.append(f"| {r.family} | `{r.ref}` | {status} | {cells} |")
     lines.append("")
     for r in results:
-        if r.passed and not r.setup_error:
-            continue
         lines.append(f"## {r.family} ({r.ref})")
         lines.append("")
         if r.setup_error:
@@ -776,8 +771,6 @@ def render_report(results: list[CellResult]) -> str:
             lines.append(r.serve_errors)
             lines.append("```")
         for s in r.scenarios:
-            if s.status is ScenarioStatus.PASS:
-                continue
             lines.append(f"### {s.name} -> {s.status.value}")
             lines.append(f"Detail: {s.detail}")
             lines.append("```")
