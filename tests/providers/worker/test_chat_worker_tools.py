@@ -1208,11 +1208,17 @@ def test_session_chat_downgrades_stream_for_chatml_function_calling(monkeypatch,
     stream=False under the hood and synthesizes a single-chunk stream so the
     downstream pipeline keeps working.
     """
+    from lilbee.providers.families import registry
     from lilbee.providers.worker.chat_worker import _ChatSession
+    from lilbee.providers.worker.response_parser.families import TemplateFamily
     from lilbee.providers.worker.transport import RoleConfig
 
     role_config = RoleConfig(role="chat", model_path=tmp_path / "x.gguf", mode="chat")
     session = _ChatSession(role_config, _FlagStub())
+    # Pin the session profile to Hermes-3, whose StreamingPolicy is
+    # DOWNGRADE_AUTO_TOOL_CHOICE; that's the contract the downgrade
+    # decision is now based on.
+    session._profile = registry().by_family(TemplateFamily.HERMES)
     captured: dict[str, Any] = {}
 
     class _Stub:

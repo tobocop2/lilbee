@@ -8,7 +8,10 @@ import re
 import threading
 import time
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lilbee.providers.families.profile import FamilyProfile
 
 from lilbee.providers.base import ContextWindowExceededError
 from lilbee.providers.worker.response_parser import (
@@ -57,11 +60,13 @@ class _ChatSession:
     """
 
     def __init__(self, role_config: RoleConfig, abort_flag: Any) -> None:
+
         self._role_config = role_config
         self._abort_flag = abort_flag
         self._llm: Any = None
         self._model_path: str = ""
         self._response_schema: ResponseSchema | None = None
+        self._profile: FamilyProfile | None = None
         self._warned_unsupported_tools: set[str] = set()
 
     def chat(
@@ -86,11 +91,12 @@ class _ChatSession:
             kwargs["tool_choice"] = tool_choice
         # llama-cpp-python's chatml-function-calling preset (and the
         # functionary-v1/v2 variants) refuse stream=True with tool_choice="auto"
-        # because the preset has no tool-call-delta path. When our chat_format
-        # override is active we downgrade to a non-streaming call internally
-        # and emit the single completion as a synthetic one-shot stream so
-        # the rest of the pipeline (SSE encoder, tool extractor) is unaware.
-        downgrade = stream and _chat_format_override_streaming_blocked(llm, tool_choice)
+        # because the preset has no tool-call-delta path. The family profile's
+        # streaming_policy field declares whether this swap is needed; lilbee
+        # downgrades to a non-streaming call internally and emits the single
+        # completion as a synthetic one-shot stream so the rest of the
+        # pipeline (SSE encoder, tool extractor) is unaware.
+        downgrade = stream and _profile_needs_stream_downgrade(self._profile, tool_choice)
         effective_stream = False if downgrade else stream
         try:
             result = llm.create_chat_completion(
@@ -207,22 +213,20 @@ class _ChatSession:
             self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
             metadata = safe_read_gguf_metadata(target_path) or {}
-            # When the loader swapped in a chat_format preset, lock the
-            # response parser to the matching family so output extraction
-            # follows the preset's wire shape instead of the (stripped)
-            # embedded template's.
-            from lilbee.providers.llama_cpp.chat_format_override import (
-                resolve_override_family,
-            )
+            # Family detection goes through the unified profile registry so the
+            # response parser, chat_format override, and streaming policy all
+            # come from one canonical source per family.
+            from lilbee.providers.families import detect as detect_profile
 
-            override_family = resolve_override_family(metadata, ref=target_str)
-            if override_family is not None:
-                family = override_family
-            else:
-                family = detect_family(
+            self._profile = detect_profile(metadata, ref=target_str)
+            family = (
+                self._profile.family
+                if self._profile is not None
+                else detect_family(
                     metadata.get("chat_template", ""),
                     architecture=metadata.get("architecture"),
                 )
+            )
             self._response_schema = get_schemas().get(family)
         return self._llm
 
@@ -240,33 +244,22 @@ class _ChatSession:
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
 
-# llama-cpp-python presets whose streaming path raises
-# "Automatic streaming tool choice is not supported" when tools are passed
-# without a specific function in tool_choice. When we picked the preset via
-# chat_format_override the user can't switch it, so we silently downgrade
-# the call to non-streaming and re-emit a one-shot synthetic stream.
-_STREAM_AUTO_TOOL_BLOCKED_FORMATS = frozenset(
-    {
-        "chatml-function-calling",
-        "functionary",
-        "functionary-v1",
-        "functionary-v2",
-    }
-)
 
-
-def _chat_format_override_streaming_blocked(
-    llm: Any, tool_choice: str | dict[str, Any] | None
+def _profile_needs_stream_downgrade(
+    profile: FamilyProfile | None, tool_choice: str | dict[str, Any] | None
 ) -> bool:
-    """True iff llama-cpp's preset will refuse this stream+tool_choice combo."""
-    chat_format = getattr(llm, "chat_format", None)
-    if not isinstance(chat_format, str):
+    """True iff the family profile declares the chat_format preset blocks this combo."""
+    from lilbee.providers.families.profile import StreamingPolicy
+
+    if profile is None or profile.streaming_policy is StreamingPolicy.NATIVE:
         return False
-    if chat_format not in _STREAM_AUTO_TOOL_BLOCKED_FORMATS:
-        return False
-    # Specific-function tool_choice is supported on these presets even with
-    # streaming; only "auto" / None / "required" trip the gate.
-    return not isinstance(tool_choice, dict)
+    if profile.streaming_policy is StreamingPolicy.DOWNGRADE_AUTO_TOOL_CHOICE:
+        # Specific-function tool_choice is supported on these presets even with
+        # streaming; only "auto" / None / "required" trip the gate.
+        return not isinstance(tool_choice, dict)
+    if profile.streaming_policy is StreamingPolicy.NEEDS_SPECIFIC_TOOL_CHOICE:
+        return not isinstance(tool_choice, dict)
+    return False
 
 
 def _wrap_single_completion_as_stream(completion: Any) -> Iterator[Any]:
@@ -424,11 +417,17 @@ def _handle_chat_streaming(
     state: WorkerLoopState,
     *,
     schema: ResponseSchema | None,
+    profile: FamilyProfile | None = None,
 ) -> None:
     """Drain *response_iter* and emit batched stream_chunk frames on the data pipe."""
+    from lilbee.providers.families.profile import OutputFormat
+
     abort_flag = state.session._abort_flag
     text = _TextBatchBuffer(reply)
-    schema_parser = StreamingResponseParser(schema) if schema is not None else None
+    output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
+    schema_parser = (
+        StreamingResponseParser(schema, output_format=output_format) if schema is not None else None
+    )
     completed_cleanly = False
     try:
         for raw_chunk in response_iter:
@@ -493,6 +492,7 @@ def _extract_non_streaming_result(
     *,
     tools_requested: bool,
     schema: ResponseSchema | None,
+    profile: FamilyProfile | None = None,
 ) -> ChatResult:
     """Build a ``ChatResult`` from one llama-cpp non-streaming response."""
     first, message = _unwrap_llama_response(response)
@@ -500,7 +500,7 @@ def _extract_non_streaming_result(
     text = content if isinstance(content, str) else ""
     tool_calls = _coerce_tool_calls(message.get("tool_calls") or [])
     finish_reason = _coerce_finish_reason(first.get("finish_reason"))
-    extracted = _maybe_extract_via_schema(text, tool_calls, tools_requested, schema)
+    extracted = _maybe_extract_via_schema(text, tool_calls, tools_requested, schema, profile)
     if extracted is None:
         return ChatResult(text=text, tool_calls=tool_calls, finish_reason=finish_reason)
     return extracted
@@ -527,11 +527,15 @@ def _maybe_extract_via_schema(
     native_tool_calls: tuple[ToolCall, ...],
     tools_requested: bool,
     schema: ResponseSchema | None,
+    profile: FamilyProfile | None = None,
 ) -> ChatResult | None:
     """Try schema extraction; return ``None`` to keep the native response."""
+    from lilbee.providers.families.profile import OutputFormat
+
     if native_tool_calls or not tools_requested or schema is None:
         return None
-    parsed = parse_response(text, schema)
+    output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
+    parsed = parse_response(text, schema, output_format=output_format)
     if not parsed.tool_calls:
         return None
     return ChatResult(
@@ -573,9 +577,15 @@ def _handle_chat_non_streaming(
     *,
     tools_requested: bool,
     schema: ResponseSchema | None,
+    profile: FamilyProfile | None = None,
 ) -> None:
     """Emit one result frame carrying the full :class:`ChatResult`."""
-    result = _extract_non_streaming_result(response, tools_requested=tools_requested, schema=schema)
+    result = _extract_non_streaming_result(
+        response,
+        tools_requested=tools_requested,
+        schema=schema,
+        profile=profile,
+    )
     reply.send(WireKind.RESULT, result)
 
 
@@ -649,12 +659,18 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             return
         tools_requested = bool(payload.tools)
         schema = session.response_schema if tools_requested else None
+        # Tests stub _ChatSession with a slimmer surface; default to None.
+        profile = getattr(session, "_profile", None)
         try:
             if payload.stream:
-                _handle_chat_streaming(reply, response, state, schema=schema)
+                _handle_chat_streaming(reply, response, state, schema=schema, profile=profile)
             else:
                 _handle_chat_non_streaming(
-                    reply, response, tools_requested=tools_requested, schema=schema
+                    reply,
+                    response,
+                    tools_requested=tools_requested,
+                    schema=schema,
+                    profile=profile,
                 )
         except Exception as exc:
             reply.send(WireKind.ERROR, _serialize_exception(exc))

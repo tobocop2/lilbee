@@ -897,9 +897,7 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at
     the same path invalidates automatically because its mtime changes.
     """
-    from lilbee.providers.llama_cpp.chat_format_override import (
-        resolve_chat_format_override,
-    )
+    from lilbee.providers.families import detect
 
     try:
         meta = read_gguf_metadata(Path(path_str))
@@ -908,10 +906,12 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
         return False
     if not isinstance(meta, dict):
         return False
-    # A chat_format override means lilbee will replace the embedded template
-    # with a llama-cpp preset that does iterate tools; treat such a model as
-    # tool-capable even if its bundled template was stripped.
-    if resolve_chat_format_override(meta, ref=path_str) is not None:
+    # When a family profile matches and declares a chat_format override, lilbee
+    # will swap in a llama-cpp preset that iterates tools; treat such a model
+    # as tool-capable even if its bundled template was stripped. Otherwise
+    # fall back to the embedded-template Jinja probe.
+    profile = detect(meta, ref=path_str)
+    if profile is not None and profile.chat_format_override is not None:
         return True
     template = meta.get("chat_template")
     if not isinstance(template, str):
@@ -1032,43 +1032,35 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
 def _apply_chat_format_override(
     kwargs: dict[str, Any], model_path: Path, meta: dict[str, str] | None
 ) -> None:
-    """Swap the GGUF's embedded chat template for a known-good llama-cpp preset.
+    """Swap the GGUF's embedded chat template for the family profile's preset."""
+    from lilbee.providers.families import detect
 
-    Community quanters routinely drop the ``{% if tools %}`` blocks from the
-    embedded template; without this override lilbee can only do tool calling
-    on Qwen / Gemma-4 etc. quants whose template survived intact. The
-    override resolver consults GGUF ``general.name`` (stable across
-    quantizers) and returns a chat_format preset only for models whose
-    output format matches one of lilbee's response schemas. *meta* is the
-    same metadata dict the caller already read; passing it through avoids
-    re-constructing ``Llama(vocab_only=True)``.
-    """
-    from lilbee.providers.llama_cpp.chat_format_override import (
-        resolve_chat_format_override,
-    )
-
-    override = resolve_chat_format_override(meta, ref=str(model_path))
-    if override is None:
+    profile = detect(meta, ref=str(model_path))
+    if profile is None or profile.chat_format_override is None:
         return
-    kwargs["chat_format"] = override
-    log.info("Chat format override for %s: %s", model_path.name, override)
-
-    from lilbee.providers.llama_cpp.chat_format_override import (
-        resolve_hf_tokenizer_repo,
+    kwargs["chat_format"] = profile.chat_format_override
+    log.info(
+        "Chat format override for %s: %s (family=%s)",
+        model_path.name,
+        profile.chat_format_override,
+        profile.family.value,
     )
 
-    hf_repo = resolve_hf_tokenizer_repo(meta, ref=str(model_path))
-    if hf_repo is not None:
+    if profile.hf_tokenizer_repo is not None:
         try:
             from llama_cpp.llama_tokenizer import LlamaHFTokenizer
 
-            kwargs["tokenizer"] = LlamaHFTokenizer.from_pretrained(hf_repo)
-            log.info("Loaded HF tokenizer %s for %s", hf_repo, model_path.name)
+            kwargs["tokenizer"] = LlamaHFTokenizer.from_pretrained(profile.hf_tokenizer_repo)
+            log.info(
+                "Loaded HF tokenizer %s for %s",
+                profile.hf_tokenizer_repo,
+                model_path.name,
+            )
         except Exception:
             log.warning(
                 "Failed to load HF tokenizer %s for chat_format=%s; tool calls may fail",
-                hf_repo,
-                override,
+                profile.hf_tokenizer_repo,
+                profile.chat_format_override,
                 exc_info=True,
             )
 

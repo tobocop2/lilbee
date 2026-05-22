@@ -176,10 +176,16 @@ def test_granite_extracts_top_level_tool_call_array() -> None:
     assert parsed.tool_calls[0].name == "search"
 
 
-def test_granite_extracts_bare_json_tool_call() -> None:
-    """OpenAI-style 'tools' parameter elicits bare JSON from Granite, no wrapper."""
+def test_granite_extracts_bare_json_tool_call_via_dual_output_format() -> None:
+    """OpenAI-style 'tools' parameter elicits bare JSON from Granite; DUAL fallback catches it."""
+    from lilbee.providers.families.profile import OutputFormat
+
     text = '{"name": "search", "arguments": {"q": "x"}}'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GRANITE])
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.GRANITE],
+        output_format=OutputFormat.DUAL,
+    )
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert parsed.content == ""
@@ -209,18 +215,30 @@ def test_llama3_extracts_python_tagged_tool_call() -> None:
     assert parsed.tool_calls[0].name == "search"
 
 
-def test_llama3_extracts_bare_json_tool_call() -> None:
-    """Llama-3 prompted via OpenAI 'tools' parameter emits bare JSON, not <|python_tag|>."""
+def test_llama3_extracts_bare_json_tool_call_via_dual_output_format() -> None:
+    """Llama-3 prompted via OpenAI 'tools' parameter emits bare JSON; DUAL fallback catches it."""
+    from lilbee.providers.families.profile import OutputFormat
+
     text = '{"name": "search", "arguments": {"q": "x"}}'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.LLAMA3],
+        output_format=OutputFormat.DUAL,
+    )
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
 
 def test_llama3_bare_json_leaves_no_content_leak() -> None:
     """Bare-JSON tool call must not also surface in content; matches the python_tag arm."""
+    from lilbee.providers.families.profile import OutputFormat
+
     text = '{"name": "search", "arguments": {"q": "x"}}'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.LLAMA3],
+        output_format=OutputFormat.DUAL,
+    )
     assert parsed.content == ""
 
 

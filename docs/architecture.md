@@ -219,6 +219,61 @@ chain-of-thought before tool calls, and llama-cpp-python's generic
 `chatml-function-calling` handler, which overrides each model's native
 tool-call format and loses family-specific training).
 
+## Model family compatibility (`providers/families/`)
+
+Every model family that lilbee handles end-to-end has one canonical record in `src/lilbee/providers/families/<family>.py` that consolidates everything load, prompt, and extract paths need to know about that family. One file per family, copy-and-edit to add a new one.
+
+### What the profile bundles
+
+```python
+@dataclass(frozen=True)
+class FamilyProfile:
+    family: TemplateFamily              # links to response_parser/schemas/<family>.json
+    template_markers: tuple[str, ...]   # substrings expected in the GGUF chat_template
+    name_patterns: tuple[re.Pattern]    # general.name regex matches (HF metadata)
+    ref_patterns: tuple[re.Pattern]     # repo-path regex matches (for fine-tunes that inherit base name)
+    architectures: tuple[str, ...]      # GGUF general.architecture fallback
+    chat_format_override: str | None    # llama-cpp preset to swap in when embedded template is stripped
+    hf_tokenizer_repo: str | None       # HF repo to download for presets that need it (functionary-v2)
+    streaming_policy: StreamingPolicy   # NATIVE | DOWNGRADE_AUTO_TOOL_CHOICE | NEEDS_SPECIFIC_TOOL_CHOICE
+    output_format: OutputFormat         # NATIVE | BARE_JSON | DUAL | CHATML_TOOL_CALL | HARMONY
+    sample_output_fixture: str | None   # tests/fixtures/family-outputs/<file>.txt for CI gate
+    reason: str                         # one-line description of what the profile does (not why-history)
+```
+
+The single source of truth is `src/lilbee/providers/families/__init__.py:ALL_PROFILES`, an explicit tuple ordered most-specific-first. The registry is built once via `@lru_cache(maxsize=1)`; consumers call `families.detect(metadata, ref)` to get the matching profile.
+
+### Why this shape (decision rationale)
+
+Earlier each per-family knob lived in a different place: chat-format override in `chat_format_override.py`, template-marker detector in `response_parser/families.py`, bare-JSON regex inside individual `schemas/*.json`, stream-downgrade decision in `chat_worker.py`, HF tokenizer plumbing in `provider.py`. Adding a model required editing five files; missing one caused silent failures the next time someone ran the opencode matrix against that family.
+
+The consolidation borrows ideas from three places and composes them for lilbee's situation:
+
+- **One artifact per family** is Ollama's `ModelFile` pattern, applied at the family level rather than per model. lilbee can't curate per model (the long tail of community quants would never converge), but per family the curation cost is bounded by the ~20 schemas lilbee already maintains.
+- **Per-family named output parsers** mirror vLLM's `--tool-call-parser` flag (`granite`, `hermes`, `llama3_json`, `llama4_pythonic`, `mistral`, etc.). vLLM splits each parser into its own module; lilbee keeps the regex extraction in JSON schemas and adds an `OutputFormat` enum the engine consults to decide whether to also run the shared bare-JSON fallback.
+- **Chat-format override + HF tokenizer download** are direct passthroughs of llama-cpp-python's own `Llama(chat_format=...)` registry and `LlamaHFTokenizer.from_pretrained` adapter. We declare each per family rather than scattering ad-hoc resolver code.
+
+What's specifically lilbee-shaped: bundling all of those into one dataclass per family. The failure modes are correlated (a stripped template usually pairs with needing both a chat_format override AND an output-format hint AND a streaming-policy declaration); having one file to edit, one matcher to consult, and one fixture to verify keeps the surface mechanical.
+
+### Adding a new family
+
+```
+1. tests/fixtures/family-outputs/<family>-search.txt
+   (paste a real tool-call output from running the model once)
+2. src/lilbee/providers/worker/response_parser/schemas/<family>.json
+3. src/lilbee/providers/families/<family>.py
+4. Re-export from providers/families/__init__.py ALL_PROFILES tuple
+5. tools/qa/opencode/matrix.py --families <family>
+```
+
+CI gates: every profile must have a fixture and the parser must extract a `lilbee_search` tool call from it. Adding a profile without a fixture fails the parametrized test in `tests/providers/families/test_each_profile_extracts_fixture.py`.
+
+### What this is NOT
+
+- Not a replacement for the JSON schemas in `response_parser/schemas/`. Those stay; only the engine around them changes.
+- Not a registry of every Ollama-curated model. lilbee's unit is the FAMILY (a chat-template + output-format combo), not the individual model.
+- Not a runtime config knob. `FamilyProfile` instances are static module-level data; users don't override them via env vars (the matching patterns + override map ARE the configuration surface).
+
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.

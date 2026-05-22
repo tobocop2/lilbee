@@ -6,10 +6,10 @@
     },
     "content": {
       "type": "string",
-      "x-regex": "^(.*?)(?:<\\|python_tag\\|>|\\{\\s*\"name\"\\s*:|$)"
+      "x-regex": "^(.*?)(?:<\\|python_tag\\|>|$)"
     },
     "tool_calls": {
-      "x-regex": "(?:<\\|python_tag\\|>|(?=\\{\\s*\"name\"\\s*:))(.*?)(?:<\\|eom_id\\|>|<\\|eot_id\\|>|$)",
+      "x-regex": "<\\|python_tag\\|>(.*?)(?:<\\|eom_id\\|>|<\\|eot_id\\|>|$)",
       "type": "array",
       "x-regex-iterator": "(\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\})",
       "items": {

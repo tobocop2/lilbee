@@ -7,6 +7,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from lilbee.providers.families.profile import OutputFormat
+from lilbee.providers.worker.response_parser.format_fallbacks import (
+    bare_json_tool_calls,
+    split_content_at_bare_json,
+)
 from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCall
 
@@ -27,8 +32,21 @@ class ParsedResponse:
     tool_calls: tuple[ToolCall, ...]
 
 
-def parse_response(text: str, schema: ResponseSchema) -> ParsedResponse:
-    """Extract content and structured tool calls from *text* using *schema*."""
+def parse_response(
+    text: str,
+    schema: ResponseSchema,
+    output_format: OutputFormat = OutputFormat.NATIVE,
+) -> ParsedResponse:
+    """Extract content and structured tool calls from *text* using *schema*.
+
+    *output_format* drives the bare-JSON fallback: ``BARE_JSON`` skips the
+    schema entirely and uses only the bare-JSON extractor; ``DUAL`` tries
+    the schema first and falls back to bare-JSON when zero tool calls were
+    extracted. ``NATIVE`` (default) preserves legacy behavior.
+    """
+    if output_format is OutputFormat.BARE_JSON:
+        return _parse_bare_json(text)
+
     # transformers is heavy (~1.2s cold import); lazy so the cost only lands
     # the first time a chat request actually carries tools. If the utility
     # is missing on this transformers release we fall through to the raw
@@ -43,12 +61,27 @@ def parse_response(text: str, schema: ResponseSchema) -> ParsedResponse:
         parsed = recursive_parse(text, schema)
     except (ValueError, TypeError) as exc:
         log.debug("response schema parse failed: %s", exc)
-        return ParsedResponse(content=text, tool_calls=())
+        parsed = None
     if not isinstance(parsed, dict):
+        if output_format is OutputFormat.DUAL:
+            return _parse_bare_json(text)
         return ParsedResponse(content=text, tool_calls=())
     content_value = parsed.get(_CONTENT_KEY)
     content = content_value if isinstance(content_value, str) else ""
     tool_calls = _tool_calls_from_parsed(parsed.get(_TOOL_CALLS_KEY))
+    if not tool_calls and output_format is OutputFormat.DUAL:
+        fallback = _parse_bare_json(text)
+        if fallback.tool_calls:
+            return fallback
+    return ParsedResponse(content=content, tool_calls=tool_calls)
+
+
+def _parse_bare_json(text: str) -> ParsedResponse:
+    """Run the shared bare-JSON extractor (OutputFormat.BARE_JSON / DUAL fallback)."""
+    tool_calls = bare_json_tool_calls(text)
+    if not tool_calls:
+        return ParsedResponse(content=text, tool_calls=())
+    content = split_content_at_bare_json(text)
     return ParsedResponse(content=content, tool_calls=tool_calls)
 
 
