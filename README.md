@@ -75,7 +75,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python). For brand-new architectures that haven't reached the bundled runtime yet, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
 - **Local by default.** Everything stays on your machine unless you opt into a cloud model, and lilbee flags it when you do.
-- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#let-the-agent-set-up-lilbee-for-you).
+- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
 - **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. The single-file standalone binary, which bundles Python, the model runtime, OCR, the crawler, and the vector store, lands around 250-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps that bundle a browser engine for their UI typically ship several hundred MB of runtime before loading any models.
 
 ## Why lilbee
@@ -94,9 +94,9 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
-### Let the agent set up lilbee for you
+### Already using an MCP-aware agent? Hand setup to it.
 
-The fastest path to a useful lilbee is to hand it to an MCP-aware agent and let it do the setup: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
+If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See [Fine-tuning lilbee from your agent](docs/agent-integration.md#fine-tuning-lilbee-from-your-agent) for the example prompt.
 
 ### Grounding for AI agents
 
