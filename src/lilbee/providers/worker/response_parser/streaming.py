@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from lilbee.providers.worker.response_parser.parse import parse_response
 from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCallDelta
+
+if TYPE_CHECKING:
+    from lilbee.providers.families.profile import OutputFormat
 
 # First characters of every marker the shipped schemas watch for. When an
 # opener appears in the unemitted content, we hold from that position until
@@ -27,8 +32,16 @@ _BUFFER_HARD_CAP = 64 * 1024
 class StreamingResponseParser:
     """Re-parse the accumulated stream buffer per chunk and emit deltas."""
 
-    def __init__(self, schema: ResponseSchema) -> None:
+    def __init__(
+        self,
+        schema: ResponseSchema,
+        *,
+        output_format: OutputFormat | None = None,
+    ) -> None:
+        from lilbee.providers.families.profile import OutputFormat as _OutputFormat
+
         self._schema = schema
+        self._output_format = output_format if output_format is not None else _OutputFormat.NATIVE
         self._buffer = ""
         self._emitted_content_len = 0
         self._emitted_tool_call_count = 0
@@ -47,7 +60,7 @@ class StreamingResponseParser:
         # unbounded memory or O(n^2) regex cost.
         if not finalize and len(self._buffer) > _BUFFER_HARD_CAP:
             finalize = True
-        parsed = parse_response(self._buffer, self._schema)
+        parsed = parse_response(self._buffer, self._schema, output_format=self._output_format)
 
         new_calls = parsed.tool_calls[self._emitted_tool_call_count :]
         tool_deltas = [

@@ -803,6 +803,12 @@ def load_llama(
     if cfg.main_gpu is not None:
         kwargs["main_gpu"] = cfg.main_gpu
 
+    # Read GGUF metadata at most once and share it across all the kwargs
+    # builders that need it (n_ctx resolution + chat_format override).
+    # Each call constructs a Llama(vocab_only=True), so caching here keeps
+    # the load path to one metadata pass instead of two.
+    meta: dict[str, str] | None = None
+
     if embedding:
         # Embedding/rerank uses the model's training context unconditionally.
         # cfg.num_ctx is a chat-tuned setting; propagating it here used to
@@ -812,9 +818,9 @@ def load_llama(
         # ``embed_train_ctx`` value (instead of ``0`` for "use model
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
-        embed_meta = safe_read_gguf_metadata(model_path)
+        meta = safe_read_gguf_metadata(model_path)
         embed_train_ctx = train_ctx_from_meta(
-            embed_meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
+            meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
         )
         kwargs["n_ctx"] = embed_train_ctx
     elif cfg.num_ctx is not None:
@@ -844,6 +850,8 @@ def load_llama(
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
+        chat_meta = meta if meta is not None else safe_read_gguf_metadata(model_path)
+        _apply_chat_format_override(kwargs, model_path, chat_meta)
 
     if abort_callback_override is not None:
         kwargs["abort_callback"] = abort_callback_override
@@ -889,6 +897,8 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at
     the same path invalidates automatically because its mtime changes.
     """
+    from lilbee.providers.families import detect
+
     try:
         meta = read_gguf_metadata(Path(path_str))
     except (OSError, ValueError):
@@ -896,6 +906,13 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
         return False
     if not isinstance(meta, dict):
         return False
+    # When a family profile matches and declares a chat_format override, lilbee
+    # will swap in a llama-cpp preset that iterates tools; treat such a model
+    # as tool-capable even if its bundled template was stripped. Otherwise
+    # fall back to the embedded-template Jinja probe.
+    profile = detect(meta, ref=path_str)
+    if profile is not None and profile.chat_format_override is not None:
+        return True
     template = meta.get("chat_template")
     if not isinstance(template, str):
         return False
@@ -1010,6 +1027,42 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
         return
     kwargs["type_k"] = ggml_type
     kwargs["type_v"] = ggml_type
+
+
+def _apply_chat_format_override(
+    kwargs: dict[str, Any], model_path: Path, meta: dict[str, str] | None
+) -> None:
+    """Swap the GGUF's embedded chat template for the family profile's preset."""
+    from lilbee.providers.families import detect
+
+    profile = detect(meta, ref=str(model_path))
+    if profile is None or profile.chat_format_override is None:
+        return
+    kwargs["chat_format"] = profile.chat_format_override
+    log.info(
+        "Chat format override for %s: %s (family=%s)",
+        model_path.name,
+        profile.chat_format_override,
+        profile.family.value,
+    )
+
+    if profile.hf_tokenizer_repo is not None:
+        try:
+            from llama_cpp.llama_tokenizer import LlamaHFTokenizer
+
+            kwargs["tokenizer"] = LlamaHFTokenizer.from_pretrained(profile.hf_tokenizer_repo)
+            log.info(
+                "Loaded HF tokenizer %s for %s",
+                profile.hf_tokenizer_repo,
+                model_path.name,
+            )
+        except Exception:
+            log.warning(
+                "Failed to load HF tokenizer %s for chat_format=%s; tool calls may fail",
+                profile.hf_tokenizer_repo,
+                profile.chat_format_override,
+                exc_info=True,
+            )
 
 
 def _ggml_type_map() -> dict[KvCacheType, Any] | None:

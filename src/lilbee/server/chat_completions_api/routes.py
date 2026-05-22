@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -44,6 +45,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelNotFoundError,
     dispatch_chat,
     dispatch_chat_stream,
+    preflight_chat_request,
 )
 
 log = logging.getLogger(__name__)
@@ -85,6 +87,10 @@ async def chat_completions_endpoint(
         # (e.g. image content). Surface as 400 instead of a generic 500.
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
+    preflush_error = _preflush_or_none(req)
+    if preflush_error is not None:
+        return preflush_error
+
     try:
         await acquire_chat_lock_or_busy()
     except ChatBusyError:
@@ -103,6 +109,23 @@ async def chat_completions_endpoint(
             media_type="text/event-stream",
         )
     return await _run_non_stream(req, lock)
+
+
+def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
+    """Validate *req* before any streaming response starts.
+
+    A 4xx body here is reachable by any OpenAI-compatible client; once a
+    Stream is returned the headers are flushed at 200 and downstream errors
+    can only travel via SSE frames which not every client surfaces cleanly.
+    Returns ``None`` when *req* is fit to dispatch.
+    """
+    try:
+        preflight_chat_request(req)
+    except ModelNotFoundError as exc:
+        return _error_response(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
+    except ModelDoesNotSupportToolsError as exc:
+        return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
+    return None
 
 
 async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Response:
@@ -164,9 +187,27 @@ async def _gated_completions_stream(
 
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
-    """SSE frame carrying an error body, followed by ``[DONE]``."""
+    """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
+
+    Clients that follow OpenAI's streaming SDK (opencode, aider, the ai-sdk
+    family) only parse frames that match the chat.completion.chunk schema;
+    a bare ``{"error": ...}`` frame either crashes the parser or is silently
+    discarded, producing a reconnect/retry storm. Emit a real chunk with an
+    empty delta, ``finish_reason="length"`` (the only termination reason
+    every client maps to a visible "the model stopped" UX), and an inline
+    ``error`` field for clients that look at it. ``[DONE]`` follows, which
+    is what every OAI-compatible SDK expects to see at stream end.
+    """
     body = completions_error_body(code, message)
-    payload = json.dumps(body, separators=(",", ":"))
+    chunk: dict[str, object] = {
+        "id": _response_id(),
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}],
+        "error": body["error"],
+    }
+    payload = json.dumps(chunk, separators=(",", ":"))
     return f"data: {payload}\n\ndata: [DONE]\n\n".encode()
 
 

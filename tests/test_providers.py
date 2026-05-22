@@ -295,8 +295,9 @@ class TestLlamaCppProvider:
 
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
-        mock_llm = MagicMock()
-        mock_llm.metadata = {
+        reader = MagicMock()
+        reader.fields = {}
+        for key, value in {
             "general.architecture": "qwen3",
             "general.name": "Qwen3 8B",
             "general.file_type": "15",
@@ -308,8 +309,11 @@ class TestLlamaCppProvider:
             "qwen3.attention.key_length": "128",
             "qwen3.attention.value_length": "128",
             "tokenizer.chat_template": "{% if messages %}...",
-        }
-        with patch("llama_cpp.Llama", return_value=mock_llm):
+        }.items():
+            field = MagicMock()
+            field.contents.return_value = value
+            reader.fields[key] = field
+        with patch("gguf.GGUFReader", return_value=reader):
             result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result["architecture"] == "qwen3"
         assert result["context_length"] == "32768"
@@ -322,16 +326,15 @@ class TestLlamaCppProvider:
         assert result["head_count"] == "32"
         assert result["key_length"] == "128"
         assert result["value_length"] == "128"
-        mock_llm.close.assert_called_once()
 
     def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
-        mock_llm = MagicMock()
-        mock_llm.metadata = {}
-        with patch("llama_cpp.Llama", return_value=mock_llm):
+        reader = MagicMock()
+        reader.fields = {}
+        with patch("gguf.GGUFReader", return_value=reader):
             result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result is None
 
@@ -505,9 +508,13 @@ class TestLlamaCppProvider:
         with patch("llama_cpp.Llama", side_effect=fake_llama):
             result = load_llama(models_dir / "test-model.gguf", mode="chat")
         assert result is instance
-        assert len(call_log) == 2
-        assert call_log[0].get("flash_attn") is True
-        assert "flash_attn" not in call_log[1]
+        # Filter out vocab-only metadata reads (a separate construction the
+        # chat_format-override resolver makes before the real load); we only
+        # care about the actual model-load attempts here.
+        load_attempts = [c for c in call_log if not c.get("vocab_only")]
+        assert len(load_attempts) == 2
+        assert load_attempts[0].get("flash_attn") is True
+        assert "flash_attn" not in load_attempts[1]
 
     def testload_llama_retries_with_halved_ctx_on_oom(self, models_dir: Path) -> None:
         """A llama_context load failure halves n_ctx and retries before wrapping the error."""
@@ -781,8 +788,17 @@ class TestLlamaCppProvider:
         cfg.flash_attention = "0"
         instance = MagicMock()
         instance.n_ctx.return_value = _MIN_CHAT_CTX
+
+        # Two distinct mocks: vocab-only metadata reads close their handle
+        # by design (that's how read_gguf_metadata releases the Llama);
+        # only the real model-load mock must not be closed.
+        def fake_llama(**kwargs):
+            if kwargs.get("vocab_only"):
+                return MagicMock(metadata={})
+            return instance
+
         try:
-            with patch("llama_cpp.Llama", return_value=instance):
+            with patch("llama_cpp.Llama", side_effect=fake_llama):
                 result = load_llama(models_dir / "ok.gguf", mode="chat")
             assert result is instance
             instance.close.assert_not_called()
@@ -3780,22 +3796,32 @@ class TestTrainCtxFromMeta:
 
 
 class TestReadGgufMetadata:
-    def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns parsed fields."""
+    @staticmethod
+    def _fake_reader(metadata: dict[str, object]) -> mock.MagicMock:
+        reader = mock.MagicMock()
+        reader.fields = {}
+        for key, value in metadata.items():
+            field = mock.MagicMock()
+            field.contents.return_value = value
+            reader.fields[key] = field
+        return reader
+
+    def test_reads_all_fields(self) -> None:
+        """read_gguf_metadata returns parsed fields from the GGUFReader."""
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {
-            "general.architecture": "llama",
-            "llama.context_length": 4096,
-            "llama.embedding_length": 4096,
-            "tokenizer.chat_template": "template",
-            "general.file_type": "7",
-            "general.name": "Test Model",
-        }
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
+        reader = self._fake_reader(
+            {
+                "general.architecture": "llama",
+                "llama.context_length": 4096,
+                "llama.embedding_length": 4096,
+                "tokenizer.chat_template": "template",
+                "general.file_type": "7",
+                "general.name": "Test Model",
+            }
+        )
+        with mock.patch("gguf.GGUFReader", return_value=reader):
+            result = read_gguf_metadata(Path("/test.gguf"))
 
         assert result == {
             "architecture": "llama",
@@ -3805,29 +3831,24 @@ class TestReadGgufMetadata:
             "file_type": "7",
             "name": "Test Model",
         }
-        mock_llm.close.assert_called_once()
 
-    def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns None when no fields found."""
+    def test_returns_none_for_empty_metadata(self) -> None:
+        """read_gguf_metadata returns None when no recognised fields are present."""
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {}
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
+        reader = self._fake_reader({})
+        with mock.patch("gguf.GGUFReader", return_value=reader):
+            result = read_gguf_metadata(Path("/test.gguf"))
         assert result is None
 
-    def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata handles None metadata."""
+    def test_uses_default_arch_when_general_architecture_absent(self) -> None:
+        """No general.architecture -> fall back to 'llama' so context_length still resolves."""
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = None
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
-        assert result is None
+        reader = self._fake_reader({"llama.context_length": 8192})
+        with mock.patch("gguf.GGUFReader", return_value=reader):
+            result = read_gguf_metadata(Path("/test.gguf"))
+        assert result == {"context_length": "8192"}
 
 
 class TestLoadLlama:

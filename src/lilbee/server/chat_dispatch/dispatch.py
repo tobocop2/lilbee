@@ -264,6 +264,19 @@ def _ensure_tool_capability(req: CanonicalChatRequest, model: str) -> None:
         raise ModelDoesNotSupportToolsError(model)
 
 
+def preflight_chat_request(req: CanonicalChatRequest) -> str:
+    """Synchronously validate *req* before any streaming response starts.
+
+    Raises ``ModelNotFoundError`` or ``ModelDoesNotSupportToolsError``
+    so the route layer can return a real 4xx HTTP status instead of
+    burying the failure in an SSE error frame after headers flush.
+    Returns the resolved canonical model ref.
+    """
+    canonical = _resolve_canonical_model(req.model)
+    _ensure_tool_capability(req, canonical)
+    return canonical
+
+
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
     """Flatten canonical messages to the OpenAI-shaped wire format the provider speaks."""
     out: list[dict[str, Any]] = []

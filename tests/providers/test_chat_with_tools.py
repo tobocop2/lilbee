@@ -196,6 +196,30 @@ def test_llama_cpp_supports_tools_false_when_template_text_only(monkeypatch) -> 
     assert provider.supports_tools("any/model::Q4_K_M") is False
 
 
+def test_llama_cpp_supports_tools_true_when_chat_format_override_applies(monkeypatch) -> None:
+    """Hermes-3 community GGUFs ship a stripped template but the chat_format
+    override fills in the tool blocks at load time, so the model IS
+    tool-capable from the route layer's perspective.
+    """
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: Path("/fake/hermes-3.gguf"),
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+        lambda path: {
+            "name": "Hermes 3 Llama 3.1 8B",
+            # Stripped: no tools mention anywhere.
+            "chat_template": "{{ messages }}",
+        },
+    )
+    assert provider.supports_tools("any/model::Q4_K_M") is True
+
+
 def test_llama_cpp_supports_tools_false_when_tool_words_only_in_prose(monkeypatch) -> None:
     """A template that mentions tool words in literal text, not inside Jinja
     delimiters, must not report tool support. Matching anywhere in the string
