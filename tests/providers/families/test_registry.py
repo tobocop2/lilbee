@@ -144,3 +144,38 @@ def test_every_compiled_pattern_is_anchored_to_a_search_method(
     """``name_patterns`` and ``ref_patterns`` must be ``re.Pattern`` (not raw strings)."""
     for pattern in (*profile.name_patterns, *profile.ref_patterns):
         assert isinstance(pattern, re.Pattern)
+
+
+def test_all_profiles_view_returns_full_match_order() -> None:
+    """``FamilyRegistry.all_profiles`` exposes the full match order tuple."""
+    assert registry().all_profiles == ALL_PROFILES
+
+
+def test_discover_profiles_raises_on_missing_module(monkeypatch) -> None:
+    """If ``_MATCH_ORDER`` lists a module that doesn't exist, discovery fails fast."""
+    import lilbee.providers.families as families_pkg
+
+    monkeypatch.setattr(families_pkg, "_MATCH_ORDER", ("not_a_real_profile",))
+    with pytest.raises(RuntimeError, match="not importable"):
+        families_pkg._discover_profiles()
+
+
+def test_discover_profiles_raises_on_extra_module(monkeypatch) -> None:
+    """A sibling profile module not listed in ``_MATCH_ORDER`` fails discovery."""
+    import lilbee.providers.families as families_pkg
+
+    # Drop one real module from the order; the leftover triggers the extras check.
+    short_order = tuple(name for name in families_pkg._MATCH_ORDER if name != "qwen3")
+    monkeypatch.setattr(families_pkg, "_MATCH_ORDER", short_order)
+    with pytest.raises(RuntimeError, match="absent from _MATCH_ORDER"):
+        families_pkg._discover_profiles()
+
+
+def test_discover_profiles_raises_on_non_profile_value(monkeypatch) -> None:
+    """If a profile module's ``PROFILE`` attribute isn't a FamilyProfile, fail loudly."""
+    import lilbee.providers.families as families_pkg
+    import lilbee.providers.families.qwen3 as qwen3_mod
+
+    monkeypatch.setattr(qwen3_mod, "PROFILE", "not-a-profile")
+    with pytest.raises(TypeError, match="must be a FamilyProfile"):
+        families_pkg._discover_profiles()

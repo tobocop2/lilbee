@@ -129,11 +129,11 @@ def _parse_with_regex(
 
 
 def _chatml_tool_call_from_match(match: re.Match[str]) -> ToolCall | None:
+    # ``body`` is constrained by the regex to ``\{.*?\}`` so a successful
+    # ``json.loads`` always returns a dict; only JSONDecodeError needs handling.
     try:
         obj = json.loads(match.group("body"))
     except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
         return None
     name = obj.get(_NAME_KEY)
     if not isinstance(name, str) or not name:
@@ -142,13 +142,9 @@ def _chatml_tool_call_from_match(match: re.Match[str]) -> ToolCall | None:
 
 
 def _harmony_tool_call_from_match(match: re.Match[str]) -> ToolCall | None:
-    name = match.group("name")
-    if not name:
-        return None
-    arguments = match.group("args")
-    if not arguments:
-        return None
-    return ToolCall(id="", name=name, arguments=arguments)
+    # ``name`` and ``args`` are required groups in ``_HARMONY_TOOL_CALL_RE`` so
+    # a successful match always populates them with a non-empty string.
+    return ToolCall(id="", name=match.group("name"), arguments=match.group("args"))
 
 
 def _tool_calls_from_parsed(raw: object) -> tuple[ToolCall, ...]:

@@ -5231,3 +5231,72 @@ class TestSdkLLMProviderPdfOcr:
         provider = SdkLLMProvider(LitellmSdkBackend())
         with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
+
+
+class TestApplyChatFormatOverride:
+    """Direct coverage of the chat_format override + HF tokenizer load branch."""
+
+    def test_applies_override_and_loads_hf_tokenizer(self) -> None:
+        """A profile with chat_format_override + hf_tokenizer_repo wires both into kwargs."""
+        from lilbee.providers.chat_format import LlamaCppChatFormatPreset
+        from lilbee.providers.families.profile import (
+            FamilyProfile,
+            OutputFormat,
+            StreamingPolicy,
+        )
+        from lilbee.providers.llama_cpp.provider import _apply_chat_format_override
+        from lilbee.providers.worker.response_parser.families import TemplateFamily
+
+        profile = FamilyProfile(
+            family=TemplateFamily.FUNCTIONARY_V3,
+            chat_format_override=LlamaCppChatFormatPreset.FUNCTIONARY_V2,
+            hf_tokenizer_repo="meetkai/functionary-small-v3.2",
+            streaming_policy=StreamingPolicy.DOWNGRADE_AUTO_TOOL_CHOICE,
+            output_format=OutputFormat.NATIVE,
+        )
+        tok_sentinel = object()
+        with (
+            mock.patch("lilbee.providers.llama_cpp.provider.detect_profile", return_value=profile),
+            mock.patch(
+                "llama_cpp.llama_tokenizer.LlamaHFTokenizer.from_pretrained",
+                return_value=tok_sentinel,
+            ) as load,
+        ):
+            kwargs: dict[str, object] = {}
+            _apply_chat_format_override(kwargs, Path("/fake/functionary.gguf"), {"x": "y"})
+
+        assert kwargs["chat_format"] == "functionary-v2"
+        assert kwargs["tokenizer"] is tok_sentinel
+        load.assert_called_once_with("meetkai/functionary-small-v3.2")
+
+    def test_swallows_hf_tokenizer_load_failure(self) -> None:
+        """When ``LlamaHFTokenizer.from_pretrained`` raises, lilbee logs and continues."""
+        from lilbee.providers.chat_format import LlamaCppChatFormatPreset
+        from lilbee.providers.families.profile import (
+            FamilyProfile,
+            OutputFormat,
+            StreamingPolicy,
+        )
+        from lilbee.providers.llama_cpp.provider import _apply_chat_format_override
+        from lilbee.providers.worker.response_parser.families import TemplateFamily
+
+        profile = FamilyProfile(
+            family=TemplateFamily.FUNCTIONARY_V3,
+            chat_format_override=LlamaCppChatFormatPreset.FUNCTIONARY_V2,
+            hf_tokenizer_repo="meetkai/functionary-small-v3.2",
+            streaming_policy=StreamingPolicy.DOWNGRADE_AUTO_TOOL_CHOICE,
+            output_format=OutputFormat.NATIVE,
+        )
+        with (
+            mock.patch("lilbee.providers.llama_cpp.provider.detect_profile", return_value=profile),
+            mock.patch(
+                "llama_cpp.llama_tokenizer.LlamaHFTokenizer.from_pretrained",
+                side_effect=RuntimeError("no network"),
+            ),
+        ):
+            kwargs: dict[str, object] = {}
+            _apply_chat_format_override(kwargs, Path("/fake/functionary.gguf"), {"x": "y"})
+
+        # chat_format still set; tokenizer skipped silently.
+        assert kwargs["chat_format"] == "functionary-v2"
+        assert "tokenizer" not in kwargs

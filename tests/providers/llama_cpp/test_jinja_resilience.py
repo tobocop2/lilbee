@@ -14,6 +14,15 @@ def test_patch_is_applied() -> None:
     assert getattr(llama_chat_format.Jinja2ChatFormatter, "__lilbee_jinja_resilience__", False)
 
 
+def test_install_is_idempotent() -> None:
+    """A second ``install()`` returns early when the sentinel is set."""
+    from lilbee.providers.llama_cpp.jinja_resilience import install
+
+    before = llama_chat_format.Jinja2ChatFormatter.__init__
+    install()
+    assert llama_chat_format.Jinja2ChatFormatter.__init__ is before
+
+
 def test_unsupported_jinja_tag_no_longer_raises_at_init() -> None:
     """A SmolLM3-style ``{% generation %}`` tag must not blow up Llama load.
 

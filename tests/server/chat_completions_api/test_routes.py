@@ -766,3 +766,115 @@ class TestBusy:
         assert body["error"]["code"] == "rate_limit_exceeded"
         assert body["error"]["type"] == "rate_limit_error"
         assert resp.headers.get("retry-after") == "1"
+
+
+class TestRouteDispatchErrorBranches:
+    """The route layer catches model-known errors raised by dispatch_chat post-preflight.
+
+    Preflight normally filters these, but if dispatch_chat itself raises one we
+    must still surface the canonical 4xx envelope rather than collapsing to 500.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_stream_returns_404_when_dispatch_raises_model_not_found(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.server.chat_completions_api.routes import _run_non_stream
+        from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        def _raise(req: object) -> None:
+            raise ModelNotFoundError("vendor/missing")
+
+        monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
+        req = CanonicalChatRequest(
+            model="vendor/missing",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+        )
+        import asyncio
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        response = await _run_non_stream(req, lock)
+        assert response.status_code == 404
+        assert response.content["error"]["code"] == "model_not_found"
+
+    @pytest.mark.asyncio
+    async def test_non_stream_returns_400_when_dispatch_raises_tools_unsupported(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.server.chat_completions_api.routes import _run_non_stream
+        from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        def _raise(req: object) -> None:
+            raise ModelDoesNotSupportToolsError("vendor/notools")
+
+        monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
+        req = CanonicalChatRequest(
+            model="vendor/notools",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+        )
+        import asyncio
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        response = await _run_non_stream(req, lock)
+        assert response.status_code == 400
+        assert response.content["error"]["code"] == "model_does_not_support_tools"
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_404_sse_frame_when_dispatch_raises_model_not_found(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.server.chat_completions_api.routes import _gated_completions_stream
+        from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        async def _raising_stream(req: object) -> Any:
+            raise ModelNotFoundError("vendor/missing")
+            yield  # pragma: no cover  -- unreachable, makes this an async generator
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.dispatch_chat_stream", _raising_stream
+        )
+        req = CanonicalChatRequest(
+            model="vendor/missing",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+            stream=True,
+        )
+        import asyncio
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        frames = [frame async for frame in _gated_completions_stream(req, lock)]
+        joined = b"".join(frames).decode()
+        assert "model_not_found" in joined
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_400_sse_frame_when_dispatch_raises_tools_unsupported(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.server.chat_completions_api.routes import _gated_completions_stream
+        from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        async def _raising_stream(req: object) -> Any:
+            raise ModelDoesNotSupportToolsError("vendor/notools")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.dispatch_chat_stream", _raising_stream
+        )
+        req = CanonicalChatRequest(
+            model="vendor/notools",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+            stream=True,
+        )
+        import asyncio
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        frames = [frame async for frame in _gated_completions_stream(req, lock)]
+        joined = b"".join(frames).decode()
+        assert "model_does_not_support_tools" in joined

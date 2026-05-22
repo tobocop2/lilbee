@@ -2279,3 +2279,44 @@ class TestAppSetActiveModelDownloadGuard:
             assert cfg.chat_model == ref
         finally:
             cfg.chat_model = chat_default
+
+
+class TestModelInfoExceptionBranches:
+    """``_read_chat_arch`` / ``_read_embed_arch`` swallow read errors and return the info object."""
+
+    def test_chat_arch_swallows_exception_when_path_resolve_fails(self) -> None:
+        from lilbee.modelhub.model_info import ModelArchInfo, _read_chat_arch
+
+        info = ModelArchInfo()
+        info.active_handler = ""
+        with mock.patch(
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _read_chat_arch(info)
+        # Failure path swallowed: function returns info; the success branch's
+        # ``info.active_handler = 'llama-cpp'`` assignment was never reached.
+        assert result is info
+        assert info.active_handler == ""
+
+    def test_embed_arch_swallows_exception_when_metadata_read_fails(self) -> None:
+        from pathlib import Path
+
+        from lilbee.modelhub.model_info import ModelArchInfo, _read_embed_arch
+
+        info = ModelArchInfo()
+        info.embed_arch = "sentinel"
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp.provider.resolve_model_path",
+                return_value=Path("/fake/embed.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+                side_effect=OSError("disk read failed"),
+            ),
+        ):
+            result = _read_embed_arch(info)
+        assert result is info
+        # Exception swallowed before the success branch overwrites the field.
+        assert info.embed_arch == "sentinel"

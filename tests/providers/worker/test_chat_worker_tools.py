@@ -1312,3 +1312,11 @@ def test_session_chat_does_not_downgrade_when_chat_format_unchanged(monkeypatch,
         tool_choice=None,
     )
     assert captured["stream"] is True
+
+
+def test_wrap_single_completion_as_stream_handles_malformed_completions() -> None:
+    """Defensive guards on the downgrade synthesiser: skip non-dict + empty-choices payloads."""
+    from lilbee.providers.worker.chat_worker import _wrap_single_completion_as_stream
+
+    assert list(_wrap_single_completion_as_stream("not a dict")) == []
+    assert list(_wrap_single_completion_as_stream({"choices": []})) == []

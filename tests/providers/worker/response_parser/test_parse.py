@@ -548,3 +548,72 @@ def test_bare_json_scanner_handles_nested_objects() -> None:
     call = parsed.tool_calls[0]
     assert call.name == "search"
     assert json.loads(call.arguments) == {"filter": {"deep": {"nested": {"v": 1}}}}
+
+
+def test_bare_json_extractor_skips_object_with_non_string_name() -> None:
+    """A ``{"name": 42, ...}`` block isn't a tool call -- must be skipped silently."""
+    from lilbee.providers.worker.response_parser.format_fallbacks import bare_json_tool_calls
+
+    assert bare_json_tool_calls('{"name": 42, "arguments": {}}') == ()
+    assert bare_json_tool_calls('{"name": "", "arguments": {}}') == ()
+
+
+def test_bare_json_split_content_returns_full_text_when_no_match() -> None:
+    """``split_content_at_bare_json`` returns *text* unchanged when nothing matches."""
+    from lilbee.providers.worker.response_parser.format_fallbacks import split_content_at_bare_json
+
+    assert split_content_at_bare_json("no JSON objects here") == "no JSON objects here"
+
+
+def test_arguments_to_string_handles_string_passthrough_and_serialiser_failure() -> None:
+    """``_arguments_to_string`` covers None, str, and non-JSON-serialisable inputs."""
+    from lilbee.providers.worker.response_parser.format_fallbacks import _arguments_to_string
+
+    assert _arguments_to_string(None) == "{}"
+    assert _arguments_to_string('{"x":1}') == '{"x":1}'
+
+    class _NotSerialisable:
+        pass
+
+    assert _arguments_to_string({"obj": _NotSerialisable()}) == "{}"
+
+
+def test_chatml_tool_call_extractor_rejects_invalid_json_body() -> None:
+    """A body that matches ``\\{.*?\\}`` shape but isn't valid JSON returns no call."""
+    schema = get_schemas()[TemplateFamily.HERMES]
+    parsed = parse_response(
+        "<tool_call>{not valid json}</tool_call>",
+        schema,
+        output_format=OutputFormat.CHATML_TOOL_CALL,
+    )
+    assert parsed.tool_calls == ()
+
+
+def test_chatml_tool_call_extractor_rejects_object_without_name() -> None:
+    """``CHATML_TOOL_CALL`` skips a wrapper whose JSON object has no ``name``."""
+    schema = get_schemas()[TemplateFamily.HERMES]
+    parsed = parse_response(
+        '<tool_call>{"arguments": {}}</tool_call>',
+        schema,
+        output_format=OutputFormat.CHATML_TOOL_CALL,
+    )
+    assert parsed.tool_calls == ()
+
+
+def test_harmony_extractor_passes_arguments_through_when_present() -> None:
+    """The HARMONY extractor returns the args body verbatim as JSON."""
+    schema = get_schemas()[TemplateFamily.GPT_OSS]
+    text = '<|channel|>commentary to=functions.s<|message|>{"q":"x"}<|call|>'
+    parsed = parse_response(text, schema, output_format=OutputFormat.HARMONY)
+    assert parsed.tool_calls[0].arguments == '{"q":"x"}'
+
+
+def test_chatml_extractor_skips_bad_wrapper_keeps_following_one() -> None:
+    """A bad first ``<tool_call>`` wrapper must not block extraction of the next valid one."""
+    schema = get_schemas()[TemplateFamily.HERMES]
+    text = (
+        "<tool_call>not-json</tool_call>"
+        '<tool_call>{"name": "ok", "arguments": {"a": 1}}</tool_call>'
+    )
+    parsed = parse_response(text, schema, output_format=OutputFormat.CHATML_TOOL_CALL)
+    assert [c.name for c in parsed.tool_calls] == ["ok"]
