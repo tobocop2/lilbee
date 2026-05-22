@@ -61,8 +61,13 @@ def _parse_arch(blob: bytes) -> str:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
-        # ``GGUFReader`` mmaps the file via numpy; on Windows the handle blocks
-        # unlink unless the memmap is released before the unlink call.
+        # ``GGUFReader`` mmaps the file via numpy; on Windows the OS-level
+        # handle blocks unlink until the underlying mmap object is closed.
+        # ``del reader.data`` alone isn't enough -- field views into the
+        # array can keep refcounts alive -- so close the mmap explicitly.
         if reader is not None and hasattr(reader, "data"):
+            backing = getattr(reader.data, "_mmap", None)
+            if backing is not None:
+                backing.close()
             del reader.data
         tmp.unlink(missing_ok=True)

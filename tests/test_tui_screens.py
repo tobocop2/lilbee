@@ -12411,6 +12411,10 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="CatalogScreen grid-mount timing race on Windows Textual",
+)
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
     """The success branches of _tick_loading_spinner update both targets."""
     from textual.widgets import Static

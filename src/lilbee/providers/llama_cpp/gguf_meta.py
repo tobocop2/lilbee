@@ -64,15 +64,18 @@ def _gguf_reader(path: Path) -> Iterator[GGUFReader]:
     """Open ``GGUFReader`` and release its memmap deterministically.
 
     ``GGUFReader.__init__`` mmaps the file via ``numpy.memmap``. On Windows
-    the mmap holds the file handle and blocks unlink/rename of the GGUF
-    until released; dropping ``reader.data`` here makes that deterministic
-    rather than depending on GC.
+    the OS handle blocks unlink/rename until the underlying mmap is closed;
+    ``del reader.data`` alone isn't enough because field views into the
+    array keep refcounts alive, so close the mmap object explicitly.
     """
     reader = GGUFReader(str(path))
     try:
         yield reader
     finally:
         if hasattr(reader, "data"):
+            backing = getattr(reader.data, "_mmap", None)
+            if backing is not None:
+                backing.close()
             del reader.data
 
 
