@@ -274,16 +274,48 @@
       </div>
 
       <div class="installpane" role="tabpanel" id="pane-binary" aria-labelledby="tab-binary" hidden>
-        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">macOS arm64</span><span class="oschip">Windows x86_64</span></div>
-        <div class="install">
-          <span class="prompt">$</span>
-          <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64 -o lilbee &amp;&amp; chmod +x lilbee</span>
-          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        <p class="binary-intro">Single self-contained binary. Bundles its own Python runtime and the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras. Click to download, or use the terminal one-liner.</p>
+
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Linux x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64">download lilbee-linux-x86_64 &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64 -o lilbee &amp;&amp; chmod +x lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
         </div>
+
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">macOS arm64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64">download lilbee-macos-arm64 &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-macos-arm64 -o lilbee &amp;&amp; chmod +x lilbee &amp;&amp; xattr -d com.apple.quarantine ./lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Windows x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64.exe">download lilbee-windows-x86_64.exe &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">&gt;</span>
+            <span class="cmd">iwr https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64.exe -OutFile lilbee.exe</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
         <div class="notes-body" id="notes-binary" hidden>
-          <p class="extras">single binary, bundles its own Python runtime, no <code>pip</code> needed &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included &nbsp;.&nbsp; <a href="https://github.com/tobocop2/lilbee/releases">macOS arm64 and Windows builds on the releases page &rarr;</a></p>
-          <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. If macOS blocks it, run <code>xattr -d com.apple.quarantine ./lilbee-macos-arm64</code> (Homebrew does this for you).</p>
+          <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. The macOS one-liner clears quarantine for you; Homebrew does the same. On Windows, SmartScreen may warn the first time.</p>
+          <p class="extras"><a href="https://github.com/tobocop2/lilbee/releases">CUDA-prebuilt Linux and Windows binaries, plus older versions, on the releases page &rarr;</a></p>
         </div>
       </div>
 
