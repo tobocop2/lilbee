@@ -98,7 +98,9 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
 
-Coming with the [opencode integration (#267)](https://github.com/tobocop2/lilbee/pull/267): when the first answer is thin, the agent will fine-tune retrieval mid-conversation and re-answer with full function bodies, file:line included.
+### Opencode integration (coming)
+
+First-class lilbee support for [opencode](https://opencode.ai) is coming in [#267](https://github.com/tobocop2/lilbee/pull/267). The demo below previews one thing it unlocks: when the first answer is thin, the agent fine-tunes retrieval mid-conversation and re-answers with full function bodies, file:line included.
 
 ![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
