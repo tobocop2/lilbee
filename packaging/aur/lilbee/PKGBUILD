@@ -10,7 +10,10 @@ replaces=('lilbee-bin')
 options=('!strip' '!debug')
 source_x86_64=("lilbee-${pkgver}::${url}/releases/download/v${pkgver}/lilbee-linux-${CARCH}")
 sha256sums_x86_64=('e6dc28e49a9bd9158eb217a47a278552f42195cae2cd68642413bf382ed0c54c')
+source=("lilbee.service::${url}/raw/v${pkgver}/packaging/systemd/lilbee.service")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 package() {
     install -Dm755 "${srcdir}/lilbee-${pkgver}" "${pkgdir}/usr/bin/lilbee"
+    install -Dm644 "${srcdir}/lilbee.service" "${pkgdir}/usr/lib/systemd/user/lilbee.service"
 }

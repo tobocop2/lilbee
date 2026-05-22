@@ -283,6 +283,37 @@ Every GIF on this page (plus the extras) is at [lilbee.sh/tutorial.html](https:/
 
 The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
+### Running as a service (optional)
+
+If you keep the Obsidian plugin or an MCP client open all day, your OS launcher can keep `lilbee serve` warm in the background so HTTP requests skip the cold-start. `lilbee chat`, the TUI, and other CLI commands always cold-start their own process, so they are unaffected.
+
+Before enabling, pull at least one chat and embedding model with `lilbee model pull <name>`. The daemon will start either way, but requests fail until a model is available.
+
+All three recipes pin the server to `127.0.0.1:42697`.
+
+**macOS (Homebrew):**
+
+```bash
+brew services start lilbee
+```
+
+**Linux (Arch / AUR):**
+
+```bash
+systemctl --user enable --now lilbee
+```
+
+On a headless server (no graphical login session), also run `loginctl enable-linger $USER` so the service survives logout.
+
+**NixOS:** add the module to your `configuration.nix`:
+
+```nix
+{
+  imports = [ lilbee.nixosModules.lilbee ];
+  services.lilbee.enable = true;
+}
+```
+
 ## Supported formats
 
 Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive; Kreuzberg supports additional formats beyond what's listed here.
