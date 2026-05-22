@@ -395,7 +395,20 @@ def tmux_send(name: str, keys: str) -> None:
 
 
 def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
+    """Boot opencode in a tmux session pinned to the per-cell lilbee data dir.
+
+    The ``LILBEE_DATA=workspace/.lilbee`` env override is critical: matrix.py
+    imports ``lilbee.core.config``, whose module-import side effect sets
+    ``LILBEE_DATA`` in matrix.py's own env to the GLOBAL data root. Every
+    tmux session and subprocess matrix.py spawns inherits that polluted env,
+    so the launched lilbee serve would read the global config.toml (default
+    chat_model=Qwen3-0.6B) instead of the workspace's. Setting the env
+    explicitly per cell breaks the inheritance: the launched serve resolves
+    workspace/.lilbee/config.toml, picks up chat_model=<cell.ref>, and the
+    worker pool spawns with the right model. See bb-hef0.
+    """
     tmux_kill(session)
+    workspace_data = workspace / ".lilbee"
     subprocess.run(
         [
             "tmux",
@@ -407,6 +420,8 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
             str(_TMUX_WINDOW_COLS),
             "-y",
             str(_TMUX_WINDOW_ROWS),
+            "-e",
+            f"LILBEE_DATA={workspace_data}",
             "bash",
             "-lc",
             f"cd {workspace} && exec uv run lilbee launch opencode",
