@@ -74,7 +74,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Models from Hugging Face, inside the app.** Browse the catalog, pull a model, assign it to a role. No external CLI.
 - **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python). For brand-new architectures that haven't reached the bundled runtime yet, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
-- **Local by default.** Everything stays on your machine unless you opt into a cloud model, and lilbee flags it when you do.
+- **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
 - **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
 - **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. The single-file standalone binary, which bundles Python, the model runtime, OCR, the crawler, and the vector store, lands around 250-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps that bundle a browser engine for their UI typically ship several hundred MB of runtime before loading any models.
 
@@ -102,7 +102,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it your project's docs, your dependency source, your API docs, your design notes; the agent stops making up function names and instead reads the actual code, cites file and line, and says it doesn't know when the answer isn't in your library.
 
-lilbee stays the local part: your files, the search index, and the embeddings never leave your machine. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
+Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
 
@@ -128,7 +128,7 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 ### Pick and tune your models
 
-Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults out of the box.
+Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
@@ -142,7 +142,7 @@ Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a s
 
 lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
 
-- **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a persistent warning whenever a cloud role is active.
+- **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
