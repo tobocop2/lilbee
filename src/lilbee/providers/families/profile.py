@@ -1,25 +1,21 @@
-"""``FamilyProfile`` dataclass + the enums that drive its behavior fields."""
+"""``FamilyProfile`` dataclass plus the enums that drive its behavior fields."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
+
+from lilbee.providers.chat_format import LlamaCppChatFormatPreset
 
 if TYPE_CHECKING:
     from lilbee.providers.worker.response_parser.families import TemplateFamily
 
 
 class OutputFormat(StrEnum):
-    """Wire format the model uses for its tool-call output.
-
-    The parser engine combines the family's native schema regex with a
-    shared fallback keyed on this field; ``DUAL`` means accept either the
-    family-native shape or bare-JSON-with-name (OpenAI-compatible clients
-    routinely elicit the latter from any tool-trained model).
-    """
+    """Wire format the model uses for its tool-call output."""
 
     NATIVE = "native"
     BARE_JSON = "bare_json"
@@ -29,19 +25,10 @@ class OutputFormat(StrEnum):
 
 
 class StreamingPolicy(StrEnum):
-    """Whether the family's chat_format preset supports streaming with tools.
-
-    ``llama-cpp-python``'s ``chatml-function-calling`` and ``functionary-*``
-    presets raise ``"Automatic streaming tool choice is not supported"`` when
-    invoked with ``stream=True`` and ``tool_choice="auto"``. lilbee silently
-    downgrades to non-streaming for those presets and synthesises a one-shot
-    stream. This enum lets each profile declare its policy explicitly so the
-    chat worker doesn't carry the per-preset bool table.
-    """
+    """Whether the family's ``chat_format`` preset supports streaming with tools."""
 
     NATIVE = "native"
     DOWNGRADE_AUTO_TOOL_CHOICE = "downgrade_auto_tool_choice"
-    NEEDS_SPECIFIC_TOOL_CHOICE = "needs_specific_tool_choice"
 
 
 @dataclass(frozen=True)
@@ -53,25 +40,21 @@ class FamilyProfile:
     name_patterns: tuple[re.Pattern[str], ...] = ()
     ref_patterns: tuple[re.Pattern[str], ...] = ()
     architectures: tuple[str, ...] = ()
-    chat_format_override: str | None = None
+    chat_format_override: LlamaCppChatFormatPreset | None = None
     hf_tokenizer_repo: str | None = None
     streaming_policy: StreamingPolicy = StreamingPolicy.NATIVE
     output_format: OutputFormat = OutputFormat.NATIVE
-    sample_output_fixture: str | None = None
-    reason: str = ""
-    extras: Mapping[str, str] = field(default_factory=dict)
 
     def matches(self, metadata: Mapping[str, object] | None, ref: str | None) -> bool:
-        """Return True if this profile matches the given GGUF identity.
+        """True if any of the profile's identity hints fires on this GGUF.
 
-        Match order within a single profile: ref_patterns (most specific) >
-        name_patterns > template_markers > architectures. The registry's
-        ordered ``match_order`` decides which PROFILE is consulted first
-        when multiple could match.
+        Hints are ORed: any single hit wins. Profile precedence when several
+        could match a model is decided by the package-level ``ALL_PROFILES``
+        ordering, not by any rank inside the profile.
         """
         return (
             _matches_any_pattern(ref, self.ref_patterns)
-            or _matches_any_pattern(_gguf_name(metadata), self.name_patterns)
+            or _matches_any_pattern(_gguf_field(metadata, "name"), self.name_patterns)
             or _matches_template_markers(
                 _gguf_field(metadata, "chat_template"), self.template_markers
             )
@@ -95,10 +78,6 @@ def _matches_architecture(arch: str | None, architectures: tuple[str, ...]) -> b
     if not arch or not architectures:
         return False
     return arch.lower() in {a.lower() for a in architectures}
-
-
-def _gguf_name(metadata: Mapping[str, object] | None) -> str | None:
-    return _gguf_field(metadata, "name") or _gguf_field(metadata, "general.name")
 
 
 def _gguf_field(metadata: Mapping[str, object] | None, key: str) -> str | None:

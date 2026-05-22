@@ -313,7 +313,7 @@ class TestLlamaCppProvider:
             field = MagicMock()
             field.contents.return_value = value
             reader.fields[key] = field
-        with patch("gguf.GGUFReader", return_value=reader):
+        with patch("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", return_value=reader):
             result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result["architecture"] == "qwen3"
         assert result["context_length"] == "32768"
@@ -334,7 +334,7 @@ class TestLlamaCppProvider:
 
         reader = MagicMock()
         reader.fields = {}
-        with patch("gguf.GGUFReader", return_value=reader):
+        with patch("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", return_value=reader):
             result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result is None
 
@@ -1833,7 +1833,7 @@ class TestRequireLitellm:
 
         with (
             mock.patch.dict("sys.modules", {"litellm": None}),
-            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+            pytest.raises(ProviderError, match="lilbee\\[remote\\] extra"),
         ):
             _require_litellm()
 
@@ -1845,7 +1845,7 @@ class TestRequireLitellm:
         cfg.llm_provider = "remote"
         with (
             mock.patch.object(LitellmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError, match="SDK backend adapter is not installed"),
+            pytest.raises(ProviderError, match="Remote backend adapter"),
         ):
             create_provider(cfg)
 
@@ -3820,7 +3820,7 @@ class TestReadGgufMetadata:
                 "general.name": "Test Model",
             }
         )
-        with mock.patch("gguf.GGUFReader", return_value=reader):
+        with mock.patch("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", return_value=reader):
             result = read_gguf_metadata(Path("/test.gguf"))
 
         assert result == {
@@ -3837,7 +3837,7 @@ class TestReadGgufMetadata:
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         reader = self._fake_reader({})
-        with mock.patch("gguf.GGUFReader", return_value=reader):
+        with mock.patch("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", return_value=reader):
             result = read_gguf_metadata(Path("/test.gguf"))
         assert result is None
 
@@ -3846,7 +3846,7 @@ class TestReadGgufMetadata:
         from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
 
         reader = self._fake_reader({"llama.context_length": 8192})
-        with mock.patch("gguf.GGUFReader", return_value=reader):
+        with mock.patch("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", return_value=reader):
             result = read_gguf_metadata(Path("/test.gguf"))
         assert result == {"context_length": "8192"}
 

@@ -38,7 +38,7 @@ from lilbee.providers.sdk_backend import (
 
 log = logging.getLogger(__name__)
 
-_PROVIDER_NAME = "litellm"
+_PROVIDER_NAME = "remote"
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
 # Substrings dropped from the "LiteLLM" logger before they reach the user's
@@ -220,8 +220,8 @@ def litellm_available() -> bool:
 
 
 _LITELLM_MISSING_MSG = (
-    "Remote and API models need the lilbee[litellm] extra. "
-    "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
+    "Remote and API models need the lilbee[remote] extra. "
+    "Reinstall with: uv tool install --prerelease=allow 'lilbee[remote]'"
 )
 
 

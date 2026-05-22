@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -57,24 +59,41 @@ def train_ctx_from_meta(
     return value
 
 
-def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read metadata from a GGUF file's headers via the gguf-package reader.
+@contextmanager
+def _gguf_reader(path: Path) -> Iterator[GGUFReader]:
+    """Open ``GGUFReader`` and release its memmap deterministically.
 
-    Reading via ``gguf.GGUFReader`` (pure-Python binary parser) instead of
-    ``Llama(vocab_only=True)`` keeps the metadata pass robust against GGUFs
-    whose embedded Jinja chat template uses tags llama-cpp-python's bundled
-    Jinja can't compile (e.g. SmolLM3's ``{% generation %}``). Loading the
-    actual model would still trip the same parse error, but the metadata is
-    exactly what we need to consult before deciding whether to override the
-    chat template at load time.
-
-    Returns a dict with keys like ``architecture``, ``context_length``,
-    ``embedding_length``, ``chat_template``, ``file_type``, plus the
-    KV-cache-shape fields (``block_count``, ``head_count_kv``,
-    ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
-    against host memory.
+    ``GGUFReader.__init__`` mmaps the file via ``numpy.memmap``. On Windows
+    the mmap holds the file handle and blocks unlink/rename of the GGUF
+    until released; dropping ``reader.data`` here makes that deterministic
+    rather than depending on GC.
     """
-    reader = GGUFReader(str(model_path))
+    reader = GGUFReader(str(path))
+    try:
+        yield reader
+    finally:
+        if hasattr(reader, "data"):
+            del reader.data
+
+
+def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
+    """Read GGUF header metadata. Returns ``None`` on any read failure.
+
+    Reads via ``gguf.GGUFReader`` (pure-Python binary parser) instead of
+    ``Llama(vocab_only=True)`` so the metadata pass stays robust against
+    GGUFs whose embedded Jinja chat template uses tags llama-cpp-python's
+    bundled Jinja can't compile (e.g. SmolLM3's ``{% generation %}``).
+    """
+    try:
+        with _gguf_reader(model_path) as reader:
+            return _collect_metadata(reader)
+    except Exception:
+        log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
+        return None
+
+
+def _collect_metadata(reader: GGUFReader) -> dict[str, str] | None:
+    """Pull the fields lilbee consults from one open ``GGUFReader``."""
 
     def field_value(name: str) -> Any:
         field = reader.fields.get(name)
@@ -151,11 +170,11 @@ def find_mmproj_for_model(model_path: Path) -> Path:
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     """Read ``clip.projector_type`` from a GGUF mmproj without loading the model."""
     try:
-        reader = GGUFReader(str(mmproj_path))
-        field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
+        with _gguf_reader(mmproj_path) as reader:
+            field = reader.get_field(_CLIP_PROJECTOR_TYPE_KEY)
+            if field is None or field.types[-1] != GGUFValueType.STRING:
+                return None
+            return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
     except Exception:
         log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
         return None
-    if field is None or field.types[-1] != GGUFValueType.STRING:
-        return None
-    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")

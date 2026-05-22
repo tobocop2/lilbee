@@ -106,7 +106,7 @@ the button at all times so you can see what's loaded without opening the
 picker.
 
 The pickers list everything the role can run: native GGUFs you already have
-installed plus, when the `litellm` extra is installed and an API key is set,
+installed plus, when the `remote` extra is installed and an API key is set,
 whatever the SDK backend exposes for that provider. There is no separate
 "local-only" picker; routing happens automatically once the model is selected.
 
@@ -139,7 +139,7 @@ override individual values at runtime without touching the file.
 
 Tabs for features that aren't installed are hidden, not greyed out:
 
-- **API-Keys** appears only when the `litellm` extra is installed.
+- **API-Keys** appears only when the `remote` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
 - **Wiki** appears only when the experimental wiki layer is enabled
   (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
@@ -376,7 +376,7 @@ in the TUI (or `lilbee status` from the shell) shows which database is active.
 lilbee runs entirely on your machine by default. There are two ways to use
 cloud models when you want to:
 
-- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add
+- **Bring your own key, inside lilbee.** Install the `[remote]` extra and add
   an API key in `/settings` → API-Keys, then pick a cloud model from the model
   bar picker or the Frontier tab in `/catalog`. The TUI shows a persistent
   warning whenever a cloud role is active.
@@ -593,7 +593,7 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[remote]'` (or `uv tool install --prerelease=allow 'lilbee[remote]'`), any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
@@ -700,19 +700,19 @@ extras add capabilities that require heavier dependencies:
 # pip
 pip install --pre 'lilbee[graph]'      # concept graph: topic clustering + search boosting
 pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside local docs
-pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
+pip install --pre 'lilbee[remote]'    # remote providers: connect to any SDK-backed provider
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
 uv tool install --prerelease=allow 'lilbee[crawler]'
-uv tool install --prerelease=allow 'lilbee[litellm]'
+uv tool install --prerelease=allow 'lilbee[remote]'
 ```
 
 Install multiple at once:
 
 ```bash
-pip install --pre 'lilbee[graph,crawler,litellm]'
-uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
+pip install --pre 'lilbee[graph,crawler,remote]'
+uv tool install --prerelease=allow 'lilbee[graph,crawler,remote]'
 ```
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
@@ -854,8 +854,8 @@ are available locally vs. remotely and routes each call to the right backend.
 embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
-**Install:** `pip install --pre 'lilbee[litellm]'` or
-`uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
+**Install:** `pip install --pre 'lilbee[remote]'` or
+`uv tool install --prerelease=allow 'lilbee[remote]'` (the extra retains the
 adapter library name).
 
 **Configuration:**
@@ -970,7 +970,7 @@ vision model is configured, it takes precedence.
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[remote]'` / `uv tool install --prerelease=allow 'lilbee[remote]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
@@ -993,8 +993,8 @@ lilbee runs vision OCR in one of two ways:
    (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
    directly, in-process. This is the recommended path and supports an SSE
    heartbeat for long scans.
-2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
-   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
+2. **Remote vision model.** With `pip install --pre 'lilbee[remote]'` (or
+   `uv tool install --prerelease=allow 'lilbee[remote]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route
    vision calls accordingly.
 

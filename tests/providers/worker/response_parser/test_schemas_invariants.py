@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.providers.worker.response_parser import get_schemas
 from lilbee.providers.worker.response_parser.families import TemplateFamily
-from lilbee.providers.worker.response_parser.streaming import _MARKER_OPENERS
+from lilbee.providers.worker.response_parser.streaming import _NATIVE_OPENERS as _MARKER_OPENERS
 
 
 def test_schemas_registry_covers_every_known_family() -> None:

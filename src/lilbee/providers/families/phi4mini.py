@@ -1,4 +1,4 @@
-"""Phi-4-mini family profile (Microsoft)."""
+"""Microsoft Phi-4-mini: native ``functools[...]`` array wrapper."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.PHI4MINI,
     template_markers=("<|tool|>", "<|/tool|>"),
     output_format=OutputFormat.NATIVE,
-    reason="Phi-4 native functools[...] array wrapper.",
 )

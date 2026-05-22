@@ -1,4 +1,4 @@
-"""IBM Granite family profile."""
+"""IBM Granite: native ``<|tool_call|>[json-array]`` and bare-JSON fallback."""
 
 from __future__ import annotations
 
@@ -9,8 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.GRANITE,
     template_markers=("<|start_of_role|>",),
     output_format=OutputFormat.DUAL,
-    reason=(
-        "Granite native <|tool_call|>[json-array]; accept bare JSON too for "
-        "OpenAI-style tools-parameter clients."
-    ),
 )

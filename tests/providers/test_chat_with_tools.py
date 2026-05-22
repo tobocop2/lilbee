@@ -252,6 +252,7 @@ def test_llama_cpp_supports_tools_false_when_resolve_fails(monkeypatch) -> None:
 
 
 def test_llama_cpp_supports_tools_false_when_metadata_unreadable(monkeypatch) -> None:
+    """``GGUFReader`` failures route through ``read_gguf_metadata`` and surface as ``False``."""
     from lilbee.providers.llama_cpp.provider import LlamaCppProvider
 
     provider = LlamaCppProvider()
@@ -260,10 +261,10 @@ def test_llama_cpp_supports_tools_false_when_metadata_unreadable(monkeypatch) ->
         lambda model: Path("/fake/path.gguf"),
     )
 
-    def _boom(path: Path) -> dict[str, str]:
+    def _boom(*args: object, **kwargs: object) -> None:
         raise OSError("nope")
 
-    monkeypatch.setattr("lilbee.providers.llama_cpp.provider.read_gguf_metadata", _boom)
+    monkeypatch.setattr("lilbee.providers.llama_cpp.gguf_meta.GGUFReader", _boom)
     assert provider.supports_tools("any/model") is False
 
 

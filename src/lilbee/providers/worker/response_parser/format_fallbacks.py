@@ -1,86 +1,79 @@
-"""Shared wire-format extractors keyed by ``OutputFormat``.
+"""Bare-JSON tool-call extractor used for :data:`OutputFormat.BARE_JSON` and ``DUAL``.
 
-The family-native schema in ``schemas/<family>.json`` describes what the
-model emits when prompted via its NATIVE training prompt. But
-OpenAI-compatible clients (opencode, aider, the ai-sdk family) prompt
-every tool-trained model via the standard ``tools`` parameter, which
-typically elicits a bare ``{"name": ..., "arguments": ...}`` shape from
-the model regardless of family. The profile's ``output_format`` field
-declares which fallbacks the parser engine should consult when the
-family-native regex misses.
+OpenAI-compatible clients prompt every tool-trained model via the standard
+``tools`` parameter, which elicits a bare ``{"name": ..., "arguments": ...}``
+JSON object regardless of the family's native wire shape. The extractor
+walks the text, uses :class:`json.JSONDecoder` to consume each candidate
+object exactly the way ``json.loads`` would, and keeps the ones that match
+the tool-call envelope. Using the stdlib decoder rather than a bracket
+regex handles nested objects, escaped strings, and unicode the way the
+JSON grammar requires.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
-from dataclasses import dataclass
 
-from lilbee.providers.families.profile import OutputFormat
 from lilbee.providers.worker.transport import ToolCall
 
 log = logging.getLogger(__name__)
 
-_BARE_JSON_TOOL_CALL_RE = re.compile(
-    r"(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})",
-)
-_BARE_JSON_BOUNDARY_RE = re.compile(r'^(.*?)(?=\{\s*"name"\s*:)', re.DOTALL)
-
-
-@dataclass(frozen=True)
-class FormatFallback:
-    """Tool-call regex + content-boundary regex for one OutputFormat shape."""
-
-    tool_call_regex: re.Pattern[str]
-    content_boundary_regex: re.Pattern[str]
-
-
-FALLBACKS: dict[OutputFormat, FormatFallback] = {
-    OutputFormat.BARE_JSON: FormatFallback(
-        tool_call_regex=_BARE_JSON_TOOL_CALL_RE,
-        content_boundary_regex=_BARE_JSON_BOUNDARY_RE,
-    ),
-    OutputFormat.DUAL: FormatFallback(
-        tool_call_regex=_BARE_JSON_TOOL_CALL_RE,
-        content_boundary_regex=_BARE_JSON_BOUNDARY_RE,
-    ),
-}
-
-
-def extract_bare_json_tool_calls(text: str) -> tuple[tuple[str, str], ...]:
-    """Find ``{"name": ..., "arguments": ...}`` JSON blocks in *text*."""
-    out: list[tuple[str, str]] = []
-    for match in _BARE_JSON_TOOL_CALL_RE.finditer(text):
-        try:
-            obj = json.loads(match.group(1))
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(obj, dict):
-            continue
-        name = obj.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        arguments = obj.get("arguments")
-        if arguments is None:
-            arguments_str = "{}"
-        elif isinstance(arguments, str):
-            arguments_str = arguments
-        else:
-            arguments_str = json.dumps(arguments, separators=(",", ":"))
-        out.append((name, arguments_str))
-    return tuple(out)
+_DECODER = json.JSONDecoder()
+_NAME_KEY = "name"
+_ARGUMENTS_KEY = "arguments"
 
 
 def bare_json_tool_calls(text: str) -> tuple[ToolCall, ...]:
-    """``ToolCall`` form of :func:`extract_bare_json_tool_calls`."""
-    return tuple(
-        ToolCall(id="", name=name, arguments=args)
-        for name, args in extract_bare_json_tool_calls(text)
-    )
+    """Yield every ``{"name": ..., "arguments": ...}`` object embedded in *text*."""
+    out: list[ToolCall] = []
+    for obj in _iter_json_objects(text):
+        name = obj.get(_NAME_KEY)
+        if not isinstance(name, str) or not name:
+            continue
+        arguments = obj.get(_ARGUMENTS_KEY)
+        out.append(ToolCall(id="", name=name, arguments=_arguments_to_string(arguments)))
+    return tuple(out)
 
 
 def split_content_at_bare_json(text: str) -> str:
-    """Return the prefix of *text* before the first ``{"name": ...}`` JSON object."""
-    match = _BARE_JSON_BOUNDARY_RE.match(text)
-    return match.group(1) if match else text
+    """Prefix of *text* up to the first ``{"name": ..., "arguments": ...}`` object."""
+    for offset, _ in _iter_json_objects_with_offsets(text):
+        return text[:offset]
+    return text
+
+
+def _iter_json_objects(text: str) -> list[dict[str, object]]:
+    return [obj for _, obj in _iter_json_objects_with_offsets(text)]
+
+
+def _iter_json_objects_with_offsets(text: str) -> list[tuple[int, dict[str, object]]]:
+    """Scan *text* for ``{...}`` objects whose top-level keys include ``name``."""
+    found: list[tuple[int, dict[str, object]]] = []
+    idx = 0
+    end = len(text)
+    while idx < end:
+        brace = text.find("{", idx)
+        if brace < 0:
+            break
+        try:
+            value, consumed = _DECODER.raw_decode(text, brace)
+        except json.JSONDecodeError:
+            idx = brace + 1
+            continue
+        if isinstance(value, dict) and _NAME_KEY in value:
+            found.append((brace, value))
+        idx = max(consumed, brace + 1)
+    return found
+
+
+def _arguments_to_string(arguments: object) -> str:
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        return arguments
+    try:
+        return json.dumps(arguments, separators=(",", ":"))
+    except (TypeError, ValueError):
+        log.debug("could not serialise bare-JSON tool-call arguments: %r", arguments)
+        return "{}"

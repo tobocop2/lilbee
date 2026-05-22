@@ -1,4 +1,4 @@
-"""Liquid Foundation Models v2 family profile."""
+"""Liquid Foundation Models v2: ``tool_call_start/end`` wrappers, kwarg-style args."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.LFM2,
     template_markers=("<|tool_list_start|>",),
     output_format=OutputFormat.NATIVE,
-    reason="LFM2 tool_call_start/end wrappers with kwarg-style args.",
 )

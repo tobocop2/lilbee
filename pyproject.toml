@@ -68,10 +68,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.50"]
+remote = ["litellm>=1.50"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.6"]
-release = ["lilbee[crawler,litellm,graph]"]
+release = ["lilbee[crawler,remote,graph]"]
 
 [project.urls]
 Homepage = "https://lilbee.sh/"

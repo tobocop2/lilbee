@@ -1,4 +1,4 @@
-"""Qwen3-Coder family profile (sparse MoE coder variant)."""
+"""Qwen3-Coder (sparse-MoE coder variant): native ``<function=>`` plus ``<parameter=>`` XML."""
 
 from __future__ import annotations
 
@@ -12,5 +12,4 @@ PROFILE = FamilyProfile(
     template_markers=("<function=", "<parameter="),
     name_patterns=(re.compile(r"qwen[\s\-_]?3[\s\-_]?coder", re.IGNORECASE),),
     output_format=OutputFormat.NATIVE,
-    reason="Qwen3-Coder native <tool_call><function=...><parameter=...> XML wrapper.",
 )

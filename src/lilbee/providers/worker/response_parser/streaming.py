@@ -2,46 +2,34 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from lilbee.providers.families.profile import OutputFormat
 from lilbee.providers.worker.response_parser.parse import parse_response
 from lilbee.providers.worker.response_parser.schemas import ResponseSchema
 from lilbee.providers.worker.transport import ToolCallDelta
 
-if TYPE_CHECKING:
-    from lilbee.providers.families.profile import OutputFormat
+# First character of every marker that could open a tool-call envelope. When
+# one of these appears in the unemitted content we hold from that position
+# until the closing marker arrives and parse_response strips the block, or
+# the stream finalises. Benign content with these characters ("5 < 10",
+# "function foo") is also held; releases on the next chunk that completes
+# the would-be tool-call block.
+_NATIVE_OPENERS = ("<", "[", "f", ">")
+_BARE_JSON_OPENER = "{"
 
-# First characters of every marker the shipped schemas watch for. When an
-# opener appears in the unemitted content, we hold from that position until
-# the closing marker arrives and parse_response strips the block. Benign
-# content with these characters (e.g., "5 < 10") is also held; it releases
-# on the next chunk that completes whatever the parser would otherwise
-# treat as a tool-call block, or on stream finalisation. ``f`` covers
-# Phi-4's ``functools[...]`` opener and ``>`` covers Functionary v3's
-# ``>>>name`` opener; without them those bareword markers would stream
-# through to the UI as visible text.
-_MARKER_OPENERS = ("<", "[", "f", ">")
-
-# Hard cap on the held-back buffer; protects against models that emit a
-# marker opener and then never close it (the parser would otherwise hold
-# the entire remaining stream and re-run the regex over it on every chunk).
-# 64 KB is well over any realistic tool-call envelope.
+# Hard cap on the held buffer; protects against models that emit a marker
+# opener and then never close it (the parser would otherwise hold the entire
+# remaining stream and re-run the regex over it on every chunk). 64 KB is
+# well over any realistic tool-call envelope.
 _BUFFER_HARD_CAP = 64 * 1024
 
 
 class StreamingResponseParser:
     """Re-parse the accumulated stream buffer per chunk and emit deltas."""
 
-    def __init__(
-        self,
-        schema: ResponseSchema,
-        *,
-        output_format: OutputFormat | None = None,
-    ) -> None:
-        from lilbee.providers.families.profile import OutputFormat as _OutputFormat
-
+    def __init__(self, schema: ResponseSchema, *, output_format: OutputFormat) -> None:
         self._schema = schema
-        self._output_format = output_format if output_format is not None else _OutputFormat.NATIVE
+        self._output_format = output_format
+        self._openers = _openers_for(output_format)
         self._buffer = ""
         self._emitted_content_len = 0
         self._emitted_tool_call_count = 0
@@ -77,7 +65,7 @@ class StreamingResponseParser:
         if finalize:
             safe_end = len(parsed.content)
         else:
-            safe_end = _safe_emit_position(parsed.content, self._emitted_content_len)
+            safe_end = _safe_emit_position(parsed.content, self._emitted_content_len, self._openers)
 
         if safe_end > self._emitted_content_len:
             content_delta = parsed.content[self._emitted_content_len : safe_end]
@@ -88,15 +76,16 @@ class StreamingResponseParser:
         return content_delta, tool_deltas
 
 
-def _safe_emit_position(content: str, start: int) -> int:
-    """Latest position safe to emit; everything after the first opener is held.
+def _openers_for(output_format: OutputFormat) -> tuple[str, ...]:
+    """Marker openers to hold on for *output_format*."""
+    if output_format in (OutputFormat.BARE_JSON, OutputFormat.DUAL):
+        return (*_NATIVE_OPENERS, _BARE_JSON_OPENER)
+    return _NATIVE_OPENERS
 
-    Anything from the first opener onward could turn into a tool-call block
-    once the closing marker arrives. We release it only when ``parse_response``
-    strips the now-complete block out of ``content`` (so the opener disappears)
-    or on stream finalisation.
-    """
+
+def _safe_emit_position(content: str, start: int, openers: tuple[str, ...]) -> int:
+    """Latest position safe to emit; everything after the first opener is held."""
     for i in range(start, len(content)):
-        if content[i] in _MARKER_OPENERS:
+        if content[i] in openers:
             return i
     return len(content)

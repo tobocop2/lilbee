@@ -1,4 +1,4 @@
-"""OpenAI gpt-oss family profile."""
+"""OpenAI gpt-oss: Harmony format ``<|channel|>commentary to=functions...<|call|>``."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.GPT_OSS,
     template_markers=("<|channel|>", "<|call|>"),
     output_format=OutputFormat.HARMONY,
-    reason="OpenAI gpt-oss Harmony format: <|channel|>commentary to=functions...<|call|>.",
 )

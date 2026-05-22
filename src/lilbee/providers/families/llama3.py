@@ -1,4 +1,9 @@
-"""Llama-3.1 family profile."""
+"""Llama-3 / Llama-3.1: native ``<|python_tag|>{json}`` plus bare-JSON fallback.
+
+OpenAI-compatible clients prompt llama-3.1 via the standard ``tools`` parameter
+without invoking the python-tag hint, so the model emits bare ``{"name": ...,
+"arguments": ...}`` JSON in that path. ``DUAL`` accepts either shape.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +14,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.LLAMA3,
     template_markers=("<|python_tag|>",),
     output_format=OutputFormat.DUAL,
-    reason=(
-        "Llama-3 native <|python_tag|>{json} wrapper; accept bare JSON too since "
-        "OpenAI-compatible clients prompt llama-3.1 via the tools parameter without "
-        "invoking the python-tag hint."
-    ),
 )

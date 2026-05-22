@@ -1,4 +1,4 @@
-"""InternLM2 family profile (architecture-driven detection)."""
+"""InternLM2: minimal embedded template, detected via GGUF architecture only."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.INTERNLM2,
     architectures=("internlm2", "internlm"),
     output_format=OutputFormat.NATIVE,
-    reason="Minimal embedded template; detected via GGUF architecture only.",
 )

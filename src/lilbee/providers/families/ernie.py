@@ -1,4 +1,4 @@
-"""Baidu ERNIE-4.5 family profile."""
+"""Baidu ERNIE-4.5: native ``<tool_call>{json}</tool_call>`` inside its sentence frame."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.ERNIE,
     template_markers=("<|begin_of_sentence|>", "<|end_of_sentence|>"),
     output_format=OutputFormat.NATIVE,
-    reason="ERNIE-4.5 native <tool_call>{json}</tool_call> wrapper inside its own sentence frame.",
 )

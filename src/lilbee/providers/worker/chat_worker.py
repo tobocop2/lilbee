@@ -8,12 +8,11 @@ import re
 import threading
 import time
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from lilbee.providers.families.profile import FamilyProfile
+from typing import Any
 
 from lilbee.providers.base import ContextWindowExceededError
+from lilbee.providers.families import detect as detect_profile
+from lilbee.providers.families.profile import FamilyProfile, OutputFormat, StreamingPolicy
 from lilbee.providers.worker.response_parser import (
     ResponseSchema,
     StreamingResponseParser,
@@ -183,7 +182,8 @@ class _ChatSession:
             "Tool-call extraction not available for model %r: chat template did "
             "not match any supported family. Tool calls in responses will appear "
             "as raw text; the client will not invoke the tool. See "
-            "docs/agent-integration.md for the supported-families list.",
+            "docs/architecture.md (Model family compatibility section) for the "
+            "supported-families list.",
             model_ref or self._role_config.model_path.name,
         )
 
@@ -193,11 +193,8 @@ class _ChatSession:
         return self._response_schema
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
-        from lilbee.providers.llama_cpp.provider import (
-            load_llama,
-            resolve_model_path,
-            safe_read_gguf_metadata,
-        )
+        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
         from lilbee.providers.model_cache import LoaderMode
 
         target_path = (
@@ -212,12 +209,7 @@ class _ChatSession:
             # polling loop in _handle_chat_streaming.
             self._llm = load_llama(target_path, mode=LoaderMode.CHAT)
             self._model_path = target_str
-            metadata = safe_read_gguf_metadata(target_path) or {}
-            # Family detection goes through the unified profile registry so the
-            # response parser, chat_format override, and streaming policy all
-            # come from one canonical source per family.
-            from lilbee.providers.families import detect as detect_profile
-
+            metadata = read_gguf_metadata(target_path) or {}
             self._profile = detect_profile(metadata, ref=target_str)
             family = (
                 self._profile.family
@@ -248,18 +240,12 @@ _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
 def _profile_needs_stream_downgrade(
     profile: FamilyProfile | None, tool_choice: str | dict[str, Any] | None
 ) -> bool:
-    """True iff the family profile declares the chat_format preset blocks this combo."""
-    from lilbee.providers.families.profile import StreamingPolicy
-
+    """True iff the family profile declares its preset blocks ``stream=True`` here."""
     if profile is None or profile.streaming_policy is StreamingPolicy.NATIVE:
         return False
-    if profile.streaming_policy is StreamingPolicy.DOWNGRADE_AUTO_TOOL_CHOICE:
-        # Specific-function tool_choice is supported on these presets even with
-        # streaming; only "auto" / None / "required" trip the gate.
-        return not isinstance(tool_choice, dict)
-    if profile.streaming_policy is StreamingPolicy.NEEDS_SPECIFIC_TOOL_CHOICE:
-        return not isinstance(tool_choice, dict)
-    return False
+    # Specific-function tool_choice is supported on the downgrade-tagged
+    # presets even with streaming; only "auto" / None / "required" trip the gate.
+    return not isinstance(tool_choice, dict)
 
 
 def _wrap_single_completion_as_stream(completion: Any) -> Iterator[Any]:
@@ -420,8 +406,6 @@ def _handle_chat_streaming(
     profile: FamilyProfile | None = None,
 ) -> None:
     """Drain *response_iter* and emit batched stream_chunk frames on the data pipe."""
-    from lilbee.providers.families.profile import OutputFormat
-
     abort_flag = state.session._abort_flag
     text = _TextBatchBuffer(reply)
     output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
@@ -530,8 +514,6 @@ def _maybe_extract_via_schema(
     profile: FamilyProfile | None = None,
 ) -> ChatResult | None:
     """Try schema extraction; return ``None`` to keep the native response."""
-    from lilbee.providers.families.profile import OutputFormat
-
     if native_tool_calls or not tools_requested or schema is None:
         return None
     output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
@@ -659,8 +641,7 @@ def _handle_chat(reply: Reply, payload: Any, state: WorkerLoopState) -> None:
             return
         tools_requested = bool(payload.tools)
         schema = session.response_schema if tools_requested else None
-        # Tests stub _ChatSession with a slimmer surface; default to None.
-        profile = getattr(session, "_profile", None)
+        profile = session._profile
         try:
             if payload.stream:
                 _handle_chat_streaming(reply, response, state, schema=schema, profile=profile)

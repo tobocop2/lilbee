@@ -1,4 +1,4 @@
-"""Mistral family profile (Mistral-Nemo, Mistral-Small, etc.)."""
+"""Mistral (Nemo, Small, etc.): native ``[TOOL_CALLS]`` + JSON-array wrapper."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.MISTRAL,
     template_markers=("[TOOL_CALLS]",),
     output_format=OutputFormat.NATIVE,
-    reason="Mistral native [TOOL_CALLS] + JSON-array wrapper.",
 )

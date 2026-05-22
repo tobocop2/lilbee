@@ -81,7 +81,7 @@ def install() -> None:
     """Replace Jinja2ChatFormatter.__init__ once, idempotent."""
     if getattr(llama_chat_format.Jinja2ChatFormatter, _PATCHED_FLAG, False):
         return
-    llama_chat_format.Jinja2ChatFormatter.__init__ = _resilient_init
+    llama_chat_format.Jinja2ChatFormatter.__init__ = _resilient_init  # type: ignore[method-assign]
     setattr(llama_chat_format.Jinja2ChatFormatter, _PATCHED_FLAG, True)
 
 

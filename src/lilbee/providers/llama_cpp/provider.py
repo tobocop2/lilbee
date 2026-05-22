@@ -23,6 +23,7 @@ from lilbee.providers.base import (
     ProviderError,
     filter_options,
 )
+from lilbee.providers.families import detect as detect_profile
 from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.gguf_meta import (
     find_mmproj_for_model,
@@ -818,7 +819,7 @@ def load_llama(
         # ``embed_train_ctx`` value (instead of ``0`` for "use model
         # default") keeps the OOM-retry path working: ``_halve_ctx_for_retry``
         # cannot bisect from 0.
-        meta = safe_read_gguf_metadata(model_path)
+        meta = read_gguf_metadata(model_path)
         embed_train_ctx = train_ctx_from_meta(
             meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path
         )
@@ -826,7 +827,7 @@ def load_llama(
     elif cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
     else:
-        meta = safe_read_gguf_metadata(model_path)
+        meta = read_gguf_metadata(model_path)
         kwargs["n_ctx"] = _resolve_chat_ctx(model_path, meta)
         log.info(
             "Chat n_ctx=%d for %s (dynamic, training_ctx=%s)",
@@ -850,7 +851,7 @@ def load_llama(
     if not embedding:
         _apply_flash_attention(kwargs)
         _apply_kv_cache_type(kwargs)
-        chat_meta = meta if meta is not None else safe_read_gguf_metadata(model_path)
+        chat_meta = meta if meta is not None else read_gguf_metadata(model_path)
         _apply_chat_format_override(kwargs, model_path, chat_meta)
 
     if abort_callback_override is not None:
@@ -897,20 +898,14 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at
     the same path invalidates automatically because its mtime changes.
     """
-    from lilbee.providers.families import detect
-
-    try:
-        meta = read_gguf_metadata(Path(path_str))
-    except (OSError, ValueError):
-        log.debug("supports_tools: read_gguf_metadata failed for %s", path_str, exc_info=True)
-        return False
+    meta = read_gguf_metadata(Path(path_str))
     if not isinstance(meta, dict):
         return False
     # When a family profile matches and declares a chat_format override, lilbee
     # will swap in a llama-cpp preset that iterates tools; treat such a model
     # as tool-capable even if its bundled template was stripped. Otherwise
     # fall back to the embedded-template Jinja probe.
-    profile = detect(meta, ref=path_str)
+    profile = detect_profile(meta, ref=path_str)
     if profile is not None and profile.chat_format_override is not None:
         return True
     template = meta.get("chat_template")
@@ -937,20 +932,6 @@ def _parse_context_overflow_breakdown(message: str) -> tuple[int, int, int]:
         n_ctx = int(match.group(2))
         return int(match.group(1)), n_ctx, n_ctx
     return 0, 0, 0
-
-
-def safe_read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read GGUF metadata, returning None on any failure.
-
-    The metadata block can be unreadable on truncated or malformed GGUFs
-    even when the model itself loads, so callers that just want to read the
-    chat template or training-context length tolerate the miss.
-    """
-    try:
-        return read_gguf_metadata(model_path)
-    except Exception:
-        log.debug("read_gguf_metadata failed for %s", model_path, exc_info=True)
-        return None
 
 
 # Fallback used when an embedding GGUF reports zero, negative, or
@@ -1033,16 +1014,15 @@ def _apply_chat_format_override(
     kwargs: dict[str, Any], model_path: Path, meta: dict[str, str] | None
 ) -> None:
     """Swap the GGUF's embedded chat template for the family profile's preset."""
-    from lilbee.providers.families import detect
-
-    profile = detect(meta, ref=str(model_path))
+    profile = detect_profile(meta, ref=str(model_path))
     if profile is None or profile.chat_format_override is None:
         return
-    kwargs["chat_format"] = profile.chat_format_override
+    # llama-cpp-python accepts the StrEnum value (str subclass) directly.
+    kwargs["chat_format"] = profile.chat_format_override.value
     log.info(
         "Chat format override for %s: %s (family=%s)",
         model_path.name,
-        profile.chat_format_override,
+        profile.chat_format_override.value,
         profile.family.value,
     )
 
@@ -1060,7 +1040,7 @@ def _apply_chat_format_override(
             log.warning(
                 "Failed to load HF tokenizer %s for chat_format=%s; tool calls may fail",
                 profile.hf_tokenizer_repo,
-                profile.chat_format_override,
+                profile.chat_format_override.value,
                 exc_info=True,
             )
 

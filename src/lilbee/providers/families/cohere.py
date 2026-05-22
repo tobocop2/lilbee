@@ -1,4 +1,4 @@
-"""Cohere Command-R family profile."""
+"""Cohere Command-R: native ``<|START_ACTION|>...<|END_ACTION|>`` JSON wrapper."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.COHERE,
     template_markers=("<|START_ACTION|>",),
     output_format=OutputFormat.NATIVE,
-    reason="Cohere native <|START_ACTION|>...<|END_ACTION|> JSON wrapper.",
 )

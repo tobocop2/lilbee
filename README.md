@@ -76,7 +76,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
 - **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
 - **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
-- **Compact at the base.** If you already have Python, the lilbee wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. That's without the optional extras: `[crawler]` adds Playwright so you can index websites (and Chromium downloads ~150 MB on first crawl), `[litellm]` adds the cloud-provider SDKs, `[graph]` adds spaCy. The single-file standalone binary bundles all of those along with Python, the model runtime, OCR, and the vector store, and lands at 250-365 MB. Even loaded, that's in the same range as all-in-one desktop AI apps that bundle a browser engine for their UI alone, before any models are loaded.
+- **Compact at the base.** If you already have Python, the lilbee wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. That's without the optional extras: `[crawler]` adds Playwright so you can index websites (and Chromium downloads ~150 MB on first crawl), `[remote]` adds the cloud-provider SDKs, `[graph]` adds spaCy. The single-file standalone binary bundles all of those along with Python, the model runtime, OCR, and the vector store, and lands at 250-365 MB. Even loaded, that's in the same range as all-in-one desktop AI apps that bundle a browser engine for their UI alone, before any models are loaded.
 
 ## Why lilbee
 
@@ -146,7 +146,7 @@ Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a s
 
 lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
 
-- **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
+- **Bring your own key.** Install the `[remote]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
@@ -236,12 +236,12 @@ The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most deskto
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker builds already include all three. lilbee works without them either way.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,remote]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker builds already include all three. lilbee works without them either way.
 
 | Extra | What it adds |
 | --- | --- |
 | `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline. |
-| `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active. |
+| `[remote]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active. |
 | `[graph]` | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
@@ -341,7 +341,7 @@ lilbee stands on a stack of established open-source projects, all embedded in on
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
-- [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
+- [LiteLLM] bridges cloud model providers (the `[remote]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 

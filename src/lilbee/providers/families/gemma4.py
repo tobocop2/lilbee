@@ -1,4 +1,4 @@
-"""Gemma-4 family profile (gemma-4-E2B-it via unsloth GGUFs)."""
+"""Gemma-4 (gemma-4-E2B-it unsloth GGUFs): ``<|\"|>`` tool-call quote marker."""
 
 from __future__ import annotations
 
@@ -12,5 +12,4 @@ PROFILE = FamilyProfile(
     template_markers=('<|"|>',),
     name_patterns=(re.compile(r"gemma[\s\-_]?4", re.IGNORECASE),),
     output_format=OutputFormat.NATIVE,
-    reason='Gemma-4 uses <|"|> tool-call quote marker, no override needed.',
 )

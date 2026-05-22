@@ -3746,10 +3746,10 @@ class TestSelfCheckExtras:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload == {
             "ok": True,
-            "litellm": True,
-            "crawl4ai": True,
-            "spacy": True,
-            "graspologic_native": True,
+            "remote": True,
+            "crawler": True,
+            "graph": True,
+            "graph_native": True,
         }
 
     def test_one_extra_missing_exits_nonzero_json(self) -> None:
@@ -3761,11 +3761,11 @@ class TestSelfCheckExtras:
         assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is False
-        assert payload["litellm"] is True
-        assert payload["crawl4ai"] is False
-        assert "crawl4ai_error" in payload
-        assert payload["spacy"] is True
-        assert payload["graspologic_native"] is True
+        assert payload["remote"] is True
+        assert payload["crawler"] is False
+        assert "crawler_error" in payload
+        assert payload["graph"] is True
+        assert payload["graph_native"] is True
 
     def test_one_extra_missing_human_mode_reports_failure(self) -> None:
         with mock.patch(
@@ -3774,7 +3774,7 @@ class TestSelfCheckExtras:
         ):
             result = runner.invoke(app, ["self-check-extras"])
         assert result.exit_code == 1, result.output
-        assert "spacy" in result.output
+        assert "graph" in result.output
         assert "MISSING" in result.output
 
 

@@ -204,35 +204,42 @@ def self_check_cmd(
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
 
-_SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
+# Map user-facing extra labels to the import name that proves the extra is wired.
+# ``remote`` is the install extra for ``lilbee[remote]``; it bundles ``litellm``.
+_SELF_CHECK_EXTRAS: dict[str, str] = {
+    "remote": "litellm",
+    "crawler": "crawl4ai",
+    "graph": "spacy",
+    "graph_native": "graspologic_native",
+}
 
 
 def self_check_extras_cmd() -> None:
-    """Verify optional extras (crawler, litellm, graph) are bundled and importable."""
+    """Verify optional extras (crawler, remote, graph) are bundled and importable."""
     results: dict[str, Any] = {}
     failed: list[str] = []
-    for name in _SELF_CHECK_EXTRAS:
+    for label, import_name in _SELF_CHECK_EXTRAS.items():
         try:
-            importlib.import_module(name)
-            results[name] = True
+            importlib.import_module(import_name)
+            results[label] = True
         except ImportError as exc:
-            results[name] = False
-            results[f"{name}_error"] = str(exc)
-            failed.append(name)
+            results[label] = False
+            results[f"{label}_error"] = str(exc)
+            failed.append(label)
 
     if cfg.json_mode:
         json_output({"ok": not failed, **results})
     else:
-        for name in _SELF_CHECK_EXTRAS:
-            ok = results.get(name) is True
+        for label in _SELF_CHECK_EXTRAS:
+            ok = results.get(label) is True
             tag = (
                 f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"
                 if ok
                 else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
             )
-            console.print(f"  {name}: {tag}")
+            console.print(f"  {label}: {tag}")
             if not ok:
-                console.print(f"    {results.get(f'{name}_error', '')}")
+                console.print(f"    {results.get(f'{label}_error', '')}")
 
     if failed:
         raise typer.Exit(1)

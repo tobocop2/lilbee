@@ -1,4 +1,4 @@
-"""AI2 OLMo-3 family profile."""
+"""AI2 OLMo-3: ``<function_calls>`` wrapper with ``name(key=value)`` syntax."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.OLMO3,
     template_markers=("<function_calls>",),
     output_format=OutputFormat.NATIVE,
-    reason="OLMo-3 wraps tool calls in <function_calls> with name(key=value) syntax.",
 )

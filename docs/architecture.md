@@ -42,7 +42,7 @@ flowchart LR
     subgraph Providers
         LLAMA[llama-cpp-python]
         MTMD[mtmd vision backend]
-        SDK[SDK backend litellm]
+        SDK[Remote backend]
         HF[HuggingFace Hub]
     end
 
@@ -81,7 +81,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Structured files.** kreuzberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
 - **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via kreuzberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
-- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
+- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol when `pip install lilbee[remote]` is available.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
@@ -96,7 +96,7 @@ lilbee treats chat, embedding, vision (OCR), and reranking as independent **mode
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
     ROUTE --> CHECK{SDK backend installed & model available?}
-    CHECK -->|Yes| SDK_BACK[SDK backend via litellm]
+    CHECK -->|Yes| SDK_BACK[Remote backend]
     CHECK -->|No| LCPP[llama-cpp-python GGUF]
 
     APP -->|explicit config| SDK_P[SDKLLMProvider]
@@ -104,7 +104,7 @@ flowchart TD
 ```
 
 - **auto** (default). `RoutingProvider` checks if the SDK backend is installed and the requested model is available via its API. If so, routes through the SDK; otherwise falls back to local GGUF via llama-cpp.
-- **remote**. Force all calls through the SDK backend (anything litellm reaches). Requires `pip install lilbee[litellm]`.
+- **remote**. Force all calls through the remote backend (any provider reachable through the SDK adapter). Requires `pip install lilbee[remote]`.
 - **llama-cpp**. Force local GGUF inference via llama-cpp-python (always available).
 
 **Model roles** (`lilbee model list --task <role>`):
@@ -228,45 +228,37 @@ Every model family that lilbee handles end-to-end has one canonical record in `s
 ```python
 @dataclass(frozen=True)
 class FamilyProfile:
-    family: TemplateFamily              # links to response_parser/schemas/<family>.json
-    template_markers: tuple[str, ...]   # substrings expected in the GGUF chat_template
-    name_patterns: tuple[re.Pattern]    # general.name regex matches (HF metadata)
-    ref_patterns: tuple[re.Pattern]     # repo-path regex matches (for fine-tunes that inherit base name)
-    architectures: tuple[str, ...]      # GGUF general.architecture fallback
-    chat_format_override: str | None    # llama-cpp preset to swap in when embedded template is stripped
-    hf_tokenizer_repo: str | None       # HF repo to download for presets that need it (functionary-v2)
-    streaming_policy: StreamingPolicy   # NATIVE | DOWNGRADE_AUTO_TOOL_CHOICE | NEEDS_SPECIFIC_TOOL_CHOICE
-    output_format: OutputFormat         # NATIVE | BARE_JSON | DUAL | CHATML_TOOL_CALL | HARMONY
-    sample_output_fixture: str | None   # tests/fixtures/family-outputs/<file>.txt for CI gate
-    reason: str                         # one-line description of what the profile does (not why-history)
+    family: TemplateFamily                       # links to response_parser/schemas/<family>.json
+    template_markers: tuple[str, ...]            # substrings expected in the GGUF chat_template
+    name_patterns: tuple[re.Pattern]             # general.name regex matches (HF metadata)
+    ref_patterns: tuple[re.Pattern]              # repo-path regex matches (for fine-tunes that inherit base name)
+    architectures: tuple[str, ...]               # GGUF general.architecture fallback
+    chat_format_override: LlamaCppChatFormatPreset | None  # llama-cpp preset to swap in
+    hf_tokenizer_repo: str | None                # HF repo to download for presets that need it (functionary-v2)
+    streaming_policy: StreamingPolicy            # NATIVE | DOWNGRADE_AUTO_TOOL_CHOICE
+    output_format: OutputFormat                  # NATIVE | BARE_JSON | DUAL | CHATML_TOOL_CALL | HARMONY
 ```
 
-The single source of truth is `src/lilbee/providers/families/__init__.py:ALL_PROFILES`, an explicit tuple ordered most-specific-first. The registry is built once via `@lru_cache(maxsize=1)`; consumers call `families.detect(metadata, ref)` to get the matching profile.
+The package discovers profiles at import time via `pkgutil.iter_modules(__path__)`, ordered against the `_MATCH_ORDER` tuple in `families/__init__.py` (most-specific first). Consumers call `families.detect(metadata, ref)` to get the matching profile.
 
-### Why this shape (decision rationale)
+### Why this shape
 
-Earlier each per-family knob lived in a different place: chat-format override in `chat_format_override.py`, template-marker detector in `response_parser/families.py`, bare-JSON regex inside individual `schemas/*.json`, stream-downgrade decision in `chat_worker.py`, HF tokenizer plumbing in `provider.py`. Adding a model required editing five files; missing one caused silent failures the next time someone ran the opencode matrix against that family.
+Each per-family knob used to live in its own module: chat-format override in a resolver, template-marker detector in `response_parser/families.py`, bare-JSON regex inside individual `schemas/*.json`, stream-downgrade decision in `chat_worker.py`, HF tokenizer plumbing in `provider.py`. The failure modes are correlated: a stripped template usually pairs with needing both a chat_format override AND an output-format hint AND a streaming-policy declaration. Bundling them in one dataclass per family makes the surface mechanical.
 
-The consolidation borrows ideas from three places and composes them for lilbee's situation:
+The shape composes three ideas that already work elsewhere:
 
-- **One artifact per family** is Ollama's `ModelFile` pattern, applied at the family level rather than per model. lilbee can't curate per model (the long tail of community quants would never converge), but per family the curation cost is bounded by the ~20 schemas lilbee already maintains.
-- **Per-family named output parsers** mirror vLLM's `--tool-call-parser` flag (`granite`, `hermes`, `llama3_json`, `llama4_pythonic`, `mistral`, etc.). vLLM splits each parser into its own module; lilbee keeps the regex extraction in JSON schemas and adds an `OutputFormat` enum the engine consults to decide whether to also run the shared bare-JSON fallback.
-- **Chat-format override + HF tokenizer download** are direct passthroughs of llama-cpp-python's own `Llama(chat_format=...)` registry and `LlamaHFTokenizer.from_pretrained` adapter. We declare each per family rather than scattering ad-hoc resolver code.
-
-What's specifically lilbee-shaped: bundling all of those into one dataclass per family. The failure modes are correlated (a stripped template usually pairs with needing both a chat_format override AND an output-format hint AND a streaming-policy declaration); having one file to edit, one matcher to consult, and one fixture to verify keeps the surface mechanical.
+- **One artifact per family** mirrors Ollama's `ModelFile` pattern, applied at the family level rather than per model.
+- **Per-family named output parsers** mirror vLLM's `--tool-call-parser` flag (`granite`, `hermes`, `llama3_json`, `llama4_pythonic`, `mistral`, etc.). lilbee keeps the regex extraction in JSON schemas and adds an `OutputFormat` enum the engine consults to decide whether to also run the shared bare-JSON fallback.
+- **Chat-format override + HF tokenizer download** are direct passthroughs of llama-cpp-python's own `Llama(chat_format=...)` registry and `LlamaHFTokenizer.from_pretrained` adapter.
 
 ### Adding a new family
 
 ```
-1. tests/fixtures/family-outputs/<family>-search.txt
-   (paste a real tool-call output from running the model once)
-2. src/lilbee/providers/worker/response_parser/schemas/<family>.json
-3. src/lilbee/providers/families/<family>.py
-4. Re-export from providers/families/__init__.py ALL_PROFILES tuple
-5. tools/qa/opencode/matrix.py --families <family>
+1. src/lilbee/providers/worker/response_parser/schemas/<family>.json
+2. src/lilbee/providers/families/<family>.py
+3. Add the module name to _MATCH_ORDER in providers/families/__init__.py
+4. tools/qa/opencode/matrix.py --families <family>
 ```
-
-CI gates: every profile must have a fixture and the parser must extract a `lilbee_search` tool call from it. Adding a profile without a fixture fails the parametrized test in `tests/providers/families/test_each_profile_extracts_fixture.py`.
 
 ### What this is NOT
 
@@ -718,7 +710,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[remote]`, any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | GGUF vision model for OCR (via mtmd backend) | When set, takes precedence over Tesseract for scanned PDFs and images |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |

@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 
+from lilbee.providers.families import registry
+from lilbee.providers.families.profile import OutputFormat
 from lilbee.providers.worker.response_parser import (
     StreamingResponseParser,
     TemplateFamily,
     get_schemas,
 )
+
+
+def _streaming_parser_for(family: TemplateFamily) -> StreamingResponseParser:
+    """Build a ``StreamingResponseParser`` keyed on the family's profile output format."""
+    profile = registry().by_family(family)
+    output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
+    return StreamingResponseParser(get_schemas()[family], output_format=output_format)
 
 
 def _drain(parser: StreamingResponseParser, chunks: list[str]):
@@ -27,7 +36,7 @@ def _drain(parser: StreamingResponseParser, chunks: list[str]):
 
 def test_streaming_emits_text_only_when_no_tool_calls() -> None:
     """A plain text stream comes out as content with no tool deltas."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     content, deltas = _drain(parser, ["Hello ", "world", "!"])
     assert content == "Hello world!"
     assert deltas == []
@@ -35,7 +44,7 @@ def test_streaming_emits_text_only_when_no_tool_calls() -> None:
 
 def test_streaming_holds_partial_marker_until_complete() -> None:
     """A chunk ending mid-marker (``<tool_c``) must not leak the partial bytes."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     # After the first chunk, the trailing "<tool_c" must not be emitted yet.
     content_after_first, _ = parser.feed("Hi <tool_c")
     assert "<tool_c" not in content_after_first
@@ -49,7 +58,7 @@ def test_streaming_holds_partial_marker_until_complete() -> None:
 
 def test_streaming_emits_one_delta_per_completed_tool_call() -> None:
     """Two ``<tool_call>`` blocks across chunks emit two tool deltas."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     _, deltas = _drain(
         parser,
         [
@@ -63,7 +72,7 @@ def test_streaming_emits_one_delta_per_completed_tool_call() -> None:
 
 def test_streaming_emits_tool_call_arguments_as_json_string() -> None:
     """Arguments are serialised JSON in each ``ToolCallDelta.arguments_delta``."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     _, deltas = _drain(
         parser, ['<tool_call>{"name": "search", "arguments": {"q": "foo"}}</tool_call>']
     )
@@ -75,7 +84,7 @@ def test_streaming_emits_tool_call_arguments_as_json_string() -> None:
 
 def test_streaming_flush_releases_held_content() -> None:
     """Content held by the safety margin is released on ``flush()``."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     held, _ = parser.feed("short text")
     flushed, _ = parser.flush()
     assert held + flushed == "short text"
@@ -89,7 +98,7 @@ def test_streaming_does_not_leak_tool_call_body_across_chunks() -> None:
     ``{"name": "x",`` would be emitted as plain text, and opencode would
     render the raw JSON instead of invoking the tool.
     """
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     chunks = [
         "Before. ",
         "<tool_call>\n",
@@ -119,7 +128,7 @@ def test_streaming_does_not_leak_tool_call_body_across_chunks() -> None:
 
 def test_streaming_handles_token_sized_chunks() -> None:
     """A token-by-token stream (1 char at a time) emits no partial tool-call text."""
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     full = 'Answer: <tool_call>{"name": "f", "arguments": {"q": "x"}}</tool_call> done.'
     chunks = list(full)
     content, deltas = _drain(parser, chunks)
@@ -135,7 +144,7 @@ def test_streaming_holds_phi4_functools_marker_until_close() -> None:
     parser must hold from the leading ``f`` so the marker word never reaches
     the UI as plain text. Without ``f`` in ``_MARKER_OPENERS`` it would.
     """
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.PHI4MINI])
+    parser = _streaming_parser_for(TemplateFamily.PHI4MINI)
     full = 'I will help. functools[{"name": "search", "arguments": {"q":"x"}}] done.'
     content, deltas = _drain(parser, list(full))
     assert "functools" not in content
@@ -151,7 +160,7 @@ def test_streaming_buffer_caps_on_never_closing_marker() -> None:
     """
     from lilbee.providers.worker.response_parser.streaming import _BUFFER_HARD_CAP
 
-    parser = StreamingResponseParser(get_schemas()[TemplateFamily.QWEN3])
+    parser = _streaming_parser_for(TemplateFamily.QWEN3)
     # First chunk opens a never-closing tag, then a flood of bytes.
     parser.feed("<tool_call>")
     long_blob = "x" * (_BUFFER_HARD_CAP + 100)

@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import json
 
-from lilbee.providers.worker.response_parser import TemplateFamily, get_schemas, parse_response
+from lilbee.providers.families import registry
+from lilbee.providers.families.profile import OutputFormat
+from lilbee.providers.worker.response_parser import (
+    ParsedResponse,
+    TemplateFamily,
+    get_schemas,
+    parse_response,
+)
+
+
+def _parse(text: str, family: TemplateFamily) -> ParsedResponse:
+    """Run ``parse_response`` keyed on the family's profile-declared output format."""
+    profile = registry().by_family(family)
+    output_format = profile.output_format if profile is not None else OutputFormat.NATIVE
+    return parse_response(text, get_schemas()[family], output_format=output_format)
 
 
 def test_qwen3_extracts_single_tool_call_with_json_args() -> None:
     """Qwen3 emits ``<tool_call>{"name":..., "arguments":...}</tool_call>``."""
     text = '<tool_call>\n{"name": "search", "arguments": {"q": "foo"}}\n</tool_call>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert len(parsed.tool_calls) == 1
     call = parsed.tool_calls[0]
     assert call.name == "search"
@@ -20,7 +34,7 @@ def test_qwen3_extracts_single_tool_call_with_json_args() -> None:
 def test_qwen3_keeps_leading_content_before_tool_call() -> None:
     """Content before ``<tool_call>`` is preserved as the cleaned content."""
     text = 'Let me search.\n<tool_call>{"name": "f", "arguments": {}}</tool_call>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert parsed.content.strip() == "Let me search."
     assert len(parsed.tool_calls) == 1
 
@@ -31,7 +45,7 @@ def test_qwen3_extracts_multiple_parallel_tool_calls() -> None:
         '<tool_call>{"name": "a", "arguments": {"x": 1}}</tool_call>\n'
         '<tool_call>{"name": "b", "arguments": {"y": 2}}</tool_call>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert [c.name for c in parsed.tool_calls] == ["a", "b"]
 
 
@@ -46,7 +60,7 @@ def test_qwen3_strips_thinking_block_from_content() -> None:
         "<think>I should search.</think>"
         '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert len(parsed.tool_calls) == 1
     assert "I should search" not in parsed.content
 
@@ -54,7 +68,7 @@ def test_qwen3_strips_thinking_block_from_content() -> None:
 def test_qwen3_preserves_content_after_tool_call() -> None:
     """Text after ``</tool_call>`` is preserved, not silently dropped."""
     text = 'Looking it up. <tool_call>{"name": "f", "arguments": {}}</tool_call> Done.'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert len(parsed.tool_calls) == 1
     assert "Looking it up." in parsed.content
     assert "Done." in parsed.content
@@ -62,7 +76,7 @@ def test_qwen3_preserves_content_after_tool_call() -> None:
 
 def test_qwen3_text_only_response_returns_no_tool_calls() -> None:
     """When the model never emits a ``<tool_call>`` block, tool_calls is empty."""
-    parsed = parse_response("just chatting today", get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse("just chatting today", TemplateFamily.QWEN3)
     assert parsed.tool_calls == ()
     assert "just chatting today" in parsed.content
 
@@ -74,7 +88,7 @@ def test_qwen3_coder_extracts_function_and_parameters() -> None:
         "<parameter=q>\nfoo\n</parameter>\n"
         "</function>\n</tool_call>"
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3_CODER])
+    parsed = _parse(text, TemplateFamily.QWEN3_CODER)
     assert len(parsed.tool_calls) == 1
     call = parsed.tool_calls[0]
     assert call.name == "search"
@@ -84,7 +98,7 @@ def test_qwen3_coder_extracts_function_and_parameters() -> None:
 def test_mistral_extracts_tool_call_array() -> None:
     """Mistral emits ``[TOOL_CALLS] [{"name":..., "arguments":...}]``."""
     text = 'Here is the call: [TOOL_CALLS] [{"name": "search", "arguments": {"q": "foo"}}]'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.MISTRAL])
+    parsed = _parse(text, TemplateFamily.MISTRAL)
     assert len(parsed.tool_calls) == 1
     call = parsed.tool_calls[0]
     assert call.name == "search"
@@ -94,7 +108,7 @@ def test_mistral_extracts_tool_call_array() -> None:
 def test_mistral_keeps_prefix_content() -> None:
     """Content before ``[TOOL_CALLS]`` is preserved."""
     text = 'Reasoning prose.\n[TOOL_CALLS] [{"name": "f", "arguments": {}}]'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.MISTRAL])
+    parsed = _parse(text, TemplateFamily.MISTRAL)
     assert "Reasoning prose." in parsed.content
     assert len(parsed.tool_calls) == 1
 
@@ -105,7 +119,7 @@ def test_cohere_extracts_tool_calls_from_action_block() -> None:
         "<|START_RESPONSE|>I'll search.<|END_RESPONSE|>"
         '<|START_ACTION|>[{"tool_name": "search", "parameters": {"q": "x"}}]<|END_ACTION|>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.COHERE])
+    parsed = _parse(text, TemplateFamily.COHERE)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
@@ -117,7 +131,7 @@ def test_ernie_extracts_tool_calls_between_tool_call_tags() -> None:
         "<response>\nLet me search.\n</response>"
         '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.ERNIE])
+    parsed = _parse(text, TemplateFamily.ERNIE)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
@@ -128,7 +142,7 @@ def test_gpt_oss_extracts_tool_calls_from_commentary_channel() -> None:
         "<|channel|>final<|message|>I'll search.<|end|>"
         '<|channel|>commentary to=functions.search<|message|>{"q": "x"}<|call|>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GPT_OSS])
+    parsed = _parse(text, TemplateFamily.GPT_OSS)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
@@ -137,7 +151,7 @@ def test_gpt_oss_extracts_tool_calls_from_commentary_channel() -> None:
 def test_smollm_extracts_tool_call() -> None:
     """SmolLM3 wraps tool calls in ``<tool_call>{json}</tool_call>``."""
     text = '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.SMOLLM])
+    parsed = _parse(text, TemplateFamily.SMOLLM)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
@@ -149,7 +163,7 @@ def test_hermes_extracts_tool_call_with_scratch_pad() -> None:
         "<scratch_pad>Let me think.</scratch_pad>"
         '<tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.HERMES])
+    parsed = _parse(text, TemplateFamily.HERMES)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
@@ -162,7 +176,7 @@ def test_deepseek_v31_extracts_tool_call_with_separator() -> None:
         '<｜tool▁call▁begin｜>search<｜tool▁sep｜>{"q": "x"}<｜tool▁call▁end｜>'
         "<｜tool▁calls▁end｜>"
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.DEEPSEEK_V31])
+    parsed = _parse(text, TemplateFamily.DEEPSEEK_V31)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
@@ -171,14 +185,13 @@ def test_deepseek_v31_extracts_tool_call_with_separator() -> None:
 def test_granite_extracts_top_level_tool_call_array() -> None:
     """IBM Granite emits a JSON array after ``<|tool_call|>`` or ``<tool_call>``."""
     text = '<|tool_call|>[{"name": "search", "arguments": {"q": "x"}}]'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GRANITE])
+    parsed = _parse(text, TemplateFamily.GRANITE)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
 
 def test_granite_extracts_bare_json_tool_call_via_dual_output_format() -> None:
     """OpenAI-style 'tools' parameter elicits bare JSON from Granite; DUAL fallback catches it."""
-    from lilbee.providers.families.profile import OutputFormat
 
     text = '{"name": "search", "arguments": {"q": "x"}}'
     parsed = parse_response(
@@ -194,7 +207,7 @@ def test_granite_extracts_bare_json_tool_call_via_dual_output_format() -> None:
 def test_phi4mini_extracts_functools_array() -> None:
     """Phi-4 wraps the tool-call array in ``functools[...]``."""
     text = 'Some reasoning. functools[{"name": "search", "arguments": {"q": "x"}}]'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.PHI4MINI])
+    parsed = _parse(text, TemplateFamily.PHI4MINI)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
@@ -202,7 +215,7 @@ def test_phi4mini_extracts_functools_array() -> None:
 def test_functionary_v3_extracts_recipient_routed_call() -> None:
     """Functionary v3 routes tool calls via ``>>>name`` lines."""
     text = '>>>all\nAnswer text\n>>>search\n{"q": "x"}'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.FUNCTIONARY_V3])
+    parsed = _parse(text, TemplateFamily.FUNCTIONARY_V3)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
@@ -210,14 +223,13 @@ def test_functionary_v3_extracts_recipient_routed_call() -> None:
 def test_llama3_extracts_python_tagged_tool_call() -> None:
     """Llama 3.x emits ``<|python_tag|>{json}`` for tool calls."""
     text = '<|python_tag|>{"name": "search", "arguments": {"q": "x"}}'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.LLAMA3])
+    parsed = _parse(text, TemplateFamily.LLAMA3)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "search"
 
 
 def test_llama3_extracts_bare_json_tool_call_via_dual_output_format() -> None:
     """Llama-3 prompted via OpenAI 'tools' parameter emits bare JSON; DUAL fallback catches it."""
-    from lilbee.providers.families.profile import OutputFormat
 
     text = '{"name": "search", "arguments": {"q": "x"}}'
     parsed = parse_response(
@@ -231,7 +243,6 @@ def test_llama3_extracts_bare_json_tool_call_via_dual_output_format() -> None:
 
 def test_llama3_bare_json_leaves_no_content_leak() -> None:
     """Bare-JSON tool call must not also surface in content; matches the python_tag arm."""
-    from lilbee.providers.families.profile import OutputFormat
 
     text = '{"name": "search", "arguments": {"q": "x"}}'
     parsed = parse_response(
@@ -250,7 +261,7 @@ def test_glm46_extracts_xml_arg_key_value_call() -> None:
         '<arg_value>"Berlin"</arg_value>\n'
         "</tool_call>"
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GLM46])
+    parsed = _parse(text, TemplateFamily.GLM46)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
     assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
@@ -261,7 +272,7 @@ def test_glm47_extracts_single_line_xml_call() -> None:
     text = (
         '<tool_call>get_weather<arg_key>city</arg_key><arg_value>"Berlin"</arg_value></tool_call>'
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GLM47])
+    parsed = _parse(text, TemplateFamily.GLM47)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
 
@@ -275,7 +286,7 @@ def test_kimi_k2_extracts_tool_call_with_functions_prefix() -> None:
         "<|tool_call_end|>"
         "<|tool_calls_section_end|>"
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.KIMI_K2])
+    parsed = _parse(text, TemplateFamily.KIMI_K2)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
     assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
@@ -288,7 +299,7 @@ def test_internlm2_extracts_action_plugin_call() -> None:
         '{"name": "get_weather", "arguments": {"city": "Berlin"}}'
         "<|action_end|>"
     )
-    parsed = parse_response(text, get_schemas()[TemplateFamily.INTERNLM2])
+    parsed = _parse(text, TemplateFamily.INTERNLM2)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
     assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Berlin"}
@@ -297,7 +308,7 @@ def test_internlm2_extracts_action_plugin_call() -> None:
 def test_olmo3_extracts_pythonic_function_call() -> None:
     """OLMo 3 emits pythonic ``name(key=value)`` inside ``<function_calls>...</function_calls>``."""
     text = '<function_calls>\nget_weather(city="Berlin")\n</function_calls>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.OLMO3])
+    parsed = _parse(text, TemplateFamily.OLMO3)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
 
@@ -305,7 +316,7 @@ def test_olmo3_extracts_pythonic_function_call() -> None:
 def test_lfm2_extracts_pythonic_list_call() -> None:
     """LFM2 emits ``<|tool_call_start|>[name(key=value)]<|tool_call_end|>``."""
     text = '<|tool_call_start|>[get_weather(city="Berlin")]<|tool_call_end|>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.LFM2])
+    parsed = _parse(text, TemplateFamily.LFM2)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "get_weather"
 
@@ -317,13 +328,13 @@ def test_malformed_json_inside_tool_call_falls_back_to_text() -> None:
     raw text as content rather than raising out of the worker.
     """
     text = "<tool_call>NOT JSON{</tool_call>"
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert parsed.tool_calls == ()
 
 
 def test_empty_input_returns_empty_response() -> None:
     """Parsing an empty string never raises."""
-    parsed = parse_response("", get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse("", TemplateFamily.QWEN3)
     assert parsed.content == ""
     assert parsed.tool_calls == ()
 
@@ -336,7 +347,7 @@ def test_recursive_parse_value_error_falls_back_to_raw_text() -> None:
     # `{not_json}` matches the outer regex (braces present) but breaks at the
     # `x-parser: "json"` step inside, raising ValueError from recursive_parse.
     text = "<tool_call>{not_json}</tool_call>"
-    parsed = parse_response(text, get_schemas()[TemplateFamily.QWEN3])
+    parsed = _parse(text, TemplateFamily.QWEN3)
     assert parsed.content == text
     assert parsed.tool_calls == ()
 
@@ -353,7 +364,7 @@ def test_root_regex_miss_returns_raw_text() -> None:
         "x-regex": r"NEVER_MATCHES_(\w+)",
         "properties": {"content": {"type": "string"}, "tool_calls": {"type": "array"}},
     }
-    parsed = parse_response("just regular text", schema)
+    parsed = parse_response("just regular text", schema, output_format=OutputFormat.NATIVE)
     assert parsed.content == "just regular text"
     assert parsed.tool_calls == ()
 
@@ -366,7 +377,7 @@ def test_gemma4_extracts_wrapped_function_call() -> None:
     emit flat ``{name, arguments}`` dicts.
     """
     text = '<|tool_call>call:weather{"city":"Tokyo"}<tool_call|>'
-    parsed = parse_response(text, get_schemas()[TemplateFamily.GEMMA4])
+    parsed = _parse(text, TemplateFamily.GEMMA4)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "weather"
 
@@ -464,6 +475,76 @@ def test_missing_transformers_utility_degrades_gracefully(monkeypatch) -> None:
     parsed = parse_response(
         '<tool_call>{"name": "x", "arguments": {}}</tool_call>',
         get_schemas()[TemplateFamily.QWEN3],
+        output_format=OutputFormat.NATIVE,
     )
     assert parsed.tool_calls == ()
     assert "tool_call" in parsed.content
+
+
+def test_qwen3_dual_bare_json_falls_back_when_template_marker_missing() -> None:
+    """Qwen3 DUAL: OpenAI-style clients drop ``<tool_call>`` markers; bare-JSON catches it."""
+    text = '{"name": "search", "arguments": {"q": "x"}}'
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.QWEN3],
+        output_format=OutputFormat.DUAL,
+    )
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+
+
+def test_chatml_tool_call_output_format_extracts_each_wrapper() -> None:
+    """``OutputFormat.CHATML_TOOL_CALL`` extracts every ``<tool_call>{json}</tool_call>``."""
+    text = (
+        "Some prose. "
+        '<tool_call>{"name": "a", "arguments": {"x": 1}}</tool_call>'
+        '<tool_call>{"name": "b", "arguments": {"y": 2}}</tool_call>'
+    )
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.HERMES],
+        output_format=OutputFormat.CHATML_TOOL_CALL,
+    )
+    assert [c.name for c in parsed.tool_calls] == ["a", "b"]
+    assert parsed.content.strip() == "Some prose."
+
+
+def test_chatml_tool_call_output_format_drops_invalid_json_calls() -> None:
+    """A ``<tool_call>`` wrapper whose body isn't valid JSON produces zero calls."""
+    text = "<tool_call>not-json</tool_call>"
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.HERMES],
+        output_format=OutputFormat.CHATML_TOOL_CALL,
+    )
+    assert parsed.tool_calls == ()
+
+
+def test_harmony_output_format_extracts_commentary_channel_calls() -> None:
+    """``OutputFormat.HARMONY`` extracts ``<|channel|>commentary to=...<|call|>`` blocks."""
+    text = (
+        "<|channel|>final<|message|>Sure.<|end|>"
+        '<|channel|>commentary to=functions.search<|message|>{"q": "x"}<|call|>'
+    )
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.GPT_OSS],
+        output_format=OutputFormat.HARMONY,
+    )
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
+
+
+def test_bare_json_scanner_handles_nested_objects() -> None:
+    """The bare-JSON extractor must walk nested objects via ``json.JSONDecoder.raw_decode``."""
+    text = '{"name": "search", "arguments": {"filter": {"deep": {"nested": {"v": 1}}}}}'
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.LLAMA3],
+        output_format=OutputFormat.BARE_JSON,
+    )
+    assert len(parsed.tool_calls) == 1
+    call = parsed.tool_calls[0]
+    assert call.name == "search"
+    assert json.loads(call.arguments) == {"filter": {"deep": {"nested": {"v": 1}}}}

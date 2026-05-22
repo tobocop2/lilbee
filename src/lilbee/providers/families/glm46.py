@@ -1,4 +1,4 @@
-"""GLM-4.5 / 4.6 family profile."""
+"""GLM-4.5 / 4.6: ``<tool_call>NAME`` + ``<arg_key>K</arg_key><arg_value>V</arg_value>``."""
 
 from __future__ import annotations
 
@@ -9,5 +9,4 @@ PROFILE = FamilyProfile(
     family=TemplateFamily.GLM46,
     template_markers=("<arg_key>", "<arg_value>"),
     output_format=OutputFormat.NATIVE,
-    reason="GLM 4.5/4.6 <tool_call>NAME plus <arg_key>K</arg_key><arg_value>V</arg_value>.",
 )

@@ -1630,14 +1630,14 @@ graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
 ]
-litellm = [
-    { name = "litellm" },
-]
 release = [
     { name = "crawl4ai" },
     { name = "graspologic-native" },
     { name = "litellm" },
     { name = "spacy" },
+]
+remote = [
+    { name = "litellm" },
 ]
 
 [package.dev-dependencies]
@@ -1669,8 +1669,8 @@ requires-dist = [
     { name = "jmespath", specifier = ">=1.0" },
     { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
-    { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
+    { name = "lilbee", extras = ["crawler", "remote", "graph"], marker = "extra == 'release'" },
+    { name = "litellm", marker = "extra == 'remote'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
@@ -1687,7 +1687,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "graph", "crawler", "release"]
+provides-extras = ["remote", "graph", "crawler", "release"]
 
 [package.metadata.requires-dev]
 dev = [

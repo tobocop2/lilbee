@@ -39,10 +39,13 @@ class _StubSession:
     """Captures chat() kwargs and returns a canned llama-cpp response."""
 
     def __init__(self, *, response: Any) -> None:
+        from lilbee.providers.families.profile import FamilyProfile
+
         self._response = response
         self._abort_flag = _FlagStub()
         self.calls: list[dict[str, Any]] = []
         self.response_schema = None
+        self._profile: FamilyProfile | None = None
 
     def chat(
         self,
@@ -221,9 +224,7 @@ def test_session_chat_warns_once_when_tools_requested_without_schema(
 
     monkeypatch.setattr("lilbee.providers.llama_cpp.provider.load_llama", _fake_load_llama)
     monkeypatch.setattr("lilbee.providers.llama_cpp.provider.resolve_model_path", _fake_resolve)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata", _fake_metadata
-    )
+    monkeypatch.setattr("lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", _fake_metadata)
 
     tools = [{"type": "function", "function": {"name": "f"}}]
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.worker.chat_worker"):
@@ -539,9 +540,7 @@ def test_chat_session_caches_schema_from_template_metadata(monkeypatch, tmp_path
 
     monkeypatch.setattr("lilbee.providers.llama_cpp.provider.load_llama", _fake_load_llama)
     monkeypatch.setattr("lilbee.providers.llama_cpp.provider.resolve_model_path", _fake_resolve)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata", _fake_metadata
-    )
+    monkeypatch.setattr("lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", _fake_metadata)
 
     session._ensure_loaded(None)
 
@@ -566,7 +565,7 @@ def test_chat_session_caches_none_schema_for_unrecognised_template(monkeypatch, 
         "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _m: fake_path
     )
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.safe_read_gguf_metadata",
+        "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
         lambda _p: {"chat_template": "no recognised markers here"},
     )
 

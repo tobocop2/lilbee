@@ -390,10 +390,13 @@ class _FlagStub:
 
 class _StubSession:
     def __init__(self, *, response: Any = None, exc: Exception | None = None) -> None:
+        from lilbee.providers.families.profile import FamilyProfile
+
         self._response = response
         self._exc = exc
         self._abort_flag = _FlagStub()
         self.response_schema = None
+        self._profile: FamilyProfile | None = None
 
     def chat(
         self,
