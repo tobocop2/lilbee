@@ -898,15 +898,20 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at
     the same path invalidates automatically because its mtime changes.
     """
+    from lilbee.providers.worker.response_parser.schemas import get_schemas
+
     meta = read_gguf_metadata(Path(path_str))
     if not isinstance(meta, dict):
         return False
-    # When a family profile matches and declares a chat_format override, lilbee
-    # will swap in a llama-cpp preset that iterates tools; treat such a model
-    # as tool-capable even if its bundled template was stripped. Otherwise
-    # fall back to the embedded-template Jinja probe.
+    # A matching family profile is itself evidence the model is tool-capable:
+    # the family ships a response-parsing schema lilbee uses to extract calls,
+    # so even families whose embedded chat template doesn't trip the generic
+    # Jinja probe (e.g. ERNIE's <tool_call> markers, LFM2's <|tool_list_start|>)
+    # still register as tool-capable when the profile is registered.
     profile = detect_profile(meta, ref=path_str)
-    if profile is not None and profile.chat_format_override is not None:
+    if profile is not None and (
+        profile.chat_format_override is not None or profile.family in get_schemas()
+    ):
         return True
     template = meta.get("chat_template")
     if not isinstance(template, str):

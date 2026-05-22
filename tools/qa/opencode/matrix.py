@@ -39,16 +39,28 @@ _SERVE_BOOT_TIMEOUT_S = 30.0
 _SERVE_TERMINATE_TIMEOUT_S = 10.0
 _OPENCODE_BOOT_SETTLE_S = 30.0  # boot + first-prompt prefill warmup
 _INDEX_TIMEOUT_S = 120.0
-_MODEL_PULL_TIMEOUT_S = 1800.0
+_MODEL_PULL_TIMEOUT_S = 3600.0  # residential bandwidth, multi-quant repos can run 30+ min
 _POLL_INTERVAL_S = 2.0
 _SCENARIO_TIMEOUT_S = 600.0  # 8B on Apple Silicon w/ 32K KV cache + tool round-trip is slow
 _MULTI_TOOL_TIMEOUT_S = 600.0
 _INTER_SCENARIO_SETTLE_S = 15.0  # let opencode finish the prior turn before queuing the next
+# Fail-fast: declare a scenario dead when the pane stops changing for this long
+# AFTER the model has emitted at least one ``Build · …`` activity marker. Keeps
+# a quiet model from eating the full 600s timeout.
+_PANE_IDLE_TIMEOUT_S = 90.0
 
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
 _LILBEE_PROVIDER_ID = "lilbee"
 
+# Substrings whose appearance in the pane means the cell can't recover --
+# record the scenario as FAIL immediately instead of polling to timeout.
+_FAIL_FAST_MARKERS = (
+    "does not support tool calls",
+    "context_length_exceeded",
+    "exceeds the usable budget",
+    "Internal Server Error",
+)
 _RAW_MARKER_FORBIDDEN = ("<tool_call>", "[TOOL_CALLS]", "functools[", "Error:", "Traceback")
 _SUSPENDED_SUFFIX = ".qa-suspended"
 _CHAT_CTX_TARGET = 32768  # opencode's default system prompt is ~14K tokens, plus tools schema ~10K
@@ -288,6 +300,10 @@ def pin_opencode_default_model(model_ref: str) -> None:
 
 def index_workspace(workspace: Path, log_path: Path) -> None:
     """Run lilbee add on each fixture so lilbee_search has content."""
+    import os
+
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     with log_path.open("a") as log:
         log.write("=== lilbee add ===\n")
         log.flush()
@@ -295,6 +311,7 @@ def index_workspace(workspace: Path, log_path: Path) -> None:
             subprocess.run(
                 ["uv", "run", "lilbee", "add", str(workspace / fixture)],
                 cwd=workspace,
+                env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 check=False,
@@ -303,13 +320,18 @@ def index_workspace(workspace: Path, log_path: Path) -> None:
 
 
 def boot_serve(workspace: Path, port: int, log_path: Path) -> subprocess.Popen[bytes]:
-    """Spawn lilbee serve on *port* and wait for /api/health."""
+    """Spawn lilbee serve on *port* in its own process group and wait for /api/health.
+
+    The process group lets :func:`stop_serve` reap the whole tree (``uv`` plus
+    the lilbee child it forks) rather than orphaning the child python.
+    """
     log_file = log_path.open("ab")
     proc = subprocess.Popen(
         ["uv", "run", "lilbee", "serve", "--port", str(port)],
         cwd=workspace,
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     deadline = time.time() + _SERVE_BOOT_TIMEOUT_S
     while time.time() < deadline:
@@ -322,16 +344,24 @@ def boot_serve(workspace: Path, port: int, log_path: Path) -> subprocess.Popen[b
         except (httpx.HTTPError, httpx.RequestError):
             pass
         time.sleep(0.5)
-    proc.terminate()
+    stop_serve(proc)
     raise TimeoutError("lilbee serve did not become ready in time")
 
 
 def stop_serve(proc: subprocess.Popen[bytes]) -> None:
-    proc.terminate()
+    """Reap the full lilbee-serve process group (uv parent + lilbee python child)."""
+    import os
+    import signal
+
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
     try:
         proc.wait(timeout=_SERVE_TERMINATE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
 
 
 def tmux_session_exists(name: str) -> bool:
@@ -387,15 +417,30 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
 
 
 def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
-    """Send the prompt and poll the pane until expected/forbidden settle."""
+    """Send the prompt and poll the pane until expected/forbidden/idle settle."""
     tmux_send(session, scenario.prompt)
     start = time.time()
     deadline = start + scenario.timeout_s
     last_pane = ""
+    last_change_at = start
+    last_pane_len = 0
+    missing: list[str] = list(scenario.expected)
     while time.time() < deadline:
         pane = tmux_capture(session)
         last_pane = pane
         pane_lower = pane.lower()
+        if pane != "" and len(pane) != last_pane_len:
+            last_pane_len = len(pane)
+            last_change_at = time.time()
+        fail_fast = next((m for m in _FAIL_FAST_MARKERS if m.lower() in pane_lower), None)
+        if fail_fast is not None:
+            return ScenarioResult(
+                name=scenario.name,
+                status=ScenarioStatus.FAIL,
+                detail=f"fail-fast marker hit: {fail_fast!r}",
+                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
+                elapsed_s=time.time() - start,
+            )
         forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
         if forbidden_hits:
             return ScenarioResult(
@@ -414,6 +459,15 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
                 pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
                 elapsed_s=time.time() - start,
             )
+        idle_for = time.time() - last_change_at
+        if idle_for > _PANE_IDLE_TIMEOUT_S and time.time() - start > _OPENCODE_BOOT_SETTLE_S:
+            return ScenarioResult(
+                name=scenario.name,
+                status=ScenarioStatus.TIMEOUT,
+                detail=f"pane idle {idle_for:.0f}s; missing {missing}",
+                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
+                elapsed_s=time.time() - start,
+            )
         time.sleep(_POLL_INTERVAL_S)
     return ScenarioResult(
         name=scenario.name,
@@ -422,6 +476,33 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
         pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
         elapsed_s=scenario.timeout_s,
     )
+
+
+def _run_pull_with_group_kill(pull_ref: str) -> None:
+    """Run ``lilbee model pull`` in its own process group so a timeout reaps the
+    full tree (otherwise ``uv``'s child python orphans and keeps the download
+    running, contending for bandwidth with the next cell's pull).
+
+    Progress bars are suppressed so the matrix stdout stays grep-able.
+    """
+    import os
+    import signal
+
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    proc = subprocess.Popen(
+        ["uv", "run", "lilbee", "model", "pull", pull_ref],
+        cwd=REPO_ROOT,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=10)
+        raise
 
 
 def setup_cell(
@@ -433,12 +514,7 @@ def setup_cell(
     if not args.no_pull:
         pull_ref = _pull_ref_for(cell.ref)
         print(f"[{cell.family}] pulling {pull_ref}")
-        subprocess.run(
-            ["uv", "run", "lilbee", "model", "pull", pull_ref],
-            cwd=REPO_ROOT,
-            timeout=_MODEL_PULL_TIMEOUT_S,
-            check=False,
-        )
+        _run_pull_with_group_kill(pull_ref)
     print(f"[{cell.family}] indexing fixtures")
     index_workspace(workspace, log_path)
     print(f"[{cell.family}] pinning opencode default model")
@@ -466,8 +542,30 @@ def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes], keep: bool)
     stop_serve(serve_proc)
 
 
+def cleanup_cell_model(cell: ModelCell) -> None:
+    """Delete the cell's chat GGUF from the HF cache + lilbee's manifest.
+
+    Disk pressure on a dev laptop is the real limiter for an exhaustive
+    sweep (qwen3-coder alone is 17 GB). Freeing the blob between cells
+    keeps total disk usage flat at roughly the largest single model
+    instead of the cumulative pull set.
+    """
+    from lilbee.core.config import cfg
+
+    repo = _pull_ref_for(cell.ref)
+    cache_dir_name = "models--" + repo.replace("/", "--")
+    models_root = Path(cfg.models_dir)
+    for target in (
+        models_root / cache_dir_name,
+        models_root / ".locks" / cache_dir_name,
+        models_root / "manifests" / cache_dir_name,
+    ):
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+
+
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
-    """Orchestrate one matrix cell: setup, scenarios, teardown."""
+    """Orchestrate one matrix cell: setup, scenarios, teardown, cleanup."""
     result = CellResult(family=cell.family, ref=cell.ref)
     session = f"{_TMUX_SESSION_PREFIX}-{cell.family}"
     log_path = LOG_DIR / f"{cell.family}.log"
@@ -486,6 +584,10 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     except Exception as exc:
         result.setup_error = f"{type(exc).__name__}: {exc}"
         print(f"[{cell.family}] setup error: {result.setup_error}")
+        log_path.write_text(f"setup_error: {result.setup_error}\n")
+    if not args.keep_models:
+        print(f"[{cell.family}] cleaning up chat GGUF")
+        cleanup_cell_model(cell)
     return result
 
 
@@ -532,8 +634,14 @@ def main() -> int:
     parser.add_argument(
         "--keep-on-fail",
         action="store_true",
-        default=True,
-        help="leave tmux session up when a cell fails (default: True)",
+        default=False,
+        help="leave tmux session up when a cell fails (default: False; opt-in for post-mortem)",
+    )
+    parser.add_argument(
+        "--keep-models",
+        action="store_true",
+        default=False,
+        help="keep the cell's chat GGUF on disk after each cell (default: delete)",
     )
     args = parser.parse_args()
 

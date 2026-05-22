@@ -220,6 +220,32 @@ def test_llama_cpp_supports_tools_true_when_chat_format_override_applies(monkeyp
     assert provider.supports_tools("any/model::Q4_K_M") is True
 
 
+def test_llama_cpp_supports_tools_true_when_family_profile_has_schema(monkeypatch) -> None:
+    """ERNIE/LFM2 use native tool-call wrappers their embedded chat template
+    references in ways the generic Jinja probe doesn't match. The matching
+    family profile (plus a registered response schema) is enough to declare
+    the model tool-capable.
+    """
+    from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+    provider = LlamaCppProvider()
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        lambda model: Path("/fake/ernie.gguf"),
+    )
+    # ERNIE marker triggers the ERNIE family profile, which has NO
+    # chat_format_override but DOES have a registered response schema.
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+        lambda path: {
+            "name": "ERNIE-4.5",
+            "chat_template": "<|begin_of_sentence|>{{ messages }}<|end_of_sentence|>",
+        },
+    )
+    assert provider.supports_tools("baidu/ERNIE-4.5") is True
+
+
 def test_llama_cpp_supports_tools_false_when_tool_words_only_in_prose(monkeypatch) -> None:
     """A template that mentions tool words in literal text, not inside Jinja
     delimiters, must not report tool support. Matching anywhere in the string
