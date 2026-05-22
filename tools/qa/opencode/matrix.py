@@ -51,6 +51,7 @@ _PANE_IDLE_TIMEOUT_S = 90.0
 
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
+_OPENCODE_SHARE_DIR = Path.home() / ".local" / "share" / "opencode"
 _LILBEE_PROVIDER_ID = "lilbee"
 
 # Substrings whose appearance in the pane means the cell can't recover --
@@ -98,8 +99,15 @@ def _ref_for_manifest(path: Path) -> str:
 
 
 def _pull_ref_for(model_ref: str) -> str:
-    """Strip the trailing ``/<file>.gguf`` so ``lilbee model pull`` accepts it."""
-    return model_ref.rsplit("/", 1)[0] if model_ref.endswith(".gguf") else model_ref
+    """Return the HuggingFace repo id (owner/name) for *model_ref*.
+
+    GGUF refs in models.toml have the shape ``owner/repo[/subdir]/file.gguf``,
+    e.g. ``Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf`` (3 parts, no subdir) or
+    ``unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf``
+    (4 parts, with a quant-tier subdir). ``lilbee model pull`` wants exactly
+    ``owner/repo`` regardless, so keep only the first two segments.
+    """
+    return "/".join(model_ref.split("/")[:2])
 
 
 @contextlib.contextmanager
@@ -510,6 +518,26 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
     )
 
 
+def reset_opencode_session_state() -> None:
+    """Wipe opencode's per-user session DB so the prior cell's history can't
+    bleed into the new cell's pane.
+
+    opencode persists conversation history under ``~/.local/share/opencode/``
+    (sqlite + JSON storage). When matrix.py runs cell N+1's smoke, opencode
+    boots with the recent-sessions panel populated by cell N's transcripts,
+    which contained tokens like ``KnownModelCache`` / ``recursive_parse`` /
+    ``schemas`` -- exactly the substrings the next cell's smoke scenarios
+    look for. Without this scrub the matrix reports false PASSes for cells
+    whose models never even loaded.
+
+    The picker state (``~/.local/state/opencode/model.json``) is preserved
+    because that's where :func:`pin_opencode_default_model` writes the
+    per-cell model pin.
+    """
+    if _OPENCODE_SHARE_DIR.exists():
+        shutil.rmtree(_OPENCODE_SHARE_DIR)
+
+
 def ensure_embedding_model_pulled() -> None:
     """Idempotent: ensure the shared embedding model is in the registry.
 
@@ -565,6 +593,7 @@ def setup_cell(
     race; the per-cell log still captures everything via the launcher's stdio.
     """
     workspace = write_per_cell_workspace(cell.family, cell.ref)
+    reset_opencode_session_state()
     port = free_port()
     if not args.no_pull:
         pull_ref = _pull_ref_for(cell.ref)
