@@ -744,11 +744,7 @@ def _count_ok_chat_completions(workspace: Path) -> int:
     if not log_file.exists():
         return 0
     text = log_file.read_text(encoding="utf-8", errors="replace")
-    return sum(
-        1
-        for line in text.splitlines()
-        if 'POST /v1/chat/completions HTTP/1.1" 200' in line
-    )
+    return sum(1 for line in text.splitlines() if 'POST /v1/chat/completions HTTP/1.1" 200' in line)
 
 
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
