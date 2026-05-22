@@ -62,7 +62,19 @@ _FAIL_FAST_MARKERS = (
     "exceeds the usable budget",
     "Internal Server Error",
 )
-_RAW_MARKER_FORBIDDEN = ("<tool_call>", "[TOOL_CALLS]", "functools[", "Error:", "Traceback")
+_RAW_MARKER_FORBIDDEN = (
+    "<tool_call>",
+    "[TOOL_CALLS]",
+    "functools[",
+    "Error:",
+    "Traceback",
+    # Model emitted the tool call as raw JSON text instead of using opencode's
+    # tool-call channel. lilbee's per-family extractor did not pick the
+    # payload up, so opencode renders the JSON as a chat reply. The cell
+    # cannot be marked "supported" if this happens.
+    '{"name": "lilbee_',
+    '{"name":"lilbee_',
+)
 _SUSPENDED_SUFFIX = ".qa-suspended"
 _CHAT_CTX_TARGET = 32768  # opencode's default system prompt is ~14K tokens, plus tools schema ~10K
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -152,11 +164,21 @@ class Scenario:
     timeout_s: float
 
 
+_OPENCODE_TOOL_DISPATCH_MARKER = "lilbee_search [query="
+"""Substring opencode prints ONLY when it has dispatched a tool call.
+
+A model that emits the raw ``{"name":"lilbee_search","parameters":{"query":...}}``
+JSON instead of using opencode's tool-call channel never produces this exact
+bracket form. Requiring it in the expected set rules out the false-PASS
+where the model's raw-JSON output still happens to contain the tool name.
+"""
+
+
 SMOKE_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="S1 single tool call",
         prompt="search the indexed docs for the chat worker file",
-        expected=("lilbee_search", "chat worker"),
+        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "chat worker"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -166,7 +188,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about the dispatch layer, "
             "then quote the named class that resolves the model"
         ),
-        expected=("lilbee_search", "KnownModelCache"),
+        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "KnownModelCache"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
     ),
@@ -176,7 +198,7 @@ SMOKE_SCENARIOS: tuple[Scenario, ...] = (
             "use lilbee_search to find information about tool extraction, "
             "then describe the parsing library and schema location"
         ),
-        expected=("recursive_parse", "schemas"),
+        expected=(_OPENCODE_TOOL_DISPATCH_MARKER, "recursive_parse", "schemas"),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_SCENARIO_TIMEOUT_S,
     ),
@@ -206,10 +228,20 @@ class CellResult:
     ref: str
     scenarios: list[ScenarioResult] = field(default_factory=list)
     setup_error: str = ""
+    serve_errors: str = ""
+    """Worker / dispatch errors scraped from the cell's launcher-serve.log.
+    Non-empty means the chat or embed worker raised an exception during the
+    cell, so even an all-green substring check downgrades to FAIL.
+    """
 
     @property
     def passed(self) -> bool:
-        return not self.setup_error and all(s.status is ScenarioStatus.PASS for s in self.scenarios)
+        return (
+            not self.setup_error
+            and not self.serve_errors
+            and bool(self.scenarios)
+            and all(s.status is ScenarioStatus.PASS for s in self.scenarios)
+        )
 
 
 def load_models(path: Path) -> list[ModelCell]:
@@ -664,6 +696,24 @@ def cleanup_cell_model(cell: ModelCell) -> None:
             shutil.rmtree(target, ignore_errors=True)
 
 
+def _scrape_serve_errors(workspace: Path) -> str:
+    """Pull worker/dispatch exceptions out of the cell's launcher-serve.log.
+
+    A cell whose scenarios pass the pane substring check but whose lilbee serve
+    raised a chat-worker exception (e.g., tool-call shape mismatch, context
+    overflow, ProviderError) cannot be marked "supported" -- the model
+    + parser combination is broken, even if opencode happened to render
+    enough text to satisfy the smoke substrings.
+    """
+    log_file = workspace / ".lilbee" / "data" / "logs" / "launcher-serve.log"
+    if not log_file.exists():
+        return ""
+    text = log_file.read_text(encoding="utf-8", errors="replace")
+    needles = ("Traceback (most recent call last)", "ProviderError:", "WorkerError:", "TypeError:")
+    hits = [line for line in text.splitlines() if any(n in line for n in needles)]
+    return "\n".join(hits[-8:]) if hits else ""
+
+
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     """Orchestrate one matrix cell: setup, scenarios, teardown, cleanup."""
     result = CellResult(family=cell.family, ref=cell.ref)
@@ -671,6 +721,7 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     log_path = LOG_DIR / f"{cell.family}.log"
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\n[{cell.family}] starting ({cell.ref})")
+    workspace: Path | None = None
     try:
         workspace, _port, serve_proc = setup_cell(cell, args, log_path)
         try:
@@ -685,6 +736,10 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
         result.setup_error = f"{type(exc).__name__}: {exc}"
         print(f"[{cell.family}] setup error: {result.setup_error}")
         log_path.write_text(f"setup_error: {result.setup_error}\n")
+    if workspace is not None:
+        result.serve_errors = _scrape_serve_errors(workspace)
+        if result.serve_errors:
+            print(f"[{cell.family}] serve errors detected, downgrading to FAIL")
     if not args.keep_models:
         print(f"[{cell.family}] cleaning up chat GGUF")
         cleanup_cell_model(cell)
@@ -715,6 +770,11 @@ def render_report(results: list[CellResult]) -> str:
         lines.append("")
         if r.setup_error:
             lines.append(f"Setup error: {r.setup_error}")
+        if r.serve_errors:
+            lines.append("### Worker / dispatch errors in launcher-serve.log")
+            lines.append("```")
+            lines.append(r.serve_errors)
+            lines.append("```")
         for s in r.scenarios:
             if s.status is ScenarioStatus.PASS:
                 continue
