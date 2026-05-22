@@ -87,18 +87,42 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
     Prefers the ``lilbee`` binary on PATH so frozen builds (Nuitka standalone)
     spawn the binary directly. Falls back to ``sys.executable -m lilbee`` for
     pip / editable installs where the entry point shims to the same form.
+
+    Stdout/stderr go to ``cfg.data_dir / "logs" / "launcher-serve.log"`` (size
+    capped at 5 MB) so a crash mid-session leaves a trace instead of disappearing.
+    Set ``LILBEE_LAUNCHER_SERVE_QUIET=1`` to restore the previous DEVNULL behavior.
     """
+    import os
+
+    from lilbee.core.config import cfg
+
     lilbee_bin = shutil.which("lilbee")
     cmd = (
         [lilbee_bin, "serve", "--port", str(port)]
         if lilbee_bin is not None
         else [sys.executable, "-m", "lilbee", "serve", "--port", str(port)]
     )
+
+    if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET"):
+        stdout: object = subprocess.DEVNULL
+        stderr: object = subprocess.DEVNULL
+    else:
+        log_dir = cfg.data_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "launcher-serve.log"
+        # Truncate when the file passes 5 MB so a long-lived session doesn't
+        # accumulate the chat-completion firehose into the data dir indefinitely.
+        if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
+            log_path.unlink()
+        log_file = log_path.open("ab")
+        stdout = log_file
+        stderr = subprocess.STDOUT
+
     # Only caller-controlled value is the validated integer port; no shell.
     return subprocess.Popen(  # noqa: S603
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 
