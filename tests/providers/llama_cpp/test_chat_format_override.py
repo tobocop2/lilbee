@@ -49,28 +49,15 @@ def test_smollm3_override_targets_chatml_function_calling() -> None:
     assert resolve_override_family(meta) is TemplateFamily.SMOLLM
 
 
-def test_functionary_v3_override_matches_by_repo_path() -> None:
-    """Functionary v3.x fine-tunes inherit Llama-3.1's general.name; the override
-    has to consult the ref path to recognise them.
+def test_functionary_v3_falls_through_to_embedded_template() -> None:
+    """Functionary v3.x GGUFs embed Llama-3.1's chat template natively, so the
+    standard LLAMA3 path handles them. No override fires (the functionary-v2
+    preset would require hf_tokenizer_path that lilbee can't supply offline).
     """
     from lilbee.providers.llama_cpp.chat_format_override import (
         resolve_chat_format_override,
-        resolve_override_family,
     )
-    from lilbee.providers.worker.response_parser.families import TemplateFamily
 
     meta = {"name": "Meta Llama 3.1 8B Instruct"}
     ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q8_0.gguf"
-    assert resolve_chat_format_override(meta, ref=ref) == "functionary-v2"
-    assert resolve_override_family(meta, ref=ref) is TemplateFamily.FUNCTIONARY_V3
-
-
-def test_functionary_override_does_not_fire_for_plain_llama() -> None:
-    """A non-Functionary Llama-3.1 GGUF must not get the Functionary preset."""
-    from lilbee.providers.llama_cpp.chat_format_override import (
-        resolve_chat_format_override,
-    )
-
-    meta = {"name": "Meta Llama 3.1 8B Instruct"}
-    ref = "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
     assert resolve_chat_format_override(meta, ref=ref) is None

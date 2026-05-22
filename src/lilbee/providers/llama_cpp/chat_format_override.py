@@ -94,20 +94,14 @@ _OVERRIDES: tuple[_ChatFormatOverride, ...] = (
         family=TemplateFamily.FUNCTIONARY_V3,
         reason="Functionary-v2 community GGUFs commonly drop the template.",
     ),
-    _ChatFormatOverride(
-        name_pattern=None,
-        ref_pattern=re.compile(r"functionary[^/]*v3", re.IGNORECASE),
-        chat_format="functionary-v2",
-        family=TemplateFamily.FUNCTIONARY_V3,
-        reason=(
-            "Functionary v3.x GGUFs inherit Meta's general.name ('Meta Llama "
-            "3.1 8B Instruct') from the base model, so name matching misses "
-            "them. Match by repo path instead. v3 keeps the v2 functionary "
-            "tool-call wire shape (>>>name\\n{json}), so functionary-v2 in "
-            "llama-cpp-python's registry is the right preset; lilbee's "
-            "functionary_v3 schema handles extraction."
-        ),
-    ),
+    # NOTE: Functionary v3.x GGUFs (meetkai/functionary-small-v3.2-GGUF) embed
+    # the Llama-3.1 chat template natively and don't get an override here.
+    # llama-cpp-python's functionary-v2 preset requires hf_tokenizer_path at
+    # Llama init for its custom tool tokenization, which lilbee can't supply
+    # offline. Without the override, the model loads with its embedded
+    # Llama-3.1 template, family detection picks LLAMA3, and the bare-JSON
+    # parser arm extracts the tool calls the model emits via the standard
+    # Llama-3.1 tools prompt.
 )
 
 
