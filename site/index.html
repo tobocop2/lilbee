@@ -403,12 +403,14 @@
       <div class="label">built on</div>
       <p class="built-intro">lilbee stands on established open-source projects and wires them into one program.</p>
       <ul class="deps">
-        <li><span class="dep-name"><a href="https://github.com/kreuzberg-dev/kreuzberg">Kreuzberg</a></span><span class="dep-role">parses documents</span></li>
-        <li><span class="dep-name"><a href="https://lancedb.com">LanceDB</a></span><span class="dep-role">embedded vector index</span></li>
-        <li><span class="dep-name"><a href="https://github.com/abetlen/llama-cpp-python">llama.cpp</a></span><span class="dep-role">runs models locally</span></li>
-        <li><span class="dep-name"><a href="https://github.com/Goldziher/tree-sitter-language-pack">tree-sitter</a></span><span class="dep-role">chunks code</span></li>
-        <li><span class="dep-name"><a href="https://github.com/unclecode/crawl4ai">crawl4ai</a> + <a href="https://playwright.dev">Playwright</a></span><span class="dep-role">crawl the web</span></li>
-        <li><span class="dep-name"><a href="https://textual.textualize.io">Textual</a></span><span class="dep-role">draws the terminal</span></li>
+        <li><span class="dep-name"><a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> + <a href="https://github.com/abetlen/llama-cpp-python">llama-cpp-python</a></span><span class="dep-role">local model runtime. without it, no lilbee.</span></li>
+        <li><span class="dep-name"><a href="https://huggingface.co">Hugging Face Hub</a> + <a href="https://github.com/huggingface/huggingface_hub">huggingface_hub</a></span><span class="dep-role">model catalog and every download</span></li>
+        <li><span class="dep-name"><a href="https://github.com/kreuzberg-dev/kreuzberg">Kreuzberg</a></span><span class="dep-role">parses 90+ document formats</span></li>
+        <li><span class="dep-name"><a href="https://lancedb.com">LanceDB</a></span><span class="dep-role">embedded vector store</span></li>
+        <li><span class="dep-name"><a href="https://tree-sitter.github.io/tree-sitter/">tree-sitter</a> + <a href="https://github.com/Goldziher/tree-sitter-language-pack">tree-sitter-language-pack</a></span><span class="dep-role">chunks code across 150+ languages</span></li>
+        <li><span class="dep-name"><a href="https://github.com/unclecode/crawl4ai">crawl4ai</a> + <a href="https://playwright.dev">Playwright</a> + <a href="https://github.com/tesseract-ocr/tesseract">Tesseract</a></span><span class="dep-role">crawl the web; Tesseract is the OCR fallback</span></li>
+        <li><span class="dep-name"><a href="https://textual.textualize.io">Textual</a> + <a href="https://litestar.dev">Litestar</a></span><span class="dep-role">terminal UI + HTTP server</span></li>
+        <li><span class="dep-name"><a href="https://modelcontextprotocol.io">Model Context Protocol</a> + <a href="https://typer.tiangolo.com">Typer</a> + <a href="https://docs.pydantic.dev">Pydantic</a></span><span class="dep-role">agent surface, CLI, config</span></li>
       </ul>
     </section>
 
