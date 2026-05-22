@@ -118,12 +118,14 @@ def _match(metadata: Mapping[str, object] | None, *, ref: str | None) -> _ChatFo
         if isinstance(candidate, str):
             name_value = candidate
     for rule in _OVERRIDES:
-        if rule.name_pattern is not None and name_value is not None:
-            if rule.name_pattern.search(name_value):
-                return rule
-        if rule.ref_pattern is not None and ref is not None:
-            if rule.ref_pattern.search(ref):
-                return rule
+        if (
+            rule.name_pattern is not None
+            and name_value is not None
+            and rule.name_pattern.search(name_value)
+        ):
+            return rule
+        if rule.ref_pattern is not None and ref is not None and rule.ref_pattern.search(ref):
+            return rule
     return None
 
 
