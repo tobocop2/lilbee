@@ -96,7 +96,11 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ### Already using an MCP-aware agent? Hand setup to it.
 
-If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
+If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
+
+Coming with the [opencode integration (#267)](https://github.com/tobocop2/lilbee/pull/267): when the first answer is thin, the agent will fine-tune retrieval mid-conversation and re-answer with full function bodies, file:line included.
+
+![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
 ### Grounding for AI agents
 
@@ -105,10 +109,6 @@ Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it you
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
-
-When the first answer is thin, the agent fine-tunes lilbee mid-conversation, then re-answers with full function bodies, file:line included.
-
-![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
 ### Offline copies of websites
 
@@ -317,14 +317,16 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 ## Built on
 
-lilbee stands on established open-source projects, all embedded in one process:
+lilbee stands on a stack of established open-source projects, all embedded in one process:
 
-- [Kreuzberg] parses documents
-- [LanceDB] is the embedded search layer
-- [tree-sitter] chunks code
-- [llama-cpp][llama-cpp-python] runs models locally
-- [crawl4ai] and [Playwright] crawl the web
-- [Textual] draws the terminal
+- [llama.cpp] (via [llama-cpp-python]) is the local model runtime. Every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
+- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
+- [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [LanceDB] is the embedded vector store.
+- [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
+- [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
+- [Textual] draws the terminal; [Litestar] runs the HTTP server.
+- [Model Context Protocol] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 
 ## License
 
@@ -332,8 +334,17 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
+[llama.cpp]: https://github.com/ggml-org/llama.cpp
 [llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
+[Hugging Face Hub]: https://huggingface.co
+[huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawl4ai]: https://github.com/unclecode/crawl4ai
 [Playwright]: https://playwright.dev
 [Textual]: https://textual.textualize.io
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
+[tree-sitter-language-pack]: https://github.com/Goldziher/tree-sitter-language-pack
+[Tesseract]: https://github.com/tesseract-ocr/tesseract
+[Litestar]: https://litestar.dev
+[Model Context Protocol]: https://modelcontextprotocol.io
+[Typer]: https://typer.tiangolo.com
+[Pydantic]: https://docs.pydantic.dev
