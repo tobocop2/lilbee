@@ -215,7 +215,7 @@ class _ChatSession:
                 resolve_override_family,
             )
 
-            override_family = resolve_override_family(metadata)
+            override_family = resolve_override_family(metadata, ref=target_str)
             if override_family is not None:
                 family = override_family
             else:

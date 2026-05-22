@@ -911,7 +911,7 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     # A chat_format override means lilbee will replace the embedded template
     # with a llama-cpp preset that does iterate tools; treat such a model as
     # tool-capable even if its bundled template was stripped.
-    if resolve_chat_format_override(meta) is not None:
+    if resolve_chat_format_override(meta, ref=path_str) is not None:
         return True
     template = meta.get("chat_template")
     if not isinstance(template, str):
@@ -1047,7 +1047,7 @@ def _apply_chat_format_override(
         resolve_chat_format_override,
     )
 
-    override = resolve_chat_format_override(meta)
+    override = resolve_chat_format_override(meta, ref=str(model_path))
     if override is not None:
         kwargs["chat_format"] = override
         log.info("Chat format override for %s: %s", model_path.name, override)

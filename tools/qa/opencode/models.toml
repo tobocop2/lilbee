@@ -34,9 +34,8 @@ size_gb = 2.0
 
 [[model]]
 family = "functionary"
-ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q4_0.gguf"
-size_gb = 4.5
-skip = true  # pending pull
+ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q8_0.gguf"
+size_gb = 8.5  # lilbee model pull auto-picks Q8_0; no Q4_K_M in this repo
 
 [[model]]
 family = "granite"

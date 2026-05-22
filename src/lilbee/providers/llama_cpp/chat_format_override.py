@@ -29,7 +29,15 @@ from lilbee.providers.worker.response_parser.families import TemplateFamily
 
 @dataclass(frozen=True)
 class _ChatFormatOverride:
-    """One (name-pattern -> chat_format) rule.
+    """One model-identity-pattern -> chat_format rule.
+
+    ``name_pattern`` matches against the GGUF's ``general.name``; ``ref_pattern``
+    matches against the canonical HF-style ``<repo>/<file>.gguf`` ref. Either
+    pattern can be ``None`` for rules that key on just one identifier.
+    Functionary-style fine-tunes inherit their base model's ``general.name``
+    (e.g. "Meta Llama 3.1 8B Instruct") so name-only matching misses them;
+    the ref carries ``meetkai/functionary-small-v3.2-GGUF/...`` which
+    disambiguates.
 
     ``family`` is the response-parser schema that matches the output shape
     the preset produces; pinning it here keeps prompt-time rendering and
@@ -40,10 +48,11 @@ class _ChatFormatOverride:
     fix upstream.
     """
 
-    name_pattern: re.Pattern[str]
+    name_pattern: re.Pattern[str] | None
     chat_format: str
     family: TemplateFamily
     reason: str
+    ref_pattern: re.Pattern[str] | None = None
 
 
 # Ordered most-specific-first. The first match wins; downstream rules are
@@ -85,33 +94,57 @@ _OVERRIDES: tuple[_ChatFormatOverride, ...] = (
         family=TemplateFamily.FUNCTIONARY_V3,
         reason="Functionary-v2 community GGUFs commonly drop the template.",
     ),
+    _ChatFormatOverride(
+        name_pattern=None,
+        ref_pattern=re.compile(r"functionary[^/]*v3", re.IGNORECASE),
+        chat_format="functionary-v2",
+        family=TemplateFamily.FUNCTIONARY_V3,
+        reason=(
+            "Functionary v3.x GGUFs inherit Meta's general.name ('Meta Llama "
+            "3.1 8B Instruct') from the base model, so name matching misses "
+            "them. Match by repo path instead. v3 keeps the v2 functionary "
+            "tool-call wire shape (>>>name\\n{json}), so functionary-v2 in "
+            "llama-cpp-python's registry is the right preset; lilbee's "
+            "functionary_v3 schema handles extraction."
+        ),
+    ),
 )
 
 
-def _match(metadata: Mapping[str, object] | None) -> _ChatFormatOverride | None:
-    if not metadata:
-        return None
-    name = metadata.get("name") or metadata.get("general.name")
-    if not isinstance(name, str):
-        return None
+def _match(metadata: Mapping[str, object] | None, *, ref: str | None) -> _ChatFormatOverride | None:
+    name_value = None
+    if metadata:
+        candidate = metadata.get("name") or metadata.get("general.name")
+        if isinstance(candidate, str):
+            name_value = candidate
     for rule in _OVERRIDES:
-        if rule.name_pattern.search(name):
-            return rule
+        if rule.name_pattern is not None and name_value is not None:
+            if rule.name_pattern.search(name_value):
+                return rule
+        if rule.ref_pattern is not None and ref is not None:
+            if rule.ref_pattern.search(ref):
+                return rule
     return None
 
 
-def resolve_chat_format_override(metadata: Mapping[str, object] | None) -> str | None:
+def resolve_chat_format_override(
+    metadata: Mapping[str, object] | None, *, ref: str | None = None
+) -> str | None:
     """Return a llama-cpp ``chat_format`` preset to override the embedded template.
 
     Returns ``None`` when the model's embedded template should be used as-is.
     Only consults stable, declarative GGUF metadata keys; never loads the
-    model. Safe to call from the ``_supports_tools`` cache key.
+    model. Safe to call from the ``_supports_tools`` cache key. *ref* is the
+    canonical ``<repo>/<file>.gguf`` form, consulted when a rule keys on
+    repo path (e.g. Functionary fine-tunes inherit Meta's general.name).
     """
-    rule = _match(metadata)
+    rule = _match(metadata, ref=ref)
     return rule.chat_format if rule is not None else None
 
 
-def resolve_override_family(metadata: Mapping[str, object] | None) -> TemplateFamily | None:
+def resolve_override_family(
+    metadata: Mapping[str, object] | None, *, ref: str | None = None
+) -> TemplateFamily | None:
     """Return the response-parser family that matches the override's output shape.
 
     When an override applies, the model emits the preset's wire format
@@ -120,5 +153,5 @@ def resolve_override_family(metadata: Mapping[str, object] | None) -> TemplateFa
     Returns ``None`` when no override applies, so the caller can fall back
     to template-based detection.
     """
-    rule = _match(metadata)
+    rule = _match(metadata, ref=ref)
     return rule.family if rule is not None else None
