@@ -53,6 +53,11 @@ class _ChatFormatOverride:
     family: TemplateFamily
     reason: str
     ref_pattern: re.Pattern[str] | None = None
+    hf_tokenizer_repo: str | None = None
+    """HF repo whose tokenizer.json + special-tokens files must be passed to
+    Llama() init. Required by chat formats that read special tool tokens off
+    the HF AutoTokenizer (functionary v1/v2/v3); None for presets that work
+    off the GGUF-embedded tokenizer alone."""
 
 
 # Ordered most-specific-first. The first match wins; downstream rules are
@@ -94,14 +99,23 @@ _OVERRIDES: tuple[_ChatFormatOverride, ...] = (
         family=TemplateFamily.FUNCTIONARY_V3,
         reason="Functionary-v2 community GGUFs commonly drop the template.",
     ),
-    # NOTE: Functionary v3.x GGUFs (meetkai/functionary-small-v3.2-GGUF) embed
-    # the Llama-3.1 chat template natively and don't get an override here.
-    # llama-cpp-python's functionary-v2 preset requires hf_tokenizer_path at
-    # Llama init for its custom tool tokenization, which lilbee can't supply
-    # offline. Without the override, the model loads with its embedded
-    # Llama-3.1 template, family detection picks LLAMA3, and the bare-JSON
-    # parser arm extracts the tool calls the model emits via the standard
-    # Llama-3.1 tools prompt.
+    _ChatFormatOverride(
+        name_pattern=None,
+        ref_pattern=re.compile(r"functionary[^/]*v3", re.IGNORECASE),
+        chat_format="functionary-v2",
+        family=TemplateFamily.FUNCTIONARY_V3,
+        hf_tokenizer_repo="meetkai/functionary-small-v3.2",
+        reason=(
+            "Functionary v3.x GGUFs inherit Meta's general.name ('Meta Llama "
+            "3.1 8B Instruct') from the base model; match by repo path. v3 "
+            "keeps the v2 functionary tool-call wire shape (>>>name\\n{json}), "
+            "so functionary-v2 in llama-cpp-python's registry is the right "
+            "preset. The preset reads special tool tokens off an "
+            "HF AutoTokenizer; lilbee downloads the tokenizer from "
+            "meetkai/functionary-small-v3.2 and passes it through Llama "
+            "init. Extraction uses the functionary_v3 schema."
+        ),
+    ),
 )
 
 
@@ -151,3 +165,17 @@ def resolve_override_family(
     """
     rule = _match(metadata, ref=ref)
     return rule.family if rule is not None else None
+
+
+def resolve_hf_tokenizer_repo(
+    metadata: Mapping[str, object] | None, *, ref: str | None = None
+) -> str | None:
+    """Return the HF repo whose tokenizer must be loaded for this preset.
+
+    Some llama-cpp chat_format presets (functionary v1/v2/v3) read special
+    tool tokens off an HF AutoTokenizer rather than the GGUF tokenizer.
+    The caller wraps the result in ``LlamaHFTokenizer.from_pretrained(repo)``
+    and passes it as the ``tokenizer`` kwarg to ``Llama(...)``.
+    """
+    rule = _match(metadata, ref=ref)
+    return rule.hf_tokenizer_repo if rule is not None else None

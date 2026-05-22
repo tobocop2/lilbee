@@ -1048,9 +1048,29 @@ def _apply_chat_format_override(
     )
 
     override = resolve_chat_format_override(meta, ref=str(model_path))
-    if override is not None:
-        kwargs["chat_format"] = override
-        log.info("Chat format override for %s: %s", model_path.name, override)
+    if override is None:
+        return
+    kwargs["chat_format"] = override
+    log.info("Chat format override for %s: %s", model_path.name, override)
+
+    from lilbee.providers.llama_cpp.chat_format_override import (
+        resolve_hf_tokenizer_repo,
+    )
+
+    hf_repo = resolve_hf_tokenizer_repo(meta, ref=str(model_path))
+    if hf_repo is not None:
+        try:
+            from llama_cpp.llama_tokenizer import LlamaHFTokenizer
+
+            kwargs["tokenizer"] = LlamaHFTokenizer.from_pretrained(hf_repo)
+            log.info("Loaded HF tokenizer %s for %s", hf_repo, model_path.name)
+        except Exception:
+            log.warning(
+                "Failed to load HF tokenizer %s for chat_format=%s; tool calls may fail",
+                hf_repo,
+                override,
+                exc_info=True,
+            )
 
 
 def _ggml_type_map() -> dict[KvCacheType, Any] | None:

@@ -47,7 +47,6 @@ size_gb = 4.8
 family = "cohere"
 ref = "bartowski/c4ai-command-r7b-12-2024-GGUF/c4ai-command-r7b-12-2024-Q4_K_M.gguf"
 size_gb = 4.4
-skip = true  # pending pull
 
 [[model]]
 family = "mistral-nemo"

@@ -41,8 +41,8 @@ _OPENCODE_BOOT_SETTLE_S = 30.0  # boot + first-prompt prefill warmup
 _INDEX_TIMEOUT_S = 120.0
 _MODEL_PULL_TIMEOUT_S = 1800.0
 _POLL_INTERVAL_S = 2.0
-_SCENARIO_TIMEOUT_S = 300.0  # 4B on Apple Silicon w/ 32K KV cache is slow
-_MULTI_TOOL_TIMEOUT_S = 420.0
+_SCENARIO_TIMEOUT_S = 600.0  # 8B on Apple Silicon w/ 32K KV cache + tool round-trip is slow
+_MULTI_TOOL_TIMEOUT_S = 600.0
 _INTER_SCENARIO_SETTLE_S = 15.0  # let opencode finish the prior turn before queuing the next
 
 _PANE_EXCERPT_TAIL = 2000
