@@ -410,7 +410,7 @@ lilbee --json sync
 
 Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`.
 
-See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
+See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the full MCP reference and the JSON CLI fallback for non-MCP agents.
 
 ## Key Files
 - `app/` — Shared use-case orchestration (status, models, reset, ingest, version) consumed by cli/, server/, mcp.py and the TUI

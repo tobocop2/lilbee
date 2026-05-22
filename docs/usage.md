@@ -219,9 +219,9 @@ commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 lilbee is also the retrieval backend for AI coding agents. Wire it into any
 agent that speaks MCP (Claude Code, opencode, Cursor, anything else) and the
 agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can
-quote back. lilbee stays the local part: your files, the embeddings, the
-search index. See [agent-integration.md](agent-integration.md) for setup,
-example configs, and the full tool list.
+quote back. Your files, the embeddings, and the index stay on your computer.
+See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for setup, the
+full tool list, and a JSON CLI fallback for agents that don't speak MCP.
 
 > [!CAUTION]
 > **Private data and cloud agents**
@@ -358,9 +358,9 @@ lilbee --data-dir ~/kb status          # use an explicit data dir
 
 ## HTTP server
 
-`lilbee serve` starts a REST API that any tool or GUI can hit. By default it
+The HTTP server exposes a REST API that any tool or GUI can hit. By default it
 picks a random port and writes it to `<data_dir>/server.port` so callers on
-the same machine can discover it:
+the same machine can discover it. Start it with `lilbee serve`:
 
 ```bash
 lilbee serve                           # random port
@@ -382,7 +382,7 @@ Server-specific env vars live in the [Server table](#server) below.
 
 ### Running as a service
 
-For tools that talk to lilbee's HTTP REST API all day (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep `lilbee serve` warm so requests skip the cold-start. This is the only lilbee surface designed for that pattern; the TUI, `lilbee chat`, `lilbee mcp`, and the rest of the CLI cold-start and exit on every invocation by design.
+For tools that talk to lilbee's HTTP REST API all day (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep the HTTP server warm so requests skip the cold-start. This is the only lilbee surface designed for that pattern; the TUI, `lilbee chat`, the MCP server, and the rest of the CLI cold-start and exit on every invocation by design.
 
 Pull at least one chat and embedding model first (`lilbee model pull <name>`). The daemon will start without one, but `/api/*` requests fail until a model is available. All recipes pin the server to `127.0.0.1:42697`.
 
@@ -546,7 +546,7 @@ defaults apply only when a value is explicitly unset in code or config.
 
 ### Server
 
-Only relevant when running `lilbee serve`.
+Only relevant when running the HTTP server.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

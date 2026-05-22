@@ -262,6 +262,82 @@ Never assume you can read a key back.
   grep and the user's question is about a path that isn't indexed yet, offer to index it
   rather than guessing through filesystem tools.
 
+## If your agent can't speak MCP
+
+Every lilbee CLI command accepts `--json` (or `-j`) before the subcommand for structured output. Use this as the shell-out fallback when MCP isn't an option. The shape mirrors the MCP tools: one JSON object per stdout line, errors return non-zero exit with `{"error": "..."}`, and `distance` scores are lower-is-more-relevant. Vectors are stripped from output.
+
+### Read (inline, no LLM)
+
+```bash
+lilbee --json status                           # indexed sources, models, totals
+lilbee --json search "query" --top-k 12        # cited chunks (no LLM at query time)
+lilbee --json chunks manual.pdf                # inspect how one source was chunked
+lilbee --json topics "auth"                    # concept-graph view of a query
+lilbee --json model list                       # installed models
+lilbee --json model show <ref>                 # catalog + installed metadata for a model
+lilbee --json version
+lilbee --json self-check                       # runtime + model self-check
+```
+
+### Write (LLM calls or long ops)
+
+```bash
+lilbee --json add ~/docs ~/notes               # copy files / dirs into the library, indexes in one call
+lilbee --json add https://example.com/page     # URL becomes a markdown source
+lilbee --json sync                             # re-index after edits to the documents directory
+lilbee --json rebuild                          # nuke the index and re-ingest everything
+lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
+lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
+lilbee --json ask "question"                   # full local RAG (llama-cpp or SDK backend)
+lilbee --json model pull <ref>                 # download a model, streams JSON progress events
+lilbee --json model rm <ref>                   # delete an installed model
+lilbee --json reset --yes                      # factory reset (destructive, requires --yes)
+lilbee --json init [path]                      # create a .lilbee/ in a directory
+```
+
+`add` is the most common entry point. It accepts files, directories, and URLs, copies them into the documents directory, and runs an indexing pass before returning. Long ops take seconds to minutes; the final JSON includes per-file outcomes and counts.
+
+### Wiki (experimental, opt-in)
+
+```bash
+lilbee --json wiki status                      # page counts + wiki_enabled flag
+lilbee --json wiki build                       # generate the topic / entity wiki
+lilbee --json wiki update                      # refresh after a sync (full rebuild today)
+lilbee --json wiki synthesize                  # cross-source synthesis pages
+lilbee --json wiki lint                        # orphans, stale citations, pending drafts
+lilbee --json wiki citations <source>          # per-section citation coverage for one source
+lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
+lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
+lilbee --json wiki drafts accept <slug>        # promote a draft to concepts/ or entities/
+lilbee --json wiki drafts reject <slug>        # discard a draft
+lilbee --json wiki prune                       # archive stale pages
+```
+
+### Two patterns worth knowing
+
+- **`search` vs `ask`.** `search` returns raw chunks without an LLM call. Use it when your agent has its own LLM and just needs grounded context. `ask` runs lilbee's local RAG end-to-end and returns an answer with sources. Most non-MCP agents want `search`.
+- **Citation rule still applies.** Every fact stated from `search` results must trace back to a chunk's `source` + line range, exactly as returned. Don't invent.
+
+### Output shape
+
+```json
+// lilbee --json search "oil change interval" --top-k 3
+{"command": "search", "query": "oil change interval", "results": [
+  {"source": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
+]}
+
+// lilbee --json status
+{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "total_chunks": 42}
+
+// lilbee --json model pull <ref>  (streams events, then a final "DONE" line)
+{"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
+{"event": "done", "model": "...", "installed": true}
+```
+
+### Gaps vs MCP
+
+The CLI doesn't expose `crawl` (non-blocking URL crawling) or per-key settings management. Use `add <url>` for one-shot URL ingest. For continuous crawling or programmatic settings, the HTTP server exposes both: see the [REST API reference](https://lilbee.sh/api/).
+
 ## Experimental: wiki layer
 
 The wiki layer generates per-concept and per-entity pages with citations from the

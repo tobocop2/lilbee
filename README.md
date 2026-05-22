@@ -264,15 +264,15 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 ## HTTP Server
 
-`lilbee serve` starts a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) and the [usage guide](docs/usage.md#http-server) for setup.
+The HTTP server exposes a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) and the [usage guide](docs/usage.md#http-server) for setup.
 
-The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs `lilbee serve` in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact passage. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ### Running as a service (optional)
 
-For tools that talk to lilbee's HTTP REST API (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep `lilbee serve` warm so requests skip the cold-start.
+For tools that talk to lilbee's HTTP REST API (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep the HTTP server warm so requests skip the cold-start.
 
-This is the only lilbee surface that benefits from a system daemon. The TUI, `lilbee chat`, `lilbee mcp`, and the rest of the CLI are designed to load on demand and exit when you close them. There's no always-on process to babysit, which is uncommon in this corner of the local-AI ecosystem.
+This is the only lilbee surface that benefits from a system daemon. The TUI, `lilbee chat`, the MCP server, and the rest of the CLI are designed to load on demand and exit when you close them. There's no always-on process to babysit, which is uncommon in this corner of the local-AI ecosystem.
 
 Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:42697`.
 
