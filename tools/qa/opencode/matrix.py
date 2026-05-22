@@ -64,6 +64,8 @@ _FAIL_FAST_MARKERS = (
 _RAW_MARKER_FORBIDDEN = ("<tool_call>", "[TOOL_CALLS]", "functools[", "Error:", "Traceback")
 _SUSPENDED_SUFFIX = ".qa-suspended"
 _CHAT_CTX_TARGET = 32768  # opencode's default system prompt is ~14K tokens, plus tools schema ~10K
+_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_EMBED_PULL_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 
 
 def _models_manifests_dir() -> Path:
@@ -272,10 +274,9 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
         if src.is_file():
             shutil.copy(src, workspace / src.name)
     config_dir.mkdir()
-    embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
     (config_dir / "config.toml").write_text(
         f'chat_model = "{model_ref}"\n'
-        f'embedding_model = "{embed_ref}"\n'
+        f'embedding_model = "{_EMBED_REF}"\n'
         f"chat_n_ctx_target = {_CHAT_CTX_TARGET}\n"
     )
     return workspace
@@ -509,6 +510,20 @@ def run_scenario(session: str, scenario: Scenario) -> ScenarioResult:
     )
 
 
+def ensure_embedding_model_pulled() -> None:
+    """Idempotent: ensure the shared embedding model is in the registry.
+
+    The matrix's per-cell `lilbee add` step requires the workspace's
+    configured embedding model to be registered, otherwise indexing skips
+    every fixture with "Model not found in registry" and `lilbee_search`
+    comes up empty in opencode. The registry is keyed off ``cfg.models_dir``
+    (global), so one pull at matrix start serves every cell -- no per-cell
+    re-pull needed.
+    """
+    print(f"ensuring embedding model {_EMBED_PULL_REF} is registered")
+    _run_pull_with_group_kill(_EMBED_PULL_REF)
+
+
 def _run_pull_with_group_kill(pull_ref: str) -> None:
     """Run ``lilbee model pull`` in its own process group so a timeout reaps the
     full tree (otherwise ``uv``'s child python orphans and keeps the download
@@ -713,6 +728,8 @@ def main() -> int:
         return 2
 
     print(f"running QA matrix for {len(cells)} model(s)")
+    if not args.no_pull:
+        ensure_embedding_model_pulled()
     results = [run_cell(c, args) for c in cells]
     (RESULTS_DIR / "results.md").write_text(render_report(results))
     print(f"\nreport: {RESULTS_DIR / 'results.md'}")
