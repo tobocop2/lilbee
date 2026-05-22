@@ -76,7 +76,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
 - **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
 - **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
-- **Compact.** If you already have Python, the wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. The single-file standalone binary, which bundles Python, the model runtime, OCR, the crawler, and the vector store, lands around 250-365 MB across Linux, macOS, and Windows. Comparable all-in-one desktop AI apps that bundle a browser engine for their UI typically ship several hundred MB of runtime before loading any models.
+- **Compact at the base.** If you already have Python, the lilbee wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. That's without the optional extras: `[crawler]` adds Playwright so you can index websites (and Chromium downloads ~150 MB on first crawl), `[litellm]` adds the cloud-provider SDKs, `[graph]` adds spaCy. The single-file standalone binary bundles all of those along with Python, the model runtime, OCR, and the vector store, and lands at 250-365 MB. Even loaded, that's in the same range as all-in-one desktop AI apps that bundle a browser engine for their UI alone, before any models are loaded.
 
 ## Why lilbee
 
@@ -96,7 +96,15 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ### Already using an MCP-aware agent? Hand setup to it.
 
-If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. The agent already knows what chunk size, MMR weight, and reranker depth do. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
+If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
+
+### Opencode integration (coming)
+
+Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families.
+
+The demo shows a small local model (Qwen) given a specific instruction: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
+
+![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
 ### Grounding for AI agents
 
@@ -105,10 +113,6 @@ Once configured, lilbee plugs into whatever agent you use, over MCP. Feed it you
 Your files, the search index, and the embeddings stay on your computer. The agent calls `lilbee_search` and gets back cited snippets. The demo below is lilbee talking to lilbee: an agent indexes lilbee's own source, then answers questions about how lilbee works with file:line citations.
 
 ![an agent indexes lilbee's own source through lilbee's MCP server, then answers questions about how lilbee works with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.gif)
-
-When the first answer is thin, the agent fine-tunes lilbee mid-conversation, then re-answers with full function bodies, file:line included.
-
-![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
 ### Offline copies of websites
 
@@ -254,11 +258,13 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-Live-indexing example: opencode on MiniMax M2.7 indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
+**The demos below use opencode driving a cloud model. lilbee stays local; only the queries and the returned chunks cross the wire to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
+
+Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
 ![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
-The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the agent can write a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
+The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 3449 chunks) and the same opencode + cloud setup can write a procedural level generator with every API call backed by a `godot-classes/<Class>.xml:line` citation; the [side-by-side benchmark](docs/benchmarks/godot-level-generator.md) measured 4 hallucinated APIs without lilbee, 0 with.
 
 ![cited codegen against the full Godot class reference](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.gif)
 
@@ -317,14 +323,17 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 ## Built on
 
-lilbee stands on established open-source projects, all embedded in one process:
+lilbee stands on a stack of established open-source projects, all embedded in one process:
 
-- [Kreuzberg] parses documents
-- [LanceDB] is the embedded search layer
-- [tree-sitter] chunks code
-- [llama-cpp][llama-cpp-python] runs models locally
-- [crawl4ai] and [Playwright] crawl the web
-- [Textual] draws the terminal
+- [llama.cpp] (via [llama-cpp-python]) is the local model runtime. Every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
+- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
+- [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [LanceDB] is the embedded vector store.
+- [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
+- [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
+- [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
+- [Textual] draws the terminal; [Litestar] runs the HTTP server.
+- [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 
 ## License
 
@@ -332,8 +341,18 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
+[llama.cpp]: https://github.com/ggml-org/llama.cpp
 [llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
+[Hugging Face Hub]: https://huggingface.co
+[huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawl4ai]: https://github.com/unclecode/crawl4ai
 [Playwright]: https://playwright.dev
 [Textual]: https://textual.textualize.io
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
+[tree-sitter-language-pack]: https://github.com/Goldziher/tree-sitter-language-pack
+[Tesseract]: https://github.com/tesseract-ocr/tesseract
+[Litestar]: https://litestar.dev
+[LiteLLM]: https://github.com/BerriAI/litellm
+[MCP Python SDK]: https://github.com/modelcontextprotocol/python-sdk
+[Typer]: https://typer.tiangolo.com
+[Pydantic]: https://docs.pydantic.dev
