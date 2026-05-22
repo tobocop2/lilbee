@@ -327,6 +327,7 @@ lilbee stands on a stack of established open-source projects, all embedded in on
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
+- [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 
@@ -347,6 +348,7 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [tree-sitter-language-pack]: https://github.com/Goldziher/tree-sitter-language-pack
 [Tesseract]: https://github.com/tesseract-ocr/tesseract
 [Litestar]: https://litestar.dev
+[LiteLLM]: https://github.com/BerriAI/litellm
 [MCP Python SDK]: https://github.com/modelcontextprotocol/python-sdk
 [Typer]: https://typer.tiangolo.com
 [Pydantic]: https://docs.pydantic.dev
