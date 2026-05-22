@@ -624,6 +624,19 @@ h1 { font-size: inherit; font-weight: inherit; margin: 0; }
 .dep-name a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
 .dep-name a:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
 .dep-role { color: var(--ink-3); }
+.deps-flat {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.9;
+  max-width: 80ch;
+  margin-top: 0.4rem;
+}
+.deps-flat a {
+  color: var(--ink-2);
+  border-bottom-color: var(--rule-2);
+  white-space: nowrap;
+}
+.deps-flat a:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
 
 /* footer ------------------------------------------------------------- */
 footer {
