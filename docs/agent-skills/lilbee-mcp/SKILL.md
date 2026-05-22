@@ -1,6 +1,6 @@
 ---
 name: lilbee-mcp
-description: Search and manage the user's local lilbee knowledge base over MCP. Use whenever the user has indexed code, docs, PDFs, or web pages into lilbee and you need cited answers, or whenever they ask you to ingest content, swap models, or tune retrieval against their library. Every fact returned cites file and line. Indexing, crawling, and model pulls are long ops that must go to a worker subagent so the chat stays responsive. A topic-wiki layer is also exposed but is experimental and lives in its own section at the end.
+description: Search and manage the user's local lilbee knowledge base over MCP. Use whenever the user has indexed code, docs, PDFs, or web pages into lilbee and you need cited answers, or whenever they ask you to ingest content, swap models, or tune retrieval against their library. Every fact returned cites file and line. Indexing, crawling, and model pulls are long ops that must go to a worker subagent so the chat stays responsive.
 ---
 
 # lilbee-mcp
@@ -79,7 +79,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_model_list(source, task)` | Locally-installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
 | `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
-| `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the curated catalog + Hugging Face. Use before `lilbee_model_pull` to pick what to install. |
+| `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the curated catalog + Hugging Face. Use before `lilbee_model_pull` to pick what to install. Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. |
 | `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. |
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
@@ -92,7 +92,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_add(paths, force, enable_ocr, ocr_timeout)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
 | `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
 | `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
-| `lilbee_model_pull(model, source)` | Download a model. Streams progress as MCP notifications. Large models = many minutes. |
+| `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
 
 (Experimental wiki tools are documented at the end of this skill.)
@@ -156,9 +156,9 @@ lilbee_settings_set({
 })
 ```
 
-If the response includes `reindex_required: true` (changing `chunk_size` /
-`chunk_overlap` does this), hand `lilbee_sync(force_rebuild=true)` to the worker before
-searching again.
+If the response includes `reindex_required: true` (triggered by `chunk_size`,
+`chunk_overlap`, or swapping `embedding_model` to a different ref), hand
+`lilbee_sync(force_rebuild=true)` to the worker before searching again.
 
 Tell the user which knobs you moved and why; `lilbee_settings_reset([...])` rolls any of
 them back.
@@ -262,48 +262,7 @@ Never assume you can read a key back.
   grep and the user's question is about a path that isn't indexed yet, offer to index it
   rather than guessing through filesystem tools.
 
-## Experimental: wiki layer
+## Other skills
 
-The wiki layer generates per-concept and per-entity pages with citations from the
-indexed library, then lets you query and lint them. It is still rough; treat it as
-opt-in, not part of normal answer flow. Skip everything here unless the user
-explicitly asks about wiki / synthesis pages, or `lilbee_status` already shows a
-wiki built. The build / read tools (`lilbee_wiki_list`, `lilbee_wiki_read`,
-`lilbee_wiki_build`, `lilbee_wiki_update`, `lilbee_wiki_synthesize`) return
-`{"error": "wiki not enabled"}` until the user enables it with
-`lilbee_settings_set({"wiki": true})`. The remaining wiki tools operate on
-the on-disk wiki directory regardless of the flag and will report empty
-results when there's nothing to read.
-
-### Build / refresh (long, must go through `lilbee-worker`)
-
-| Tool | Use |
-|---|---|
-| `lilbee_wiki_build()` | Generate the full topic / entity wiki from the indexed library. LLM-bound; minutes per source. |
-| `lilbee_wiki_update()` | Refresh the wiki after a sync. Currently a full rebuild. |
-| `lilbee_wiki_synthesize()` | Generate cross-source synthesis pages (concept clusters spanning ≥3 sources). |
-| `lilbee_wiki_prune()` | Archive stale wiki pages whose sources were deleted, and flag pages with mostly-stale citations. |
-
-### Read / inspect (inline)
-
-| Tool | Use |
-|---|---|
-| `lilbee_wiki_status()` | Page counts, generator settings, last build, and the `wiki_enabled` flag. |
-| `lilbee_wiki_list()` | Every wiki page with slug, title, type, source count. |
-| `lilbee_wiki_read(slug)` | Read one wiki page's body + frontmatter. |
-| `lilbee_wiki_lint(wiki_source)` | Find orphan pages, stale citations, pending drafts. Pass empty `wiki_source` to lint all. |
-| `lilbee_wiki_citations(wiki_source)` | Per-section citation coverage for one wiki page. |
-| `lilbee_wiki_drafts_list()` | Pending drafts with drift, faithfulness, and pairing info. |
-| `lilbee_wiki_drafts_diff(slug)` | Unified diff between a pending draft and the live page. |
-
-### Typical flow
-
-```
-lilbee_wiki_status                       # check whether one already exists
-lilbee-worker:  lilbee_wiki_build()      # LLM-bound, minutes per source
-lilbee_wiki_list                         # see what was generated
-lilbee_wiki_drafts_list                  # check what landed in drafts/ for review
-```
-
-Query a built wiki via `lilbee_search(..., scope="wiki")`. Run
-`lilbee_wiki_lint(wiki_source="")` afterward to surface orphans and stale citations.
+- **Wiki tools** (experimental per-concept and per-entity pages with citations) live in the separate [`lilbee-mcp-wiki` skill](../lilbee-mcp-wiki/SKILL.md). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
+- **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the [JSON CLI fallback](../../usage.md#json-cli-fallback) in the usage guide.

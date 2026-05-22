@@ -219,9 +219,99 @@ commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 lilbee is also the retrieval backend for AI coding agents. Wire it into any
 agent that speaks MCP (Claude Code, opencode, Cursor, anything else) and the
 agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can
-quote back. lilbee stays the local part: your files, the embeddings, the
-search index. See [agent-integration.md](agent-integration.md) for setup,
-example configs, and the full tool list.
+quote back. Your files, the embeddings, and the index stay on your computer.
+See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for the full MCP
+tool list and workflows. Non-MCP agents can use the [JSON CLI
+fallback](#json-cli-fallback) below.
+
+### JSON CLI fallback
+
+Every lilbee CLI command accepts `--json` (or `-j`) before the subcommand for
+structured output. Use this as the shell-out path for agents that can't speak
+MCP. The shape mirrors the MCP tools: one JSON object per stdout line, errors
+return non-zero exit with `{"error": "..."}`, and `distance` scores are
+lower-is-more-relevant. Vectors are stripped from output.
+
+**Read (inline, no LLM):**
+
+```bash
+lilbee --json status                           # indexed sources, models, totals
+lilbee --json search "query" --top-k 12        # cited chunks (no LLM at query time)
+lilbee --json chunks manual.pdf                # inspect how one source was chunked
+lilbee --json topics "auth"                    # concept-graph view of a query
+lilbee --json model list                       # installed models
+lilbee --json model show <ref>                 # catalog + installed metadata for a model
+lilbee --json version
+lilbee --json self-check                       # runtime + model self-check
+```
+
+**Write (LLM calls or long ops):**
+
+```bash
+lilbee --json add ~/docs ~/notes               # copy files / dirs in, indexes in one call
+lilbee --json add https://example.com/page     # URL becomes a markdown source
+lilbee --json sync                             # re-index after edits to the documents directory
+lilbee --json rebuild                          # nuke the index and re-ingest everything
+lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
+lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
+lilbee --json ask "question"                   # full local RAG (llama-cpp or SDK backend)
+lilbee --json model pull <ref>                 # download a model, streams JSON progress events
+lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
+lilbee --json model rm <ref>                   # delete an installed model
+lilbee --json reset --yes                      # factory reset (destructive, requires --yes)
+lilbee --json init [path]                      # create a .lilbee/ in a directory
+```
+
+`add` is the most common entry point: files, directories, and URLs all go
+through it, and indexing happens in the same call. Long ops take seconds to
+minutes; the final JSON includes per-file outcomes and counts.
+
+**Wiki (experimental, opt-in):**
+
+```bash
+lilbee --json wiki status                      # page counts + wiki_enabled flag
+lilbee --json wiki build                       # generate the topic / entity wiki
+lilbee --json wiki update                      # refresh after a sync (full rebuild today)
+lilbee --json wiki synthesize                  # cross-source synthesis pages
+lilbee --json wiki lint                        # orphans, stale citations, pending drafts
+lilbee --json wiki citations <source>          # per-section citation coverage for one source
+lilbee --json wiki drafts list                 # pending drafts with drift + faithfulness
+lilbee --json wiki drafts diff <slug>          # unified diff between a draft and the live page
+lilbee --json wiki drafts accept <slug>        # promote a draft to concepts/ or entities/
+lilbee --json wiki drafts reject <slug>        # discard a draft
+lilbee --json wiki prune                       # archive stale pages
+```
+
+**Two patterns worth knowing:**
+
+- **`search` vs `ask`.** `search` returns raw chunks without an LLM call. Use it
+  when your agent has its own LLM and just needs grounded context. `ask` runs
+  lilbee's local RAG end-to-end and returns an answer with sources. Most
+  non-MCP agents want `search`.
+- **Citation rule still applies.** Every fact stated from `search` results must
+  trace back to a chunk's `source` + line range, exactly as returned. Don't
+  invent.
+
+**Output shape:**
+
+```json
+// lilbee --json search "oil change interval" --top-k 3
+{"command": "search", "query": "oil change interval", "results": [
+  {"source": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
+]}
+
+// lilbee --json status
+{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "total_chunks": 42}
+
+// lilbee --json model pull <ref>  (streams events, then a final "done" line)
+{"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
+{"event": "done", "model": "...", "installed": true}
+```
+
+**Gaps vs MCP.** The CLI doesn't expose `crawl` (non-blocking URL crawling) or
+per-key settings management. Use `add <url>` for one-shot URL ingest. For
+continuous crawling or programmatic settings, the HTTP server exposes both: see
+the [REST API reference](https://lilbee.sh/api/).
 
 > [!CAUTION]
 > **Private data and cloud agents**
@@ -358,9 +448,9 @@ lilbee --data-dir ~/kb status          # use an explicit data dir
 
 ## HTTP server
 
-`lilbee serve` starts a REST API that any tool or GUI can hit. By default it
+The HTTP server exposes a REST API that any tool or GUI can hit. By default it
 picks a random port and writes it to `<data_dir>/server.port` so callers on
-the same machine can discover it:
+the same machine can discover it. Start it with `lilbee serve`:
 
 ```bash
 lilbee serve                           # random port
@@ -379,6 +469,35 @@ reference. A Python-library API reference is still being written; for now,
 the source under `src/lilbee/` is the canonical reference.)
 
 Server-specific env vars live in the [Server table](#server) below.
+
+### Running as a service
+
+For tools that talk to lilbee's HTTP REST API all day (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep the HTTP server warm so requests skip the cold-start. This is the only lilbee surface designed for that pattern; the TUI, `lilbee chat`, the MCP server, and the rest of the CLI cold-start and exit on every invocation by design.
+
+Pull at least one chat and embedding model first (`lilbee model pull <name>`). The daemon will start without one, but `/api/*` requests fail until a model is available. All recipes pin the server to `127.0.0.1:42697`.
+
+**macOS (Homebrew):**
+
+```bash
+brew services start lilbee
+```
+
+**Linux (Arch / AUR, systemd):**
+
+```bash
+systemctl --user enable --now lilbee
+```
+
+On a headless server (no graphical login session), also run `loginctl enable-linger $USER` so the service survives logout.
+
+**NixOS:** add the module to your `configuration.nix`:
+
+```nix
+{
+  imports = [ lilbee.nixosModules.lilbee ];
+  services.lilbee.enable = true;
+}
+```
 
 ## Data locations
 
@@ -517,7 +636,7 @@ defaults apply only when a value is explicitly unset in code or config.
 
 ### Server
 
-Only relevant when running `lilbee serve`.
+Only relevant when running the HTTP server.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
