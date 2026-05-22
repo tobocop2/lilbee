@@ -256,6 +256,7 @@ lilbee --json remove manual.pdf                # drop chunks (keeps the file on 
 lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
 lilbee --json ask "question"                   # full local RAG (llama-cpp or SDK backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
+lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
 lilbee --json model rm <ref>                   # delete an installed model
 lilbee --json reset --yes                      # factory reset (destructive, requires --yes)
 lilbee --json init [path]                      # create a .lilbee/ in a directory

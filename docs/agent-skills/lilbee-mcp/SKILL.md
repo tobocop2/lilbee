@@ -79,7 +79,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_model_list(source, task)` | Locally-installed models, optionally filtered. |
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
 | `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
-| `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the curated catalog + Hugging Face. Use before `lilbee_model_pull` to pick what to install. |
+| `lilbee_catalog_browse(task, search, size, installed, featured, sort, limit, offset)` | Browse the curated catalog + Hugging Face. Use before `lilbee_model_pull` to pick what to install. Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. |
 | `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. |
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
@@ -92,7 +92,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_add(paths, force, enable_ocr, ocr_timeout)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
 | `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
 | `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
-| `lilbee_model_pull(model, source)` | Download a model. Streams progress as MCP notifications. Large models = many minutes. |
+| `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
 
 (Experimental wiki tools are documented at the end of this skill.)
@@ -156,9 +156,9 @@ lilbee_settings_set({
 })
 ```
 
-If the response includes `reindex_required: true` (changing `chunk_size` /
-`chunk_overlap` does this), hand `lilbee_sync(force_rebuild=true)` to the worker before
-searching again.
+If the response includes `reindex_required: true` (triggered by `chunk_size`,
+`chunk_overlap`, or swapping `embedding_model` to a different ref), hand
+`lilbee_sync(force_rebuild=true)` to the worker before searching again.
 
 Tell the user which knobs you moved and why; `lilbee_settings_reset([...])` rolls any of
 them back.
