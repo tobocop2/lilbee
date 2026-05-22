@@ -467,6 +467,33 @@ h1 { font-size: inherit; font-weight: inherit; margin: 0; }
   letter-spacing: 0.04em;
 }
 .oschip.dim { color: var(--ink-3); }
+
+/* binary pane: per-OS rows ------------------------------------------ */
+.binary-intro {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  margin-bottom: 0.9rem;
+}
+.binary-row { margin-bottom: 0.85rem; }
+.binary-row:last-of-type { margin-bottom: 0.35rem; }
+.binary-row-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0.35rem;
+  font-size: 12.5px;
+}
+.binary-dl {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+.binary-dl:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
+
 .installmeta {
   font-size: 12.5px;
   color: var(--ink-3);
@@ -624,6 +651,19 @@ h1 { font-size: inherit; font-weight: inherit; margin: 0; }
 .dep-name a { color: var(--ink-2); border-bottom-color: var(--rule-2); }
 .dep-name a:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
 .dep-role { color: var(--ink-3); }
+.deps-flat {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.9;
+  max-width: 80ch;
+  margin-top: 0.4rem;
+}
+.deps-flat a {
+  color: var(--ink-2);
+  border-bottom-color: var(--rule-2);
+  white-space: nowrap;
+}
+.deps-flat a:hover { color: var(--accent-hot); border-bottom-color: var(--accent-hot); }
 
 /* footer ------------------------------------------------------------- */
 footer {
