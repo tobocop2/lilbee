@@ -96,6 +96,15 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
 
     from lilbee.core.config import cfg
 
+    log.info(
+        "spawn_server: LILBEE_DATA=%r cfg.data_root=%s cfg.data_dir=%s cfg.chat_model=%r cwd=%s",
+        os.environ.get("LILBEE_DATA"),
+        cfg.data_root,
+        cfg.data_dir,
+        cfg.chat_model,
+        os.getcwd(),
+    )
+
     lilbee_bin = shutil.which("lilbee")
     cmd = (
         [lilbee_bin, "serve", "--port", str(port)]
