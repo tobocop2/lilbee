@@ -380,6 +380,35 @@ the source under `src/lilbee/` is the canonical reference.)
 
 Server-specific env vars live in the [Server table](#server) below.
 
+### Running as a service
+
+For tools that talk to lilbee's HTTP REST API all day (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep `lilbee serve` warm so requests skip the cold-start. This is the only lilbee surface designed for that pattern; the TUI, `lilbee chat`, `lilbee mcp`, and the rest of the CLI cold-start and exit on every invocation by design.
+
+Pull at least one chat and embedding model first (`lilbee model pull <name>`). The daemon will start without one, but `/api/*` requests fail until a model is available. All recipes pin the server to `127.0.0.1:42697`.
+
+**macOS (Homebrew):**
+
+```bash
+brew services start lilbee
+```
+
+**Linux (Arch / AUR, systemd):**
+
+```bash
+systemctl --user enable --now lilbee
+```
+
+On a headless server (no graphical login session), also run `loginctl enable-linger $USER` so the service survives logout.
+
+**NixOS:** add the module to your `configuration.nix`:
+
+```nix
+{
+  imports = [ lilbee.nixosModules.lilbee ];
+  services.lilbee.enable = true;
+}
+```
+
 ## Data locations
 
 lilbee resolves the data directory in this order (highest priority first):

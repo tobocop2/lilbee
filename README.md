@@ -270,7 +270,11 @@ The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it runs
 
 ### Running as a service (optional)
 
-If you keep the Obsidian plugin or an MCP client open all day, your OS launcher can keep `lilbee serve` warm so HTTP requests skip the cold-start. `lilbee chat`, the TUI, and other CLI commands always cold-start their own process, so they are unaffected. Pull at least one chat and embedding model first; all recipes pin to `127.0.0.1:42697`.
+For tools that talk to lilbee's HTTP REST API (the Obsidian plugin, custom GUIs, anything hitting `/api/*`), your OS launcher can keep `lilbee serve` warm so requests skip the cold-start.
+
+This is the only lilbee surface that benefits from a system daemon. The TUI, `lilbee chat`, `lilbee mcp`, and the rest of the CLI are designed to load on demand and exit when you close them. There's no always-on process to babysit, which is uncommon in this corner of the local-AI ecosystem.
+
+Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:42697`.
 
 | Platform | Command |
 | --- | --- |
