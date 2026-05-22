@@ -507,8 +507,17 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
 
 def setup_cell(
     cell: ModelCell, args: argparse.Namespace, log_path: Path
-) -> tuple[Path, int, subprocess.Popen[bytes]]:
-    """Pull, seed, index, pin opencode default, boot serve."""
+) -> tuple[Path, int, subprocess.Popen[bytes] | None]:
+    """Pull, seed, index, pin opencode default.
+
+    ``lilbee launch opencode`` spawns its own lilbee serve internally; we used
+    to also spawn one here for a /api/health smoke-check, but two parallel
+    serves racing for the same workspace ``server.json`` / ``server.port``
+    state caused opencode to land on a stale port whose lilbee serve had a
+    different view of installed models, surfacing as 404 model_not_found at
+    chat time. Letting the launcher own the serve lifecycle eliminates that
+    race; the per-cell log still captures everything via the launcher's stdio.
+    """
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     port = free_port()
     if not args.no_pull:
@@ -519,9 +528,7 @@ def setup_cell(
     index_workspace(workspace, log_path)
     print(f"[{cell.family}] pinning opencode default model")
     pin_opencode_default_model(cell.ref)
-    print(f"[{cell.family}] booting lilbee serve on port {port}")
-    serve_proc = boot_serve(workspace, port, log_path)
-    return workspace, port, serve_proc
+    return workspace, port, None
 
 
 def run_smoke_scenarios(family: str, session: str) -> list[ScenarioResult]:
@@ -536,10 +543,23 @@ def run_smoke_scenarios(family: str, session: str) -> list[ScenarioResult]:
     return results
 
 
-def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes], keep: bool) -> None:
+def teardown_cell(
+    session: str, serve_proc: subprocess.Popen[bytes] | None, keep: bool
+) -> None:
+    """Kill the cell's tmux + opencode + lilbee-launch-spawned serve cleanly.
+
+    The serve was spawned by ``lilbee launch opencode`` inside the tmux
+    session, so killing the tmux drops its entire process group. The
+    explicit ``stop_serve`` arm only fires if a separately-tracked
+    ``Popen`` handle was passed (legacy boot_serve path).
+    """
     if not keep:
         tmux_kill(session)
-    stop_serve(serve_proc)
+    if serve_proc is not None:
+        stop_serve(serve_proc)
+    # Make sure no orphan ``lilbee serve`` from a previous cell's
+    # launch-opencode survives into the next cell.
+    subprocess.run(["pkill", "-f", "lilbee serve"], check=False)
 
 
 def cleanup_cell_model(cell: ModelCell) -> None:
