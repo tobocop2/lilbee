@@ -1,0 +1,14 @@
+[Unit]
+Description=lilbee HTTP server
+Documentation=https://github.com/tobocop2/lilbee
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lilbee serve --host 127.0.0.1 --port 42697
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
