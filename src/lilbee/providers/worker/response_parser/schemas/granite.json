@@ -6,14 +6,15 @@
     },
     "content": {
       "type": "string",
-      "x-regex": "^(.*?)(?:<\\|tool_call\\|>|<tool_call>|$)"
+      "x-regex": "^(.*?)(?:<\\|tool_call\\|>|<tool_call>|\\[\\s*\\{\\s*\"name\"\\s*:|\\{\\s*\"name\"\\s*:|$)"
     },
     "tool_calls": {
       "type": "array",
-      "x-regex": "(?:<\\|tool_call\\|>|<tool_call>)\\s*(\\[.*\\])",
-      "x-parser": "json",
+      "x-regex": "(?:<\\|tool_call\\|>|<tool_call>|(?=\\{\\s*\"name\"))([\\s\\S]*)",
+      "x-regex-iterator": "(\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\})",
       "items": {
         "type": "object",
+        "x-parser": "json",
         "properties": {
           "name": {
             "type": "string"

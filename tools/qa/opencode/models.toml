@@ -35,13 +35,13 @@ size_gb = 2.0
 [[model]]
 family = "functionary"
 ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q8_0.gguf"
-size_gb = 8.5  # lilbee model pull auto-picks Q8_0; no Q4_K_M in this repo
+size_gb = 8.5
+skip = true  # functionary-v2 preset needs hf_tokenizer_path; v3 inherits Llama-3.1 template but emits >>>name\n{json} which the LLAMA3 schema's bare-JSON arm doesn't capture. Needs a dedicated FUNCTIONARY_V3 path.
 
 [[model]]
 family = "granite"
 ref = "ibm-granite/granite-3.3-8b-instruct-GGUF/granite-3.3-8b-instruct-Q4_K_M.gguf"
 size_gb = 4.8
-skip = true  # pending pull
 
 [[model]]
 family = "cohere"

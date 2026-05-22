@@ -176,6 +176,15 @@ def test_granite_extracts_top_level_tool_call_array() -> None:
     assert parsed.tool_calls[0].name == "search"
 
 
+def test_granite_extracts_bare_json_tool_call() -> None:
+    """OpenAI-style 'tools' parameter elicits bare JSON from Granite, no wrapper."""
+    text = '{"name": "search", "arguments": {"q": "x"}}'
+    parsed = parse_response(text, get_schemas()[TemplateFamily.GRANITE])
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "search"
+    assert parsed.content == ""
+
+
 def test_phi4mini_extracts_functools_array() -> None:
     """Phi-4 wraps the tool-call array in ``functools[...]``."""
     text = 'Some reasoning. functools[{"name": "search", "arguments": {"q": "x"}}]'
