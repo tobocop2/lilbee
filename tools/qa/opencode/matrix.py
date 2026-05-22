@@ -543,9 +543,7 @@ def run_smoke_scenarios(family: str, session: str) -> list[ScenarioResult]:
     return results
 
 
-def teardown_cell(
-    session: str, serve_proc: subprocess.Popen[bytes] | None, keep: bool
-) -> None:
+def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep: bool) -> None:
     """Kill the cell's tmux + opencode + lilbee-launch-spawned serve cleanly.
 
     The serve was spawned by ``lilbee launch opencode`` inside the tmux
