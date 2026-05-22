@@ -1,14 +1,11 @@
 name: Publish to PyPI
 
-# Pure publish step -- no builds. Finds the release-candidate.yml run for this
-# tag, downloads its default wheels + sdist, uploads them to PyPI, then dispatches
-# the packaging fan-out (Docker / Homebrew / AUR / Nix). PyPI publish only needs
-# the default wheels + sdist (they finish ~25 min into the RC run), so this can
-# run as soon as those artifacts are up. The fan-out needs the executables on the
-# GH release; if they're not attached yet it waits up to 5 hours for the RC run
-# to attach them (the Windows nuitka build alone has been observed at ~3h45m) and
-# fails loudly past that. No second dispatch is needed even when the wheels land
-# before the executables.
+# Pure PyPI publish: finds the release-candidate.yml run for this tag, downloads
+# its default wheels + sdist, uploads them to PyPI. Auto-dispatched by
+# release-candidate.yml's dispatch-publish job as soon as the wheels are built;
+# also available as workflow_dispatch for manual re-runs. The packaging fan-out
+# (Docker / Homebrew / AUR / Nix / CUDA) is dispatched separately from
+# release-candidate.yml -- this workflow no longer chains into it.
 #
 # Filename `publish.yml` + the `pypi` environment name are pinned by PyPI's
 # trusted-publisher config -- don't rename.
@@ -23,7 +20,7 @@ on:
 permissions:
   contents: read
   id-token: write   # OIDC for Trusted Publishing
-  actions: write    # cross-run artifact download (read) + dispatch publish-docker/packages
+  actions: read     # cross-run artifact download
 
 concurrency:
   group: publish-${{ inputs.tag }}
@@ -118,51 +115,4 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip-existing: true   # safe to re-run (e.g. to redo the fan-out once executables land)
-
-  # Docker / Homebrew / AUR / Nix consume the executables on the GH release that
-  # the RC run already attached -- they don't need a build, just the tag.
-  dispatch-fanout:
-    needs: [publish-pypi]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/fanout-packaging
-        with:
-          tag: ${{ inputs.tag }}
-
-  # CUDA executables are built during release-candidate.yml in parallel with
-  # Vulkan/Metal. By the time publish.yml is dispatched they are normally
-  # already attached to the prerelease, so this job just waits for cu125 Linux
-  # and dispatches publish-cuda-packages.yml. Parallel to publish-pypi so PyPI
-  # flakiness can't block the lilbee-cuda fan-out.
-  dispatch-cuda:
-    needs: [guard]
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Wait for cu125 Linux on release and dispatch publish-cuda-packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -uo pipefail
-          deadline=$(( $(date +%s) + 14400 ))
-          while true; do
-            names=$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || echo "")
-            case " ${names} " in
-              *" lilbee-linux-x86_64-cu125 "*)
-                echo "cu125 Linux attached; dispatching publish-cuda-packages"
-                gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
-                exit 0
-                ;;
-            esac
-            if [ "$(date +%s)" -ge "${deadline}" ]; then
-              echo "::error::cu125 Linux never attached to ${TAG} within 4h; skipping publish-cuda-packages"
-              exit 1
-            fi
-            sleep 60
-          done
+          skip-existing: true   # safe to re-run
