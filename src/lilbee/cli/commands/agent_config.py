@@ -46,12 +46,8 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
 
 @agent_config_app.command("opencode")
 def _opencode_cmd() -> None:
-    """Print an opencode.json block (OpenAI-compatible provider + MCP server).
-
-    The MCP server points at the running daemon's streamable-http endpoint so
-    opencode shares its warm models instead of spawning a second process.
-    """
-    _emit_block(opencode.opencode_config, mcp_remote=True)
+    """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
+    _emit_block(opencode.opencode_config)
 
 
 @agent_config_app.command("litellm")
