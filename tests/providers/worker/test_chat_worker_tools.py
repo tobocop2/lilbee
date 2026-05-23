@@ -1369,3 +1369,30 @@ def test_normalize_tool_call_arguments_leaves_dicts_and_bad_json_untouched() -> 
     out = _normalize_tool_call_arguments(messages)
     assert out[0]["tool_calls"][0]["function"]["arguments"] == {"already": "dict"}
     assert out[0]["tool_calls"][1]["function"]["arguments"] == "not json{"
+
+
+def test_normalize_tool_call_ids_to_nine_char_consistently() -> None:
+    """Long opencode ids -> 9-char alphanumeric, matched across assistant + tool messages.
+
+    Mistral's template raises on ids whose length != 9; the rewrite must keep the
+    assistant tool_call.id and the tool result's tool_call_id pointing at the same
+    rewritten value.
+    """
+    from lilbee.providers.worker.chat_worker import _normalize_tool_call_ids
+
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_AbCdEf123456", "type": "function", "function": {"name": "s"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_AbCdEf123456", "content": "r"},
+    ]
+    out = _normalize_tool_call_ids(messages)
+    new_id = out[1]["tool_calls"][0]["id"]
+    assert len(new_id) == 9
+    assert new_id.isalnum()
+    assert out[2]["tool_call_id"] == new_id  # assistant + tool stay linked

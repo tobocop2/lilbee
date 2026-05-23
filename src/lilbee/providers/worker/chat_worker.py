@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -92,6 +93,39 @@ def _normalize_tool_call_arguments(messages: list[dict[str, Any]]) -> list[dict[
     return normalized
 
 
+def _normalize_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rewrite tool-call ids to a deterministic 9-char alphanumeric form.
+
+    Mistral's chat template enforces ``tool_call.id|length == 9`` (and the same
+    on a tool result's ``tool_call_id``), raising mid-stream when it sees the
+    longer ``call_...`` ids OpenAI-compatible clients like opencode generate.
+    Other families' templates don't constrain the id, so collapsing every id
+    to a stable 9-char hash is safe everywhere and keeps assistant tool_calls
+    matched to their tool-result messages within the request.
+    """
+    mapping: dict[str, str] = {}
+
+    def short(original: str) -> str:
+        if original not in mapping:
+            mapping[original] = hashlib.sha1(original.encode()).hexdigest()[:9]
+        return mapping[original]
+
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant" and message.get("tool_calls"):
+            new_calls = []
+            for call in message["tool_calls"]:
+                cid = call.get("id") if isinstance(call, dict) else None
+                new_calls.append({**call, "id": short(cid)} if isinstance(cid, str) else call)
+            out.append({**message, "tool_calls": new_calls})
+        elif role == "tool" and isinstance(message.get("tool_call_id"), str):
+            out.append({**message, "tool_call_id": short(message["tool_call_id"])})
+        else:
+            out.append(message)
+    return out
+
+
 class _ChatSession:
     """Lazy-loaded Llama chat handle, kept alive for the worker's lifetime.
 
@@ -124,6 +158,7 @@ class _ChatSession:
         if tools and self._response_schema is None:
             self._warn_unsupported_tool_extraction(model)
         messages = _normalize_tool_call_arguments(messages)
+        messages = _normalize_tool_call_ids(messages)
         windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:
