@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
+import inspect
 import logging
 import os
 import textwrap
@@ -11,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.search import clean_result
@@ -41,8 +44,36 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
+def _offload_sync(fn: _F) -> _F:
+    """Run a sync tool handler off the event loop; async handlers pass through.
+
+    The bundled mcp SDK calls sync tool handlers directly on the event loop, so
+    under the shared streamable-http daemon one slow handler would stall every
+    connected agent. ``functools.wraps`` preserves the wrapped signature so the
+    generated tool schema is unchanged.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    @functools.wraps(fn)
+    async def _runner(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    return cast("_F", _runner)
+
+
+def _tool(fn: _F) -> _F:
+    """Register *fn* as an MCP tool with sync handlers offloaded off the loop.
+
+    Returns the original callable so in-process callers (tests, the stdio
+    fallback) keep the synchronous API while the schema sees the offloaded form.
+    """
+    mcp.tool()(_offload_sync(fn))
+    return fn
+
+
 def _tool_if(condition: bool) -> Callable[[_F], _F]:
-    """Register a function as an MCP tool only when *condition* is true.
+    """Register an MCP tool only when *condition* is true.
 
     The function stays importable so direct callers (tests, in-process
     fallback) can still reach it. Whether the tool appears in the MCP
@@ -50,9 +81,7 @@ def _tool_if(condition: bool) -> Callable[[_F], _F]:
     a server restart.
     """
     if condition:
-        # mcp.tool() returns Callable[[Callable[..., Any]], Callable[..., Any]];
-        # cast to the typed-callable shape so generic call sites narrow correctly.
-        return cast("Callable[[_F], _F]", mcp.tool())
+        return _tool
 
     def _passthrough(fn: _F) -> _F:
         return fn
@@ -70,7 +99,7 @@ def _error(msg: str) -> dict[str, Any]:
     return {"error": msg}
 
 
-@mcp.tool()
+@_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
@@ -100,7 +129,7 @@ def search(
         return _error(str(exc))
 
 
-@mcp.tool()
+@_tool
 def status() -> dict[str, Any]:
     """Show indexed documents, configuration, and chunk counts."""
     sources = get_services().store.get_sources()
@@ -130,7 +159,7 @@ def status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
 
@@ -144,7 +173,7 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
     ).model_dump()
 
 
-@mcp.tool()
+@_tool
 async def add(
     paths: list[str],
     force: bool = False,
@@ -253,7 +282,7 @@ def crawl_status(task_id: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def init(path: str = "") -> dict[str, Any]:
     """Initialize a local ``.lilbee/`` knowledge base; empty path = cwd.
 
@@ -284,7 +313,7 @@ def init(path: str = "") -> dict[str, Any]:
     return {"command": "init", "path": str(root), "created": created}
 
 
-@mcp.tool()
+@_tool
 def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
     """Remove documents by source name; ``delete_files=true`` also deletes the file on disk."""
     result = get_services().store.remove_documents(
@@ -293,7 +322,7 @@ def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 
-@mcp.tool()
+@_tool
 def list_documents() -> dict[str, Any]:
     """List all indexed documents with their chunk counts."""
     sources = get_services().store.get_sources()
@@ -305,7 +334,7 @@ def list_documents() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def reset(confirm: bool = False) -> dict[str, Any]:
     """Factory reset: delete all documents and indexed data. Requires ``confirm=true``."""
     if not confirm:
@@ -473,7 +502,7 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-@mcp.tool()
+@_tool
 def settings_list(group: str = "") -> dict[str, Any]:
     """List writable lilbee settings (each with value, default, type, help, choices).
 
@@ -491,7 +520,7 @@ def settings_list(group: str = "") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def settings_get(key: str) -> dict[str, Any]:
     """Get a single setting's current value + metadata."""
 
@@ -502,7 +531,7 @@ def settings_get(key: str) -> dict[str, Any]:
     return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
 
 
-@mcp.tool()
+@_tool
 def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomically update writable settings; rolls back on any validation error.
 
@@ -522,7 +551,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
     """Reset writable settings to their built-in defaults."""
 
@@ -537,7 +566,7 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     """List installed models. ``source`` is ``native`` / ``remote``; ``task`` filters by role."""
     from lilbee.app.models import list_models_data
@@ -554,7 +583,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     return list_models_data(source=src, task=parsed_task).model_dump()
 
 
-@mcp.tool()
+@_tool
 def catalog_browse(
     task: str = "",
     search: str = "",
@@ -620,7 +649,7 @@ def catalog_browse(
     }
 
 
-@mcp.tool()
+@_tool
 def model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref."""
     from lilbee.app.models import show_model_data
@@ -644,7 +673,7 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
         log.warning("MCP report_progress failed", exc_info=True)
 
 
-@mcp.tool()
+@_tool
 async def model_pull(
     model: str,
     source: str = ModelSource.NATIVE.value,
@@ -697,7 +726,7 @@ async def model_pull(
     return result.model_dump()
 
 
-@mcp.tool()
+@_tool
 def model_rm(model: str, source: str = "") -> dict[str, Any]:
     """Remove an installed model.
 
@@ -787,7 +816,7 @@ def _strip_schema_noise() -> None:
     payload, which matters most for small-context (16K) chat models where
     the tools surface was previously eating ~60% of the budget.
 
-    Runs once after every ``@mcp.tool()`` decoration in this module has fired.
+    Runs once after every ``@_tool`` decoration in this module has fired.
     """
     for info in mcp._tool_manager._tools.values():
         params = info.parameters
