@@ -9,7 +9,13 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from lilbee.core.config.enums import (
+    ChatMode,
+    ClustererBackend,
+    KvCacheType,
+    LlmProvider,
+    WikiEntityMode,
+)
 
 
 class RenderStyle(StrEnum):
@@ -784,7 +790,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        choices=("auto", "llama-cpp", "remote"),
+        choices=tuple(p.value for p in LlmProvider),
         help_text=(
             "Provider routing: auto picks the first key present; force a specific one when set"
         ),

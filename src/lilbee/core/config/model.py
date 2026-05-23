@@ -24,7 +24,7 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from .enums import ChatMode, ClustererBackend, KvCacheType, LlmProvider, WikiEntityMode
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -131,7 +131,7 @@ class Config(BaseSettings):
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
-    llm_provider: str = ConfigField(default="auto", writable=True)
+    llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)

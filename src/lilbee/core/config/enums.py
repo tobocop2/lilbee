@@ -10,6 +10,15 @@ class ChatMode(StrEnum):
     CHAT = "chat"
 
 
+class LlmProvider(StrEnum):
+    """Inference backend that ``create_provider`` builds. Values match the
+    historical ``llm_provider`` strings so persisted config parses unchanged."""
+
+    AUTO = "auto"
+    LLAMA_CPP = "llama-cpp"
+    REMOTE = "remote"
+
+
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
 

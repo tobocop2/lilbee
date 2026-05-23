@@ -1008,13 +1008,13 @@ class TestFactory:
         provider = create_provider(cfg)
         assert isinstance(provider, LlamaCppProvider)
 
-    def test_unknown_provider_raises(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import create_provider
+    def test_unknown_provider_rejected_at_config_boundary(self) -> None:
+        # llm_provider is a validated LlmProvider StrEnum: an invalid value is
+        # rejected at assignment, so create_provider never sees a bad string.
+        from pydantic import ValidationError
 
-        cfg.llm_provider = "unknown"
-        with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            create_provider(cfg)
+        with pytest.raises(ValidationError):
+            cfg.llm_provider = "unknown"
 
     def test_services_singleton(self) -> None:
         from lilbee.app.services import get_services, reset_services
