@@ -110,6 +110,24 @@ def _ref_for_manifest(path: Path) -> str:
     return f"{repo}/{filename}"
 
 
+def _installed_ref_for_repo(repo: str) -> str | None:
+    """Return the chat model ref actually installed under *repo*, if any.
+
+    ``lilbee model pull <repo>`` installs the repo's default quant, which need
+    not be the specific file named in models.toml (e.g. legraphista/glm-4-9b
+    installs Q4_K_S, internlm2 installs fp16). Pinning opencode to the
+    models.toml ref then points at an uninstalled file: ``/v1/models`` omits
+    it, opencode never dispatches, and the cell logs zero chat completions.
+    Resolving the installed ref after the pull keeps the cell aligned with
+    whatever quant lilbee actually fetched.
+    """
+    for path in _list_chat_manifests():
+        ref = _ref_for_manifest(path)
+        if _pull_ref_for(ref) == repo:
+            return ref
+    return None
+
+
 def _pull_ref_for(model_ref: str) -> str:
     """Return the HuggingFace repo id (owner/name) for *model_ref*.
 
@@ -662,13 +680,19 @@ def setup_cell(
     chat time. Letting the launcher own the serve lifecycle eliminates that
     race; the per-cell log still captures everything via the launcher's stdio.
     """
-    workspace = write_per_cell_workspace(cell.family, cell.ref)
     reset_opencode_session_state()
     port = free_port()
     if not args.no_pull:
         pull_ref = _pull_ref_for(cell.ref)
         print(f"[{cell.family}] pulling {pull_ref}")
         _run_pull_with_group_kill(pull_ref)
+        installed = _installed_ref_for_repo(pull_ref)
+        if installed is not None and installed != cell.ref:
+            print(
+                f"[{cell.family}] pull installed {installed}; using it (models.toml had {cell.ref})"
+            )
+            cell.ref = installed
+    workspace = write_per_cell_workspace(cell.family, cell.ref)
     print(f"[{cell.family}] indexing fixtures")
     index_workspace(workspace, log_path)
     print(f"[{cell.family}] pinning opencode default model")
