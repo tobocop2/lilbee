@@ -126,6 +126,41 @@ def _normalize_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, A
     return out
 
 
+def _merge_consecutive_same_role(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge adjacent plain user/assistant messages that share a role.
+
+    Mistral's chat template enforces strict user/assistant alternation among
+    non-tool messages and raises mid-stream on two consecutive users. opencode
+    emits exactly that for its session-title and summarisation requests
+    (``system -> user -> user``), so the auxiliary call 500s even though the
+    main tool conversation alternates correctly. Joining the consecutive
+    contents with a blank line keeps the prompt intact and satisfies every
+    strict-alternation template; lenient templates are unaffected.
+
+    Messages carrying ``tool_calls`` and ``tool``-role results are never merged
+    -- they are rendered through dedicated template branches and must stay
+    discrete.
+    """
+    merged: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        mergeable = role in ("user", "assistant") and not message.get("tool_calls")
+        if (
+            mergeable
+            and merged
+            and merged[-1].get("role") == role
+            and not merged[-1].get("tool_calls")
+        ):
+            prev = merged[-1]
+            prev_content = prev.get("content") or ""
+            cur_content = message.get("content") or ""
+            joined = "\n\n".join(p for p in (prev_content, cur_content) if p)
+            merged[-1] = {**prev, "content": joined}
+            continue
+        merged.append(message)
+    return merged
+
+
 def _qa_log_message_roles(messages: list[dict[str, Any]]) -> None:
     """QA-only: log the role sequence (+tool-call markers) sent to the template.
 
@@ -180,6 +215,7 @@ class _ChatSession:
             self._warn_unsupported_tool_extraction(model)
         messages = _normalize_tool_call_arguments(messages)
         messages = _normalize_tool_call_ids(messages)
+        messages = _merge_consecutive_same_role(messages)
         _qa_log_message_roles(messages)
         windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}

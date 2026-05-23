@@ -1396,3 +1396,37 @@ def test_normalize_tool_call_ids_to_nine_char_consistently() -> None:
     assert len(new_id) == 9
     assert new_id.isalnum()
     assert out[2]["tool_call_id"] == new_id  # assistant + tool stay linked
+
+
+def test_merge_consecutive_same_role_joins_user_messages() -> None:
+    """opencode's title-gen sends system->user->user; Mistral needs them merged."""
+    from lilbee.providers.worker.chat_worker import _merge_consecutive_same_role
+
+    out = _merge_consecutive_same_role(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "context"},
+            {"role": "user", "content": "make a title"},
+        ]
+    )
+    assert [m["role"] for m in out] == ["system", "user"]
+    assert out[1]["content"] == "context\n\nmake a title"
+
+
+def test_merge_consecutive_same_role_preserves_tool_round_trip() -> None:
+    """Tool-call and tool-result messages are never merged into neighbors."""
+    from lilbee.providers.worker.chat_worker import _merge_consecutive_same_role
+
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "x", "function": {"name": "s"}}],
+        },
+        {"role": "tool", "tool_call_id": "x", "content": "r"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+    out = _merge_consecutive_same_role(messages)
+    assert [m["role"] for m in out] == ["user", "assistant", "tool", "assistant", "user"]
