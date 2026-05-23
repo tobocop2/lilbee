@@ -439,6 +439,47 @@ class _TextBatchBuffer:
         self._seen_first_token = True
 
 
+class _QaRawTap:
+    """QA-only diagnostic: capture the model's raw streamed output and report it.
+
+    Set ``LILBEE_QA_LOG_RAW=1`` to log, at stream end, the accumulated raw text
+    plus how many native tool-call deltas the model produced. This is how the
+    opencode matrix figures out WHY a family didn't dispatch: the log shows
+    whether the model emitted a tool call in a format the family schema missed,
+    or simply chatted without calling a tool. No-op unless the env var is set.
+    """
+
+    def __init__(self) -> None:
+        import os
+
+        self._on = bool(os.environ.get("LILBEE_QA_LOG_RAW"))
+        self._chunks: list[str] = []
+        self._native_tool_deltas = 0
+
+    def observe(self, raw_chunk: Any) -> None:
+        if not self._on:
+            return
+        if _extract_tool_call_deltas(raw_chunk):
+            self._native_tool_deltas += 1
+        content = _extract_stream_content(raw_chunk)
+        if content:
+            self._chunks.append(content)
+
+    def report(self, *, family: str, output_format: OutputFormat, has_schema: bool) -> None:
+        if not self._on:
+            return
+        raw = "".join(self._chunks)
+        log.info(
+            "QA raw stream: family=%s out_fmt=%s schema=%s native_tool_deltas=%d raw_len=%d raw=%r",
+            family,
+            output_format.value if isinstance(output_format, OutputFormat) else output_format,
+            has_schema,
+            self._native_tool_deltas,
+            len(raw),
+            raw[:1200],
+        )
+
+
 def _handle_chat_streaming(
     reply: Reply,
     response_iter: Any,
@@ -454,6 +495,7 @@ def _handle_chat_streaming(
     schema_parser = (
         StreamingResponseParser(schema, output_format=output_format) if schema is not None else None
     )
+    qa_raw = _QaRawTap()
     completed_cleanly = False
     try:
         for raw_chunk in response_iter:
@@ -461,12 +503,18 @@ def _handle_chat_streaming(
                 with contextlib.suppress(Exception):
                     response_iter.close()
                 break
+            qa_raw.observe(raw_chunk)
             _emit_stream_chunk(reply, raw_chunk, text, schema_parser)
         completed_cleanly = True
     finally:
         if schema_parser is not None:
             _drain_schema_parser_flush(text, schema_parser)
         text.flush()
+        qa_raw.report(
+            family=profile.family.value if profile is not None else "none",
+            output_format=output_format,
+            has_schema=schema is not None,
+        )
     if completed_cleanly:
         reply.send(WireKind.STREAM_END, None)
 
