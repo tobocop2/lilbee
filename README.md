@@ -98,9 +98,9 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
 
-### Opencode integration (coming)
+### Opencode integration
 
-Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families.
+`lilbee launch opencode` points [opencode](https://opencode.ai) at your local lilbee chat models, with tool-calling driven end to end across the Qwen3, Qwen3-Coder, Llama 3.1, Hermes 3, Mistral-Nemo, Gemma, and SmolLM3 families. See [Local models with opencode](docs/opencode-models.md) for the verified list and how it's measured.
 
 The demo shows a small local model (Qwen) given a specific instruction: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 
@@ -267,7 +267,7 @@ opencode opens with your local lilbee models in the picker and the `lilbee-mcp` 
 
 **Any other agent** (Claude Code, Cursor, Cline, custom) can use lilbee as an MCP server. Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and the agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-**The demos below use opencode driving a cloud model. lilbee stays local; only the queries and the returned chunks cross the wire to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
+**The demos below use opencode driving a cloud model. lilbee stays local; only the queries and the returned chunks cross the wire to the cloud model.** Local-model opencode integration works across many GGUF families: see [Opencode integration](#opencode-integration) above.
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
 
