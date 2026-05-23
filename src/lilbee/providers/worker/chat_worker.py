@@ -31,7 +31,11 @@ from lilbee.providers.worker.transport import (
     ToolCallDelta,
 )
 from lilbee.providers.worker.transport_pipe import _serialize_exception
-from lilbee.providers.worker.windowing import count_tools_overhead, window_messages_to_budget
+from lilbee.providers.worker.windowing import (
+    ChatRole,
+    count_tools_overhead,
+    window_messages_to_budget,
+)
 from lilbee.providers.worker.wire_kinds import WireKind
 from lilbee.providers.worker.worker_runtime import Reply, WorkerLoopState, run_worker
 
@@ -73,7 +77,7 @@ def _normalize_tool_call_arguments(messages: list[dict[str, Any]]) -> list[dict[
     normalized: list[dict[str, Any]] = []
     for message in messages:
         tool_calls = message.get("tool_calls")
-        if message.get("role") != "assistant" or not tool_calls:
+        if message.get("role") != ChatRole.ASSISTANT or not tool_calls:
             normalized.append(message)
             continue
         new_calls = []
@@ -113,13 +117,13 @@ def _normalize_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, A
     out: list[dict[str, Any]] = []
     for message in messages:
         role = message.get("role")
-        if role == "assistant" and message.get("tool_calls"):
+        if role == ChatRole.ASSISTANT and message.get("tool_calls"):
             new_calls = []
             for call in message["tool_calls"]:
                 cid = call.get("id") if isinstance(call, dict) else None
                 new_calls.append({**call, "id": short(cid)} if isinstance(cid, str) else call)
             out.append({**message, "tool_calls": new_calls})
-        elif role == "tool" and isinstance(message.get("tool_call_id"), str):
+        elif role == ChatRole.TOOL and isinstance(message.get("tool_call_id"), str):
             out.append({**message, "tool_call_id": short(message["tool_call_id"])})
         else:
             out.append(message)
@@ -144,7 +148,7 @@ def _merge_consecutive_same_role(messages: list[dict[str, Any]]) -> list[dict[st
     merged: list[dict[str, Any]] = []
     for message in messages:
         role = message.get("role")
-        mergeable = role in ("user", "assistant") and not message.get("tool_calls")
+        mergeable = role in (ChatRole.USER, ChatRole.ASSISTANT) and not message.get("tool_calls")
         if (
             mergeable
             and merged
