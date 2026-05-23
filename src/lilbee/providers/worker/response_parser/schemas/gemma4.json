@@ -1,30 +1,38 @@
 {
-    "type": "object",
-    "properties": {
-        "role": {"const": "assistant"},
-        "content": {
-            "type": "string",
-            "x-regex-substitutions": [["tool_code\\s*\\n.*", ""], ["<eos>", ""]],
-            "x-regex": "^\\s*(.*?)\\s*$",
-        },
-        "tool_calls": {
-            "x-regex": "tool_code\\s*\\n(.*?)(?:<eos>|$)",
-            "type": "array",
-            "x-regex-iterator": "([a-zA-Z_]\\w*\\s*\\((?:[^()]|\\([^()]*\\))*\\))",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "x-regex": "^([a-zA-Z_]\\w*)"},
-                    "arguments": {
-                        "type": "object",
-                        "x-regex-key-value": "(?P<key>[a-zA-Z_]\\w*)\\s*=\\s*(?P<value>\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|\\[[^\\]]*\\]|\\{[^}]*\\}|[^,)]+)",
-                        "additionalProperties": {
-                            "x-parser": "json",
-                            "x-parser-args": {"allow_non_json": true},
-                        },
-                    },
-                },
-            },
-        },
+  "type": "object",
+  "properties": {
+    "role": {
+      "const": "assistant"
     },
+    "content": {
+      "type": "string",
+      "x-regex-substitutions": [
+        ["tool_code\\s*\\n.*", ""],
+        ["<eos>", ""]
+      ],
+      "x-regex": "^\\s*(.*?)\\s*$"
+    },
+    "tool_calls": {
+      "x-regex": "tool_code\\s*\\n(.*?)(?:<eos>|$)",
+      "type": "array",
+      "x-regex-iterator": "([a-zA-Z_]\\w*\\s*\\((?:[^()]|\\([^()]*\\))*\\))",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "x-regex": "^([a-zA-Z_]\\w*)"
+          },
+          "arguments": {
+            "type": "object",
+            "x-regex-key-value": "(?P<key>[a-zA-Z_]\\w*)\\s*=\\s*(?P<value>\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|\\[[^\\]]*\\]|\\{[^}]*\\}|[^,)]+)",
+            "additionalProperties": {
+              "x-parser": "json",
+              "x-parser-args": {"allow_non_json": true}
+            }
+          }
+        }
+      }
+    }
+  }
 }
