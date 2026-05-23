@@ -161,27 +161,6 @@ def _merge_consecutive_same_role(messages: list[dict[str, Any]]) -> list[dict[st
     return merged
 
 
-def _qa_log_message_roles(messages: list[dict[str, Any]]) -> None:
-    """QA-only: log the role sequence (+tool-call markers) sent to the template.
-
-    Mistral's template enforces strict user/assistant alternation among non-
-    tool messages; this shows the exact sequence so a violating history is
-    visible. No-op unless ``LILBEE_QA_LOG_RAW`` is set.
-    """
-    import os
-
-    if not os.environ.get("LILBEE_QA_LOG_RAW"):
-        return
-    seq = []
-    for m in messages:
-        r = m.get("role")
-        if r == "assistant" and m.get("tool_calls"):
-            seq.append("assistant[tc]")
-        else:
-            seq.append(str(r))
-    log.info("QA message roles (%d): %s", len(messages), " -> ".join(seq))
-
-
 class _ChatSession:
     """Lazy-loaded Llama chat handle, kept alive for the worker's lifetime.
 
@@ -216,7 +195,6 @@ class _ChatSession:
         messages = _normalize_tool_call_arguments(messages)
         messages = _normalize_tool_call_ids(messages)
         messages = _merge_consecutive_same_role(messages)
-        _qa_log_message_roles(messages)
         windowed = self._window_messages(messages, options, llm, tools=tools, model_ref=model)
         kwargs: dict[str, Any] = dict(options) if options else {}
         if tools is not None:

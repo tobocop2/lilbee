@@ -723,22 +723,7 @@ def _make_role_config_factory(role: WorkerRole) -> Callable[[], RoleConfig]:
     spec = _ROLE_SPECS[role]
 
     def _make() -> RoleConfig:
-        import os
-
         model_name = getattr(cfg, spec.cfg_attr)
-        # Diagnostic for bb-hef0 (cloud-pod qa): if the worker is being
-        # configured with the default chat_model when a workspace .lilbee/
-        # config.toml is supposed to override it, the resulting "model not
-        # found" surfaces to opencode as a 404 with no obvious cause. Log
-        # what cfg saw and where it looked.
-        log.info(
-            "worker config_factory role=%s cfg.%s=%r cwd=%s data_dir=%s",
-            role,
-            spec.cfg_attr,
-            model_name,
-            os.getcwd(),
-            cfg.data_dir,
-        )
         if not model_name:
             raise ProviderError(
                 f"No {role} model configured. Set cfg.{spec.cfg_attr} first.",
