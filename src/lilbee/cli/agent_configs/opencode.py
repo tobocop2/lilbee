@@ -42,13 +42,17 @@ def opencode_config(
     api_key: str,
     model_refs: list[str],
     mcp_command: list[str] | None = None,
+    mcp_remote: bool = False,
 ) -> dict[str, Any]:
     """Return the opencode.json block wiring lilbee as a provider.
 
     ``base_url`` is the lilbee server origin (e.g. ``http://127.0.0.1:8080``);
     the chat-completions ``/v1`` suffix is appended here so callers pass a
-    single canonical URL. When ``mcp_command`` is given, the block also
-    registers a lilbee MCP server that runs that command.
+    single canonical URL. ``mcp_remote`` registers the daemon's
+    streamable-http MCP endpoint (``/mcp``) with the bearer token so opencode
+    shares the running daemon's warm models for retrieval. ``mcp_command``
+    instead registers a local MCP server that opencode spawns itself; pass at
+    most one.
     """
     block: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
@@ -64,7 +68,16 @@ def opencode_config(
             }
         },
     }
-    if mcp_command is not None:
+    if mcp_remote:
+        block["mcp"] = {
+            "lilbee": {
+                "type": "remote",
+                "url": f"{base_url}/mcp",
+                "enabled": True,
+                "headers": {"Authorization": f"Bearer {api_key}"},
+            }
+        }
+    elif mcp_command is not None:
         block["mcp"] = {
             "lilbee": {
                 "type": "local",

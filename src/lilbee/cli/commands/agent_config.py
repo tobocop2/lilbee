@@ -17,7 +17,6 @@ from lilbee.cli.launchers.server import (
 
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
-_MCP_COMMAND = ["lilbee", "mcp"]
 _SERVE_HINT = "Start `lilbee serve --port 8080` first, then re-run this command."
 
 
@@ -47,8 +46,12 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
 
 @agent_config_app.command("opencode")
 def _opencode_cmd() -> None:
-    """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
-    _emit_block(opencode.opencode_config, mcp_command=_MCP_COMMAND)
+    """Print an opencode.json block (OpenAI-compatible provider + MCP server).
+
+    The MCP server points at the running daemon's streamable-http endpoint so
+    opencode shares its warm models instead of spawning a second process.
+    """
+    _emit_block(opencode.opencode_config, mcp_remote=True)
 
 
 @agent_config_app.command("litellm")

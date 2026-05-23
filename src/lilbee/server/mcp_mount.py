@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from litestar.handlers import asgi
-from litestar.types import Receive, Scope, Send
+from litestar.types import ASGIApp, Receive, Scope, Send
 from mcp.server.transport_security import TransportSecuritySettings
 
 from lilbee.mcp_server import mcp
@@ -41,7 +41,7 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     mcp._session_manager = None
     mcp.settings.streamable_http_path = "/"
     mcp.settings.transport_security = _TRANSPORT_SECURITY
-    asgi_app = mcp.streamable_http_app()
+    asgi_app = cast("ASGIApp", mcp.streamable_http_app())
     manager = mcp.session_manager
 
     async def _forward(scope: Scope, receive: Receive, send: Send) -> None:

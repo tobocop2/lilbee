@@ -144,9 +144,7 @@ async def test_initialize_succeeds_with_the_session_token(
     assert _parse_sse(resp.text)["result"]["serverInfo"]["name"] == "lilbee"
 
 
-async def test_tools_list_exposes_search_over_http(
-    mcp_app: Litestar, auth_token: str
-) -> None:
+async def test_tools_list_exposes_search_over_http(mcp_app: Litestar, auth_token: str) -> None:
     async with _client(mcp_app) as client:
         session_id = await _initialize(client, auth_token)
         result = await _call(
