@@ -2212,6 +2212,22 @@ class TestClassifyLoadError:
         assert code is None
         assert user_message == "Internal error"
 
+    def test_not_in_registry_is_classified_as_model_not_installed(self):
+        msg = (
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
+            "Install it via the catalog or 'lilbee model pull'."
+        )
+        code, user_message = handlers.classify_load_error(msg)
+        assert code == "model_not_installed"
+        assert user_message == "Active model isn't installed — pull it from the catalog"
+
+    def test_not_available_is_classified_as_model_not_installed(self):
+        code, user_message = handlers.classify_load_error(
+            "Model 'foo' is not available. Pull it first or check the name."
+        )
+        assert code == "model_not_installed"
+        assert user_message == "Active model isn't installed — pull it from the catalog"
+
     def test_classifier_is_case_insensitive(self):
         code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
         assert code == "model_too_large"

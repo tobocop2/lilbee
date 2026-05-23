@@ -34,17 +34,22 @@ def sse_error(message: str, *, code: str | None = None, detail: str | None = Non
 
 
 _OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
+_NOT_INSTALLED_MARKERS = ("not found in registry", "is not available", "pull it first")
 
 
 def classify_load_error(message: str) -> tuple[str | None, str]:
     """Return ``(code, user_message)`` for an SSE error event.
 
-    Recognises the llama.cpp OOM diagnostic and maps it to a stable code; any
-    other input falls back to the legacy generic shape.
+    Recognises two known failure shapes and maps each to a stable code:
+    the llama.cpp OOM diagnostic, and the "configured model isn't installed"
+    case (e.g. the active chat model was uninstalled, leaving a stale ref in
+    config). Anything else falls back to the legacy generic shape.
     """
     lowered = message.lower()
     if any(marker in lowered for marker in _OOM_MARKERS):
         return "model_too_large", "Model too large for available RAM"
+    if any(marker in lowered for marker in _NOT_INSTALLED_MARKERS):
+        return "model_not_installed", "Active model isn't installed — pull it from the catalog"
     return None, "Internal error"
 
 
