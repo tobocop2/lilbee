@@ -107,7 +107,7 @@ def _normalize_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, A
 
     def short(original: str) -> str:
         if original not in mapping:
-            mapping[original] = hashlib.sha1(original.encode()).hexdigest()[:9]
+            mapping[original] = hashlib.sha256(original.encode()).hexdigest()[:9]
         return mapping[original]
 
     out: list[dict[str, Any]] = []
