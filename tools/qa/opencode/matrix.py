@@ -474,8 +474,16 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     workspace/.lilbee/config.toml, picks up chat_model=<cell.ref>, and the
     worker pool spawns with the right model. See bb-hef0.
     """
+    import os
+
     tmux_kill(session)
     workspace_data = workspace / ".lilbee"
+    env_flags = ["-e", f"LILBEE_DATA={workspace_data}"]
+    # Forward QA diagnostic flags into the launched serve + its worker
+    # subprocesses (multiprocessing-spawn inherits the tmux session env), so
+    # LILBEE_QA_LOG_RAW reaches the chat worker where the raw-output tap lives.
+    if os.environ.get("LILBEE_QA_LOG_RAW"):
+        env_flags += ["-e", "LILBEE_QA_LOG_RAW=1"]
     subprocess.run(
         [
             "tmux",
@@ -487,8 +495,7 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
             str(_TMUX_WINDOW_COLS),
             "-y",
             str(_TMUX_WINDOW_ROWS),
-            "-e",
-            f"LILBEE_DATA={workspace_data}",
+            *env_flags,
             "bash",
             "-lc",
             f"cd {workspace} && exec uv run lilbee launch opencode",
