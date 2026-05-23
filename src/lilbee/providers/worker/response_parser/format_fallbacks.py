@@ -22,16 +22,21 @@ log = logging.getLogger(__name__)
 _DECODER = json.JSONDecoder()
 _NAME_KEY = "name"
 _ARGUMENTS_KEY = "arguments"
+# Some tool-trained families (Mistral-Nemo, others) emit the call argument map
+# under "parameters" instead of the OpenAI-standard "arguments". Accept either.
+_PARAMETERS_KEY = "parameters"
 
 
 def bare_json_tool_calls(text: str) -> tuple[ToolCall, ...]:
-    """Yield every ``{"name": ..., "arguments": ...}`` object embedded in *text*."""
+    """Yield every ``{"name": ..., "arguments"|"parameters": ...}`` object in *text*."""
     out: list[ToolCall] = []
     for obj in _iter_json_objects(text):
         name = obj.get(_NAME_KEY)
         if not isinstance(name, str) or not name:
             continue
         arguments = obj.get(_ARGUMENTS_KEY)
+        if arguments is None:
+            arguments = obj.get(_PARAMETERS_KEY)
         out.append(ToolCall(id="", name=name, arguments=_arguments_to_string(arguments)))
     return tuple(out)
 

@@ -558,6 +558,29 @@ def test_bare_json_extractor_skips_object_with_non_string_name() -> None:
     assert bare_json_tool_calls('{"name": "", "arguments": {}}') == ()
 
 
+def test_bare_json_extractor_accepts_parameters_key_alias() -> None:
+    """Mistral-Nemo emits ``parameters`` instead of ``arguments``; treat them the same."""
+    from lilbee.providers.worker.response_parser.format_fallbacks import bare_json_tool_calls
+
+    calls = bare_json_tool_calls('{"name": "lilbee_search", "parameters": {"query": "x"}}')
+    assert len(calls) == 1
+    assert calls[0].name == "lilbee_search"
+    assert json.loads(calls[0].arguments) == {"query": "x"}
+
+
+def test_mistral_extracts_bare_json_array_without_tool_calls_marker() -> None:
+    """Mistral-Nemo emits a bare ``[{"name":...,"parameters":...}]`` array, no [TOOL_CALLS]."""
+    text = '[{"name": "lilbee_search", "parameters": {"query": "chat worker"}}]'
+    parsed = parse_response(
+        text,
+        get_schemas()[TemplateFamily.MISTRAL],
+        output_format=OutputFormat.DUAL,
+    )
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "lilbee_search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"query": "chat worker"}
+
+
 def test_bare_json_split_content_returns_full_text_when_no_match() -> None:
     """``split_content_at_bare_json`` returns *text* unchanged when nothing matches."""
     from lilbee.providers.worker.response_parser.format_fallbacks import split_content_at_bare_json
