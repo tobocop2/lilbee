@@ -99,9 +99,10 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     assert options["apiKey"] == _TOKEN
     assert _CHAT_REF in payload["provider"]["lilbee"]["models"]
     mcp_entry = payload["mcp"]["lilbee"]
-    assert mcp_entry["type"] == "local"
+    assert mcp_entry["type"] == "remote"
     assert mcp_entry["enabled"] is True
-    assert mcp_entry["command"] == ["lilbee", "mcp"]
+    assert mcp_entry["url"] == f"http://127.0.0.1:{_PORT}/mcp"
+    assert mcp_entry["headers"]["Authorization"] == f"Bearer {_TOKEN}"
 
 
 @pytest.mark.no_health_default
