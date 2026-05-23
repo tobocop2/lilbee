@@ -670,10 +670,51 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 
 All chat-generating endpoints (`/api/ask`, `/api/chat`, both their `/stream` variants, and `POST /v1/chat/completions`) share a process-wide chat lock so only one inference call runs at a time per server. Concurrent requests queue server-side; if the wait exceeds the configured timeout the request returns 429 with a `Retry-After: 1` header.
 
-### MCP Server (`lilbee mcp`)
+### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
 - Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`
+
+#### Transports
+
+The same FastMCP tool server is reachable two ways:
+
+- **stdio** (`lilbee mcp`): the default for a single agent. The client spawns
+  the process, which loads its own in-process `Services` (its own model copy).
+  Zero configuration, no network.
+- **streamable-http** (on the `lilbee serve` daemon): for multiple agents
+  sharing one warm backend. The tool server mounts as a Litestar sub-app at
+  `/mcp`, behind the same bearer-token `AuthMiddleware` as `/v1/*` and REST, and
+  resolves the same process-wide `Services`. Sync tool handlers are offloaded
+  off the event loop so one slow call cannot stall the other connected agents.
+  Retrieval reads run concurrently; generation shares the chat lock above.
+
+```mermaid
+flowchart LR
+    A1[Agent A]
+    A2[Agent B]
+
+    subgraph stdio["stdio (default, single agent)"]
+        M1["lilbee mcp"]
+        S1[(Services + own model copy)]
+        M1 --> S1
+    end
+
+    subgraph daemon["lilbee serve daemon (shared)"]
+        AUTH["AuthMiddleware (bearer token)"]
+        MCPSUB["/mcp (FastMCP sub-app)"]
+        REST["/v1 + REST"]
+        SVC[(one warm Services)]
+        AUTH --> MCPSUB
+        AUTH --> REST
+        MCPSUB --> SVC
+        REST --> SVC
+    end
+
+    A1 -->|stdio| M1
+    A1 -.->|http + Bearer| AUTH
+    A2 -.->|http + Bearer| AUTH
+```
 
 #### Schema-size discipline
 
