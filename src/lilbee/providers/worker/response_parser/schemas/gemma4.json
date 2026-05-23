@@ -1,34 +1,30 @@
 {
-  "type": "object",
-  "properties": {
-    "role": {
-      "const": "assistant"
+    "type": "object",
+    "properties": {
+        "role": {"const": "assistant"},
+        "content": {
+            "type": "string",
+            "x-regex-substitutions": [["tool_code\\s*\\n.*", ""], ["<eos>", ""]],
+            "x-regex": "^\\s*(.*?)\\s*$",
+        },
+        "tool_calls": {
+            "x-regex": "tool_code\\s*\\n(.*?)(?:<eos>|$)",
+            "type": "array",
+            "x-regex-iterator": "([a-zA-Z_]\\w*\\s*\\((?:[^()]|\\([^()]*\\))*\\))",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "x-regex": "^([a-zA-Z_]\\w*)"},
+                    "arguments": {
+                        "type": "object",
+                        "x-regex-key-value": "(?P<key>[a-zA-Z_]\\w*)\\s*=\\s*(?P<value>\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|\\[[^\\]]*\\]|\\{[^}]*\\}|[^,)]+)",
+                        "additionalProperties": {
+                            "x-parser": "json",
+                            "x-parser-args": {"allow_non_json": true},
+                        },
+                    },
+                },
+            },
+        },
     },
-    "thinking": {
-      "type": "string",
-      "x-regex": "<\\|channel\\>thought\\n(.*?)\\<channel\\|\\>"
-    },
-    "content": {
-      "type": "string",
-      "x-regex": "(?:<channel\\|\\>)?((?:(?!<\\|tool_call\\>).)*)"
-    },
-    "tool_calls": {
-      "x-regex-iterator": "<\\|tool_call>(.*?)<tool_call\\|>",
-      "type": "array",
-      "items": {
-        "type": "object",
-        "x-regex": "call\\:(?P<name>\\w+)(?P<arguments>\\{.*\\})",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "arguments": {
-            "type": "object",
-            "x-parser": "gemma4-tool-call",
-            "additionalProperties": true
-          }
-        }
-      }
-    }
-  }
 }

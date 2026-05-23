@@ -369,17 +369,18 @@ def test_root_regex_miss_returns_raw_text() -> None:
     assert parsed.tool_calls == ()
 
 
-def test_gemma4_extracts_wrapped_function_call() -> None:
-    """Gemma 4 schema wraps each call in ``{type:"function", function:{...}}``.
+def test_gemma4_extracts_tool_code_python_call() -> None:
+    """Gemma emits ``tool_code\\nname(key="val")`` Python-call blocks.
 
-    Exercises the function-wrapped branch of ``_coerce_one`` where the entry
-    has a nested ``function`` dict, distinct from Mistral/Qwen3 schemas that
-    emit flat ``{name, arguments}`` dicts.
+    The GGUF (e.g. gemma-4-E2B) renders tool calls as a ``tool_code`` block
+    with a Python-style invocation, not the JSON envelope older Gemma schemas
+    assumed; the schema parses the call name + key=value args.
     """
-    text = '<|tool_call>call:weather{"city":"Tokyo"}<tool_call|>'
+    text = 'lilbee_search\n<eos>tool_code\nweather(city="Tokyo")\n<eos><eos>'
     parsed = _parse(text, TemplateFamily.GEMMA4)
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Tokyo"}
 
 
 def test_non_dict_entry_in_tool_calls_is_dropped() -> None:
