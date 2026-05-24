@@ -133,6 +133,9 @@ class Config(BaseSettings):
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    # Path to a llama-server binary for the multi-gpu fleet. Empty = use the
+    # lilbee[multi-gpu] wheel's bundled binary, else PATH.
+    llama_server_path: str = ConfigField(default="", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)

@@ -801,6 +801,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.API_KEYS,
         help_text="OpenAI-compatible base URL (Ollama default: http://localhost:11434)",
     ),
+    "llama_server_path": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.API_KEYS,
+        help_text="Path to a llama-server binary for multi-gpu (empty: bundled wheel or PATH)",
+    ),
     "wiki_summary_max_tokens": SettingDef(
         int,
         nullable=False,
