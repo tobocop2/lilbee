@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
@@ -52,12 +53,62 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     return LLMOptions(**options).to_dict()
 
 
-class ProviderError(Exception):
-    """Raised when an LLM provider operation fails."""
+class ProviderErrorKind(StrEnum):
+    """Provider-agnostic error categories, each mapping to one user action.
 
-    def __init__(self, message: str, *, provider: str = "") -> None:
+    Classified at each backend boundary by exception type or status code, so
+    callers branch on the kind, not on message strings (which never generalize).
+    """
+
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    CONTEXT_OVERFLOW = "context_overflow"
+    NOT_FOUND = "not_found"
+    BAD_REQUEST = "bad_request"
+    CONNECTION = "connection"
+    SERVER = "server"
+    UNKNOWN = "unknown"
+
+
+_ERROR_HINTS: dict[ProviderErrorKind, str] = {
+    ProviderErrorKind.AUTH: "Check the API key configured for this provider.",
+    ProviderErrorKind.RATE_LIMIT: "The provider is rate-limiting requests; wait and retry.",
+    ProviderErrorKind.CONTEXT_OVERFLOW: (
+        "The prompt exceeds the model's context window; shorten it or use a larger-context model."
+    ),
+    ProviderErrorKind.NOT_FOUND: "The model or endpoint was not found; check the model name.",
+    ProviderErrorKind.BAD_REQUEST: "The provider rejected the request as invalid.",
+    ProviderErrorKind.CONNECTION: "Could not reach the provider; check the connection or base URL.",
+    ProviderErrorKind.SERVER: "The provider reported a server error; retry shortly.",
+}
+
+
+class ProviderError(Exception):
+    """Raised when an LLM provider operation fails.
+
+    ``kind`` is the provider-agnostic category; ``str()`` appends an actionable
+    hint for it so every display surface gets the guidance without re-deriving it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "",
+        kind: ProviderErrorKind = ProviderErrorKind.UNKNOWN,
+    ) -> None:
+        self.message = message
         self.provider = provider
+        self.kind = kind
         super().__init__(message)
+
+    @property
+    def hint(self) -> str:
+        """Actionable guidance for ``kind``, or ``""`` when there is none."""
+        return _ERROR_HINTS.get(self.kind, "")
+
+    def __str__(self) -> str:
+        return f"{self.message} {self.hint}" if self.hint else self.message
 
 
 ChatMessage = dict[str, str]

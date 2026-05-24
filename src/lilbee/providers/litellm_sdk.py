@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import OLLAMA_PREFIX, ProviderModelRef
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
@@ -37,6 +37,44 @@ from lilbee.providers.sdk_backend import (
 log = logging.getLogger(__name__)
 
 _PROVIDER_NAME = "litellm"
+
+
+def _classify_litellm_error(exc: Exception) -> ProviderErrorKind:
+    """Map a litellm exception to a ``ProviderErrorKind`` by type, never by message.
+
+    Universal across backends (litellm normalizes errors into one hierarchy); the
+    MRO walk picks the most specific kind (ContextWindowExceeded over BadRequest).
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - unreachable after a successful litellm call
+        return ProviderErrorKind.UNKNOWN
+    table: dict[type, ProviderErrorKind] = {
+        litellm.AuthenticationError: ProviderErrorKind.AUTH,
+        litellm.PermissionDeniedError: ProviderErrorKind.AUTH,
+        litellm.NotFoundError: ProviderErrorKind.NOT_FOUND,
+        litellm.RateLimitError: ProviderErrorKind.RATE_LIMIT,
+        litellm.ContextWindowExceededError: ProviderErrorKind.CONTEXT_OVERFLOW,
+        litellm.BadRequestError: ProviderErrorKind.BAD_REQUEST,
+        litellm.Timeout: ProviderErrorKind.CONNECTION,
+        litellm.APIConnectionError: ProviderErrorKind.CONNECTION,
+        litellm.ServiceUnavailableError: ProviderErrorKind.SERVER,
+        litellm.InternalServerError: ProviderErrorKind.SERVER,
+    }
+    for cls in type(exc).__mro__:
+        kind = table.get(cls)
+        if kind is not None:
+            return kind
+    return ProviderErrorKind.UNKNOWN
+
+
+def _provider_error(prefix: str, exc: Exception) -> ProviderError:
+    """Wrap a backend exception as a ``ProviderError`` classified by type."""
+    return ProviderError(
+        f"{prefix} failed: {exc}", provider=_PROVIDER_NAME, kind=_classify_litellm_error(exc)
+    )
+
+
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
 # Substrings dropped from the "LiteLLM" logger before they reach the user's
@@ -253,7 +291,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.completion(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error("Chat", exc) from exc
         view = _LitellmResponseView(response)
         return CompletionResult(
             content=view.message_content,
@@ -268,7 +306,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.completion(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error("Chat", exc) from exc
         return self._stream_chunks(response)
 
     @staticmethod
@@ -289,7 +327,7 @@ class LitellmSdkBackend:
         except ProviderError:
             raise
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error("Chat", exc) from exc
 
     @staticmethod
     def _completion_kwargs(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
@@ -321,7 +359,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.embedding(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Embedding failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error("Embedding", exc) from exc
         data = response["data"] if isinstance(response, dict) else response.data
         vectors = [item["embedding"] for item in data]
         if isinstance(response, dict):
@@ -352,7 +390,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.rerank(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Rerank failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error("Rerank", exc) from exc
         results = response["results"] if isinstance(response, dict) else response.results
         scores = [0.0] * len(request.candidates)
         for item in results:
