@@ -1015,12 +1015,55 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     kwargs["type_v"] = ggml_type
 
 
+def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: str) -> bool:
+    """Render with the HF tokenizer's own jinja chat template, not the GGUF's.
+
+    Some GGUFs ship a stripped template that drops tool definitions (functionary)
+    or no template at all (Command-R), so the model never sees the tools. The
+    upstream HF repo carries a tool-aware template; load it and hand llama-cpp a
+    ``Jinja2ChatFormatter`` built from it. The formatter only renders the prompt;
+    lilbee's own response parser extracts the tool calls from the generated text,
+    so this stays independent of llama-cpp's per-preset tool parsing. Returns
+    True when the handler was installed.
+    """
+    try:
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+        from transformers import AutoTokenizer
+
+        tok = AutoTokenizer.from_pretrained(hf_tokenizer_repo)
+        if not tok.chat_template:
+            return False
+        formatter = Jinja2ChatFormatter(
+            template=tok.chat_template,
+            eos_token=tok.eos_token or "",
+            bos_token=tok.bos_token or "",
+        )
+        kwargs["chat_handler"] = formatter.to_chat_handler()
+    except Exception:
+        log.warning(
+            "Failed to build HF-template chat handler from %s; tool calls may fail",
+            hf_tokenizer_repo,
+            exc_info=True,
+        )
+        return False
+    log.info("Rendering with HF chat template from %s", hf_tokenizer_repo)
+    return True
+
+
 def _apply_chat_format_override(
     kwargs: dict[str, Any], model_path: Path, meta: dict[str, str] | None
 ) -> None:
     """Swap the GGUF's embedded chat template for the family profile's preset."""
     profile = detect_profile(meta, ref=str(model_path))
-    if profile is None or profile.chat_format_override is None:
+    if profile is None:
+        return
+    if (
+        profile.render_with_hf_template
+        and profile.hf_tokenizer_repo is not None
+        and _apply_hf_template_chat_handler(kwargs, profile.hf_tokenizer_repo)
+    ):
+        return
+    if profile.chat_format_override is None:
         return
     # llama-cpp-python accepts the StrEnum value (str subclass) directly.
     kwargs["chat_format"] = profile.chat_format_override.value

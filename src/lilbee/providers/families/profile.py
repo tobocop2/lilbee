@@ -42,6 +42,7 @@ class FamilyProfile:
     architectures: tuple[str, ...] = ()
     chat_format_override: LlamaCppChatFormatPreset | None = None
     hf_tokenizer_repo: str | None = None
+    render_with_hf_template: bool = False
     streaming_policy: StreamingPolicy = StreamingPolicy.NATIVE
     output_format: OutputFormat = OutputFormat.NATIVE
 

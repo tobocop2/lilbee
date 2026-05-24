@@ -125,6 +125,25 @@ def test_cohere_extracts_tool_calls_from_action_block() -> None:
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
 
 
+def test_functionary_v3_extracts_call_after_recipient_marker() -> None:
+    """Functionary v3 emits ``>>>name\\n{json}`` after an optional ``>>>all`` block."""
+    text = '>>>all\nLet me look that up.\n>>>lilbee_search\n{"query": "chat worker"}'
+    parsed = _parse(text, TemplateFamily.FUNCTIONARY_V3)
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "lilbee_search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"query": "chat worker"}
+    assert "Let me look that up." in parsed.content
+
+
+def test_functionary_v3_bare_call_without_all_block() -> None:
+    """A direct ``>>>name\\n{json}`` with no ``>>>all`` preamble still parses."""
+    text = '>>>get_weather\n{"city": "Paris"}'
+    parsed = _parse(text, TemplateFamily.FUNCTIONARY_V3)
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Paris"}
+
+
 def test_ernie_extracts_tool_calls_between_tool_call_tags() -> None:
     """ERNIE 4.x emits ``<tool_call>{json}</tool_call>`` with content in ``<response>``."""
     text = (
