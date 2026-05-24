@@ -21,6 +21,7 @@ from lilbee.runtime.progress.types import (
     SetupDoneEvent,
     SetupProgressEvent,
     SetupStartEvent,
+    SseErrorCode,
     SseEvent,
     SyncDoneEvent,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "SetupDoneEvent",
     "SetupProgressEvent",
     "SetupStartEvent",
+    "SseErrorCode",
     "SseEvent",
     "SyncDoneEvent",
     "noop_callback",
