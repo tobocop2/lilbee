@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+from typing import IO
 
 import httpx
 import typer
@@ -104,8 +105,8 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
     )
 
     if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET"):
-        stdout: object = subprocess.DEVNULL
-        stderr: object = subprocess.DEVNULL
+        stdout: int | IO[bytes] = subprocess.DEVNULL
+        stderr: int | IO[bytes] = subprocess.DEVNULL
     else:
         log_dir = cfg.data_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)

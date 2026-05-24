@@ -83,7 +83,10 @@ def _normalize_tool_call_arguments(messages: list[dict[str, Any]]) -> list[dict[
         new_calls = []
         for call in tool_calls:
             fn = call.get("function") if isinstance(call, dict) else None
-            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if not isinstance(fn, dict):
+                new_calls.append(call)
+                continue
+            args = fn.get("arguments")
             if isinstance(args, str):
                 try:
                     parsed = json.loads(args)

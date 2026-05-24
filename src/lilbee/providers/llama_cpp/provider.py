@@ -1041,7 +1041,10 @@ def _tool_args_as_json_strings(messages: Any) -> Any:
         fixed_calls = []
         for call in tool_calls:
             fn = call.get("function") if isinstance(call, dict) else None
-            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if not isinstance(fn, dict):
+                fixed_calls.append(call)
+                continue
+            args = fn.get("arguments")
             if isinstance(args, dict):
                 fixed_calls.append({**call, "function": {**fn, "arguments": json.dumps(args)}})
             else:
@@ -1089,11 +1092,15 @@ def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: s
             def __call__(
                 self, *, messages: Any, tools: Any = None, **_: Any
             ) -> ChatFormatterResponse:
-                prompt = self._tokenizer.apply_chat_template(
-                    _tool_args_as_json_strings(messages),
-                    tools=tools,
-                    add_generation_prompt=True,
-                    tokenize=False,
+                # tokenize=False makes apply_chat_template return the rendered str.
+                prompt = cast(
+                    str,
+                    self._tokenizer.apply_chat_template(
+                        _tool_args_as_json_strings(messages),
+                        tools=tools,
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    ),
                 )
                 return ChatFormatterResponse(prompt=prompt, stop=[self.eos_token])
 
