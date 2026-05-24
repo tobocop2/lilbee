@@ -13,6 +13,20 @@ family = "glm-air"
 ref = "unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
 size_gb = 60.0
 
+# Small DeepSeek R1-Distills. Based on Qwen/Llama, so they dispatch through the
+# qwen3 / llama3 extraction paths (not the deepseek_v31 profile, which is the
+# 671B native format). Reasoning-focused, so whether they reliably tool-call is
+# what the matrix decides.
+[[model]]
+family = "deepseek-r1-qwen"
+ref = "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+size_gb = 4.7
+
+[[model]]
+family = "deepseek-r1-llama"
+ref = "bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
+size_gb = 4.9
+
 [[model]]
 family = "qwen3-coder"
 ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
