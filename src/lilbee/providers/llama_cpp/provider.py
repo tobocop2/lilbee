@@ -53,6 +53,26 @@ from lilbee.vision import PageText, PdfOcrChunk, pdf_page_count
 
 log = logging.getLogger(__name__)
 
+
+def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
+    """Translate user-facing chat options into generation kwargs.
+
+    The output keys (``temperature``/``top_p``/``top_k``/``seed``/``max_tokens``/
+    ``repeat_penalty``) are accepted by both llama-cpp-python's
+    ``create_chat_completion`` and llama-server's OpenAI body, so the in-process
+    path and the multi-GPU fleet translate options identically. ``num_predict``
+    becomes ``max_tokens`` and ``num_ctx`` is dropped (a model-load param, not
+    per-call). ``filter_options`` also validates against ``LLMOptions``.
+    """
+    if not options:
+        return {}
+    filtered = filter_options(options)
+    if "num_predict" in filtered:
+        filtered["max_tokens"] = filtered.pop("num_predict")
+    filtered.pop("num_ctx", None)
+    return filtered
+
+
 # Vision OCR sentinel used when no per-call timeout and no ``cfg.ocr_timeout``
 # is set. 24h is effectively "no cap" for the round-trip wait loop.
 _VISION_NO_CAP_TIMEOUT_S = 86_400.0
@@ -416,13 +436,7 @@ class LlamaCppProvider(LLMProvider):
     @staticmethod
     def _chat_kwargs_from_options(options: dict[str, Any] | None) -> dict[str, Any]:
         """Translate user-facing options into llama-cpp create_chat_completion kwargs."""
-        if not options:
-            return {}
-        filtered = filter_options(options)
-        if "num_predict" in filtered:
-            filtered["max_tokens"] = filtered.pop("num_predict")
-        filtered.pop("num_ctx", None)  # model-load param, not per-call
-        return filtered
+        return chat_options_to_kwargs(options)
 
     def list_models(self) -> list[str]:
         """List installed models from registry."""

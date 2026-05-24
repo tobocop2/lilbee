@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
+from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.multi_gpu.binary import resolve_llama_server_binary
 from lilbee.providers.multi_gpu.client import LlamaServerClient
@@ -47,6 +47,15 @@ if TYPE_CHECKING:
 _CHAT_SLOTS = 4
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
+# Roles that offload every layer in-process regardless of cfg.n_gpu_layers: the
+# embedding loader and the mtmd vision loader both hardcode all-layer offload;
+# only chat honors cfg.n_gpu_layers.
+_ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
+# llama-server --flash-attn values; vision matches the in-process loader's
+# full-core thread default (os.cpu_count() or this floor).
+_FLASH_ON = "on"
+_FLASH_OFF = "off"
+_DEFAULT_THREADS = 4
 
 # Server roles -> (slots, model-ref accessor). chat/embed are always configured;
 # reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
@@ -62,8 +71,9 @@ _SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, Callable[[Any], str]]] = {
 def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
     """Per-slot context for a role, derived exactly as the in-process loader does.
 
-    Embed/rerank use the model's training context; chat/vision honor ``cfg.num_ctx``
-    then fall back to the dynamic chat-ctx picker. Never a hardcoded budget.
+    Embed/rerank use the embedding model's training context; vision uses the
+    vision loader's training-context picker (not the chat ctx); chat honors
+    ``cfg.num_ctx`` then falls back to the dynamic chat-ctx picker. Never hardcoded.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.provider import _EMBED_FALLBACK_CTX, _resolve_chat_ctx
@@ -72,16 +82,46 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
         from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
 
         return train_ctx_from_meta(meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path)
+    if role is WorkerRole.VISION:
+        from lilbee.providers.mtmd_backend import _resolve_vision_n_ctx
+
+        return _resolve_vision_n_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
     return _resolve_chat_ctx(model_path, meta)
 
 
 def _role_gpu_layers(role: WorkerRole) -> int:
-    """GPU-layer offload for a role, from ``cfg.n_gpu_layers`` (None = all)."""
+    """GPU-layer offload for a role. Chat honors ``cfg.n_gpu_layers``; embed/rerank
+    and vision always offload all layers, mirroring their in-process loaders."""
     from lilbee.providers.llama_cpp.provider import _resolve_n_gpu_layers
 
-    return _resolve_n_gpu_layers(embedding=role in _EMBED_ROLES)
+    return _resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
+
+
+def _flash_attn_flag() -> str:
+    """``--flash-attn`` value for chat, mirroring the in-process loader.
+
+    In-process forces flash attention on for chat unless ``cfg.flash_attention``
+    is explicitly ``False``; ``None`` (auto) and ``True`` both enable it.
+    """
+    from lilbee.core.config import cfg
+
+    return _FLASH_OFF if cfg.flash_attention is False else _FLASH_ON
+
+
+def _cache_type_flag() -> str | None:
+    """KV cache type string for chat, or ``None`` to leave llama-server's f16 default.
+
+    Mirrors ``_apply_kv_cache_type``: f16 is the engine default (no flag), any
+    other configured type maps to its llama.cpp type name (== the enum value).
+    """
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import KvCacheType
+
+    if cfg.kv_cache_type is KvCacheType.F16:
+        return None
+    return cfg.kv_cache_type.value
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -171,15 +211,21 @@ class FleetProvider:
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
         from lilbee.core.config import cfg
+        from lilbee.providers.llama_cpp.provider import chat_options_to_kwargs
 
         # The fleet's chat server serves cfg.chat_model; a different model override
         # must load in-process, not be silently served by the wrong server.
         if model is None or model == str(cfg.chat_model):
             clients = self._server_clients(WorkerRole.CHAT)
             if clients:
+                # Translate options exactly as the in-process path does (validate via
+                # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
+                # honors the same generation settings; a raw passthrough would drop
+                # num_predict and leak the load-only num_ctx.
+                server_options = chat_options_to_kwargs(options) or None
                 # generator satisfies ClosableIterator; client.chat isn't overloaded.
                 return _least_in_flight(clients).chat(  # type: ignore[return-value]
-                    messages, options=options, stream=stream
+                    messages, options=server_options, stream=stream
                 )
         local = self._local_provider()
         if stream:
@@ -338,8 +384,13 @@ def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlac
             weights += mmproj.stat().st_size
     meta = read_gguf_metadata(path)
     ctx = _role_ctx(role, path, meta)
-    kv_bytes = KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type, 2)
-    est = estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_bytes)
+    # Only chat passes --cache-type to its server; embed/rerank/vision run f16 KV
+    # (their in-process loaders apply no KV quant), so estimate their KV at f16 to
+    # match the runtime rather than the chat-tuned cfg.kv_cache_type.
+    kv_type = cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
+    est = estimate_model_vram(
+        weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=KV_CACHE_TYPE_BYTES[kv_type]
+    )
     return ModelPlacementInput(role=role, est_vram_bytes=est)
 
 
@@ -358,7 +409,9 @@ def _launch_for(
     model_path = resolve_model_path(model_ref)
     ctx = _role_ctx(plan.role, model_path, read_gguf_metadata(model_path))
     chosen = tuple(by_index[i] for i in plan.devices)
-    mmproj = _vision_mmproj(model_ref) if plan.role is WorkerRole.VISION else None
+    is_chat = plan.role is WorkerRole.CHAT
+    is_vision = plan.role is WorkerRole.VISION
+    mmproj = _vision_mmproj(model_ref) if is_vision else None
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],
@@ -369,6 +422,13 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
+        # Chat mirrors the in-process loader's flash-attn + KV-cache-type; embed/
+        # rerank raise the batch/ubatch to the full context (server caps embeddings
+        # at n_ubatch); vision matches the in-process loader's full-core threads.
+        flash_attn=_flash_attn_flag() if is_chat else None,
+        cache_type=_cache_type_flag() if is_chat else None,
+        batch_size=ctx if plan.role in _EMBED_ROLES else None,
+        threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
     )
     return InstanceLaunch(
         role=plan.role,
@@ -378,4 +438,7 @@ def _launch_for(
         # Stamp the owning lilbee pid so a concurrent instance's reaper won't
         # touch this server (only a dead parent's orphans get reaped).
         port_file=data_dir / f"llama-server-{plan.role.value}-{os.getpid()}.port",
+        # Embed/rerank truncate oversize inputs to the per-slot context; chat and
+        # vision do not (they handle long prompts in the engine).
+        token_cap=ctx if plan.role in _EMBED_ROLES else None,
     )

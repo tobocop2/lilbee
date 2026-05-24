@@ -56,6 +56,7 @@ class InstanceLaunch:
     env_overrides: dict[str, str]  # backend-specific device-pinning env
     model: str
     port_file: Path
+    token_cap: int | None = None  # per-slot ctx for embed/rerank input truncation
 
 
 class FleetServer:
@@ -94,7 +95,9 @@ class FleetServer:
         )
         if self.client is not None:
             self.client.close()
-        self.client = LlamaServerClient(f"http://{_HOST}:{port}", self._launch.model)
+        self.client = LlamaServerClient(
+            f"http://{_HOST}:{port}", self._launch.model, token_cap=self._launch.token_cap
+        )
         return self.client
 
     def is_alive(self) -> bool:

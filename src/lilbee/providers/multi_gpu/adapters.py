@@ -70,6 +70,10 @@ def build_server_argv(
     ctx_per_slot: int,
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
+    flash_attn: str | None = None,
+    cache_type: str | None = None,
+    batch_size: int | None = None,
+    threads: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -79,6 +83,12 @@ def build_server_argv(
     GPUs by ``tensor_split`` (per-device proportion), so unequal cards split by
     capacity rather than evenly. ``--ctx-size`` is the per-slot context times the
     slot count, since llama-server divides total context across parallel slots.
+
+    The optional flags mirror the in-process loader for the same role+config:
+    ``flash_attn`` (``on``/``off``) and ``cache_type`` apply to chat;
+    ``batch_size`` sets ``--batch-size``/``--ubatch-size`` for embed/rerank (the
+    server caps embeddings at ``n_ubatch``, default 512, so a full-context embed
+    needs both raised); ``threads`` matches the vision loader's full-core setting.
     """
     argv = [
         str(binary),
@@ -94,6 +104,14 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
+    if flash_attn is not None:
+        argv += ["--flash-attn", flash_attn]
+    if cache_type is not None:
+        argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
+    if batch_size is not None:
+        argv += ["--batch-size", str(batch_size), "--ubatch-size", str(batch_size)]
+    if threads is not None:
+        argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
     if len(devices) > 1:

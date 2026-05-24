@@ -175,6 +175,21 @@ flowchart TD
   fits one GPU is a single pinned instance; small models co-locate; a model too big
   for one GPU is tensor-split **proportionally to each card's free VRAM** (so unequal
   GPUs don't OOM the smaller one); anything that fits nowhere falls back in-process.
+- **Loader parity** (`adapters.build_server_argv`): each server's flags mirror the
+  in-process loader for the same model and config, so behavior matches and only the
+  GPU placement differs. Chat carries `--flash-attn` (on unless `flash_attention` is
+  disabled) and `--cache-type-k/-v` from `kv_cache_type`; embed and rerank raise
+  `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
+  `n_ubatch`, default 512); vision matches the in-process loader's full-core threads
+  and always offloads every layer. Embed and rerank requests also send
+  `embd_normalize=-1`: in-process `create_embedding` returns raw vectors, while the
+  server would L2-normalize pooled output by default (which would also collapse a
+  rank score to +-1), so the fleet disables it to return identical values. Context
+  and GPU-layer counts come from the same
+  helpers the in-process path uses, never a hardcoded budget. `main_gpu` is the one
+  setting deliberately not forwarded: it selects a single card by global index, which
+  is meaningless once a server is pinned to a subset, and placement owns card choice
+  in fleet mode.
 - **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); a `pid`/`port` file lets the next start reap a crashed parent's

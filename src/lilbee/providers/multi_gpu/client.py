@@ -16,9 +16,22 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.llama_cpp.batching import _RERANK_PAIR_SEPARATOR
 
 _PROVIDER_NAME = "multi-gpu"
+# Match the in-process embedder: llama-cpp-python's create_embedding does not
+# normalize (normalize=False), but llama-server normalizes pooled embeddings with
+# embd_normalize=2 (L2) by default. We send -1 (no normalization) per request so
+# the fleet returns the same raw vectors, and so rank-pooling rerank scores (a
+# single value per pair) are not collapsed to +-1 by L2 normalization. The server
+# only exposes this per request body, not as a startup flag.
+_EMBD_NORMALIZE_NONE = -1
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
+_TOKENIZE_PATH = "/tokenize"
+_DETOKENIZE_PATH = "/detokenize"
+# Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
+# the server adds BOS via add_special and leaves special-token strings unparsed.
+_TOKENIZE_ADD_SPECIAL = True
+_TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
@@ -32,11 +45,22 @@ class LlamaServerClient:
     """Calls one llama-server's OpenAI surface. Tracks in-flight requests so the
     fleet router can pick the least-busy replica."""
 
-    def __init__(self, base_url: str, model: str, *, http: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        *,
+        http: httpx.Client | None = None,
+        token_cap: int | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
         self._http = http or httpx.Client(base_url=self._base, timeout=_DEFAULT_TIMEOUT_S)
         self._owns_http = http is None
+        # Per-slot context for embed/rerank servers: inputs longer than this are
+        # token-truncated (via the server's tokenizer) before embedding, mirroring
+        # the in-process backstop. None for chat/vision, which don't truncate inputs.
+        self._token_cap = token_cap
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
 
@@ -81,8 +105,19 @@ class LlamaServerClient:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch via ``/v1/embeddings``."""
+        if not texts:
+            # Match the in-process embedder; the server rejects an empty input.
+            return []
+        texts = self._truncate_to_cap(texts)
         with self._track():
-            resp = self._http.post(_EMBED_PATH, json={"model": self._model, "input": texts})
+            resp = self._http.post(
+                _EMBED_PATH,
+                json={
+                    "model": self._model,
+                    "input": texts,
+                    "embd_normalize": _EMBD_NORMALIZE_NONE,
+                },
+            )
             resp.raise_for_status()
             return [list(item["embedding"]) for item in resp.json()["data"]]
 
@@ -96,9 +131,18 @@ class LlamaServerClient:
         """
         if not candidates:
             return []
-        pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
+        pairs = self._truncate_to_cap(
+            [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
+        )
         with self._track():
-            resp = self._http.post(_EMBED_PATH, json={"model": self._model, "input": pairs})
+            resp = self._http.post(
+                _EMBED_PATH,
+                json={
+                    "model": self._model,
+                    "input": pairs,
+                    "embd_normalize": _EMBD_NORMALIZE_NONE,
+                },
+            )
             resp.raise_for_status()
             data = resp.json()["data"]
         if len(data) != len(pairs):
@@ -107,6 +151,42 @@ class LlamaServerClient:
                 provider=_PROVIDER_NAME,
             )
         return [_rerank_score(item) for item in data]
+
+    def _truncate_to_cap(self, texts: list[str]) -> list[str]:
+        """Token-truncate any input longer than the cap, via the server's tokenizer.
+
+        Mirrors the in-process backstop: the server cannot split a pooled
+        embedding sequence, so an input longer than the context errors instead of
+        truncating. We tokenize, keep the first ``token_cap`` tokens, and
+        detokenize. No cap (chat/vision) leaves inputs untouched.
+        """
+        if self._token_cap is None:
+            return texts
+        out: list[str] = []
+        for text in texts:
+            tokens = self._tokenize(text)
+            if len(tokens) > self._token_cap:
+                out.append(self._detokenize(tokens[: self._token_cap]))
+            else:
+                out.append(text)
+        return out
+
+    def _tokenize(self, text: str) -> list[int]:
+        resp = self._http.post(
+            _TOKENIZE_PATH,
+            json={
+                "content": text,
+                "add_special": _TOKENIZE_ADD_SPECIAL,
+                "parse_special": _TOKENIZE_PARSE_SPECIAL,
+            },
+        )
+        resp.raise_for_status()
+        return list(resp.json()["tokens"])
+
+    def _detokenize(self, tokens: list[int]) -> str:
+        resp = self._http.post(_DETOKENIZE_PATH, json={"tokens": tokens})
+        resp.raise_for_status()
+        return str(resp.json()["content"])
 
     def close(self) -> None:
         """Close the underlying client if this instance created it."""
