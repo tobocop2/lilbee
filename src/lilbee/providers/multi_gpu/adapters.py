@@ -62,18 +62,18 @@ def build_server_argv(
     binary: Path,
     spec: RoleServerSpec,
     model_path: Path,
-    port: int,
     devices: tuple[int, ...],
     n_gpu_layers: int,
     slots: int,
     ctx_per_slot: int,
     tensor_split: tuple[int, ...] = (),
 ) -> list[str]:
-    """Assemble the llama-server command line for one instance.
+    """Assemble the llama-server command line for one instance, minus ``--port``.
 
-    Single-device instances are pinned via the visible-device env in the child
-    (so no split flag); multi-device instances split across the placement's GPUs
-    by ``tensor_split`` (per-device proportion), so unequal cards split by
+    The port is claimed and appended at spawn time (avoiding a batch-allocation
+    race). Single-device instances are pinned via the visible-device env in the
+    child (so no split flag); multi-device instances split across the placement's
+    GPUs by ``tensor_split`` (per-device proportion), so unequal cards split by
     capacity rather than evenly. ``--ctx-size`` is the per-slot context times the
     slot count, since llama-server divides total context across parallel slots.
     """
@@ -83,8 +83,6 @@ def build_server_argv(
         str(model_path),
         "--host",
         _HOST,
-        "--port",
-        str(port),
         "--n-gpu-layers",
         str(n_gpu_layers),
         "--parallel",

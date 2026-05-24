@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import LlmProvider
 from lilbee.providers.multi_gpu import provider as prov_mod
+from lilbee.providers.multi_gpu.devices import FleetDevice, visible_env
 from lilbee.providers.multi_gpu.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.multi_gpu.provider import FleetProvider, _least_in_flight
 from lilbee.providers.worker.transport import WorkerRole
+
+_GB = 1024**3
 
 
 def _fake_client(in_flight: int = 0) -> MagicMock:
@@ -19,10 +24,15 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     return client
 
 
+def _fake_fleet(clients: dict[WorkerRole, list[MagicMock]]) -> MagicMock:
+    fleet = MagicMock()
+    fleet.healthy_clients.side_effect = lambda role: clients.get(role, [])
+    return fleet
+
+
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
     p = FleetProvider()
-    p._fleet = MagicMock()  # non-None: _server_clients won't try to build
-    p._clients = clients  # type: ignore[assignment]
+    p._fleet = _fake_fleet(clients)  # non-None: _server_clients won't try to build
     p._local = MagicMock()
     return p
 
@@ -41,8 +51,8 @@ def test_chat_routes_to_least_busy_server() -> None:
     busy.chat.assert_not_called()
 
 
-def test_chat_falls_back_to_local_when_no_server() -> None:
-    p = _provider_with_clients({})  # no chat server
+def test_chat_falls_back_to_local_when_no_healthy_server() -> None:
+    p = _provider_with_clients({})  # no healthy chat server
     p._local.chat.return_value = "from-local"
     assert p.chat([{"role": "user", "content": "hi"}]) == "from-local"
     p._local.chat.assert_called_once()
@@ -62,17 +72,14 @@ def test_embed_falls_back_to_local() -> None:
 
 
 def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
-    import threading
-    import time
-
     calls = {"n": 0}
     client = _fake_client()
     client.chat.return_value = "ok"
 
-    def _slow_build() -> tuple[object, dict]:
+    def _slow_build() -> object:
         calls["n"] += 1
         time.sleep(0.05)  # widen the race window between concurrent first calls
-        return MagicMock(), {WorkerRole.CHAT: [client]}
+        return _fake_fleet({WorkerRole.CHAT: [client]})
 
     monkeypatch.setattr(prov_mod, "_build_fleet", _slow_build)
     p = FleetProvider()
@@ -133,7 +140,7 @@ def test_shutdown_tears_down_fleet_and_local() -> None:
     p.shutdown()
     fleet.shutdown.assert_called_once()
     local.shutdown.assert_called_once()
-    assert p._fleet is None and p._clients == {}
+    assert p._fleet is None
 
 
 def test_invalidate_load_cache_respawns_fleet_and_drops_local_cache() -> None:
@@ -146,16 +153,16 @@ def test_invalidate_load_cache_respawns_fleet_and_drops_local_cache() -> None:
 
 
 def test_server_clients_builds_fleet_once(monkeypatch) -> None:
-    built = {WorkerRole.CHAT: [_fake_client()]}
     calls = {"n": 0}
+    fleet = _fake_fleet({WorkerRole.CHAT: [_fake_client()]})
 
-    def _fake_build() -> tuple[object, dict]:
+    def _fake_build() -> object:
         calls["n"] += 1
-        return MagicMock(), built
+        return fleet
 
     monkeypatch.setattr(prov_mod, "_build_fleet", _fake_build)
     p = FleetProvider()
-    assert p._server_clients(WorkerRole.CHAT) == built[WorkerRole.CHAT]
+    assert len(p._server_clients(WorkerRole.CHAT)) == 1
     p._server_clients(WorkerRole.EMBED)  # second call must not rebuild
     assert calls["n"] == 1
 
@@ -172,7 +179,10 @@ def test_factory_returns_fleet_provider_for_multi_gpu() -> None:
     from lilbee.providers.factory import create_provider
 
     cfg.llm_provider = LlmProvider.MULTI_GPU
-    assert isinstance(create_provider(cfg), FleetProvider)
+    try:
+        assert isinstance(create_provider(cfg), FleetProvider)
+    finally:
+        cfg.llm_provider = LlmProvider.AUTO
 
 
 class TestBuildFleetWiring:
@@ -180,7 +190,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             prov_mod,
             "_estimate_role",
-            lambda role, ref, **_k: ModelPlacementInput(role, 5 * 1024**3),
+            lambda role, ref, **_k: ModelPlacementInput(role, 5 * _GB),
         )
         inputs, refs = prov_mod._server_model_inputs()
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
@@ -200,28 +210,32 @@ class TestBuildFleetWiring:
         assert inp.role == WorkerRole.CHAT
         assert inp.est_vram_bytes > 1000  # weights + kv + overhead
 
-    def test_launch_for_builds_instance(self, monkeypatch) -> None:
+    def test_launch_for_builds_instance_with_pinning(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "lilbee.providers.llama_cpp.provider.resolve_model_path",
             lambda ref: Path("/models/chat.gguf"),
         )
-        monkeypatch.setattr(prov_mod, "pick_free_port", lambda: 42700)
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = prov_mod._launch_for(plan, "ref", Path("/bin/llama-server"), Path("/data"))
+        launch = prov_mod._launch_for(
+            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
+        )
         assert launch.role == WorkerRole.CHAT
-        assert launch.port == 42700
+        assert launch.env_overrides == visible_env((device,))
         assert launch.port_file == Path("/data/llama-server-chat.port")
         assert "--model" in launch.argv
+        assert "--port" not in launch.argv  # claimed at spawn, not here
 
-    def test_build_fleet_plans_and_starts(self, monkeypatch) -> None:
+    def test_build_fleet_resolves_devices_plans_and_starts(self, monkeypatch) -> None:
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.enumerate_gpu_vram",
-            lambda: [(0, 24 * 1024**3)],
+            prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
         )
+        monkeypatch.setattr(prov_mod, "probe_devices", lambda _binary: [device])
         monkeypatch.setattr(
             prov_mod,
             "_server_model_inputs",
-            lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * 1024**3)], {WorkerRole.CHAT: "ref"}),
+            lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
         )
         monkeypatch.setattr(
             prov_mod,
@@ -230,11 +244,36 @@ class TestBuildFleetWiring:
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), in_process_roles=()
             ),
         )
+        monkeypatch.setattr(prov_mod, "_launch_for", lambda *a: MagicMock())
+        started = {"n": 0}
+        monkeypatch.setattr(
+            prov_mod.Fleet, "start", lambda self, launches: started.__setitem__("n", 1)
+        )
+        fleet = prov_mod._build_fleet()
+        assert isinstance(fleet, prov_mod.Fleet)
+        assert started["n"] == 1
+
+    def test_build_fleet_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(
             prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
         )
-        monkeypatch.setattr(prov_mod, "_launch_for", lambda *a: MagicMock())
-        started = {WorkerRole.CHAT: [_fake_client()]}
-        monkeypatch.setattr(prov_mod.Fleet, "start", lambda self, launches: started)
-        _fleet, clients = prov_mod._build_fleet()
-        assert clients is started
+        monkeypatch.setattr(prov_mod, "probe_devices", lambda _binary: [])  # binary can't enumerate
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gpu_select.enumerate_gpu_vram",
+            lambda: [(0, 24 * _GB)],
+        )
+        seen: dict[str, list] = {}
+        monkeypatch.setattr(
+            prov_mod,
+            "_server_model_inputs",
+            lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
+        )
+
+        def _capture(inputs, devices):
+            seen["devices"] = devices
+            return Placement(instances=(), in_process_roles=(WorkerRole.CHAT,))
+
+        monkeypatch.setattr(prov_mod, "plan_placement", _capture)
+        monkeypatch.setattr(prov_mod.Fleet, "start", lambda self, launches: None)
+        prov_mod._build_fleet()
+        assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback

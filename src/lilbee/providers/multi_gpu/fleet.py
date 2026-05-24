@@ -1,20 +1,24 @@
 """Supervisor for the llama-server sidecar fleet.
 
-Each instance runs in its own process group so stop/crash kills the whole group
-(PID-only kills strand GPU memory). Readiness is llama-server's ``/health``, which
-returns 200 only once the model is loaded. ``Fleet`` spawns the planned instances,
-waits for readiness, groups their clients by role, and tears the group down.
+Each instance runs in its own process group (so a stop/crash kills the whole
+group; PID-only kills strand GPU memory), claims its port at spawn time (no
+batch up-front allocation that races), and records ``pid``/``port`` to a file so
+a crashed parent's orphans are reaped on the next start. A background monitor
+restarts a server that dies and tracks health so the router skips a degraded
+one. See docs/architecture.md for the device/placement rationale.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError
@@ -25,12 +29,14 @@ _HOST = "127.0.0.1"
 _READY_TIMEOUT_S = 180.0
 _READY_POLL_S = 0.5
 _STOP_TIMEOUT_S = 10.0
+_MONITOR_POLL_S = 2.0
+_PORT_BIND_RETRIES = 8
+# Restart backoff (seconds), clamped to the last entry for repeated crashes.
+_RESTART_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 30.0)
 # Windows puts the child in a new process group via creationflags; POSIX uses
-# start_new_session. The constant is Windows-only in stdlib, so resolve it
-# dynamically (0 = no-op creationflags on POSIX) to keep one branchless line.
+# start_new_session. The constant is Windows-only in stdlib (0 = no-op on POSIX).
 _CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-# SIGKILL is POSIX-only; resolve it dynamically so the POSIX teardown path stays
-# importable (and unit-testable) on Windows, where the runtime uses _hard_stop.
+# SIGKILL is POSIX-only; resolve dynamically so teardown stays importable on Windows.
 _SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
@@ -41,23 +47,13 @@ def pick_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _child_env(devices: tuple[int, ...]) -> dict[str, str]:
-    """Pin the child to *devices* via cross-vendor visible-device env vars."""
-    env = dict(os.environ)
-    visible = ",".join(str(d) for d in devices)
-    env["CUDA_VISIBLE_DEVICES"] = visible
-    env["GGML_VK_VISIBLE_DEVICES"] = visible
-    return env
-
-
 @dataclass
 class InstanceLaunch:
-    """Everything needed to spawn and address one server instance."""
+    """Everything needed to spawn one server, minus the port (claimed at spawn)."""
 
     role: WorkerRole
-    argv: list[str]
-    devices: tuple[int, ...]
-    port: int
+    argv: list[str]  # llama-server command WITHOUT --port; spawn appends it
+    env_overrides: dict[str, str]  # backend-specific device-pinning env
     model: str
     port_file: Path
 
@@ -69,42 +65,72 @@ class FleetServer:
         self._launch = launch
         self._proc: subprocess.Popen[bytes] | None = None
         self.client: LlamaServerClient | None = None
+        self.restarts = 0
+
+    @property
+    def role(self) -> WorkerRole:
+        return self._launch.role
 
     def spawn(self) -> LlamaServerClient:
-        """Launch the process group, write the port file, return the client."""
-        self._proc = subprocess.Popen(  # noqa: S603 - argv is built from a fixed template
-            self._launch.argv,
-            env=_child_env(self._launch.devices),
+        """Claim a port, launch the process group, record pid/port, return client."""
+        port = pick_free_port()
+        argv = [*self._launch.argv, "--port", str(port)]
+        env = {**os.environ, **self._launch.env_overrides}
+        self._proc = subprocess.Popen(  # noqa: S603 - argv is a fixed template
+            argv,
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=sys.platform != "win32",
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
-        self._launch.port_file.write_text(str(self._launch.port))
-        self.client = LlamaServerClient(f"http://{_HOST}:{self._launch.port}", self._launch.model)
+        self._launch.port_file.write_text(json.dumps({"pid": self._proc.pid, "port": port}))
+        if self.client is not None:
+            self.client.close()
+        self.client = LlamaServerClient(f"http://{_HOST}:{port}", self._launch.model)
         return self.client
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
+    def is_healthy(self) -> bool:
+        """Alive AND answering ``/health`` 200 (liveness via poll, not /health)."""
+        return self.is_alive() and self.client is not None and self.client.health()
+
     def wait_ready(self, timeout: float = _READY_TIMEOUT_S) -> bool:
-        """Poll ``/health`` until ready, the process dies, or *timeout*."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not self.is_alive():
-                return False
-            if self.client is not None and self.client.health():
-                return True
-            time.sleep(_READY_POLL_S)
+        """Poll ``/health`` until ready (200 == model loaded), death, or timeout.
+
+        A few bind retries cover the rare case where the claimed port was taken
+        between selection and the child binding it (the process dies at once).
+        """
+        for _ in range(_PORT_BIND_RETRIES):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not self.is_alive():
+                    break  # likely a port-bind failure; respawn on a fresh port
+                if self.client is not None and self.client.health():
+                    return True
+                time.sleep(_READY_POLL_S)
+            if self.is_alive():
+                return False  # alive but never became ready within the timeout
+            self.spawn()  # dead before ready -> retry with a new port
         return False
 
     def stop(self) -> None:
-        """Kill the process group (SIGTERM, escalate to SIGKILL) and clean up."""
+        """Kill the process group (SIGTERM -> SIGKILL), close the client, clean up."""
         if self._proc is not None and self._proc.poll() is None:
             _terminate_group(self._proc)
         if self.client is not None:
             self.client.close()
         self._launch.port_file.unlink(missing_ok=True)
+
+    def restart(self) -> bool:
+        """Stop the dead process and respawn on a fresh port; True if ready."""
+        self.restarts += 1
+        if self._proc is not None and self._proc.poll() is None:
+            _terminate_group(self._proc)
+        self.spawn()
+        return self.wait_ready()
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
@@ -135,32 +161,105 @@ def _hard_stop(proc: subprocess.Popen[bytes]) -> None:
         proc.kill()
 
 
-@dataclass
+def _kill_pid_group(pid: int) -> None:
+    """Best-effort kill of a recorded orphan PID's group (reaper on restart)."""
+    try:
+        if sys.platform == "win32":
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.killpg(os.getpgid(pid), _SIGKILL)
+    except (OSError, ProcessLookupError):
+        return  # already gone
+
+
+def reap_orphans(data_dir: Path) -> None:
+    """Kill llama-server processes recorded by a prior (crashed) run, then clear.
+
+    A clean shutdown removes its port files; any left behind belong to a parent
+    that died without tearing the fleet down, stranding GPU memory until now.
+    """
+    for port_file in data_dir.glob("llama-server-*.port"):
+        try:
+            record = json.loads(port_file.read_text())
+            pid = int(record["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            port_file.unlink(missing_ok=True)
+            continue
+        _kill_pid_group(pid)
+        port_file.unlink(missing_ok=True)
+
+
 class Fleet:
-    """Owns the running server instances; maps roles to their clients."""
+    """Owns running server instances; restarts crashes; serves healthy clients."""
 
-    ready_timeout: float = _READY_TIMEOUT_S
-    _servers: list[FleetServer] = field(default_factory=list)
+    def __init__(
+        self, *, ready_timeout: float = _READY_TIMEOUT_S, data_dir: Path | None = None
+    ) -> None:
+        self.ready_timeout = ready_timeout
+        self.data_dir = data_dir
+        self._servers: list[FleetServer] = []
+        self._lock = threading.RLock()
+        self._monitor: threading.Thread | None = None
+        self._stop_monitor = threading.Event()
 
-    def start(self, launches: list[InstanceLaunch]) -> dict[WorkerRole, list[LlamaServerClient]]:
-        """Spawn every launch, wait for readiness, return clients grouped by role.
+    def start(self, launches: list[InstanceLaunch]) -> None:
+        """Reap prior orphans, spawn every launch, wait for readiness, monitor.
 
-        On any instance failing to become ready, tears down the whole fleet and
+        On any instance failing to become ready, tears the whole fleet down and
         raises, so a partial fleet never serves.
         """
-        by_role: dict[WorkerRole, list[LlamaServerClient]] = {}
+        if self.data_dir is not None:
+            reap_orphans(self.data_dir)
         for launch in launches:
             server = FleetServer(launch)
-            client = server.spawn()
+            server.spawn()
             self._servers.append(server)
             if not server.wait_ready(timeout=self.ready_timeout):
                 self.shutdown()
                 raise ProviderError(f"llama-server for role {launch.role} failed to become ready")
-            by_role.setdefault(launch.role, []).append(client)
-        return by_role
+        self._start_monitor()
+
+    def healthy_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
+        """Live clients for *role*; a server mid-restart is transiently excluded."""
+        with self._lock:
+            return [
+                s.client
+                for s in self._servers
+                if s.role == role and s.is_alive() and s.client is not None
+            ]
+
+    def _start_monitor(self) -> None:
+        self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor.start()
+
+    def _monitor_loop(self) -> None:
+        while not self._stop_monitor.wait(_MONITOR_POLL_S):
+            self._restart_dead()
+
+    def _restart_dead(self) -> None:
+        """Restart any server whose process has exited, with per-server backoff."""
+        with self._lock:
+            dead = [s for s in self._servers if not s.is_alive()]
+        for server in dead:
+            self._backoff(server.restarts)
+            if self._stop_monitor.is_set():
+                return
+            with self._lock:
+                if server in self._servers and not server.is_alive():
+                    server.restart()
+
+    @staticmethod
+    def _backoff(restarts: int) -> None:
+        idx = min(restarts, len(_RESTART_BACKOFF_S) - 1)
+        time.sleep(_RESTART_BACKOFF_S[idx])
 
     def shutdown(self) -> None:
-        """Stop every instance (group-kill) and forget them."""
-        for server in self._servers:
-            server.stop()
-        self._servers.clear()
+        """Stop the monitor, then stop every instance (group-kill) and forget them."""
+        self._stop_monitor.set()
+        if self._monitor is not None:
+            self._monitor.join(timeout=_STOP_TIMEOUT_S)
+            self._monitor = None
+        with self._lock:
+            for server in self._servers:
+                server.stop()
+            self._servers.clear()

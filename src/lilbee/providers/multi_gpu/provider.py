@@ -16,8 +16,10 @@ from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
 from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.multi_gpu.binary import resolve_llama_server_binary
 from lilbee.providers.multi_gpu.client import LlamaServerClient
-from lilbee.providers.multi_gpu.fleet import Fleet, InstanceLaunch, pick_free_port
+from lilbee.providers.multi_gpu.devices import FleetDevice, probe_devices, visible_env
+from lilbee.providers.multi_gpu.fleet import Fleet, InstanceLaunch
 from lilbee.providers.multi_gpu.placement import (
+    InstancePlan,
     ModelPlacementInput,
     estimate_model_vram,
     plan_placement,
@@ -61,7 +63,6 @@ class FleetProvider:
 
     def __init__(self) -> None:
         self._fleet: Fleet | None = None
-        self._clients: dict[WorkerRole, list[LlamaServerClient]] = {}
         self._local: LlamaCppProvider | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
         # first-requests must not each build a fleet (double GPU allocation) or
@@ -79,15 +80,14 @@ class FleetProvider:
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         with self._lock:
             if self._fleet is None:
-                self._fleet, self._clients = _build_fleet()
-            return self._clients.get(role, [])
+                self._fleet = _build_fleet()
+            return self._fleet.healthy_clients(role)
 
     def _shutdown_fleet(self) -> None:
         with self._lock:
             if self._fleet is not None:
                 self._fleet.shutdown()
                 self._fleet = None
-                self._clients = {}
 
     # --- routed to the fleet (fall back to in-process if the role has no server) ---
 
@@ -197,21 +197,29 @@ class FleetProvider:
             self._local.shutdown()
 
 
-def _build_fleet() -> tuple[Fleet, dict[WorkerRole, list[LlamaServerClient]]]:
-    """Plan placement, spawn the sidecar fleet, return clients grouped by role."""
+def _build_fleet() -> Fleet:
+    """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.gpu_select import enumerate_gpu_vram
 
-    devices = enumerate_gpu_vram() or []
-    inputs, model_refs = _server_model_inputs()
-    placement = plan_placement(inputs, devices)
     binary = resolve_llama_server_binary()
+    devices = probe_devices(binary)
+    if not devices:
+        # Fallback: the binary couldn't enumerate; use the Vulkan VRAM probe and
+        # pin via the Vulkan index space (matching how the probe enumerates).
+        devices = [
+            FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
+        ]
+    by_index = {d.index: d for d in devices}
+    inputs, model_refs = _server_model_inputs()
+    placement = plan_placement(inputs, [(d.index, d.free_bytes) for d in devices])
     launches = [
-        _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir)
+        _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir, by_index)
         for plan in placement.instances
     ]
-    fleet = Fleet()
-    return fleet, fleet.start(launches)
+    fleet = Fleet(data_dir=cfg.data_dir)
+    fleet.start(launches)
+    return fleet
 
 
 def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
@@ -243,17 +251,22 @@ def _estimate_role(
     return ModelPlacementInput(role=role, est_vram_bytes=est)
 
 
-def _launch_for(plan: Any, model_ref: str, binary: Path, data_dir: Path) -> InstanceLaunch:
-    """Build the launch spec (argv + port + port file) for one planned instance."""
+def _launch_for(
+    plan: InstancePlan,
+    model_ref: str,
+    binary: Path,
+    data_dir: Path,
+    by_index: dict[int, FleetDevice],
+) -> InstanceLaunch:
+    """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
     slots, ctx, _accessor = _SERVER_ROLE_PARAMS[plan.role]
-    port = pick_free_port()
+    chosen = tuple(by_index[i] for i in plan.devices)
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],
         model_path=resolve_model_path(model_ref),
-        port=port,
         devices=plan.devices,
         n_gpu_layers=_ALL_GPU_LAYERS,
         slots=slots,
@@ -263,8 +276,7 @@ def _launch_for(plan: Any, model_ref: str, binary: Path, data_dir: Path) -> Inst
     return InstanceLaunch(
         role=plan.role,
         argv=argv,
-        devices=plan.devices,
-        port=port,
+        env_overrides=visible_env(chosen),
         model=model_ref,
         port_file=data_dir / f"llama-server-{plan.role.value}.port",
     )

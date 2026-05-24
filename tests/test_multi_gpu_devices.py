@@ -1,0 +1,92 @@
+"""Tests for binary-native GPU enumeration and per-backend device pinning."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from lilbee.providers.multi_gpu import devices as dev_mod
+from lilbee.providers.multi_gpu.devices import (
+    FleetDevice,
+    probe_devices,
+    visible_env,
+)
+
+_CUDA_LISTING = """\
+Available devices:
+  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)
+  CUDA1: NVIDIA GeForce RTX 4090 (24564 MiB, 24000 MiB free)
+"""
+_MIB = 1024 * 1024
+
+
+def _fake_run(stdout: str):
+    def _run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+    return _run
+
+
+def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_CUDA_LISTING))
+    devices = probe_devices(Path("/bin/llama-server"))
+    assert devices == [
+        FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 3090", 24268 * _MIB, 23500 * _MIB),
+        FleetDevice("CUDA", 1, "NVIDIA GeForce RTX 4090", 24564 * _MIB, 24000 * _MIB),
+    ]
+
+
+def test_probe_drops_cpu_and_keeps_gpu_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    listing = (
+        "  CUDA0: NVIDIA (24268 MiB, 23000 MiB free)\n"
+        "  CPU0: some cpu (64000 MiB)\n"
+        "  Vulkan0: NVIDIA (24268 MiB, 23000 MiB free)\n"
+    )
+    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(listing))
+    devices = probe_devices(Path("/bin/llama-server"))
+    # CUDA outranks Vulkan; CPU dropped entirely.
+    assert [d.backend for d in devices] == ["CUDA"]
+
+
+def test_probe_defaults_free_to_total_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("  Vulkan0: AMD (16000 MiB)\n"))
+    (device,) = probe_devices(Path("/bin/llama-server"))
+    assert device.free_bytes == device.total_bytes == 16000 * _MIB
+
+
+def test_probe_returns_empty_on_subprocess_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
+    assert probe_devices(Path("/bin/llama-server")) == []
+
+
+def test_probe_env_sets_pci_bus_order() -> None:
+    assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+
+def test_visible_env_cuda_pins_by_index_and_pins_order() -> None:
+    env = visible_env((FleetDevice("CUDA", 2, "", 0, 0), FleetDevice("CUDA", 3, "", 0, 0)))
+    assert env == {"CUDA_VISIBLE_DEVICES": "2,3", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
+
+def test_visible_env_rocm_uses_rocr_and_hip() -> None:
+    env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
+    assert env == {"ROCR_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "1"}
+
+
+def test_visible_env_vulkan_uses_ggml_var() -> None:
+    assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {"GGML_VK_VISIBLE_DEVICES": "0"}
+
+
+def test_visible_env_sycl_uses_oneapi_selector() -> None:
+    env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
+    assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}
+
+
+def test_visible_env_metal_and_empty_pin_nothing() -> None:
+    assert visible_env(()) == {}
+    assert visible_env((FleetDevice("Metal", 0, "", 0, 0),)) == {}
