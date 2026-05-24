@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import logging
 import re
 import threading
@@ -1015,6 +1016,33 @@ def _apply_kv_cache_type(kwargs: dict[str, Any]) -> None:
     kwargs["type_v"] = ggml_type
 
 
+def _tool_args_as_json_strings(messages: Any) -> Any:
+    """Return *messages* with assistant tool-call arguments as JSON strings.
+
+    lilbee normalises ``tool_calls[].function.arguments`` to a dict for GGUF
+    templates that iterate them, but HF chat templates follow the OpenAI wire
+    shape and concatenate ``arguments`` as a string (functionary's template does
+    ``'>>>' + name + '\\n' + arguments``). Re-serialise at render time only;
+    the windowed messages the GGUF path uses are left untouched.
+    """
+    rendered = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not tool_calls:
+            rendered.append(msg)
+            continue
+        fixed_calls = []
+        for call in tool_calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, dict):
+                fixed_calls.append({**call, "function": {**fn, "arguments": json.dumps(args)}})
+            else:
+                fixed_calls.append(call)
+        rendered.append({**msg, "tool_calls": fixed_calls})
+    return rendered
+
+
 def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: str) -> bool:
     """Render with the HF tokenizer's own jinja chat template, not the GGUF's.
 
@@ -1055,7 +1083,10 @@ def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: s
                 self, *, messages: Any, tools: Any = None, **_: Any
             ) -> ChatFormatterResponse:
                 prompt = self._tokenizer.apply_chat_template(
-                    messages, tools=tools, add_generation_prompt=True, tokenize=False
+                    _tool_args_as_json_strings(messages),
+                    tools=tools,
+                    add_generation_prompt=True,
+                    tokenize=False,
                 )
                 return ChatFormatterResponse(prompt=prompt, stop=[self.eos_token])
 
