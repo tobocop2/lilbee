@@ -130,26 +130,30 @@ default in-process worker pool. Select it like any other provider, via the
 `llm_provider` setting: the TUI settings screen, the MCP `settings_set` tool,
 `PATCH /api/config` on the HTTP server, or `LILBEE_LLM_PROVIDER=multi-gpu`. The
 default single-GPU path is unchanged when the extra is absent or the selector is
-off. The engine is 100% llama.cpp; lilbee adds
-a placement planner, a process supervisor, and a thin httpx router
-(`src/lilbee/providers/multi_gpu/`). chat and embed route to the fleet; rerank,
-vision, and PDF OCR stay in-process (their server surfaces are experimental).
+off. The engine is 100% llama.cpp; lilbee adds a placement planner, a process
+supervisor, and a thin httpx router (`src/lilbee/providers/multi_gpu/`). All four
+roles run on the fleet by mirroring the in-process primitive over HTTP: chat and
+vision use `/v1/chat/completions` (vision adds an `--mmproj` projector), embed and
+rerank use `/v1/embeddings` (rerank with `--pooling rank` and the same
+`query</s></s>candidate` pairing as in-process, never the template-dependent
+`/v1/rerank`). A model override, or a vision model with no resolvable mmproj, falls
+back to in-process, so behavior is identical; only the GPU is used more efficiently.
 
 ```mermaid
 flowchart TD
-    APP["App<br/>chat · embed · search · ingest"]
-    FP["FleetProvider"]
-    LOCAL["in-process llama-cpp"]
+    APP["App<br/>chat · embed · rerank · vision · search · ingest"]
+    FP["FleetProvider<br/>(model-match → else in-process)"]
+    LOCAL["in-process llama-cpp<br/>(fallback)"]
     SUP["Planner + supervisor<br/>VRAM bin-pack · pin per backend<br/>health · restart · reap orphans"]
 
     APP --> FP
-    FP -->|"chat / embed<br/>(least-busy healthy server)"| FLEET
-    FP -->|"rerank · vision · pdf"| LOCAL
+    FP -->|"least-busy healthy server"| FLEET
+    FP -. "override / no server" .-> LOCAL
 
     subgraph FLEET["Managed llama-server fleet"]
         direction LR
-        CS["chat server"]
-        ES["embed server"]
+        CS["chat / vision<br/>(/v1/chat/completions)"]
+        ES["embed / rerank<br/>(/v1/embeddings)"]
     end
 
     SUP -. "spawn · pin · health · restart" .-> FLEET
@@ -176,9 +180,11 @@ flowchart TD
   the model loads); a `pid`/`port` file lets the next start reap a crashed parent's
   orphaned servers. A background monitor restarts a dead server with backoff, and the
   router serves only healthy clients. Teardown group-kills (SIGTERM then SIGKILL).
-- **Routing** (`provider.py`): chat/embed go to the least-in-flight healthy server.
-  Fleet build is single-flight and the in-flight counter is atomic, because the HTTP
-  and MCP servers route concurrently.
+- **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;
+  rerank reuses the client's rank-pooling embeddings call and vision the chat call
+  with image content, so the in-process robustness carries over. A model override
+  (or a missing mmproj) routes in-process instead. Fleet build is single-flight and
+  the in-flight counter is atomic, because the HTTP and MCP servers route concurrently.
 - **Binary** (`binary.py`): the `lilbee[multi-gpu]` wheel bundles `llama-server`;
   resolution falls back to `LILBEE_LLAMA_SERVER_PATH` / PATH. Never auto-downloaded.
 - **Delegate alternative:** to use an external fleet (GPUStack, vLLM), point the
