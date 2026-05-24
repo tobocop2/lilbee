@@ -123,14 +123,21 @@ class ModelRegistry:
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
         manifest = self._read_manifest(hf_repo, gguf_filename)
+        # A split GGUF only loads when every shard is on disk. The first shard
+        # alone (plus its manifest) used to read as installed, so a pull
+        # interrupted between shards registered an unloadable model and a re-pull
+        # said "already installed". Treat an incomplete shard set as not installed.
+        shards_complete = self._split_shards_present(hf_repo, gguf_filename)
         if manifest is not None and manifest.blob is not None:
             blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-            if blob_file.exists():
+            if blob_file.exists() and shards_complete:
                 return blob_file
         recovered = self._find_cached_gguf(hf_repo, gguf_filename)
-        if recovered is not None:
+        if recovered is not None and shards_complete:
             self._reregister_from_cache(hf_repo, gguf_filename, recovered)
             return recovered
+        if not shards_complete:
+            raise KeyError(f"Split GGUF {ref} is missing shards; re-pull to fetch the full set")
         if manifest is None:
             raise KeyError(f"Model {ref} not installed")
         # Manifest present but neither it nor the cache yields a blob; keep the
@@ -203,6 +210,20 @@ class ModelRegistry:
         except ValueError:
             return None
         return resolved
+
+    def _split_shards_present(self, hf_repo: str, gguf_filename: str) -> bool:
+        """True unless *gguf_filename* is a split GGUF missing one of its shards.
+
+        A single-file GGUF is always present here. For a split set
+        (``<base>-0000N-of-0000M.gguf``) every shard must be cached, since
+        llama.cpp loads the whole set from the first shard but needs them all.
+        """
+        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
+
+        shards = split_shard_filenames(gguf_filename)
+        if len(shards) == 1:
+            return True
+        return all(self._find_cached_gguf(hf_repo, shard) is not None for shard in shards)
 
     def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
         """Write a fresh manifest for a model just recovered from the HF cache.

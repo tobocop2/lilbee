@@ -232,6 +232,33 @@ class TestModelRegistryResolve:
         assert path.exists()
         assert path.parent.name == "blobs"
 
+    def test_split_gguf_first_shard_only_not_installed(self, tmp_path: Path) -> None:
+        """A split GGUF with only its first shard cached must read as not installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        _seed_hf_cache(
+            tmp_path, repo=repo, filename="m-mxfp4-00001-of-00003.gguf", content=b"shard-1"
+        )
+        ref = f"{repo}/m-mxfp4-00001-of-00003.gguf"
+        assert registry.is_installed(ref) is False
+        with pytest.raises(KeyError, match="missing shards"):
+            registry.resolve(ref)
+
+    def test_split_gguf_all_shards_present_resolves(self, tmp_path: Path) -> None:
+        """Once every shard is cached, the split GGUF resolves and reads installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        ref = f"{repo}/m-mxfp4-00001-of-00003.gguf"
+        assert registry.is_installed(ref) is True
+        assert registry.resolve(ref).exists()
+
     def test_resolve_missing_cache_dir(self, tmp_path: Path) -> None:
         """Manifest exists but the cache folder was deleted out from under us."""
         registry = ModelRegistry(tmp_path)
