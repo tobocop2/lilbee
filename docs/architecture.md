@@ -124,10 +124,13 @@ flowchart TD
 
 ## Multi-GPU fleet (opt-in)
 
-`LILBEE_LLM_PROVIDER=multi-gpu` (the `lilbee[multi-gpu]` extra) runs inference on a
+The `multi-gpu` provider (the `lilbee[multi-gpu]` extra) runs inference on a
 managed fleet of `llama-server` sidecars bin-packed across GPUs, instead of the
-default in-process worker pool. The default single-GPU path is unchanged when the
-extra is absent or the selector is off. The engine is 100% llama.cpp; lilbee adds
+default in-process worker pool. Select it like any other provider, via the
+`llm_provider` setting: the TUI settings screen, the MCP `settings_set` tool,
+`PATCH /api/config` on the HTTP server, or `LILBEE_LLM_PROVIDER=multi-gpu`. The
+default single-GPU path is unchanged when the extra is absent or the selector is
+off. The engine is 100% llama.cpp; lilbee adds
 a placement planner, a process supervisor, and a thin httpx router
 (`src/lilbee/providers/multi_gpu/`). chat and embed route to the fleet; rerank,
 vision, and PDF OCR stay in-process (their server surfaces are experimental).

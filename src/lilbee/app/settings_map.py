@@ -792,7 +792,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.API_KEYS,
         choices=tuple(p.value for p in LlmProvider),
         help_text=(
-            "Provider routing: auto picks the first key present; force a specific one when set"
+            "Inference provider: auto (default), llama-cpp (in-process), "
+            "multi-gpu (managed llama-server fleet), or remote (external OpenAI-compatible)"
         ),
     ),
     "remote_base_url": SettingDef(

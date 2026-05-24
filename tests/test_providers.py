@@ -1008,6 +1008,19 @@ class TestFactory:
         provider = create_provider(cfg)
         assert isinstance(provider, LlamaCppProvider)
 
+    def test_explicit_multi_gpu_via_string(self) -> None:
+        # The TUI Select, MCP settings_set, and HTTP PATCH /api/config all pass
+        # the value as a string; it must coerce to the StrEnum and select the
+        # fleet provider, so multi-gpu is reachable without the env var.
+        from lilbee.providers.factory import create_provider
+        from lilbee.providers.multi_gpu.provider import FleetProvider
+
+        cfg.llm_provider = "multi-gpu"
+        try:
+            assert isinstance(create_provider(cfg), FleetProvider)
+        finally:
+            cfg.llm_provider = "auto"
+
     def test_unknown_provider_rejected_at_config_boundary(self) -> None:
         # llm_provider is a validated LlmProvider StrEnum: an invalid value is
         # rejected at assignment, so create_provider never sees a bad string.
