@@ -4,6 +4,11 @@
 # single-model size.
 
 [[model]]
+family = "gpt-oss"
+ref = "ggml-org/gpt-oss-120b-GGUF/gpt-oss-120b-mxfp4-00001-of-00003.gguf"
+size_gb = 63.0
+
+[[model]]
 family = "glm-air"
 ref = "unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
 size_gb = 60.0
