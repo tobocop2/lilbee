@@ -29,6 +29,9 @@ _STOP_TIMEOUT_S = 10.0
 # start_new_session. The constant is Windows-only in stdlib, so resolve it
 # dynamically (0 = no-op creationflags on POSIX) to keep one branchless line.
 _CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+# SIGKILL is POSIX-only; resolve it dynamically so the POSIX teardown path stays
+# importable (and unit-testable) on Windows, where the runtime uses _hard_stop.
+_SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def pick_free_port() -> int:
@@ -120,7 +123,7 @@ def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        os.killpg(pgid, signal.SIGKILL)
+        os.killpg(pgid, _SIGKILL)
 
 
 def _hard_stop(proc: subprocess.Popen[bytes]) -> None:

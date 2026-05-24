@@ -138,14 +138,14 @@ def test_stop_terminates_group_and_cleans_up(
 def test_stop_escalates_to_sigkill_on_timeout(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import signal
-
+    # Assert against fleet_mod._SIGKILL, not signal.SIGKILL: the latter is absent
+    # on Windows, where this forced-POSIX path still runs against the mocks.
     monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
     monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: FakeProc(wait_raises=True))
     server = FleetServer(_launch(tmp_path))
     server.spawn()
     server.stop()
-    assert (4321, signal.SIGKILL) in patched["killed"]
+    assert (4321, fleet_mod._SIGKILL) in patched["killed"]
 
 
 def test_stop_on_windows_terminates_process(

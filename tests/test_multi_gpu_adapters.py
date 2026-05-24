@@ -36,7 +36,8 @@ def test_build_argv_single_device_has_no_tensor_split() -> None:
         ctx_per_slot=4096,
     )
     assert "--tensor-split" not in argv
-    assert argv[:3] == ["/bin/llama-server", "--model", "/models/chat.gguf"]
+    # str(Path) renders with the platform separator (backslash on Windows).
+    assert argv[:3] == [str(Path("/bin/llama-server")), "--model", str(Path("/models/chat.gguf"))]
     assert "--cont-batching" in argv
     # total ctx = per-slot * slots
     assert argv[argv.index("--ctx-size") + 1] == str(4096 * 4)
