@@ -56,6 +56,17 @@ def test_probe_defaults_free_to_total_when_absent(monkeypatch: pytest.MonkeyPatc
     assert device.free_bytes == device.total_bytes == 16000 * _MIB
 
 
+def test_probe_returns_a_single_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even if a listing somehow names two GPU backends, pin exactly one (no mixed
+    # index spaces). CUDA and ROCm tie on rank; the tie breaks deterministically.
+    listing = (
+        "  CUDA0: NVIDIA (24268 MiB, 23000 MiB free)\n  ROCm0: AMD (24268 MiB, 23000 MiB free)\n"
+    )
+    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(listing))
+    backends = {d.backend for d in probe_devices(Path("/bin/llama-server"))}
+    assert len(backends) == 1
+
+
 def test_probe_returns_empty_when_no_gpu_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     # Only a CPU device listed -> no GPU backend to pin -> empty.
     monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("  CPU0: host cpu (64000 MiB)\n"))

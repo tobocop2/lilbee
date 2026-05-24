@@ -76,12 +76,16 @@ def _parse_devices(text: str) -> list[FleetDevice]:
 
 
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
-    """Keep only the highest-ranked GPU backend's devices (drop CPU/unknown)."""
+    """Keep one GPU backend's devices (highest rank, ties broken by name).
+
+    Returns a single backend so pinning is unambiguous: ``visible_env`` keys off
+    one backend, and mixing index spaces is the very hazard this module avoids.
+    """
     ranked = [d for d in devices if d.backend in _BACKEND_RANK]
     if not ranked:
         return []
-    best = max(_BACKEND_RANK[d.backend] for d in ranked)
-    return [d for d in ranked if _BACKEND_RANK[d.backend] == best]
+    backend = max(ranked, key=lambda d: (_BACKEND_RANK[d.backend], d.backend)).backend
+    return [d for d in ranked if d.backend == backend]
 
 
 def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:

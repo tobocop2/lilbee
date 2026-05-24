@@ -243,7 +243,8 @@ class Fleet:
                 self.shutdown()
                 raise ProviderError(f"llama-server for role {launch.role} failed to become ready")
             server.ready = True
-        self._start_monitor()
+        if self._servers:  # nothing to supervise when every role degraded to in-process
+            self._start_monitor()
 
     def healthy_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """Ready, live clients for *role*; a (re)starting server is excluded."""

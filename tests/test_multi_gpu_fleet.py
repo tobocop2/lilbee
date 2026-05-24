@@ -248,6 +248,17 @@ def test_fleet_start_reaps_then_serves_healthy_clients(
     assert fleet.healthy_clients(WorkerRole.CHAT) == []
 
 
+def test_empty_placement_starts_no_monitor(tmp_path: Path, patched: dict) -> None:
+    # Every role degraded to in-process -> no servers -> no supervisor thread.
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start([])
+    try:
+        assert fleet._monitor is None
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []
+    finally:
+        fleet.shutdown()
+
+
 def test_fleet_start_raises_and_tears_down_when_not_ready(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
