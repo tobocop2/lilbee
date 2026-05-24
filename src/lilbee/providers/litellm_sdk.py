@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import OLLAMA_PREFIX, ProviderModelRef
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
@@ -219,6 +219,109 @@ def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return formatted
 
 
+# User-facing message per recognised error kind. Each names the problem against
+# {model} and makes clear the cause sits with the user's provider account or
+# network, not with lilbee. UNKNOWN has no entry and falls back to the raw error.
+_KIND_MESSAGES: dict[ProviderErrorKind, str] = {
+    ProviderErrorKind.RATE_LIMIT: (
+        "{model} is rate-limited or out of quota. That's a limit on your provider "
+        "API key, not a lilbee problem. Check your plan and billing with the "
+        "provider, or pick a different model."
+    ),
+    ProviderErrorKind.AUTH: (
+        "{model} rejected your API key. Check that the key is set correctly and has "
+        "access to this model. That's between your key and the provider, not a lilbee problem."
+    ),
+    ProviderErrorKind.NOT_FOUND: (
+        "The provider doesn't offer {model} on your account. "
+        "Pick a different model or check the name."
+    ),
+    ProviderErrorKind.CONTEXT_OVERFLOW: (
+        "This conversation is too long for {model}'s context window. "
+        "Start a new chat or pick a model with a larger context."
+    ),
+    ProviderErrorKind.BAD_REQUEST: (
+        "The provider rejected the request for {model}. Check the model name and your settings."
+    ),
+    ProviderErrorKind.CONNECTION: (
+        "Couldn't reach the provider for {model}, or it timed out. Check your "
+        "connection and base URL, then try again or pick a different model."
+    ),
+    ProviderErrorKind.SERVER: (
+        "The provider for {model} is unavailable right now. That's on the provider's "
+        "side, not a lilbee problem. Try again shortly or pick a different model."
+    ),
+}
+
+# Operation labels prefixed onto the fallback message for an unrecognised error.
+_CHAT_FAILED = "Chat failed"
+_EMBED_FAILED = "Embedding failed"
+_RERANK_FAILED = "Rerank failed"
+
+
+def _cause_chain(exc: BaseException) -> list[BaseException]:
+    """Return *exc* and its causes, root cause first.
+
+    litellm's mid-stream fallback keeps the real cause in ``original_exception``;
+    walking root-first stops a 503 wrapper from masking the 429 it carries.
+    """
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        nxt = getattr(cur, "original_exception", None)
+        if not isinstance(nxt, BaseException):
+            nxt = cur.__cause__
+        cur = nxt if isinstance(nxt, BaseException) else None
+    chain.reverse()
+    return chain
+
+
+def _classify_litellm_error(exc: BaseException) -> ProviderErrorKind:
+    """Map a litellm exception to a ``ProviderErrorKind`` by type, never by message.
+
+    litellm normalises every backend's failures into one exception hierarchy, so
+    the same mapping covers all providers. The MRO walk picks the most specific
+    kind (``ContextWindowExceededError`` over its ``BadRequestError`` base).
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - unreachable after a real litellm call
+        return ProviderErrorKind.UNKNOWN
+    table: dict[type, ProviderErrorKind] = {
+        litellm.AuthenticationError: ProviderErrorKind.AUTH,
+        litellm.PermissionDeniedError: ProviderErrorKind.AUTH,
+        litellm.NotFoundError: ProviderErrorKind.NOT_FOUND,
+        litellm.RateLimitError: ProviderErrorKind.RATE_LIMIT,
+        litellm.ContextWindowExceededError: ProviderErrorKind.CONTEXT_OVERFLOW,
+        litellm.BadRequestError: ProviderErrorKind.BAD_REQUEST,
+        litellm.Timeout: ProviderErrorKind.CONNECTION,
+        litellm.APIConnectionError: ProviderErrorKind.CONNECTION,
+        litellm.ServiceUnavailableError: ProviderErrorKind.SERVER,
+        litellm.InternalServerError: ProviderErrorKind.SERVER,
+    }
+    for err in _cause_chain(exc):
+        for cls in type(err).__mro__:
+            kind = table.get(cls)
+            if kind is not None:
+                return kind
+    return ProviderErrorKind.UNKNOWN
+
+
+def _provider_error(fallback: str, exc: Exception, model: str) -> ProviderError:
+    """Wrap a litellm failure as a ``ProviderError`` classified by type.
+
+    Recognised kinds get a blob-free, user-facing message; unrecognised ones
+    keep the raw ``{fallback}: {exc}`` shape so nothing is lost when debugging.
+    """
+    kind = _classify_litellm_error(exc)
+    template = _KIND_MESSAGES.get(kind)
+    message = template.format(model=model) if template is not None else f"{fallback}: {exc}"
+    return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
+
+
 class LitellmSdkBackend:
     """``LlmSdkBackend`` adapter backed by the ``litellm`` SDK."""
 
@@ -253,7 +356,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.completion(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error(_CHAT_FAILED, exc, request.ref.for_display()) from exc
         view = _LitellmResponseView(response)
         return CompletionResult(
             content=view.message_content,
@@ -265,17 +368,18 @@ class LitellmSdkBackend:
         """Stream a completion through ``litellm.completion(stream=True)``."""
         litellm = _require_litellm()
         kwargs = self._completion_kwargs(request, stream=True)
+        model = request.ref.for_display()
         try:
             response = litellm.completion(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
-        return self._stream_chunks(response)
+            raise _provider_error(_CHAT_FAILED, exc, model) from exc
+        return self._stream_chunks(response, model)
 
     @staticmethod
-    def _stream_chunks(response: Any) -> Iterator[StreamChunk]:
+    def _stream_chunks(response: Any, model: str) -> Iterator[StreamChunk]:
         """Yield ``StreamChunk`` values from a litellm streaming response.
 
-        Exceptions raised mid-iteration are wrapped in ``ProviderError``
+        Exceptions raised mid-iteration are classified into ``ProviderError``
         so the semantic layer sees a consistent error type regardless of
         where the SDK failed.
         """
@@ -289,7 +393,7 @@ class LitellmSdkBackend:
         except ProviderError:
             raise
         except Exception as exc:
-            raise ProviderError(f"Chat failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error(_CHAT_FAILED, exc, model) from exc
 
     @staticmethod
     def _completion_kwargs(request: CompletionRequest, *, stream: bool) -> dict[str, Any]:
@@ -321,7 +425,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.embedding(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Embedding failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error(_EMBED_FAILED, exc, request.ref.for_display()) from exc
         data = response["data"] if isinstance(response, dict) else response.data
         vectors = [item["embedding"] for item in data]
         if isinstance(response, dict):
@@ -352,7 +456,7 @@ class LitellmSdkBackend:
         try:
             response = litellm.rerank(**kwargs)
         except Exception as exc:
-            raise ProviderError(f"Rerank failed: {exc}", provider=_PROVIDER_NAME) from exc
+            raise _provider_error(_RERANK_FAILED, exc, request.ref.for_display()) from exc
         results = response["results"] if isinstance(response, dict) else response.results
         scores = [0.0] * len(request.candidates)
         for item in results:

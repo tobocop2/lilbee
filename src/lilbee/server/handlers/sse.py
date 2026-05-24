@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderErrorKind
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -23,13 +24,20 @@ from lilbee.runtime.progress import (
 
 log = logging.getLogger(__name__)
 
+# Machine-readable ``code`` on an SSE error event. Load-time failures use
+# SseErrorCode; failed provider calls reuse ProviderErrorKind directly rather
+# than mirroring it into a second enum.
+SseErrorCodeValue = SseErrorCode | ProviderErrorKind
+
 
 def sse_event(event: str, data: Any) -> str:
     """Format a single Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def sse_error(message: str, *, code: SseErrorCode | None = None, detail: str | None = None) -> str:
+def sse_error(
+    message: str, *, code: SseErrorCodeValue | None = None, detail: str | None = None
+) -> str:
     """Format an SSE error event with optional structured ``code`` / ``detail``."""
     payload: dict[str, Any] = {"message": message}
     if code is not None:
