@@ -35,6 +35,13 @@ class SseEvent(StrEnum):
     ALREADY_INGESTING = "already_ingesting"
 
 
+class SseErrorCode(StrEnum):
+    """Stable ``code`` values on SSE error events for clients to branch on."""
+
+    MODEL_TOO_LARGE = "model_too_large"
+    MODEL_NOT_INSTALLED = "model_not_installed"
+
+
 class FileStartEvent(BaseModel):
     """Emitted when a file begins ingestion."""
 
