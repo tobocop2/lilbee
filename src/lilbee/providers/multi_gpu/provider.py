@@ -39,24 +39,49 @@ if TYPE_CHECKING:
     )
     from lilbee.providers.llama_cpp import LlamaCppProvider
 
-# Planner-internal slot counts and context budgets (no config knobs yet).
+# Fleet-only concurrency: continuous-batching slots (--parallel) per server. The
+# in-process pool has no equivalent (one worker per role), so these are the only
+# genuine constants. Context size and GPU-layer offload are NOT hardcoded -- they
+# derive from cfg + the model's training context exactly as in-process (_role_ctx,
+# _role_gpu_layers), so a user's num_ctx / n_gpu_layers and the model are honored.
 _CHAT_SLOTS = 4
 _AUX_SLOTS = 1
-_DEFAULT_CHAT_CTX = 8192
-_EMBED_CTX = 2048
-_RERANK_CTX = 2048
-_VISION_CTX = 8192
-_ALL_GPU_LAYERS = -1
+_EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 
-# Server roles -> (slots, ctx-per-slot, model-ref accessor). chat/embed are always
-# configured; reranker_model/vision_model may be "" (unconfigured) -> skipped, so
-# that role stays in-process. Vision additionally needs an mmproj projector.
-_SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, int, Callable[[Any], str]]] = {
-    WorkerRole.CHAT: (_CHAT_SLOTS, _DEFAULT_CHAT_CTX, lambda c: str(c.chat_model)),
-    WorkerRole.EMBED: (_AUX_SLOTS, _EMBED_CTX, lambda c: str(c.embedding_model)),
-    WorkerRole.RERANK: (_AUX_SLOTS, _RERANK_CTX, lambda c: str(c.reranker_model)),
-    WorkerRole.VISION: (_AUX_SLOTS, _VISION_CTX, lambda c: str(c.vision_model)),
+# Server roles -> (slots, model-ref accessor). chat/embed are always configured;
+# reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
+# stays in-process. Vision additionally needs an mmproj projector.
+_SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, Callable[[Any], str]]] = {
+    WorkerRole.CHAT: (_CHAT_SLOTS, lambda c: str(c.chat_model)),
+    WorkerRole.EMBED: (_AUX_SLOTS, lambda c: str(c.embedding_model)),
+    WorkerRole.RERANK: (_AUX_SLOTS, lambda c: str(c.reranker_model)),
+    WorkerRole.VISION: (_AUX_SLOTS, lambda c: str(c.vision_model)),
 }
+
+
+def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
+    """Per-slot context for a role, derived exactly as the in-process loader does.
+
+    Embed/rerank use the model's training context; chat/vision honor ``cfg.num_ctx``
+    then fall back to the dynamic chat-ctx picker. Never a hardcoded budget.
+    """
+    from lilbee.core.config import cfg
+    from lilbee.providers.llama_cpp.provider import _EMBED_FALLBACK_CTX, _resolve_chat_ctx
+
+    if role in _EMBED_ROLES:
+        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+
+        return train_ctx_from_meta(meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path)
+    if cfg.num_ctx is not None:
+        return cfg.num_ctx
+    return _resolve_chat_ctx(model_path, meta)
+
+
+def _role_gpu_layers(role: WorkerRole) -> int:
+    """GPU-layer offload for a role, from ``cfg.n_gpu_layers`` (None = all)."""
+    from lilbee.providers.llama_cpp.provider import _resolve_n_gpu_layers
+
+    return _resolve_n_gpu_layers(embedding=role in _EMBED_ROLES)
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -276,13 +301,13 @@ def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, 
 
     inputs: list[ModelPlacementInput] = []
     model_refs: dict[WorkerRole, str] = {}
-    for role, (slots, ctx, accessor) in _SERVER_ROLE_PARAMS.items():
+    for role, (slots, accessor) in _SERVER_ROLE_PARAMS.items():
         ref = accessor(cfg)
         if not ref:
             continue  # unconfigured optional role -> stays in-process
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
-        inputs.append(_estimate_role(role, ref, slots=slots, ctx=ctx))
+        inputs.append(_estimate_role(role, ref, slots=slots))
         model_refs[role] = ref
     return inputs, model_refs
 
@@ -299,9 +324,7 @@ def _vision_mmproj(model_ref: str) -> Path | None:
         return None
 
 
-def _estimate_role(
-    role: WorkerRole, model_ref: str, *, slots: int, ctx: int
-) -> ModelPlacementInput:
+def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlacementInput:
     """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
@@ -314,6 +337,7 @@ def _estimate_role(
         if mmproj is not None:
             weights += mmproj.stat().st_size
     meta = read_gguf_metadata(path)
+    ctx = _role_ctx(role, path, meta)
     kv_bytes = KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type, 2)
     est = estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_bytes)
     return ModelPlacementInput(role=role, est_vram_bytes=est)
@@ -327,17 +351,20 @@ def _launch_for(
     by_index: dict[int, FleetDevice],
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
+    from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
-    slots, ctx, _accessor = _SERVER_ROLE_PARAMS[plan.role]
+    slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]
+    model_path = resolve_model_path(model_ref)
+    ctx = _role_ctx(plan.role, model_path, read_gguf_metadata(model_path))
     chosen = tuple(by_index[i] for i in plan.devices)
     mmproj = _vision_mmproj(model_ref) if plan.role is WorkerRole.VISION else None
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],
-        model_path=resolve_model_path(model_ref),
+        model_path=model_path,
         devices=plan.devices,
-        n_gpu_layers=_ALL_GPU_LAYERS,
+        n_gpu_layers=_role_gpu_layers(plan.role),
         slots=slots,
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
