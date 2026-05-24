@@ -86,7 +86,7 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> **The long-term goal:** make local AI genuinely practical and useful, for everyday questions and for programming, and easy to get going. A coding agent ready to go on local models, with a real search engine over your own documents behind it. One part of that is the [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you'd build for yourself, over your files, your code, even the web pages you save: read it in plain English, or have your agent read it for you.
+> **The long-term goal:** make local AI practical and useful, for questions and for code, on hardware you already own. No token budgets to ration, no provider to depend on; the cloud's there when you want it. An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files, your code, even the web pages you save: read it yourself, or have your agent read it for you.
 
 ## What you can do with it
 
