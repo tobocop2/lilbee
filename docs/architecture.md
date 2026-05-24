@@ -136,19 +136,24 @@ a placement planner, a process supervisor, and a thin httpx router
 vision, and PDF OCR stay in-process (their server surfaces are experimental).
 
 ```mermaid
-flowchart LR
-    APP["chat / search / ingest"]
-    FP["FleetProvider (router: least-in-flight)"]
-    PLAN["placement planner (Vulkan VRAM bin-pack)"]
+flowchart TD
+    APP["App<br/>chat · embed · search · ingest"]
+    FP["FleetProvider"]
+    LOCAL["in-process llama-cpp"]
+    SUP["Planner + supervisor<br/>VRAM bin-pack · pin per backend<br/>health · restart · reap orphans"]
+
     APP --> FP
-    PLAN -. spawns / health / group-kill .-> FLEET
-    FP -->|chat| CS["chat-server"]
-    FP -->|embed| ES["embed-server"]
-    FP -->|rerank / vision / pdf| LOCAL["in-process llama-cpp"]
-    subgraph FLEET["llama-server sidecars (continuous batching)"]
-        CS
-        ES
+    FP -->|"chat / embed<br/>(least-busy healthy server)"| FLEET
+    FP -->|"rerank · vision · pdf"| LOCAL
+
+    subgraph FLEET["Managed llama-server fleet"]
+        direction LR
+        CS["chat server"]
+        ES["embed server"]
     end
+
+    SUP -. "spawn · pin · health · restart" .-> FLEET
+
     CS --> G0["GPU 0"]
     CS --> G1["GPU 1"]
     ES --> G1
