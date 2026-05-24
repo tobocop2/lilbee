@@ -61,6 +61,13 @@ def test_embed_falls_back_to_local() -> None:
     assert p.embed(["a"]) == [[0.2]]
 
 
+def test_chat_local_stream_path() -> None:
+    p = _provider_with_clients({})  # no chat server -> local
+    p._local.chat.return_value = iter(["a", "b"])
+    list(p.chat([{"role": "user", "content": "hi"}], stream=True))
+    assert p._local.chat.call_args.kwargs["stream"] is True
+
+
 def test_rerank_vision_pdf_models_delegate_to_local() -> None:
     p = _provider_with_clients({})
     p.rerank("q", ["a"])
@@ -148,6 +155,20 @@ class TestBuildFleetWiring:
         inputs, refs = prov_mod._server_model_inputs()
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_estimate_role_reads_weights_and_meta(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 1000)
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _ref: model
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            lambda _p: {"block_count": "4", "embedding_length": "8"},
+        )
+        inp = prov_mod._estimate_role(WorkerRole.CHAT, "ref", slots=2, ctx=16)
+        assert inp.role == WorkerRole.CHAT
+        assert inp.est_vram_bytes > 1000  # weights + kv + overhead
 
     def test_launch_for_builds_instance(self, monkeypatch) -> None:
         monkeypatch.setattr(
