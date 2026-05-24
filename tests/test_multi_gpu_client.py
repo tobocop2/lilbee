@@ -34,6 +34,26 @@ def _client(handler=_handler) -> LlamaServerClient:
     return LlamaServerClient("http://gpu0", "test-model", http=http)
 
 
+def test_in_flight_counter_is_atomic_under_threads() -> None:
+    import threading
+
+    c = _client()
+
+    def _work() -> None:
+        for _ in range(2000):
+            with c._track():
+                pass
+
+    threads = [threading.Thread(target=_work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Every enter is balanced by an exit; a lost read-modify-write under the
+    # racing threads would leave a non-zero residual.
+    assert c.in_flight == 0
+
+
 def test_health_true_on_200() -> None:
     assert _client().health() is True
 

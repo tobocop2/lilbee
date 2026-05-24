@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -27,6 +28,7 @@ class LlamaServerClient:
         self._http = http or httpx.Client(base_url=self._base, timeout=_DEFAULT_TIMEOUT_S)
         self._owns_http = http is None
         self.in_flight = 0
+        self._in_flight_lock = threading.Lock()
 
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
@@ -80,16 +82,22 @@ class LlamaServerClient:
 
 
 class _InFlight:
-    """Context manager bumping the owner's in-flight counter for the call's life."""
+    """Context manager that atomically bumps the owner's in-flight counter.
+
+    ``+= 1`` is a read-modify-write, so concurrent chat/embed calls would corrupt
+    the counter the router balances on; the client's lock makes it atomic.
+    """
 
     def __init__(self, client: LlamaServerClient) -> None:
         self._client = client
 
     def __enter__(self) -> None:
-        self._client.in_flight += 1
+        with self._client._in_flight_lock:
+            self._client.in_flight += 1
 
     def __exit__(self, *_exc: object) -> None:
-        self._client.in_flight -= 1
+        with self._client._in_flight_lock:
+            self._client.in_flight -= 1
 
 
 def _parse_sse_delta(line: str) -> str:

@@ -8,6 +8,7 @@ PDF OCR, model management) delegates to an in-process ``LlamaCppProvider``.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -62,24 +63,31 @@ class FleetProvider:
         self._fleet: Fleet | None = None
         self._clients: dict[WorkerRole, list[LlamaServerClient]] = {}
         self._local: LlamaCppProvider | None = None
+        # Single-flight guard: the HTTP/MCP servers route concurrently, so two
+        # first-requests must not each build a fleet (double GPU allocation) or
+        # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
+        self._lock = threading.RLock()
 
     def _local_provider(self) -> LLMProvider:
-        if self._local is None:
-            from lilbee.providers.llama_cpp import LlamaCppProvider
+        with self._lock:
+            if self._local is None:
+                from lilbee.providers.llama_cpp import LlamaCppProvider
 
-            self._local = LlamaCppProvider()
-        return self._local
+                self._local = LlamaCppProvider()
+            return self._local
 
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
-        if self._fleet is None:
-            self._fleet, self._clients = _build_fleet()
-        return self._clients.get(role, [])
+        with self._lock:
+            if self._fleet is None:
+                self._fleet, self._clients = _build_fleet()
+            return self._clients.get(role, [])
 
     def _shutdown_fleet(self) -> None:
-        if self._fleet is not None:
-            self._fleet.shutdown()
-            self._fleet = None
-            self._clients = {}
+        with self._lock:
+            if self._fleet is not None:
+                self._fleet.shutdown()
+                self._fleet = None
+                self._clients = {}
 
     # --- routed to the fleet (fall back to in-process if the role has no server) ---
 

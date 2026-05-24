@@ -61,6 +61,36 @@ def test_embed_falls_back_to_local() -> None:
     assert p.embed(["a"]) == [[0.2]]
 
 
+def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
+    import threading
+    import time
+
+    calls = {"n": 0}
+    client = _fake_client()
+    client.chat.return_value = "ok"
+
+    def _slow_build() -> tuple[object, dict]:
+        calls["n"] += 1
+        time.sleep(0.05)  # widen the race window between concurrent first calls
+        return MagicMock(), {WorkerRole.CHAT: [client]}
+
+    monkeypatch.setattr(prov_mod, "_build_fleet", _slow_build)
+    p = FleetProvider()
+    p._local = MagicMock()
+    barrier = threading.Barrier(8)
+
+    def _hit() -> None:
+        barrier.wait()  # release all threads at once
+        p.chat([{"role": "user", "content": "hi"}])
+
+    threads = [threading.Thread(target=_hit) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert calls["n"] == 1  # single-flight: 8 concurrent first-requests build one fleet
+
+
 def test_chat_local_stream_path() -> None:
     p = _provider_with_clients({})  # no chat server -> local
     p._local.chat.return_value = iter(["a", "b"])
