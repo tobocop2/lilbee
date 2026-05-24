@@ -125,6 +125,19 @@ def test_cohere_extracts_tool_calls_from_action_block() -> None:
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
 
 
+def test_cohere_extracts_bare_tool_call_array_without_action_wrapper() -> None:
+    """Command-R7B (GGUF) emits the tool array as bare JSON, no ``<|START_ACTION|>``."""
+    text = (
+        "I will use the lilbee_search tool to find the chat worker file.\n"
+        '[\n  {"tool_call_id": "0", "tool_name": "lilbee_search", '
+        '"parameters": {"query": "chat worker file", "top_k": 5}}\n]'
+    )
+    parsed = _parse(text, TemplateFamily.COHERE)
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "lilbee_search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"query": "chat worker file", "top_k": 5}
+
+
 def test_functionary_v3_extracts_call_after_recipient_marker() -> None:
     """Functionary v3 emits ``>>>name\\n{json}`` after an optional ``>>>all`` block."""
     text = '>>>all\nLet me look that up.\n>>>lilbee_search\n{"query": "chat worker"}'

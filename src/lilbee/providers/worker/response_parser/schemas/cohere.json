@@ -13,7 +13,7 @@
       "x-regex": "<\\|START_THINKING\\|>(.*?)(?:<\\|END_THINKING\\|>|$)"
     },
     "tool_calls": {
-      "x-regex": "<\\|START_ACTION\\|>(.*?)(?:<\\|END_ACTION\\|>|$)",
+      "x-regex": "(?:<\\|START_ACTION\\|>)?\\s*(\\[\\s*\\{[\\s\\S]*?\"tool_name\"[\\s\\S]*\\])",
       "x-parser": "json",
       "x-parser-args": {
         "transform": "[*].{type: 'function', function: {name: tool_name, arguments: parameters}}"
