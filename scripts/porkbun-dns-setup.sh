@@ -42,6 +42,13 @@ GH_PAGES_SUBDOMAINS=(obsidian www)
 # 301-redirects to the canonical site, preserving the request path.
 WILDCARD_REDIRECT_TARGET="https://$DOMAIN"
 
+# Apex TXT records to ensure (site verification, etc.). Additive and idempotent:
+# ensure_apex_txt creates one only when an identical record is missing, and the
+# delete phase below never touches TXT, so existing SPF/DKIM records are safe.
+APEX_TXT_RECORDS=(
+  "google-site-verification=443jGjxV6o1LGFRxlgixDTOOQ3mnUO0FwwlEwnH96Uc"  # Google Search Console
+)
+
 # log goes to stderr so command-substitution stdout stays clean for get_secret.
 log() { echo "$@" >&2; }
 
@@ -107,6 +114,20 @@ create_record() {
     --arg ttl "$RECORD_TTL" \
     '{apikey:$k, secretapikey:$s, name:$n, type:$t, content:$c, ttl:$ttl}')
   check_status "$(api "/dns/create/$DOMAIN" "$body")" "create $type ${name:-@} -> $content"
+}
+
+# Create an apex TXT record only if an identical one isn't already present, so
+# re-runs don't stack duplicates and other TXT records (SPF, DKIM) are untouched.
+ensure_apex_txt() {
+  local content="$1" existing
+  existing=$(api "/dns/retrieve/$DOMAIN" \
+    | jq -r --arg c "$content" '.records[]? | select(.type == "TXT" and .content == $c) | .id' \
+    | head -n 1)
+  if [[ -n "$existing" ]]; then
+    log "  exists (id=$existing): $content"
+    return 0
+  fi
+  create_record "" "TXT" "$content"
 }
 
 command -v curl >/dev/null || { log "curl is required"; exit 1; }
@@ -179,6 +200,12 @@ forward_body=$(jq -n \
   --arg loc "$WILDCARD_REDIRECT_TARGET" \
   '{apikey:$k, secretapikey:$s, subdomain:"", location:$loc, type:"permanent", includePath:"yes", wildcard:"yes"}')
 check_status "$(api "/domain/addUrlForward/$DOMAIN" "$forward_body")" "create wildcard URL forward"
+
+log
+log "==> Ensuring apex TXT records (verification; additive, idempotent)"
+for txt in "${APEX_TXT_RECORDS[@]}"; do
+  ensure_apex_txt "$txt"
+done
 
 log
 log "==> Resulting DNS records:"
