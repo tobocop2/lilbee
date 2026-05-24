@@ -154,20 +154,33 @@ flowchart LR
     ES --> G1
 ```
 
+- **Detection** (`devices.probe_devices`): GPUs come from the binary's own
+  `llama-server --list-devices`, so enumeration and pinning share one backend-native
+  index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
+  so we never cross them; the Vulkan VRAM probe (`gpu_select`) is only a fallback.
+- **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
+  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, ROCm via
+  `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
 - **Placement** (`placement.py`): estimate each model's VRAM (GGUF weights + KV
   cache + overhead), first-fit-decreasing bin-pack with 90% headroom. A model that
   fits one GPU is a single pinned instance; small models co-locate; a model too big
-  for one GPU is tensor-split; anything that fits nowhere falls back in-process.
-- **Detection** (`gpu_select.enumerate_gpu_vram`): per-device VRAM from Vulkan
-  memory heaps, cross-vendor (NVIDIA/AMD/Intel); Apple is single-device.
-- **Lifecycle** (`fleet.py`): each server runs in its own process group, pinned via
-  `CUDA_VISIBLE_DEVICES`; readiness is `/health` (200 only once the model loads);
-  teardown is a group-kill (SIGTERM then SIGKILL) so no GPU process is orphaned.
+  for one GPU is tensor-split **proportionally to each card's free VRAM** (so unequal
+  GPUs don't OOM the smaller one); anything that fits nowhere falls back in-process.
+- **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
+  its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
+  the model loads); a `pid`/`port` file lets the next start reap a crashed parent's
+  orphaned servers. A background monitor restarts a dead server with backoff, and the
+  router serves only healthy clients. Teardown group-kills (SIGTERM then SIGKILL).
+- **Routing** (`provider.py`): chat/embed go to the least-in-flight healthy server.
+  Fleet build is single-flight and the in-flight counter is atomic, because the HTTP
+  and MCP servers route concurrently.
 - **Binary** (`binary.py`): the `lilbee[multi-gpu]` wheel bundles `llama-server`;
   resolution falls back to `LILBEE_LLAMA_SERVER_PATH` / PATH. Never auto-downloaded.
 - **Delegate alternative:** to use an external fleet (GPUStack, vLLM), point the
   `remote` provider at it (`LILBEE_LLM_PROVIDER=remote`); the managed fleet is the
   local, single-box option.
+- **Hardware QA:** `tools/qa/multi_gpu_smoke.py` validates enumeration, placement,
+  concurrency, restart, and orphan cleanup on a real multi-GPU host.
 
 ---
 
