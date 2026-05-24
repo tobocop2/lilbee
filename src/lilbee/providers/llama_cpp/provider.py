@@ -961,6 +961,13 @@ def _resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     training_ctx for per-host policy reasons.
     """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
+    # Some GGUFs under-declare context_length vs the model's real trained window
+    # (Command-R7B is a 128K model whose GGUF says 8192). A family profile can
+    # correct that; the dynamic picker still bounds the result by the chat target
+    # and available VRAM, so this lifts the ceiling without forcing a giant KV.
+    profile = detect_profile(meta, ref=str(model_path))
+    if profile is not None and profile.context_length_override is not None:
+        training_ctx = profile.context_length_override
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
 
     try:
