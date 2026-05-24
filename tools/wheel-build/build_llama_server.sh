@@ -36,11 +36,14 @@ if [ ! -d "${src}" ]; then
 fi
 
 # Same backend flags as the wheel build (GGML_* cmake flags apply to the server
-# target verbatim), plus the server target itself.
+# target verbatim), plus the server target itself. SSL/CURL off: the fleet only
+# talks to localhost sidecars, so we avoid the OpenSSL/libcurl link deps (the
+# reason cmake_args.sh disables OpenSSL find on the Intel-Mac wheel cell).
 eval "$(BACKEND="${backend}" TARGET_ARCH="${target_arch}" "${script_dir}/cmake_args.sh")"
 # shellcheck disable=SC2086
 cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
-  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON ${CMAKE_ARGS}
+  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON \
+  -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF ${CMAKE_ARGS}
 cmake --build "${src}/server-build" --target llama-server --config Release -j
 
 binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
