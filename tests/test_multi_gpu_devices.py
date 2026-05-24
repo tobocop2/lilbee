@@ -56,6 +56,12 @@ def test_probe_defaults_free_to_total_when_absent(monkeypatch: pytest.MonkeyPatc
     assert device.free_bytes == device.total_bytes == 16000 * _MIB
 
 
+def test_probe_returns_empty_when_no_gpu_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Only a CPU device listed -> no GPU backend to pin -> empty.
+    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("  CPU0: host cpu (64000 MiB)\n"))
+    assert probe_devices(Path("/bin/llama-server")) == []
+
+
 def test_probe_returns_empty_on_subprocess_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess:
         raise OSError("no such binary")

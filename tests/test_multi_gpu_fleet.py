@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -94,6 +95,7 @@ def test_spawn_claims_port_writes_pid_file_and_creates_client(
     record = json.loads((tmp_path / "llama-server-chat.port").read_text())
     assert record["port"] > 0
     assert record["pid"] == patched["procs"][-1].pid
+    assert record["parent_pid"] == os.getpid()
     assert server.client is not None
     assert server.is_alive()
 
@@ -172,6 +174,18 @@ def test_stop_on_windows_hard_terminates(
     assert proc.terminated
 
 
+def test_stop_on_windows_escalates_to_kill(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = FakeProc(wait_raises=True)  # terminate doesn't take; wait times out
+    monkeypatch.setattr(fleet_mod.sys, "platform", "win32")
+    monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: proc)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    server.stop()
+    assert proc.terminated and proc.killed
+
+
 def test_restart_respawns_dead_server(tmp_path: Path, patched: dict) -> None:
     server = FleetServer(_launch(tmp_path))
     server.spawn()
@@ -181,14 +195,31 @@ def test_restart_respawns_dead_server(tmp_path: Path, patched: dict) -> None:
     assert server.is_alive()
 
 
-def test_reap_orphans_kills_recorded_pids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reap_orphans_kills_only_dead_parents_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     killed: list[int] = []
     monkeypatch.setattr(fleet_mod, "_kill_pid_group", lambda pid: killed.append(pid))
-    (tmp_path / "llama-server-chat.port").write_text(json.dumps({"pid": 4242, "port": 9000}))
-    (tmp_path / "llama-server-embed.port").write_text("not-json")  # malformed -> just cleaned
+    monkeypatch.setattr(fleet_mod, "_is_pid_alive", lambda pid: pid == 111)  # 111 alive
+    dead_owner = tmp_path / "llama-server-chat-999.port"
+    live_owner = tmp_path / "llama-server-embed-111.port"
+    dead_owner.write_text(json.dumps({"parent_pid": 999, "pid": 4242, "port": 9000}))
+    live_owner.write_text(json.dumps({"parent_pid": 111, "pid": 5555, "port": 9001}))
+    (tmp_path / "llama-server-bad-0.port").write_text("not-json")  # malformed -> cleaned
     reap_orphans(tmp_path)
-    assert killed == [4242]
-    assert list(tmp_path.glob("llama-server-*.port")) == []
+    assert killed == [4242]  # only the crashed parent's server
+    assert live_owner.exists()  # a concurrent live instance's server is untouched
+    assert not dead_owner.exists()
+    assert not (tmp_path / "llama-server-bad-0.port").exists()
+
+
+def test_is_pid_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
+    assert fleet_mod._is_pid_alive(os.getpid()) is True  # this process
+    assert fleet_mod._is_pid_alive(1) is True  # exists, EPERM -> assume alive
+    assert fleet_mod._is_pid_alive(2**31 - 1) is False  # no such pid
+    monkeypatch.setattr(fleet_mod.sys, "platform", "win32")
+    assert fleet_mod._is_pid_alive(2**31 - 1) is True  # Windows: never reap
 
 
 def test_kill_pid_group_handles_missing_process(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,20 +260,51 @@ def test_fleet_start_raises_and_tears_down_when_not_ready(
     assert fleet.healthy_clients(WorkerRole.CHAT) == []
 
 
-def test_monitor_restarts_a_dead_server(
+def test_restart_dead_respawns_and_remarks_ready(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Drive _restart_dead directly in the main thread (no monitor thread), so the
+    # behavior and its coverage are deterministic.
+    monkeypatch.setattr(fleet_mod, "_RESTART_BACKOFF_S", (0.0,))
+    fleet = Fleet(data_dir=tmp_path)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    server.ready = True
+    fleet._servers.append(server)
+    server._proc._alive = False  # crash it
+    fleet._restart_dead()
+    assert server.restarts == 1
+    assert server.is_alive()
+    assert server.ready is True  # re-marked ready after a successful restart
+
+
+def test_restart_dead_aborts_when_stopping(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(fleet_mod, "_RESTART_BACKOFF_S", (0.0,))
     fleet = Fleet(data_dir=tmp_path)
-    fleet.start([_launch(tmp_path)])
-    try:
-        server = fleet._servers[0]
-        server._proc._alive = False  # crash it
-        fleet._restart_dead()  # the monitor loop's step, driven directly
-        assert server.restarts == 1
-        assert server.is_alive()
-    finally:
-        fleet.shutdown()
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    fleet._servers.append(server)
+    server._proc._alive = False
+    fleet._stop_monitor.set()  # shutting down: must abort, not restart
+    fleet._restart_dead()
+    assert server.restarts == 0
+
+
+def test_monitor_loop_runs_until_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Cover the loop body in the main thread: one tick, then stop.
+    monkeypatch.setattr(fleet_mod, "_MONITOR_POLL_S", 0.0)
+    fleet = Fleet(data_dir=tmp_path)
+    calls = {"n": 0}
+
+    def _tick() -> None:
+        calls["n"] += 1
+        fleet._stop_monitor.set()
+
+    monkeypatch.setattr(fleet, "_restart_dead", _tick)
+    fleet._monitor_loop()
+    assert calls["n"] == 1
 
 
 def test_monitor_thread_runs_and_stops(tmp_path: Path, patched: dict, monkeypatch) -> None:

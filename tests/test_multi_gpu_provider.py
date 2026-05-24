@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -222,7 +223,8 @@ class TestBuildFleetWiring:
         )
         assert launch.role == WorkerRole.CHAT
         assert launch.env_overrides == visible_env((device,))
-        assert launch.port_file == Path("/data/llama-server-chat.port")
+        # port file is stamped with the owning pid so reaping is instance-safe
+        assert launch.port_file == Path(f"/data/llama-server-chat-{os.getpid()}.port")
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
 

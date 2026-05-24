@@ -66,13 +66,16 @@ class FleetServer:
         self._proc: subprocess.Popen[bytes] | None = None
         self.client: LlamaServerClient | None = None
         self.restarts = 0
+        # ``ready`` gates routing: True only after wait_ready passes, so a server
+        # mid-(re)start (alive but model still loading) is never routed to.
+        self.ready = False
 
     @property
     def role(self) -> WorkerRole:
         return self._launch.role
 
     def spawn(self) -> LlamaServerClient:
-        """Claim a port, launch the process group, record pid/port, return client."""
+        """Claim a port, launch the process group, record pids/port, return client."""
         port = pick_free_port()
         argv = [*self._launch.argv, "--port", str(port)]
         env = {**os.environ, **self._launch.env_overrides}
@@ -84,7 +87,11 @@ class FleetServer:
             start_new_session=sys.platform != "win32",
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
-        self._launch.port_file.write_text(json.dumps({"pid": self._proc.pid, "port": port}))
+        # parent_pid identifies the owning lilbee, so reaping never kills a
+        # concurrent instance's servers (only a dead parent's orphans).
+        self._launch.port_file.write_text(
+            json.dumps({"parent_pid": os.getpid(), "pid": self._proc.pid, "port": port})
+        )
         if self.client is not None:
             self.client.close()
         self.client = LlamaServerClient(f"http://{_HOST}:{port}", self._launch.model)
@@ -92,10 +99,6 @@ class FleetServer:
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
-
-    def is_healthy(self) -> bool:
-        """Alive AND answering ``/health`` 200 (liveness via poll, not /health)."""
-        return self.is_alive() and self.client is not None and self.client.health()
 
     def wait_ready(self, timeout: float = _READY_TIMEOUT_S) -> bool:
         """Poll ``/health`` until ready (200 == model loaded), death, or timeout.
@@ -172,19 +175,41 @@ def _kill_pid_group(pid: int) -> None:
         return  # already gone
 
 
-def reap_orphans(data_dir: Path) -> None:
-    """Kill llama-server processes recorded by a prior (crashed) run, then clear.
+def _is_pid_alive(pid: int) -> bool:
+    """Whether *pid* is still running. Conservative: 'assume alive' if unsure.
 
-    A clean shutdown removes its port files; any left behind belong to a parent
-    that died without tearing the fleet down, stranding GPU memory until now.
+    Windows has no safe ``os.kill(pid, 0)`` liveness probe (a 0 signal can
+    terminate), so there we never reap (a leaked orphan beats killing a live one).
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but not signalable (e.g. EPERM) -> alive
+    return True
+
+
+def reap_orphans(data_dir: Path) -> None:
+    """Kill llama-server processes a *dead* parent left behind, then clear its files.
+
+    A clean shutdown removes its port files. Any left behind belong either to a
+    crashed parent (reap them, they strand GPU memory) or a concurrent live
+    instance (leave them alone) -- distinguished by whether the recorded parent
+    lilbee pid is still alive.
     """
     for port_file in data_dir.glob("llama-server-*.port"):
         try:
             record = json.loads(port_file.read_text())
+            parent_pid = int(record["parent_pid"])
             pid = int(record["pid"])
         except (OSError, ValueError, KeyError, TypeError):
             port_file.unlink(missing_ok=True)
             continue
+        if _is_pid_alive(parent_pid):
+            continue  # another live lilbee owns this server; do not touch it
         _kill_pid_group(pid)
         port_file.unlink(missing_ok=True)
 
@@ -217,15 +242,16 @@ class Fleet:
             if not server.wait_ready(timeout=self.ready_timeout):
                 self.shutdown()
                 raise ProviderError(f"llama-server for role {launch.role} failed to become ready")
+            server.ready = True
         self._start_monitor()
 
     def healthy_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
-        """Live clients for *role*; a server mid-restart is transiently excluded."""
+        """Ready, live clients for *role*; a (re)starting server is excluded."""
         with self._lock:
             return [
                 s.client
                 for s in self._servers
-                if s.role == role and s.is_alive() and s.client is not None
+                if s.role == role and s.ready and s.is_alive() and s.client is not None
             ]
 
     def _start_monitor(self) -> None:
@@ -237,16 +263,25 @@ class Fleet:
             self._restart_dead()
 
     def _restart_dead(self) -> None:
-        """Restart any server whose process has exited, with per-server backoff."""
+        """Restart any server whose process has exited, with per-server backoff.
+
+        The slow respawn (spawn + wait_ready) runs OUTSIDE the lock; the server is
+        marked not-ready first so routing skips it, and ready again only once it is.
+        Holding the lock across wait_ready would block all routing for the timeout.
+        """
         with self._lock:
             dead = [s for s in self._servers if not s.is_alive()]
+            for server in dead:
+                server.ready = False
         for server in dead:
             self._backoff(server.restarts)
             if self._stop_monitor.is_set():
                 return
+            if server.is_alive():
+                continue
+            ready = server.restart()
             with self._lock:
-                if server in self._servers and not server.is_alive():
-                    server.restart()
+                server.ready = ready and server.is_alive()
 
     @staticmethod
     def _backoff(restarts: int) -> None:

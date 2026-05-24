@@ -16,6 +16,9 @@ _HTTP_OK = 200
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
+# Short, separate timeout for /health: a server can wedge under heavy prompt
+# processing, and readiness/monitor polls must not block on the request timeout.
+_HEALTH_TIMEOUT_S = 5.0
 
 
 class LlamaServerClient:
@@ -33,7 +36,7 @@ class LlamaServerClient:
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
         try:
-            resp = self._http.get(_HEALTH_PATH)
+            resp = self._http.get(_HEALTH_PATH, timeout=_HEALTH_TIMEOUT_S)
         except httpx.HTTPError:
             return False
         return resp.status_code == _HTTP_OK

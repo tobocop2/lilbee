@@ -8,6 +8,7 @@ PDF OCR, model management) delegates to an in-process ``LlamaCppProvider``.
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -278,5 +279,7 @@ def _launch_for(
         argv=argv,
         env_overrides=visible_env(chosen),
         model=model_ref,
-        port_file=data_dir / f"llama-server-{plan.role.value}.port",
+        # Stamp the owning lilbee pid so a concurrent instance's reaper won't
+        # touch this server (only a dead parent's orphans get reaped).
+        port_file=data_dir / f"llama-server-{plan.role.value}-{os.getpid()}.port",
     )
