@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
@@ -52,11 +53,40 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     return LLMOptions(**options).to_dict()
 
 
-class ProviderError(Exception):
-    """Raised when an LLM provider operation fails."""
+class ProviderErrorKind(StrEnum):
+    """Provider-agnostic category of a failed provider call.
 
-    def __init__(self, message: str, *, provider: str = "") -> None:
+    Classified by exception type at each backend boundary so callers can
+    branch on the kind instead of matching message strings (which are
+    provider-specific and drift between SDK versions).
+    """
+
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    CONTEXT_OVERFLOW = "context_overflow"
+    NOT_FOUND = "not_found"
+    BAD_REQUEST = "bad_request"
+    CONNECTION = "connection"
+    SERVER = "server"
+    UNKNOWN = "unknown"
+
+
+class ProviderError(Exception):
+    """Raised when an LLM provider operation fails.
+
+    ``kind`` is the provider-agnostic category; backends that can't classify a
+    failure leave it ``UNKNOWN``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "",
+        kind: ProviderErrorKind = ProviderErrorKind.UNKNOWN,
+    ) -> None:
         self.provider = provider
+        self.kind = kind
         super().__init__(message)
 
 

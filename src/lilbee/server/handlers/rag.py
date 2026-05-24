@@ -12,6 +12,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
     CapNotice,
@@ -68,7 +69,7 @@ def _run_llm_stream(
     opts: dict[str, Any] | None,
     queue: asyncio.Queue[str | None],
     cancel: threading.Event,
-    error_holder: list[str],
+    error_holder: list[Exception],
 ) -> None:
     """Forward tokens from the cap-aware chat orchestrator into the SSE queue."""
     try:
@@ -95,9 +96,26 @@ def _run_llm_stream(
                 kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
                 queue.put_nowait(sse_event(kind, {"token": event.content}))
     except Exception as exc:
-        error_holder.append(str(exc))
+        error_holder.append(exc)
     finally:
         queue.put_nowait(None)
+
+
+def _error_event(exc: Exception) -> str:
+    """Build the SSE error event for a stream failure.
+
+    Provider errors already carry a user-facing message (rate limits, auth,
+    bad model), so surface it verbatim. Everything else goes through the
+    llama.cpp OOM classifier and otherwise collapses to a generic message.
+    """
+    if isinstance(exc, ProviderError):
+        log.warning("Provider error during stream: %s", exc)
+        kind_code = exc.kind if exc.kind is not ProviderErrorKind.UNKNOWN else None
+        return sse_error(str(exc), code=kind_code)
+    raw = str(exc)
+    code, user_message = classify_load_error(raw)
+    log.warning("Stream error: %s", raw)
+    return sse_error(user_message, code=code, detail=raw if code else None)
 
 
 async def _stream_rag_response(
@@ -121,7 +139,7 @@ async def _stream_rag_response(
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
     sse = SseStream()
-    error_holder: list[str] = []
+    error_holder: list[Exception] = []
 
     executor_fut = sse.loop.run_in_executor(
         None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
@@ -131,10 +149,7 @@ async def _stream_rag_response(
         yield event
 
     if error_holder:
-        raw = error_holder[0]
-        code, user_message = classify_load_error(raw)
-        log.warning("Stream error: %s", raw)
-        yield sse_error(user_message, code=code, detail=raw if code else None)
+        yield _error_event(error_holder[0])
         sse.cancel.set()
         return
 
