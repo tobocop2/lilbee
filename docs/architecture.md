@@ -122,6 +122,52 @@ flowchart TD
 
 ---
 
+## Multi-GPU fleet (opt-in)
+
+`LILBEE_LLM_PROVIDER=multi-gpu` (the `lilbee[multi-gpu]` extra) runs inference on a
+managed fleet of `llama-server` sidecars bin-packed across GPUs, instead of the
+default in-process worker pool. The default single-GPU path is unchanged when the
+extra is absent or the selector is off. The engine is 100% llama.cpp; lilbee adds
+a placement planner, a process supervisor, and a thin httpx router
+(`src/lilbee/providers/multi_gpu/`). chat and embed route to the fleet; rerank,
+vision, and PDF OCR stay in-process (their server surfaces are experimental).
+
+```mermaid
+flowchart LR
+    APP["chat / search / ingest"]
+    FP["FleetProvider (router: least-in-flight)"]
+    PLAN["placement planner (Vulkan VRAM bin-pack)"]
+    APP --> FP
+    PLAN -. spawns / health / group-kill .-> FLEET
+    FP -->|chat| CS["chat-server"]
+    FP -->|embed| ES["embed-server"]
+    FP -->|rerank / vision / pdf| LOCAL["in-process llama-cpp"]
+    subgraph FLEET["llama-server sidecars (continuous batching)"]
+        CS
+        ES
+    end
+    CS --> G0["GPU 0"]
+    CS --> G1["GPU 1"]
+    ES --> G1
+```
+
+- **Placement** (`placement.py`): estimate each model's VRAM (GGUF weights + KV
+  cache + overhead), first-fit-decreasing bin-pack with 90% headroom. A model that
+  fits one GPU is a single pinned instance; small models co-locate; a model too big
+  for one GPU is tensor-split; anything that fits nowhere falls back in-process.
+- **Detection** (`gpu_select.enumerate_gpu_vram`): per-device VRAM from Vulkan
+  memory heaps, cross-vendor (NVIDIA/AMD/Intel); Apple is single-device.
+- **Lifecycle** (`fleet.py`): each server runs in its own process group, pinned via
+  `CUDA_VISIBLE_DEVICES`; readiness is `/health` (200 only once the model loads);
+  teardown is a group-kill (SIGTERM then SIGKILL) so no GPU process is orphaned.
+- **Binary** (`binary.py`): the `lilbee[multi-gpu]` wheel bundles `llama-server`;
+  resolution falls back to `LILBEE_LLAMA_SERVER_PATH` / PATH. Never auto-downloaded.
+- **Delegate alternative:** to use an external fleet (GPUStack, vLLM), point the
+  `remote` provider at it (`LILBEE_LLM_PROVIDER=remote`); the managed fleet is the
+  local, single-box option.
+
+---
+
 ## Inference Worker Pool
 
 `LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.
