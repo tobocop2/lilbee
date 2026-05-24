@@ -35,14 +35,14 @@ model itself or the bundled runtime, not the lilbee tool plumbing:
 
 | Family | Why |
 |--------|-----|
-| Command-R7B | this GGUF's context tops out at 8K tokens, smaller than opencode's system prompt plus tool schema |
-| Phi-4-mini | the bundled llama.cpp aborts while loading this GGUF |
-| Functionary v3 | the functionary preset needs a tokenizer attribute the bundled llama.cpp build doesn't expose |
-| GLM-4-9B-chat | the older GLM-4 chat template doesn't advertise tools in a form opencode can pick up |
+| Command-R7B | this GGUF ships no chat template, so the prompt can't be rendered with the tool schema; the family needs lilbee to supply a Command-R template |
+| Phi-4-mini | the bundled llama.cpp aborts (SIGABRT) building the compute graph for this architecture |
+| GLM-4-9B-chat | the bundled llama.cpp aborts (SIGABRT) loading this GGUF |
+| Functionary v3 | its GGUF ships a stripped template, and the llama.cpp functionary preset reads a tokenizer attribute that transformers 5.x removed; the family needs lilbee to supply the functionary tool template |
 | InternLM2.5 | describes the search it would run instead of emitting a tool call |
-| OLMo-2 | not trained for tool calling |
+| OLMo-2 | not trained for tool calling (a tool-trained OLMo-3 GGUF exists and is the better slot) |
 | ERNIE-4.5 0.3B, LFM2 1.2B | too small to call tools reliably |
-| GLM-4.5-Air | 60 GB; the download needs xet, which lilbee turns off so pull progress stays visible |
+| GLM-4.5-Air | 60 GB; downloads once xet is enabled, loads on an 80 GB GPU, and makes the first tool call, but the model reloads and runs out of memory on follow-up turns |
 
 ## How this was measured
 
