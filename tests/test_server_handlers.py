@@ -11,6 +11,7 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
     ingest as _ingest_h,
@@ -2200,21 +2201,37 @@ class TestClassifyLoadError:
             "Host has 1.2 GB free RAM. Try a smaller model."
         )
         code, user_message = handlers.classify_load_error(msg)
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
         assert user_message == "Model too large for available RAM"
 
     def test_llama_context_signature_is_classified(self):
         code, _ = handlers.classify_load_error("llama_context: failed to allocate")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
     def test_unknown_message_falls_back_to_internal(self):
         code, user_message = handlers.classify_load_error("Network unreachable")
         assert code is None
         assert user_message == "Internal error"
 
+    def test_not_in_registry_is_classified_as_model_not_installed(self):
+        msg = (
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
+            "Install it via the catalog or 'lilbee model pull'."
+        )
+        code, user_message = handlers.classify_load_error(msg)
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
+    def test_not_available_is_classified_as_model_not_installed(self):
+        code, user_message = handlers.classify_load_error(
+            "Model 'foo' is not available. Pull it first or check the name."
+        )
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
     def test_classifier_is_case_insensitive(self):
         code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
 
 class TestResolveGenerationOptions:
