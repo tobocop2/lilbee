@@ -17,6 +17,7 @@ class LlmProvider(StrEnum):
     AUTO = "auto"
     LLAMA_CPP = "llama-cpp"
     REMOTE = "remote"
+    MULTI_GPU = "multi-gpu"
 
 
 class ClustererBackend(StrEnum):

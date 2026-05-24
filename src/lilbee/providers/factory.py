@@ -47,4 +47,10 @@ def create_provider(config: Config) -> LLMProvider:
                 api_key=config.llm_api_key,
             )  # pragma: no cover
 
+        case LlmProvider.MULTI_GPU:
+            # heavy: provider composes llama_cpp + spawns llama-server sidecars
+            from lilbee.providers.multi_gpu.provider import FleetProvider
+
+            return FleetProvider()
+
     assert_never(config.llm_provider)  # pragma: no cover
