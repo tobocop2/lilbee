@@ -1027,18 +1027,39 @@ def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: s
     True when the handler was installed.
     """
     try:
-        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+        from llama_cpp.llama_chat_format import ChatFormatterResponse, Jinja2ChatFormatter
         from transformers import AutoTokenizer
 
-        tok = AutoTokenizer.from_pretrained(hf_tokenizer_repo)
-        if not tok.chat_template:
+        tokenizer = AutoTokenizer.from_pretrained(hf_tokenizer_repo)
+        if not tokenizer.chat_template:
             return False
-        formatter = Jinja2ChatFormatter(
-            template=tok.chat_template,
-            eos_token=tok.eos_token or "",
-            bos_token=tok.bos_token or "",
-        )
-        kwargs["chat_handler"] = formatter.to_chat_handler()
+
+        class _HFTemplateChatFormatter(Jinja2ChatFormatter):
+            """Render with the tokenizer's own ``apply_chat_template``.
+
+            ``Jinja2ChatFormatter`` compiles a single template string in a sandbox
+            that lacks the ``loopcontrols`` extension and can't pick between a
+            tokenizer's named templates (Command-R ships a ``{default, tool_use, rag}``
+            dict and uses ``{% break %}``). ``apply_chat_template`` handles both, so
+            delegate rendering to it and inherit the base class's generation handler.
+            """
+
+            def __init__(self) -> None:
+                self._tokenizer = tokenizer
+                self.eos_token = tokenizer.eos_token or ""
+                self.bos_token = tokenizer.bos_token or ""
+                self.add_generation_prompt = True
+                self.stop_token_ids = None
+
+            def __call__(
+                self, *, messages: Any, tools: Any = None, **_: Any
+            ) -> ChatFormatterResponse:
+                prompt = self._tokenizer.apply_chat_template(
+                    messages, tools=tools, add_generation_prompt=True, tokenize=False
+                )
+                return ChatFormatterResponse(prompt=prompt, stop=[self.eos_token])
+
+        kwargs["chat_handler"] = _HFTemplateChatFormatter().to_chat_handler()
     except Exception:
         log.warning(
             "Failed to build HF-template chat handler from %s; tool calls may fail",
