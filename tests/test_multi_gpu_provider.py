@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import LlmProvider
 from lilbee.providers.multi_gpu import provider as prov_mod
@@ -99,6 +101,92 @@ def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
     assert calls["n"] == 1  # single-flight: 8 concurrent first-requests build one fleet
 
 
+def test_rerank_routes_to_fleet() -> None:
+    client = _fake_client()
+    client.rerank.return_value = [0.9, 0.1]
+    p = _provider_with_clients({WorkerRole.RERANK: [client]})
+    assert p.rerank("q", ["a", "b"]) == [0.9, 0.1]
+    client.rerank.assert_called_once_with("q", ["a", "b"])
+
+
+def test_rerank_falls_back_to_local_without_server() -> None:
+    p = _provider_with_clients({})
+    p._local.rerank.return_value = [0.5]
+    assert p.rerank("q", ["a"]) == [0.5]
+
+
+def test_vision_ocr_routes_to_fleet_for_configured_model(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    client.chat.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+
+
+def test_vision_ocr_falls_back_to_local_for_model_override(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client()]})
+    p._local.vision_ocr.return_value = "local-ocr"
+    # override != the server's configured vision model -> in-process
+    assert p.vision_ocr(b"png", "org/repo/other.gguf") == "local-ocr"
+    p._local.vision_ocr.assert_called_once()
+
+
+def test_chat_with_model_override_uses_local(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._local.chat.return_value = "local"
+    assert p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf") == "local"
+    p._local.chat.assert_called_once()
+
+
+def test_vision_call_returns_text() -> None:
+    client = _fake_client()
+    client.chat.return_value = "OCR text"
+    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None) == "OCR text"
+
+
+def test_vision_call_enforces_timeout() -> None:
+    client = _fake_client()
+    client.chat.return_value = "OCR text"
+    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 5.0) == "OCR text"
+    client.chat.assert_called_once()
+
+
+def test_vision_call_rejects_non_text() -> None:
+    from lilbee.providers.base import ProviderError
+
+    client = _fake_client()
+    client.chat.return_value = iter(["streamed"])  # not a str
+    with pytest.raises(ProviderError, match="expected text"):
+        prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
+
+
+def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: Path("/m/v.gguf")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+        lambda _p: Path("/m/mmproj.gguf"),
+    )
+    assert prov_mod._vision_mmproj("ref") == Path("/m/mmproj.gguf")
+
+
+def test_vision_mmproj_returns_none_when_absent(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(
+        "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: Path("/m/v.gguf")
+    )
+
+    def _raise(_p: Path) -> Path:
+        raise ProviderError("no mmproj")
+
+    monkeypatch.setattr("lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model", _raise)
+    assert prov_mod._vision_mmproj("ref") is None
+
+
 def test_chat_local_stream_path() -> None:
     p = _provider_with_clients({})  # no chat server -> local
     p._local.chat.return_value = iter(["a", "b"])
@@ -187,15 +275,66 @@ def test_factory_returns_fleet_provider_for_multi_gpu() -> None:
 
 
 class TestBuildFleetWiring:
-    def test_server_model_inputs_covers_chat_and_embed(self, monkeypatch) -> None:
+    def test_server_model_inputs_skips_unconfigured_optional_roles(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            prov_mod,
-            "_estimate_role",
-            lambda role, ref, **_k: ModelPlacementInput(role, 5 * _GB),
+            prov_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, 5 * _GB)
         )
+        monkeypatch.setattr(cfg, "reranker_model", "")  # unconfigured -> skipped
+        monkeypatch.setattr(cfg, "vision_model", "")
         inputs, refs = prov_mod._server_model_inputs()
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_server_model_inputs_includes_configured_rerank(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            prov_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+        )
+        monkeypatch.setattr(cfg, "reranker_model", "some/reranker.gguf")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        _inputs, refs = prov_mod._server_model_inputs()
+        assert WorkerRole.RERANK in refs
+
+    def test_server_model_inputs_includes_vision_only_with_mmproj(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            prov_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+        )
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
+
+        monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: None)
+        assert WorkerRole.VISION not in prov_mod._server_model_inputs()[1]
+
+        monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        assert WorkerRole.VISION in prov_mod._server_model_inputs()[1]
+
+    def test_estimate_role_vision_adds_mmproj_size(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "v.gguf"
+        model.write_bytes(b"x" * 1000)
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"y" * 500)
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: model
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: mmproj)
+        inp = prov_mod._estimate_role(WorkerRole.VISION, "ref", slots=1, ctx=16)
+        assert inp.est_vram_bytes >= 1500  # weights + mmproj counted
+
+    def test_launch_for_vision_passes_mmproj(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            lambda _r: Path("/m/v.gguf"),
+        )
+        monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        launch = prov_mod._launch_for(
+            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
+        )
+        assert "--mmproj" in launch.argv
+        assert str(Path("/m/mmproj.gguf")) in launch.argv
 
     def test_estimate_role_reads_weights_and_meta(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"

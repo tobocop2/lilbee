@@ -26,9 +26,11 @@ class RoleServerSpec:
     server_capable: bool
 
 
-# chat/embed have stable OpenAI surfaces; rerank (/v1/rerank) and vision
-# (mtmd-over-HTTP) are experimental in llama-server, so they stay in-process
-# until validated. server_capable gates the planner's fallback.
+# Every role runs on the fleet by mirroring the in-process primitive over HTTP:
+# rerank uses rank-pooling embeddings (--pooling rank -> /v1/embeddings, with the
+# same query</s></s>candidate pairing as in-process), NOT the template-dependent
+# /v1/rerank; vision uses the chat endpoint with an --mmproj projector. This keeps
+# the in-process robustness without depending on a model's embedded rerank template.
 ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     WorkerRole.CHAT: RoleServerSpec(
         role=WorkerRole.CHAT,
@@ -44,15 +46,15 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     ),
     WorkerRole.RERANK: RoleServerSpec(
         role=WorkerRole.RERANK,
-        endpoint_path="/v1/rerank",
-        extra_args=("--reranking", "--pooling", "rank"),
-        server_capable=False,
+        endpoint_path="/v1/embeddings",
+        extra_args=("--embeddings", "--pooling", "rank"),
+        server_capable=True,
     ),
     WorkerRole.VISION: RoleServerSpec(
         role=WorkerRole.VISION,
         endpoint_path="/v1/chat/completions",
         extra_args=(),
-        server_capable=False,
+        server_capable=True,
     ),
 }
 
@@ -67,6 +69,7 @@ def build_server_argv(
     slots: int,
     ctx_per_slot: int,
     tensor_split: tuple[int, ...] = (),
+    mmproj: Path | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -91,6 +94,8 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
+    if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
+        argv += ["--mmproj", str(mmproj)]
     if len(devices) > 1:
         ratio = tensor_split or tuple(1 for _ in devices)
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]

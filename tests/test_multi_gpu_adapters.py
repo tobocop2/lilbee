@@ -12,16 +12,35 @@ def test_every_worker_role_has_a_spec() -> None:
     assert set(ROLE_SPECS) == set(WorkerRole)
 
 
-def test_chat_and_embed_are_server_capable_rerank_vision_are_not() -> None:
-    assert ROLE_SPECS[WorkerRole.CHAT].server_capable
-    assert ROLE_SPECS[WorkerRole.EMBED].server_capable
-    assert not ROLE_SPECS[WorkerRole.RERANK].server_capable
-    assert not ROLE_SPECS[WorkerRole.VISION].server_capable
+def test_all_roles_are_server_capable() -> None:
+    assert all(spec.server_capable for spec in ROLE_SPECS.values())
 
 
 def test_embed_spec_carries_embeddings_flag() -> None:
     assert "--embeddings" in ROLE_SPECS[WorkerRole.EMBED].extra_args
     assert ROLE_SPECS[WorkerRole.EMBED].endpoint_path == "/v1/embeddings"
+
+
+def test_rerank_spec_uses_rank_pooling_embeddings_not_rerank_endpoint() -> None:
+    spec = ROLE_SPECS[WorkerRole.RERANK]
+    # Rank-pooling embeddings primitive (avoids /v1/rerank's template dependency).
+    assert spec.endpoint_path == "/v1/embeddings"
+    assert spec.extra_args == ("--embeddings", "--pooling", "rank")
+    assert "--reranking" not in spec.extra_args
+
+
+def test_build_argv_adds_mmproj_for_vision() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.VISION],
+        model_path=Path("/models/vision.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=8192,
+        mmproj=Path("/models/mmproj.gguf"),
+    )
+    assert argv[argv.index("--mmproj") + 1] == str(Path("/models/mmproj.gguf"))
 
 
 def test_build_argv_single_device_has_no_tensor_split() -> None:

@@ -28,7 +28,7 @@ from lilbee.providers.multi_gpu.placement import (
 from lilbee.providers.worker.transport import WorkerRole
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -44,19 +44,44 @@ _CHAT_SLOTS = 4
 _AUX_SLOTS = 1
 _DEFAULT_CHAT_CTX = 8192
 _EMBED_CTX = 2048
+_RERANK_CTX = 2048
+_VISION_CTX = 8192
 _ALL_GPU_LAYERS = -1
 
-# Server-capable roles -> (slots, ctx-per-slot, model-ref accessor). Both models
-# are min_length>=1 config fields, so the ref is always present.
+# Server roles -> (slots, ctx-per-slot, model-ref accessor). chat/embed are always
+# configured; reranker_model/vision_model may be "" (unconfigured) -> skipped, so
+# that role stays in-process. Vision additionally needs an mmproj projector.
 _SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, int, Callable[[Any], str]]] = {
     WorkerRole.CHAT: (_CHAT_SLOTS, _DEFAULT_CHAT_CTX, lambda c: str(c.chat_model)),
     WorkerRole.EMBED: (_AUX_SLOTS, _EMBED_CTX, lambda c: str(c.embedding_model)),
+    WorkerRole.RERANK: (_AUX_SLOTS, _RERANK_CTX, lambda c: str(c.reranker_model)),
+    WorkerRole.VISION: (_AUX_SLOTS, _VISION_CTX, lambda c: str(c.vision_model)),
 }
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     """Pick the healthy client with the fewest in-flight requests."""
     return min(clients, key=lambda c: c.in_flight)
+
+
+def _vision_call(
+    client: LlamaServerClient, messages: Sequence[Mapping[str, Any]], timeout: float | None
+) -> str:
+    """Run a vision chat on *client*, enforcing *timeout* like the in-process OCR."""
+    from lilbee.providers.base import ProviderError
+
+    if timeout and timeout > 0:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(client.chat, messages, stream=False).result(timeout=timeout)
+    else:
+        result = client.chat(messages, stream=False)
+    if not isinstance(result, str):
+        raise ProviderError(
+            f"Vision server returned {type(result).__name__}, expected text.", provider="multi-gpu"
+        )
+    return result
 
 
 class FleetProvider:
@@ -120,12 +145,17 @@ class FleetProvider:
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
-        clients = self._server_clients(WorkerRole.CHAT)
-        if clients:
-            # generator satisfies ClosableIterator; client.chat isn't overloaded.
-            return _least_in_flight(clients).chat(  # type: ignore[return-value]
-                messages, options=options, stream=stream
-            )
+        from lilbee.core.config import cfg
+
+        # The fleet's chat server serves cfg.chat_model; a different model override
+        # must load in-process, not be silently served by the wrong server.
+        if model is None or model == str(cfg.chat_model):
+            clients = self._server_clients(WorkerRole.CHAT)
+            if clients:
+                # generator satisfies ClosableIterator; client.chat isn't overloaded.
+                return _least_in_flight(clients).chat(  # type: ignore[return-value]
+                    messages, options=options, stream=stream
+                )
         local = self._local_provider()
         if stream:
             return local.chat(messages, stream=True, options=options, model=model)
@@ -142,6 +172,16 @@ class FleetProvider:
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
+        from lilbee.core.config import cfg
+        from lilbee.vision import OCR_PROMPT, build_vision_messages
+
+        # The vision server is built for cfg.vision_model with its mmproj; a
+        # different model override loads in-process.
+        if not model or model == str(cfg.vision_model):
+            clients = self._server_clients(WorkerRole.VISION)
+            if clients:
+                messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+                return _vision_call(_least_in_flight(clients), messages, timeout)
         return self._local_provider().vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
     def pdf_ocr(
@@ -164,6 +204,9 @@ class FleetProvider:
         )
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        clients = self._server_clients(WorkerRole.RERANK)
+        if clients:
+            return _least_in_flight(clients).rerank(query, candidates)
         return self._local_provider().rerank(query, candidates)
 
     def supports_rerank(self) -> bool:
@@ -224,28 +267,52 @@ def _build_fleet() -> Fleet:
 
 
 def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
-    """Build placement inputs for the configured, server-capable roles."""
+    """Build placement inputs for the configured server roles.
+
+    Skips an unconfigured optional role (empty reranker_model/vision_model) and a
+    vision model with no resolvable mmproj projector, so it stays in-process.
+    """
     from lilbee.core.config import cfg
 
     inputs: list[ModelPlacementInput] = []
     model_refs: dict[WorkerRole, str] = {}
     for role, (slots, ctx, accessor) in _SERVER_ROLE_PARAMS.items():
         ref = accessor(cfg)
+        if not ref:
+            continue  # unconfigured optional role -> stays in-process
+        if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
+            continue  # no projector -> vision can't run on a server
         inputs.append(_estimate_role(role, ref, slots=slots, ctx=ctx))
         model_refs[role] = ref
     return inputs, model_refs
 
 
+def _vision_mmproj(model_ref: str) -> Path | None:
+    """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.llama_cpp.provider import resolve_model_path
+
+    try:
+        return find_mmproj_for_model(resolve_model_path(model_ref))
+    except (ProviderError, OSError, ValueError, KeyError):
+        return None
+
+
 def _estimate_role(
     role: WorkerRole, model_ref: str, *, slots: int, ctx: int
 ) -> ModelPlacementInput:
-    """Estimate one role-model's VRAM from its GGUF on disk."""
+    """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
     from lilbee.core.config import cfg
     from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
     path = resolve_model_path(model_ref)
     weights = path.stat().st_size
+    if role is WorkerRole.VISION:
+        mmproj = _vision_mmproj(model_ref)
+        if mmproj is not None:
+            weights += mmproj.stat().st_size
     meta = read_gguf_metadata(path)
     kv_bytes = KV_CACHE_TYPE_BYTES.get(cfg.kv_cache_type, 2)
     est = estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_bytes)
@@ -264,6 +331,7 @@ def _launch_for(
 
     slots, ctx, _accessor = _SERVER_ROLE_PARAMS[plan.role]
     chosen = tuple(by_index[i] for i in plan.devices)
+    mmproj = _vision_mmproj(model_ref) if plan.role is WorkerRole.VISION else None
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],
@@ -273,6 +341,7 @@ def _launch_for(
         slots=slots,
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
+        mmproj=mmproj,
     )
     return InstanceLaunch(
         role=plan.role,

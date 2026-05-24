@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import httpx
 
+from lilbee.providers.base import ProviderError
+
+# Single source of truth for the reranker pair format: the fleet must join
+# query/candidate exactly as the in-process reranker does, or scores drift.
+from lilbee.providers.llama_cpp.batching import _RERANK_PAIR_SEPARATOR
+
+_PROVIDER_NAME = "multi-gpu"
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
@@ -43,12 +50,16 @@ class LlamaServerClient:
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         options: dict[str, Any] | None = None,
         stream: bool = False,
     ) -> str | Iterator[str]:
-        """Chat completion. Returns the full text, or a token iterator if streaming."""
+        """Chat completion. Returns the full text, or a token iterator if streaming.
+
+        ``messages`` accepts both plain ``{role, content: str}`` and multipart
+        ``content`` lists (vision image parts), so the vision path reuses this.
+        """
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
         if stream:
             return self._chat_stream(payload)
@@ -74,6 +85,28 @@ class LlamaServerClient:
             resp = self._http.post(_EMBED_PATH, json={"model": self._model, "input": texts})
             resp.raise_for_status()
             return [list(item["embedding"]) for item in resp.json()["data"]]
+
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        """Relevance scores via rank-pooling embeddings (mirrors the in-process path).
+
+        The server runs with ``--pooling rank``; we send ``query</s></s>candidate``
+        pairs to ``/v1/embeddings`` and read each item's first embedding value as the
+        score -- the same primitive and pairing as ``compute_rerank_scores``, so the
+        ``/v1/rerank`` template-dependency (and its zero-output failure modes) is moot.
+        """
+        if not candidates:
+            return []
+        pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
+        with self._track():
+            resp = self._http.post(_EMBED_PATH, json={"model": self._model, "input": pairs})
+            resp.raise_for_status()
+            data = resp.json()["data"]
+        if len(data) != len(pairs):
+            raise ProviderError(
+                f"Reranker returned {len(data)} entries for {len(pairs)} pairs",
+                provider=_PROVIDER_NAME,
+            )
+        return [_rerank_score(item) for item in data]
 
     def close(self) -> None:
         """Close the underlying client if this instance created it."""
@@ -101,6 +134,16 @@ class _InFlight:
     def __exit__(self, *_exc: object) -> None:
         with self._client._in_flight_lock:
             self._client.in_flight -= 1
+
+
+def _rerank_score(item: dict[str, Any]) -> float:
+    """Pull one relevance score from a rank-pooling ``/v1/embeddings`` item."""
+    embedding = item.get("embedding")
+    if isinstance(embedding, list) and embedding and isinstance(embedding[0], (int, float)):
+        return float(embedding[0])
+    raise ProviderError(
+        f"Reranker returned unexpected score shape: {embedding!r}", provider=_PROVIDER_NAME
+    )
 
 
 def _parse_sse_delta(line: str) -> str:

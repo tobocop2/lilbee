@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
+from lilbee.providers.base import ProviderError
 from lilbee.providers.multi_gpu.client import LlamaServerClient, _parse_sse_delta
 
 _STREAM_BODY = (
@@ -32,6 +34,42 @@ def _handler(request: httpx.Request) -> httpx.Response:
 def _client(handler=_handler) -> LlamaServerClient:
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     return LlamaServerClient("http://gpu0", "test-model", http=http)
+
+
+def test_rerank_scores_pairs_via_rank_pooling() -> None:
+    seen: dict[str, list] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen["input"] = body["input"]
+        # rank pooling returns a 1-element embedding (the score) per pair, in order
+        n = len(body["input"])
+        return httpx.Response(200, json={"data": [{"embedding": [float(i)]} for i in range(n)]})
+
+    scores = _client(handler).rerank("q", ["a", "b", "c"])
+    assert scores == [0.0, 1.0, 2.0]
+    # mirrors the in-process pairing exactly
+    assert seen["input"] == ["q</s></s>a", "q</s></s>b", "q</s></s>c"]
+
+
+def test_rerank_empty_candidates_returns_empty() -> None:
+    assert _client().rerank("q", []) == []
+
+
+def test_rerank_raises_on_count_mismatch() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})  # 1 for 2 pairs
+
+    with pytest.raises(ProviderError, match="entries for"):
+        _client(handler).rerank("q", ["a", "b"])
+
+
+def test_rerank_raises_on_bad_score_shape() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"embedding": "nope"}]})
+
+    with pytest.raises(ProviderError, match="unexpected score shape"):
+        _client(handler).rerank("q", ["a"])
 
 
 def test_in_flight_counter_is_atomic_under_threads() -> None:
