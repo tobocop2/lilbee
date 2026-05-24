@@ -12,6 +12,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,10 @@ _HOST = "127.0.0.1"
 _READY_TIMEOUT_S = 180.0
 _READY_POLL_S = 0.5
 _STOP_TIMEOUT_S = 10.0
+# Windows puts the child in a new process group via creationflags; POSIX uses
+# start_new_session. The constant is Windows-only in stdlib, so resolve it
+# dynamically (0 = no-op creationflags on POSIX) to keep one branchless line.
+_CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
 def pick_free_port() -> int:
@@ -73,7 +78,8 @@ class FleetServer:
             env=_child_env(self._launch.devices),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
+            creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
         self._launch.port_file.write_text(str(self._launch.port))
         self.client = LlamaServerClient(f"http://{_HOST}:{self._launch.port}", self._launch.model)
@@ -103,7 +109,13 @@ class FleetServer:
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
-    """SIGTERM the whole process group, escalating to SIGKILL on timeout."""
+    """SIGTERM the whole process group, escalating to SIGKILL on timeout.
+
+    Windows has no process groups via this path, so it hard-stops the process.
+    """
+    if sys.platform == "win32":
+        _hard_stop(proc)
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:  # pragma: no cover - process exited between checks
@@ -113,6 +125,15 @@ def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_STOP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         os.killpg(pgid, signal.SIGKILL)
+
+
+def _hard_stop(proc: subprocess.Popen[bytes]) -> None:
+    """Terminate the process, escalating to a hard kill on timeout (Windows path)."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=_STOP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 @dataclass

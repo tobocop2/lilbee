@@ -24,6 +24,8 @@ class FakeProc:
         self.pid = 4321
         self._alive = alive
         self._wait_raises = wait_raises
+        self.terminated = False
+        self.killed = False
 
     def poll(self) -> int | None:
         return None if self._alive else 0
@@ -33,6 +35,14 @@ class FakeProc:
             raise subprocess.TimeoutExpired("llama-server", timeout)
         self._alive = False
         return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._alive = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self._alive = False
 
 
 def _launch(
@@ -59,8 +69,11 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         return proc
 
     monkeypatch.setattr(fleet_mod.subprocess, "Popen", _popen)
-    monkeypatch.setattr(fleet_mod.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(fleet_mod.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    # raising=False: os.getpgid/killpg do not exist on Windows CI runners.
+    monkeypatch.setattr(fleet_mod.os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(
+        fleet_mod.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)), raising=False
+    )
     monkeypatch.setattr(fleet_mod.LlamaServerClient, "health", lambda self: True)
     monkeypatch.setattr(fleet_mod.LlamaServerClient, "close", lambda self: None)
     return {"killed": killed, "procs": procs}
@@ -109,9 +122,12 @@ def test_wait_ready_false_on_timeout(
     assert server.wait_ready(timeout=0.05) is False
 
 
-def test_stop_terminates_group_and_cleans_up(tmp_path: Path, patched: dict) -> None:
+def test_stop_terminates_group_and_cleans_up(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import signal
 
+    monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
     server = FleetServer(_launch(tmp_path))
     server.spawn()
     server.stop()
@@ -124,11 +140,36 @@ def test_stop_escalates_to_sigkill_on_timeout(
 ) -> None:
     import signal
 
+    monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
     monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: FakeProc(wait_raises=True))
     server = FleetServer(_launch(tmp_path))
     server.spawn()
     server.stop()
     assert (4321, signal.SIGKILL) in patched["killed"]
+
+
+def test_stop_on_windows_terminates_process(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = FakeProc()
+    monkeypatch.setattr(fleet_mod.sys, "platform", "win32")
+    monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: proc)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    server.stop()
+    assert proc.terminated and not proc.killed
+
+
+def test_stop_on_windows_escalates_to_kill(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = FakeProc(wait_raises=True)
+    monkeypatch.setattr(fleet_mod.sys, "platform", "win32")
+    monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: proc)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    server.stop()
+    assert proc.terminated and proc.killed
 
 
 def test_fleet_start_groups_clients_by_role(tmp_path: Path, patched: dict) -> None:
