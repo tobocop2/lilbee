@@ -258,6 +258,7 @@ def _launch_for(plan: Any, model_ref: str, binary: Path, data_dir: Path) -> Inst
         n_gpu_layers=_ALL_GPU_LAYERS,
         slots=slots,
         ctx_per_slot=ctx,
+        tensor_split=plan.tensor_split,
     )
     return InstanceLaunch(
         role=plan.role,

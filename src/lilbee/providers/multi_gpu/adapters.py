@@ -67,13 +67,15 @@ def build_server_argv(
     n_gpu_layers: int,
     slots: int,
     ctx_per_slot: int,
+    tensor_split: tuple[int, ...] = (),
 ) -> list[str]:
     """Assemble the llama-server command line for one instance.
 
-    Single-device instances are pinned via ``CUDA_VISIBLE_DEVICES`` in the child
-    env (so no split flag); multi-device instances tensor-split across the
-    placement's GPUs. ``--ctx-size`` is the per-slot context times the slot count,
-    since llama-server divides total context across parallel slots.
+    Single-device instances are pinned via the visible-device env in the child
+    (so no split flag); multi-device instances split across the placement's GPUs
+    by ``tensor_split`` (per-device proportion), so unequal cards split by
+    capacity rather than evenly. ``--ctx-size`` is the per-slot context times the
+    slot count, since llama-server divides total context across parallel slots.
     """
     argv = [
         str(binary),
@@ -92,6 +94,7 @@ def build_server_argv(
         str(ctx_per_slot * slots),
     ]
     if len(devices) > 1:
-        argv += ["--tensor-split", ",".join("1" for _ in devices)]
+        ratio = tensor_split or tuple(1 for _ in devices)
+        argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
     argv += list(spec.extra_args)
     return argv

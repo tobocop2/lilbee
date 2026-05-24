@@ -61,8 +61,19 @@ class TestPlanPlacement:
             [ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)],
             [(0, 24 * _GB), (1, 24 * _GB)],
         )
-        assert plan.instances == (InstancePlan(WorkerRole.CHAT, (0, 1)),)
+        # Equal cards -> equal proportion (int(24*0.9 GiB) = 21 each).
+        assert plan.instances == (InstancePlan(WorkerRole.CHAT, (0, 1), (21, 21)),)
         assert plan.in_process_roles == ()
+
+    def test_tensor_split_is_proportional_on_unequal_gpus(self) -> None:
+        # 28 GB splits across a 24 GB + 16 GB pair; the ratio must follow free VRAM
+        # (int(24*0.9)=21, int(16*0.9)=14), not an even 1:1 that would OOM the small card.
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.CHAT, 28 * _GB)],
+            [(0, 24 * _GB), (1, 16 * _GB)],
+        )
+        assert plan.instances[0].devices == (0, 1)
+        assert plan.instances[0].tensor_split == (21, 14)
 
     def test_in_process_when_model_fits_nowhere(self) -> None:
         plan = plan_placement(

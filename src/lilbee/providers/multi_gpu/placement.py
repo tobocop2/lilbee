@@ -29,10 +29,16 @@ class ModelPlacementInput:
 
 @dataclass(frozen=True)
 class InstancePlan:
-    """One planned llama-server instance. ``devices`` >1 means tensor-split."""
+    """One planned llama-server instance.
+
+    ``devices`` >1 means the model is split across them; ``tensor_split`` is the
+    per-device proportion (free VRAM in GiB) so an unequal pair splits by capacity
+    rather than evenly. Empty for a single-device instance.
+    """
 
     role: WorkerRole
     devices: tuple[int, ...]
+    tensor_split: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,8 +113,11 @@ def plan_placement(
             continue
         split = _devices_for_split(model.est_vram_bytes, remaining)
         if split is not None:
+            ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in split)
             _charge_split(model.est_vram_bytes, split, remaining)
-            instances.append(InstancePlan(role=model.role, devices=tuple(split)))
+            instances.append(
+                InstancePlan(role=model.role, devices=tuple(split), tensor_split=ratio)
+            )
             continue
         in_process.append(model.role)
 

@@ -58,6 +58,21 @@ def test_build_argv_multi_device_adds_tensor_split() -> None:
     assert argv[argv.index("--tensor-split") + 1] == "1,1"
 
 
+def test_build_argv_uses_proportional_tensor_split() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        port=42700,
+        devices=(0, 1),
+        n_gpu_layers=-1,
+        slots=2,
+        ctx_per_slot=4096,
+        tensor_split=(21, 14),
+    )
+    assert argv[argv.index("--tensor-split") + 1] == "21,14"
+
+
 def test_build_argv_appends_role_extra_args() -> None:
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
