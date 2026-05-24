@@ -292,6 +292,30 @@ def test_restart_dead_aborts_when_stopping(
     assert server.restarts == 0
 
 
+def test_restart_dead_stops_respawn_if_shutdown_raced(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # shutdown sets the stop flag while a restart's respawn is in flight; the
+    # monitor must stop the just-spawned server rather than leave it running.
+    monkeypatch.setattr(fleet_mod, "_RESTART_BACKOFF_S", (0.0,))
+    fleet = Fleet(data_dir=tmp_path)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    fleet._servers.append(server)
+    server._proc._alive = False
+    real_restart = server.restart
+
+    def _restart_then_shutdown_races() -> bool:
+        result = real_restart()
+        fleet._stop_monitor.set()  # shutdown lands during the respawn
+        return result
+
+    monkeypatch.setattr(server, "restart", _restart_then_shutdown_races)
+    fleet._restart_dead()
+    assert server.ready is False
+    assert not server._launch.port_file.exists()  # stop() cleaned it up
+
+
 def test_monitor_loop_runs_until_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Cover the loop body in the main thread: one tick, then stop.
     monkeypatch.setattr(fleet_mod, "_MONITOR_POLL_S", 0.0)

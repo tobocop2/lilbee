@@ -281,7 +281,10 @@ class Fleet:
                 continue
             ready = server.restart()
             with self._lock:
-                server.ready = ready and server.is_alive()
+                if self._stop_monitor.is_set():
+                    server.stop()  # shutdown raced our respawn; don't strand it
+                else:
+                    server.ready = ready and server.is_alive()
 
     @staticmethod
     def _backoff(restarts: int) -> None:
