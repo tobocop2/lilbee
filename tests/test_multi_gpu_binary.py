@@ -13,6 +13,13 @@ from lilbee.providers.multi_gpu.binary import resolve_llama_server_binary
 _WHICH = "lilbee.providers.multi_gpu.binary.shutil.which"
 
 
+def test_uses_bundled_binary_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binpath = tmp_path / "llama-server"
+    binpath.write_text("#!/bin/sh\n")
+    monkeypatch.setattr("lilbee.providers.multi_gpu.binary._bundled_binary", lambda: binpath)
+    assert resolve_llama_server_binary() == binpath
+
+
 def test_uses_configured_path_when_file_exists(tmp_path: Path) -> None:
     binpath = tmp_path / "llama-server"
     binpath.write_text("#!/bin/sh\n")

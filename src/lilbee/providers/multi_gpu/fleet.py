@@ -67,10 +67,6 @@ class FleetServer:
         self._proc: subprocess.Popen[bytes] | None = None
         self.client: LlamaServerClient | None = None
 
-    @property
-    def role(self) -> WorkerRole:
-        return self._launch.role
-
     def spawn(self) -> LlamaServerClient:
         """Launch the process group, write the port file, return the client."""
         self._proc = subprocess.Popen(  # noqa: S603 - argv is built from a fixed template
