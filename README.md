@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><strong>A batteries-included local search engine for your data and code that you can talk to.</strong></p>
+<p align="center"><strong>Run local AI models, search your own files and code, and crawl the web, all in one program.</strong></p>
 
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a></p>
 
@@ -23,11 +23,11 @@
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total" alt="GitHub release downloads"></a>
 </p>
 
-Point it at your files, notes, and code and ask questions in plain English. Every answer links back to the file and line it came from. Point it at nothing and you've still got a clean local-AI chat with the model catalog wired up, cloud models if you bring an API key, and an MCP server so any agent can drive it.
+A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
 
 ![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
-It's all one program: a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, and a Python library. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. It runs on your computer; lilbee uses a cloud model only when you pick one.
+It's all one program, with no separate services to run alongside it: no model server, no vector database, no container to stand up. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Run it when you want, close it when you're done; nothing left running in the background. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html).
 
@@ -68,15 +68,17 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 
 ## Highlights
 
-- **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library, all from a single `pip install`. No daemon, no inference server, no vector database to stand up.
+- **It brings and runs the models itself.** Browse Hugging Face, pull a model, assign it to a role; it runs in-process on Metal, Vulkan, or CUDA, no separate server.
+- **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
+- **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
+- **A real retrieval pipeline, not keyword search.** Hybrid keyword + vector, a concept graph, optional reranking, all from published research. [50+ settings](docs/usage.md) to tune.
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line.
-- **Indexes anything textual.** PDFs, Office files, ebooks, source in 150+ languages, scanned pages (OCR), and crawled documentation sites.
-- **Models from Hugging Face, inside the app.** Browse the catalog, pull a model, assign it to a role. No external CLI.
-- **Native runtime, with an off-ramp.** Models run in-process via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python). For brand-new architectures that haven't reached the bundled runtime yet, point lilbee at a running Ollama (or any OpenAI-compatible local backend) and its models show up in the picker alongside your native ones.
-- **Per-project libraries.** Drop `.lilbee/` next to `.git/` for a project-scoped index, or run globally for a household-scale one.
-- **Local by default.** Everything stays on your computer unless you pick a cloud model, and lilbee tells you when one is on.
-- **Agent-tunable over MCP.** Agents can swap models, widen retrieval, and rebuild the index without you leaving chat. [See it in action](#already-using-an-mcp-aware-agent-hand-setup-to-it).
-- **Compact at the base.** If you already have Python, the lilbee wheel is 6 MB on macOS arm64, 20 MB on Windows x86_64, and 47 MB on Linux x86_64. That's without the optional extras: `[crawler]` adds Playwright so you can index websites (and Chromium downloads ~150 MB on first crawl), `[litellm]` adds the cloud-provider SDKs, `[graph]` adds spaCy. The single-file standalone binary bundles all of those along with Python, the model runtime, OCR, and the vector store, and lands at 250-365 MB. Even loaded, that's in the same range as all-in-one desktop AI apps that bundle a browser engine for their UI alone, before any models are loaded.
+- **Indexes anything textual.** PDFs, Office, ebooks, code in 150+ languages, scanned pages (OCR), crawled sites.
+- **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. No daemon, no vector DB to stand up.
+- **Per-project libraries.** Keep one library for everything, or give each project its own.
+- **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
+- **Agent-tunable over MCP.** Agents swap models, widen retrieval, and rebuild the index without you leaving chat.
+- **Compact at the base.** A 6 MB wheel on macOS arm64 (more on Linux and Windows) if you have Python; the crawler and remote providers are opt-in extras on top. The all-in-one standalone binary bundles everything at 250-365 MB.
 
 ## Why lilbee
 
@@ -84,7 +86,7 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, in one process, in the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> **The long-term goal:** an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you'd build for yourself, over your files, your code, even the web pages you save. Read it in plain English, or have it read for you by your coding agent.
+> **The long-term goal:** make local AI genuinely practical and useful, for everyday questions and for programming, and easy to get going. A coding agent ready to go on local models, with a real search engine over your own documents behind it. One part of that is the [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you'd build for yourself, over your files, your code, even the web pages you save: read it in plain English, or have your agent read it for you.
 
 ## What you can do with it
 

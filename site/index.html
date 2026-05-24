@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee: a batteries-included local search engine you can talk to</title>
-<meta name="description" content="A batteries-included local search engine for your data and code. Ask in plain English; every answer cites the file and line. CLI + TUI + MCP server.">
+<title>lilbee — run local AI models and search your files, code, and the web</title>
+<meta name="description" content="Run local AI models on your own hardware and search your files, code, and the web, with answers that cite the source. Local-first, one install: CLI, TUI, and an MCP server.">
 <link rel="canonical" href="https://lilbee.sh/">
 
 <!-- Open Graph: rich link previews for any client that reads the protocol. -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="lilbee">
-<meta property="og:title" content="lilbee: a batteries-included local search engine you can talk to">
-<meta property="og:description" content="A batteries-included local search engine for your data and code. Ask in plain English; every answer cites the file and line.">
+<meta property="og:title" content="lilbee — run local AI models and search your files, code, and the web">
+<meta property="og:description" content="Run local AI models on your own hardware and search your files, code, and the web. Cited answers, local-first, one install. A web crawler and an MCP server built in.">
 <meta property="og:url" content="https://lilbee.sh/">
 <meta property="og:image" content="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png">
 <meta property="og:image:width" content="1400">
@@ -24,7 +24,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "lilbee",
-  "description": "A batteries-included local search engine for your data and code that you can talk to. Cited answers, local-first, with an MCP server for agent integration.",
+  "description": "lilbee runs local AI models on your own hardware and turns your files, code, and crawled websites into a searchable library you can talk to, with answers that cite the source. Local-first, with an MCP server for agent integration.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux, Windows",
   "url": "https://lilbee.sh/",
@@ -63,8 +63,8 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <h1 class="tagline">A <strong>batteries-included local search engine</strong> for your data and code that you can talk to.</h1>
-      <p class="sub">Point it at your files, notes, and code; ask questions in plain English. Every answer links back to the file and line. Point it at nothing and it's still a clean local-AI chat with the model catalog wired up; cloud models too if you bring an API key or use a frontier agent over MCP.</p>
+      <h1 class="tagline">Run local AI models, search your own files and code, and crawl the web, <strong>all in one program</strong>.</h1>
+      <p class="sub">A batteries-included local search engine you can talk to: ask in plain English, and every answer cites the file and line. Runs on your machine, and any coding agent can drive it over MCP.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -73,7 +73,7 @@
         <span class="surface">web API</span>
         <span class="surface">Python library</span>
       </div>
-      <p class="trust"><strong>It runs on your computer.</strong> Your files stay on disk; lilbee uses a cloud model only when you pick one.</p>
+      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one.</p>
     </section>
 
     <section>
@@ -360,6 +360,11 @@
     </section>
 
     <section>
+      <div class="label">your hardware, put to work</div>
+      <p class="lede">Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own.</p>
+    </section>
+
+    <section>
       <div class="label">one program</div>
       <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
       <div class="shape">
@@ -392,6 +397,14 @@
     <section>
       <div class="label">what it does</div>
       <div class="caps">
+        <div class="cap">
+          <h3>runs the models itself</h3>
+          <p>Browse Hugging Face, pull a model, assign it to a role. Runs in-process on Metal, Vulkan, or CUDA, no separate model server.</p>
+        </div>
+        <div class="cap">
+          <h3>a real retrieval pipeline</h3>
+          <p>Not keyword search: hybrid keyword + vector, a concept graph, optional reranking, all from published research. 50+ settings to tune.</p>
+        </div>
         <div class="cap">
           <h3>feed it your files</h3>
           <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
