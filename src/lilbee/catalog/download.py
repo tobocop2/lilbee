@@ -2,6 +2,7 @@
 
 import fnmatch
 import logging
+import re
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -34,15 +35,38 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
+_HTTP_TOO_LARGE_MARKER = "too large to be downloaded using the regular download method"
+
+
+def _download_with_xet(config: DownloadConfig) -> Path:
+    """Re-run the download with xet enabled, for files past the HTTP size cap.
+
+    lilbee disables xet by default (``HF_HUB_DISABLE_XET``) so download progress
+    bars stay smooth, but huggingface_hub refuses files over its HTTP size cap on
+    the regular path and only xet can fetch them. ``is_xet_available()`` reads the
+    constant live, so flip it for this one download and restore it after. hf_xet
+    is a hard dependency, so the xet path is always available.
+    """
+    from huggingface_hub import constants, hf_hub_download
+
+    original = constants.HF_HUB_DISABLE_XET
+    constants.HF_HUB_DISABLE_XET = False
+    try:
+        log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
+        return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+    finally:
+        constants.HF_HUB_DISABLE_XET = original
+
+
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
     """Run the HF download and translate every error class into a clean exception."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
     try:
-        # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time.
-        # Setting it here is too late: huggingface_hub.constants already
-        # captured the value when this module first imported it.
+        # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time; the
+        # _download_with_xet fallback flips the constant directly (not the env)
+        # for files that only xet can deliver.
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
@@ -57,10 +81,33 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
+    except ValueError as exc:
+        if _HTTP_TOO_LARGE_MARKER in str(exc):
+            return _download_with_xet(config)
+        raise RuntimeError(f"Failed to download {entry.hf_repo}: ValueError: {exc}") from None
     except Exception as exc:
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
+
+
+_SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
+
+
+def split_shard_filenames(filename: str) -> list[str]:
+    """Return every shard of a split GGUF in order, or ``[filename]`` if it isn't split.
+
+    A split GGUF names its parts ``<base>-00001-of-0000N.gguf`` through
+    ``<base>-0000N-of-0000N.gguf``. llama.cpp loads the whole set from the first
+    shard but needs every part on disk, so the catalog must fetch all of them and
+    only consider the model installed once the full set is present.
+    """
+    match = _SPLIT_SHARD_RE.match(filename)
+    if match is None:
+        return [filename]
+    base = match.group("base")
+    total = int(match.group("total"))
+    return [f"{base}-{index:05d}-of-{total:05d}.gguf" for index in range(1, total + 1)]
 
 
 def download_model(
@@ -76,6 +123,11 @@ def download_model(
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
 
+    A split GGUF has every shard fetched before the model is finalized, so the
+    registry manifest (and thus "installed") only lands once the full set is on
+    disk; an interrupted multi-part pull leaves the model not-installed and
+    re-pullable rather than registered-but-unloadable.
+
     Raises:
         PermissionError: gated repo requiring authentication
         RuntimeError: repo not found or download failure with details
@@ -83,32 +135,37 @@ def download_model(
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
 
     filename = resolve_filename(entry)
-    dest = cfg.models_dir / filename
-    if dest.exists():
+    shards = split_shard_filenames(filename)
+    dest = cfg.models_dir / shards[0]
+    if all((cfg.models_dir / shard).exists() for shard in shards):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
             size = dest.stat().st_size
             on_progress(size, size)  # Report 100% immediately
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
-    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
     tracker = _ProgressTracker(on_progress) if on_progress else None
-    config = DownloadConfig(
-        repo_id=entry.hf_repo,
-        filename=filename,
-        token=hf_token(),
-        cache_dir=str(cfg.models_dir),
-        tqdm_class=tracker.make_tqdm_class() if tracker else None,
-    )
-
-    cached = _hf_download_or_translate(entry, config)
+    shard_paths: list[Path] = []
+    for shard in shards:
+        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, cfg.models_dir)
+        config = DownloadConfig(
+            repo_id=entry.hf_repo,
+            filename=shard,
+            token=hf_token(),
+            cache_dir=str(cfg.models_dir),
+            tqdm_class=tracker.make_tqdm_class() if tracker else None,
+        )
+        shard_paths.append(_hf_download_or_translate(entry, config))
+    first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
 
     if on_progress:
-        actual_size = cached.stat().st_size
+        actual_size = first_shard_path.stat().st_size
         if not tracker or not tracker.was_used:
-            log.info("Model found in HuggingFace cache: %s", cached)
+            log.info("Model found in HuggingFace cache: %s", first_shard_path)
         on_progress(actual_size, actual_size)
-    return _finalize_download(entry, cached, on_progress=on_progress, on_complete=on_complete)
+    return _finalize_download(
+        entry, first_shard_path, on_progress=on_progress, on_complete=on_complete
+    )
 
 
 def _finalize_download(

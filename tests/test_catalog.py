@@ -842,6 +842,71 @@ class TestResolvePullTarget:
         assert catalog.resolve_pull_target(value) is None
 
 
+class TestSplitShardFilenames:
+    def test_single_file_returns_itself(self) -> None:
+        assert catalog.download.split_shard_filenames("model-Q4_K_M.gguf") == ["model-Q4_K_M.gguf"]
+
+    def test_split_returns_every_part_in_order(self) -> None:
+        parts = catalog.download.split_shard_filenames("Q4_K_M/M-Q4_K_M-00001-of-00003.gguf")
+        assert parts == [
+            "Q4_K_M/M-Q4_K_M-00001-of-00003.gguf",
+            "Q4_K_M/M-Q4_K_M-00002-of-00003.gguf",
+            "Q4_K_M/M-Q4_K_M-00003-of-00003.gguf",
+        ]
+
+
+class TestSplitShardDownload:
+    def test_fetches_all_shards_and_finalizes_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A split GGUF pulls every shard, and on_complete fires once after the set."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00002.gguf")
+        requested: list[str] = []
+
+        def fake(**kwargs: Any) -> str:
+            requested.append(kwargs["filename"])
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        completed: list[Path] = []
+        download_model(entry, on_complete=lambda _e, p: completed.append(p))
+
+        assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
+        assert len(completed) == 1  # manifest write only after the full set is on disk
+
+    def test_xet_fallback_when_file_too_large_for_http(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 'too large for HTTP' error retries with xet enabled, then restores the flag."""
+        import huggingface_hub.constants as hc
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)  # lilbee's default
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+
+        calls = {"n": 0}
+        disable_during_retry: list[bool] = []
+
+        def fake(**kwargs: Any) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError(
+                    "The file is too large to be downloaded using the regular download method."
+                )
+            disable_during_retry.append(hc.HF_HUB_DISABLE_XET)
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        download_model(entry)
+
+        assert calls["n"] == 2  # original attempt + xet retry
+        assert disable_during_retry == [False]  # xet was on for the retry
+        assert hc.HF_HUB_DISABLE_XET is True  # flag restored afterwards
+
+
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
