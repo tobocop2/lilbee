@@ -2208,15 +2208,16 @@ class TestVulkanGpuSelect:
         assert gpu_select._enumerate_vulkan_devices() is None
 
     def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
-        """``_resolve_vk_symbols`` reads four named attributes off the loader."""
+        """``_resolve_vk_symbols`` reads five named attributes off the loader."""
         from lilbee.providers.llama_cpp.gpu_select import _resolve_vk_symbols
 
         fake_lib = mock.MagicMock()
-        create, destroy, enum_phys, get_props = _resolve_vk_symbols(fake_lib)
+        create, destroy, enum_phys, get_props, get_mem = _resolve_vk_symbols(fake_lib)
         assert create is fake_lib.vkCreateInstance
         assert destroy is fake_lib.vkDestroyInstance
         assert enum_phys is fake_lib.vkEnumeratePhysicalDevices
         assert get_props is fake_lib.vkGetPhysicalDeviceProperties
+        assert get_mem is fake_lib.vkGetPhysicalDeviceMemoryProperties
 
     def test_list_devices_with_instance_returns_parsed_devices(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2252,16 +2253,32 @@ class TestVulkanGpuSelect:
             props_ref._obj.deviceType = dtype
             props_ref._obj.deviceName = name
 
+        def _get_memory(handle: object, mem_ref: object) -> None:
+            # device 1 reports a 12 GB device-local heap + a host heap to ignore.
+            i = handle - 0xCAFE
+            mem_ref._obj.memoryHeapCount = 2
+            mem_ref._obj.memoryHeaps[0].size = (i + 1) * 12_000_000_000
+            mem_ref._obj.memoryHeaps[0].flags = 1  # VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+            mem_ref._obj.memoryHeaps[1].size = 64_000_000_000
+            mem_ref._obj.memoryHeaps[1].flags = 0  # host-visible, not VRAM
+
         monkeypatch.setattr(
             gpu_select,
             "_resolve_vk_symbols",
-            lambda _lib: (_create_instance, lambda *_: None, _enum_physical, _get_properties),
+            lambda _lib: (
+                _create_instance,
+                lambda *_: None,
+                _enum_physical,
+                _get_properties,
+                _get_memory,
+            ),
         )
         devices = _list_devices_with_instance(object())
         assert len(devices) == device_count
         assert devices[0].device_type == VkDeviceType.INTEGRATED_GPU
         assert devices[1].device_type == VkDeviceType.DISCRETE_GPU
         assert devices[1].device_name == "NVIDIA RTX"
+        assert devices[1].vram_bytes == 24_000_000_000
 
     def test_list_devices_returns_empty_when_create_instance_fails(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2276,6 +2293,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: 1,  # VK_ERROR
                 lambda *_a: None,
                 lambda *_a: 0,
+                lambda *_a: None,
                 lambda *_a: None,
             ),
         )
@@ -2298,6 +2316,7 @@ class TestVulkanGpuSelect:
                 _create_instance,
                 lambda *_a: None,
                 lambda *_a: 1,  # enum fails
+                lambda *_a: None,
                 lambda *_a: None,
             ),
         )
@@ -2324,6 +2343,7 @@ class TestVulkanGpuSelect:
                 _create_instance,
                 lambda *_a: None,
                 _enum_physical,
+                lambda *_a: None,
                 lambda *_a: None,
             ),
         )
@@ -2353,6 +2373,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: None,
                 _enum_physical,
                 lambda *_a: None,
+                lambda *_a: None,
             ),
         )
         assert _list_devices_with_instance(object()) == []
@@ -2371,6 +2392,56 @@ class TestVulkanGpuSelect:
         monkeypatch.setattr(gpu_select.ctypes, "CDLL", _cdll)
         monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _n: "/lib/libvulkan.so")
         assert gpu_select._load_vulkan_loader() is None
+
+    def test_enumerate_gpu_vram_returns_index_vram_pairs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.llama_cpp.gpu_select import VkDeviceType, VulkanDevice
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="a",
+                    vendor_id=0,
+                    vram_bytes=24_000_000_000,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="b",
+                    vendor_id=0,
+                    vram_bytes=8_000_000_000,
+                ),
+            ],
+        )
+        assert gpu_select.enumerate_gpu_vram() == [(0, 24_000_000_000), (1, 8_000_000_000)]
+
+    def test_enumerate_gpu_vram_none_when_probe_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
+        assert gpu_select.enumerate_gpu_vram() is None
+
+    def test_device_local_vram_sums_device_local_heaps_only(self) -> None:
+        from lilbee.providers.llama_cpp.gpu_select import (
+            _device_local_vram,
+            _VkPhysicalDeviceMemoryProperties,
+        )
+
+        mem = _VkPhysicalDeviceMemoryProperties()
+        mem.memoryHeapCount = 2
+        mem.memoryHeaps[0].size = 8_000_000_000
+        mem.memoryHeaps[0].flags = 1  # VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+        mem.memoryHeaps[1].size = 16_000_000_000
+        mem.memoryHeaps[1].flags = 0  # host-visible
+        assert _device_local_vram(mem) == 8_000_000_000
 
 
 class TestClassifyManifestVendor:

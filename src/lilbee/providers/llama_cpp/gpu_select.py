@@ -34,7 +34,7 @@ import logging
 import ntpath
 import os
 import sys
-from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_void_p
+from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64, c_void_p
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
@@ -104,6 +104,7 @@ class VulkanDevice:
     device_type: int
     device_name: str
     vendor_id: int
+    vram_bytes: int = 0
 
 
 class PCIVendorID(IntEnum):
@@ -222,6 +223,32 @@ class _VkPhysicalDeviceProperties(ctypes.Structure):
     ]
 
 
+# VkPhysicalDeviceMemoryProperties layout (Vulkan 1.0 ABI, frozen). Array
+# bounds and the device-local heap flag are from vulkan_core.h. The
+# device-local heap size is the cross-vendor VRAM signal (the same heap
+# nvidia-smi/rocm-smi report) used for placement bin-packing.
+_VK_MAX_MEMORY_TYPES = 32
+_VK_MAX_MEMORY_HEAPS = 16
+_VK_MEMORY_HEAP_DEVICE_LOCAL_BIT = 0x00000001
+
+
+class _VkMemoryType(ctypes.Structure):
+    _fields_ = [("propertyFlags", c_uint32), ("heapIndex", c_uint32)]
+
+
+class _VkMemoryHeap(ctypes.Structure):
+    _fields_ = [("size", c_uint64), ("flags", c_uint32)]
+
+
+class _VkPhysicalDeviceMemoryProperties(ctypes.Structure):
+    _fields_ = [
+        ("memoryTypeCount", c_uint32),
+        ("memoryTypes", _VkMemoryType * _VK_MAX_MEMORY_TYPES),
+        ("memoryHeapCount", c_uint32),
+        ("memoryHeaps", _VkMemoryHeap * _VK_MAX_MEMORY_HEAPS),
+    ]
+
+
 def autoselect_best_gpu_index() -> str | None:
     """Return the Vulkan device index of the best-available adapter, or ``None``.
 
@@ -246,6 +273,19 @@ def autoselect_best_gpu_index() -> str | None:
     if len(ranks) <= 1:
         return None
     return str(best.index)
+
+
+def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
+    """Return ``[(device_index, device_local_vram_bytes), ...]`` or ``None``.
+
+    Cross-vendor via the Vulkan probe (NVIDIA/AMD/Intel). ``None`` when the
+    loader/probe is unavailable (macOS Metal, no Vulkan driver), so the
+    placement planner can degrade to count-only or in-process.
+    """
+    devices = _enumerate_vulkan_devices()
+    if devices is None:
+        return None
+    return [(d.index, d.vram_bytes) for d in devices]
 
 
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
@@ -309,7 +349,13 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
     instance is short-lived (created and destroyed in the same call)
     so the probe leaves no driver state behind.
     """
-    create_instance, destroy_instance, enum_physical, get_properties = _resolve_vk_symbols(lib)
+    (
+        create_instance,
+        destroy_instance,
+        enum_physical,
+        get_properties,
+        get_memory,
+    ) = _resolve_vk_symbols(lib)
 
     app_info = _VkApplicationInfo(
         sType=_VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -348,12 +394,15 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
         for i in range(count.value):
             props = _VkPhysicalDeviceProperties()
             get_properties(handles[i], byref(props))
+            mem = _VkPhysicalDeviceMemoryProperties()
+            get_memory(handles[i], byref(mem))
             devices.append(
                 VulkanDevice(
                     index=i,
                     device_type=int(props.deviceType),
                     device_name=props.deviceName.decode("utf-8", errors="replace"),
                     vendor_id=int(props.vendorID),
+                    vram_bytes=_device_local_vram(mem),
                 )
             )
         return devices
@@ -363,8 +412,14 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
 
 def _resolve_vk_symbols(
     lib: ctypes.CDLL,
-) -> tuple[ctypes._FuncPointer, ctypes._FuncPointer, ctypes._FuncPointer, ctypes._FuncPointer]:
-    """Look up the four Vulkan symbols this probe needs and stamp argtypes.
+) -> tuple[
+    ctypes._FuncPointer,
+    ctypes._FuncPointer,
+    ctypes._FuncPointer,
+    ctypes._FuncPointer,
+    ctypes._FuncPointer,
+]:
+    """Look up the five Vulkan symbols this probe needs and stamp argtypes.
 
     All argtypes / restypes are set here so ctypes uses the same
     calling convention as the C ABI; missing this on Windows produces
@@ -390,7 +445,21 @@ def _resolve_vk_symbols(
     get_properties.argtypes = [c_void_p, POINTER(_VkPhysicalDeviceProperties)]
     get_properties.restype = None
 
-    return create_instance, destroy_instance, enum_physical, get_properties
+    get_memory = lib.vkGetPhysicalDeviceMemoryProperties
+    get_memory.argtypes = [c_void_p, POINTER(_VkPhysicalDeviceMemoryProperties)]
+    get_memory.restype = None
+
+    return create_instance, destroy_instance, enum_physical, get_properties, get_memory
+
+
+def _device_local_vram(mem_props: _VkPhysicalDeviceMemoryProperties) -> int:
+    """Sum the device-local heap sizes (bytes), the cross-vendor VRAM signal."""
+    total = 0
+    for i in range(mem_props.memoryHeapCount):
+        heap = mem_props.memoryHeaps[i]
+        if heap.flags & _VK_MEMORY_HEAP_DEVICE_LOCAL_BIT:
+            total += int(heap.size)
+    return total
 
 
 def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
