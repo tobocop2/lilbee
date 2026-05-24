@@ -45,7 +45,7 @@ size_gb = 4.8
 
 [[model]]
 family = "olmo3"
-ref = "bartowski/OLMo-2-1124-7B-Instruct-GGUF/OLMo-2-1124-7B-Instruct-Q4_K_M.gguf"
+ref = "unsloth/Olmo-3-7B-Instruct-GGUF/Olmo-3-7B-Instruct-Q4_K_M.gguf"
 size_gb = 4.8
 
 [[model]]
