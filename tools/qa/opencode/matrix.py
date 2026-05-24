@@ -523,14 +523,29 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     time.sleep(_OPENCODE_BOOT_SETTLE_S)
 
 
+_TOOL_TURN_MIN_COMPLETIONS = 2
+"""Chat completions a genuine tool turn drives: the model's tool-call turn plus
+the follow-up answer turn after opencode feeds the tool result back in.
+
+A prose answer -- the model declining to call the tool and replying from
+context -- drives only one completion. The scenarios share one opencode
+session, so an earlier scenario's gear glyph stays visible in the pane; gating
+on the glyph plus a single new completion let a prose turn pass on that stale
+glyph. Requiring the per-scenario completion delta to reach two means the gear
+must be backed by an actual ``opencode -> lilbee -> tool -> answer`` round-trip
+in *this* scenario, not carried over from the previous one.
+"""
+
+
 def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioResult:
     """Send the prompt and poll until a FRESH tool dispatch lands or idle/timeout.
 
-    PASS requires both the gear-glyph dispatch marker in the pane AND a new
-    ``POST /v1/chat/completions 200`` in the launcher log since this scenario
-    started. The count delta defeats the stale-glyph trap: opencode keeps the
-    prior turn's transcript visible, so a later scenario would otherwise match
-    an earlier scenario's gear without driving its own opencode -> lilbee turn.
+    PASS requires the gear-glyph dispatch marker in the pane AND at least
+    ``_TOOL_TURN_MIN_COMPLETIONS`` new ``POST /v1/chat/completions 200`` in the
+    launcher log since this scenario started. The two-completion delta defeats
+    the stale-glyph trap: opencode keeps the prior turn's transcript visible, so
+    a later scenario would otherwise match an earlier scenario's gear off a
+    single prose completion without ever re-dispatching the tool itself.
     """
     baseline_calls = _count_ok_chat_completions(workspace)
     tmux_send(session, scenario.prompt)
@@ -566,7 +581,8 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
                 elapsed_s=time.time() - start,
             )
         missing = [s for s in scenario.expected if s.lower() not in pane_lower]
-        fresh_call = _count_ok_chat_completions(workspace) > baseline_calls
+        new_calls = _count_ok_chat_completions(workspace) - baseline_calls
+        fresh_call = new_calls >= _TOOL_TURN_MIN_COMPLETIONS
         if not missing and fresh_call:
             return ScenarioResult(
                 name=scenario.name,
@@ -580,7 +596,10 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
             detail = (
                 f"pane idle {idle_for:.0f}s; missing {missing}"
                 if missing
-                else f"pane idle {idle_for:.0f}s; gear seen but no fresh chat completion"
+                else (
+                    f"pane idle {idle_for:.0f}s; gear seen but only {new_calls} new "
+                    f"completion(s), need {_TOOL_TURN_MIN_COMPLETIONS} (prose, no re-dispatch)"
+                )
             )
             return ScenarioResult(
                 name=scenario.name,
