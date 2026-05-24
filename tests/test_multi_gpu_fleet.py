@@ -142,6 +142,45 @@ def test_wait_ready_respawns_on_port_bind_death(
     assert server.wait_ready(timeout=0.05) is True
 
 
+def test_wait_ready_false_when_dead_on_every_retry(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every (re)spawn dies at once -> exhaust the bind retries -> False.
+    monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: FakeProc(alive=False))
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    assert server.wait_ready(timeout=0.01) is False
+
+
+def test_restart_terminates_a_still_alive_process(tmp_path: Path, patched: dict) -> None:
+    # restart() defensively kills a server whose process is still alive.
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()  # alive
+    assert server.restart() is True
+    assert server.restarts == 1
+
+
+def test_restart_dead_skips_a_recovered_server(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dead in the snapshot but alive again by the time the loop reaches it -> skip.
+    monkeypatch.setattr(fleet_mod, "_RESTART_BACKOFF_S", (0.0,))
+    fleet = Fleet(data_dir=tmp_path)
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    fleet._servers.append(server)
+    calls = {"n": 0}
+
+    def _is_alive() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the snapshot, True on the recheck
+
+    monkeypatch.setattr(server, "is_alive", _is_alive)
+    fleet._restart_dead()
+    assert server.restarts == 0  # recovered, so not restarted
+
+
 def test_stop_terminates_group_and_cleans_up(tmp_path: Path, patched: dict) -> None:
     import signal
 
