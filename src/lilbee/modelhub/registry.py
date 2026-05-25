@@ -82,6 +82,35 @@ class ModelManifest:
         return format_native_gguf_ref(self.hf_repo, self.gguf_filename)
 
 
+def _copy_atomic(source_path: Path, blob_path: Path) -> None:
+    """Copy *source_path* to *blob_path* via a temp file + atomic rename.
+
+    A crash mid-copy leaves only the temp file, never a partial blob at
+    the final digest path that callers would treat as complete.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(blob_path.parent), suffix=".part")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as dst, source_path.open("rb") as src:
+            shutil.copyfileobj(src, dst)
+        os.replace(tmp_path, blob_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _blob_size_matches(blob_file: Path, expected_size: int) -> bool:
+    """True iff *blob_file* exists and its byte size equals *expected_size*.
+
+    A blob shorter than the manifest's recorded size is a truncated /
+    interrupted download and must not count as installed.
+    """
+    try:
+        return blob_file.stat().st_size == expected_size
+    except OSError:
+        return False
+
+
 def _sha256_file(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
     h = hashlib.sha256()
@@ -125,7 +154,7 @@ class ModelRegistry:
         manifest = self._read_manifest(hf_repo, gguf_filename)
         if manifest is not None and manifest.blob is not None:
             blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-            if blob_file.exists():
+            if _blob_size_matches(blob_file, manifest.size_bytes):
                 return blob_file
         recovered = self._find_cached_gguf(hf_repo, gguf_filename)
         if recovered is not None:
@@ -140,6 +169,12 @@ class ModelRegistry:
             raise KeyError(f"Cache folder missing for {ref}: {cache_path.name}")
         if manifest.blob is None:
             raise KeyError(f"Manifest for {ref} has no blob hash; install incomplete")
+        blob_file = cache_path / "blobs" / manifest.blob
+        if blob_file.exists():
+            raise KeyError(
+                f"Blob for {ref} is truncated: {blob_file.stat().st_size} of "
+                f"{manifest.size_bytes} bytes; re-download required"
+            )
         raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
@@ -255,20 +290,20 @@ class ModelRegistry:
         manifest: ModelManifest,
     ) -> Path:
         """Write a manifest, copying *source_path* into the HF cache if needed."""
-        import shutil
-
         digest = _sha256_file(source_path)
         cache_path = self._repo_cache_dir(hf_repo)
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
         if not blob_path.exists():
             blobs_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, blob_path)
+            _copy_atomic(source_path, blob_path)
 
         updated = ModelManifest(
             hf_repo=hf_repo,
             gguf_filename=gguf_filename,
-            size_bytes=manifest.size_bytes,
+            # Record the size install actually wrote, not the caller's claim,
+            # so the on-disk size check has a trustworthy reference.
+            size_bytes=source_path.stat().st_size,
             task=manifest.task,
             downloaded_at=manifest.downloaded_at,
             blob=digest,
@@ -350,11 +385,11 @@ class ModelRegistry:
         return manifests
 
     def _blob_present(self, manifest: ModelManifest) -> bool:
-        """True iff *manifest* points at an existing blob file."""
+        """True iff *manifest* points at a blob whose on-disk size matches."""
         if manifest.blob is None:
             return False
         blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-        return blob_file.exists()
+        return _blob_size_matches(blob_file, manifest.size_bytes)
 
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
