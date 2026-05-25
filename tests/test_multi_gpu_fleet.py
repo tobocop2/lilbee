@@ -253,21 +253,39 @@ def test_reap_orphans_kills_only_dead_parents_servers(
 
 def test_is_pid_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
-    assert fleet_mod._is_pid_alive(os.getpid()) is True  # this process
-    assert fleet_mod._is_pid_alive(1) is True  # exists, EPERM -> assume alive
-    assert fleet_mod._is_pid_alive(2**31 - 1) is False  # no such pid
+    # Exercise the POSIX branch by mocking os.kill's outcomes -- calling the real
+    # syscall is non-portable (Windows os.kill has different error semantics and
+    # can even target the live process), which is why this used to fail on Windows.
+    monkeypatch.setattr(fleet_mod.os, "kill", lambda _pid, _sig: None)
+    assert fleet_mod._is_pid_alive(123) is True  # signalable -> alive
+
+    def _no_such(_pid: int, _sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(fleet_mod.os, "kill", _no_such)
+    assert fleet_mod._is_pid_alive(123) is False  # no such pid
+
+    def _eperm(_pid: int, _sig: int) -> None:
+        raise PermissionError  # an OSError subclass
+
+    monkeypatch.setattr(fleet_mod.os, "kill", _eperm)
+    assert fleet_mod._is_pid_alive(123) is True  # exists but not signalable
+
     monkeypatch.setattr(fleet_mod.sys, "platform", "win32")
-    assert fleet_mod._is_pid_alive(2**31 - 1) is True  # Windows: never reap
+    assert fleet_mod._is_pid_alive(2**31 - 1) is True  # Windows: never reap (no os.kill)
 
 
 def test_kill_pid_group_handles_missing_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(fleet_mod.sys, "platform", "linux")
+    # os.killpg does not exist on Windows; provide it so forcing the POSIX branch
+    # doesn't raise AttributeError on the runner before getpgid is reached.
+    monkeypatch.setattr(fleet_mod.os, "killpg", lambda _pgid, _sig: None, raising=False)
 
     def _missing(_pid: int) -> int:
         raise ProcessLookupError
 
     monkeypatch.setattr(fleet_mod.os, "getpgid", _missing, raising=False)
-    fleet_mod._kill_pid_group(123)  # must not raise
+    fleet_mod._kill_pid_group(123)  # getpgid raises -> swallowed, must not propagate
 
 
 def test_fleet_start_reaps_then_serves_healthy_clients(
