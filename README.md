@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><strong>Run local AI models, search your own files and code, and crawl the web, all in one program.</strong></p>
+<p align="center"><strong>Run and manage local AI models, and search everything you own with them, all in one program.</strong></p>
 
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a></p>
 
