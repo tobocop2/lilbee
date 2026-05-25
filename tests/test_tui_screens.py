@@ -6800,46 +6800,6 @@ async def test_do_add_raises_on_sync_failed(tmp_path):
         assert "doc.txt" in str(captured["exc"])
 
 
-async def test_do_crawl_prompts_to_raise_safety_cap(monkeypatch):
-    """Hitting the safety cap pushes a ConfirmDialog that re-opens the crawl dialog."""
-    import threading
-    from pathlib import Path
-
-    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-    from lilbee.runtime.progress import CrawlDoneEvent, EventType
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        chat = app.screen
-        opened = {"n": 0}
-        monkeypatch.setattr(
-            chat, "_open_crawl_dialog", lambda: opened.__setitem__("n", opened["n"] + 1)
-        )
-
-        async def fake_crawl_and_save(url, *, on_progress, **kwargs):
-            on_progress(
-                EventType.CRAWL_DONE,
-                CrawlDoneEvent(
-                    pages_crawled=5, files_written=5, stopped_at_safety_cap=True, safety_cap=5
-                ),
-            )
-            return [Path("p0.md")]
-
-        reporter = ProgressReporter(app.task_bar, "fake-id")
-        with patch("lilbee.crawler.crawl_and_save", fake_crawl_and_save):
-            thread = threading.Thread(
-                target=lambda: chat._do_crawl("https://example.com", None, None, reporter)
-            )
-            thread.start()
-            thread.join(timeout=5)
-        await pilot.pause()
-        assert isinstance(app.screen, ConfirmDialog)
-        await pilot.press("y")
-        await pilot.pause()
-        assert opened["n"] == 1
-
-
 async def test_sync_called_with_quiet_true():
     """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
     app = ChatTestApp()

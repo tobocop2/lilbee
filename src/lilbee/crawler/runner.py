@@ -28,7 +28,7 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
-from lilbee.crawler.models import CrawlResult
+from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CrawlResult
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
@@ -62,21 +62,22 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
-def _resolve_page_limit(max_pages: int | None) -> tuple[int, int | None]:
-    """Resolve the page count to crawl and the safety cap, if one applies.
+def _resolve_page_limit(max_pages: int | None) -> int | None:
+    """Resolve the page bound the fetcher consumes (None means unbounded).
 
-    An explicit limit (caller ``max_pages`` or ``cfg.crawl_max_pages``) is the
-    user's choice and is honored as-is, even above ``cfg.crawl_safety_max_pages``.
-    Only a fully unbounded crawl (both unset) is bounded by the safety cap, so a
-    hostile site can't exhaust the disk by default while an explicit request can
-    still exceed it. The second element is the safety cap when it was the source
-    of the bound (so a caller can tell the user it was hit), else ``None``.
+    ``CRAWL_PAGES_UNLIMITED`` (0) is an explicit "no limit" and returns None.
+    ``None`` is unspecified: it falls back to ``cfg.crawl_max_pages`` if set,
+    else the protective default ``cfg.crawl_safety_max_pages`` so a hostile site
+    can't exhaust the disk on a crawl nobody bounded. A positive int is honored
+    as-is, even above the default.
     """
-    explicit = _resolve_limit(max_pages, cfg.crawl_max_pages)
-    if explicit is not None:
-        return explicit, None
-    cap = cfg.crawl_safety_max_pages
-    return cap, cap
+    if max_pages == CRAWL_PAGES_UNLIMITED:
+        return None
+    if max_pages is not None:
+        return max_pages
+    if cfg.crawl_max_pages is not None:
+        return cfg.crawl_max_pages
+    return cfg.crawl_safety_max_pages
 
 
 def _looks_like_missing_chromium(exc: BaseException) -> bool:
@@ -134,10 +135,11 @@ async def crawl_recursive(
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
-    ``max_depth`` of None means unbounded depth. An explicit ``max_pages``
-    (or ``cfg.crawl_max_pages``) is honored as-is; only a fully unbounded
-    crawl is bounded by ``cfg.crawl_safety_max_pages`` so a hostile site can't
-    exhaust the disk by default. ``CRAWL_PAGE`` events fire as each page completes; total is
+    ``max_depth`` of None means unbounded depth. ``max_pages`` of
+    ``CRAWL_PAGES_UNLIMITED`` (0) means no page limit; a positive int is that
+    cap; None is unspecified and falls back to ``cfg.crawl_safety_max_pages`` so
+    a hostile site can't exhaust the disk on a crawl nobody bounded.
+    ``CRAWL_PAGE`` events fire as each page completes; total is
     ``CRAWL_TOTAL_UNKNOWN`` by default and promoted to the sitemap count
     when available.
 
@@ -148,7 +150,7 @@ async def crawl_recursive(
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
-    pages, _ = _resolve_page_limit(max_pages)
+    pages = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
@@ -388,16 +390,9 @@ async def crawl_and_save(
             await _maybe_periodic_sync(tasks)
 
         if on_progress:
-            _, safety_cap = _resolve_page_limit(max_pages)
-            stopped_at_cap = safety_cap is not None and pages_seen >= safety_cap
             on_progress(
                 EventType.CRAWL_DONE,
-                CrawlDoneEvent(
-                    pages_crawled=pages_seen,
-                    files_written=len(written_paths),
-                    stopped_at_safety_cap=stopped_at_cap,
-                    safety_cap=safety_cap if stopped_at_cap else None,
-                ),
+                CrawlDoneEvent(pages_crawled=pages_seen, files_written=len(written_paths)),
             )
 
         return written_paths

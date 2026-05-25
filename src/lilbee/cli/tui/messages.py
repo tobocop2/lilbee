@@ -26,11 +26,6 @@ MODEL_FALLBACK_NOTICE = (
     "Pick a different model or restore the original to clear this notice."
 )
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
-CMD_CRAWL_CAP_TITLE = "Crawl limit reached"
-CMD_CRAWL_CAP_PROMPT = (
-    "Stopped at the {cap}-page safety limit ({count} saved). The site has more pages. "
-    "Open the crawl dialog to set a higher --max-pages and continue?"
-)
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."
 SETUP_CHROMIUM_NAME = "Install Chromium browser"
@@ -112,12 +107,12 @@ CMD_CRAWL_UNAVAILABLE = "Web crawling is not available. Run 'uv sync --extra cra
 CRAWL_DIALOG_TITLE = "Crawl a URL"
 CRAWL_DIALOG_URL_PLACEHOLDER = "example.com (https:// added automatically)"
 CRAWL_DIALOG_DEPTH_PLACEHOLDER = "blank = no limit"
-CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER = "blank = no limit"
+CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER = "clear for unlimited"
 CRAWL_DIALOG_URL_LABEL = "URL"
 CRAWL_DIALOG_RECURSIVE_LABEL = "Recursive (crawl whole site)"
 CRAWL_DIALOG_ADVANCED_TITLE = "Advanced"
 CRAWL_DIALOG_DEPTH_LABEL = "Depth cap"
-CRAWL_DIALOG_MAX_PAGES_LABEL = "Max pages"
+CRAWL_DIALOG_MAX_PAGES_LABEL = "Max pages (clear for unlimited)"
 CRAWL_DIALOG_SUBMIT = "Crawl"
 CRAWL_DIALOG_CANCEL = "Cancel"
 CRAWL_DIALOG_URL_REQUIRED = "URL is required"

@@ -1,6 +1,7 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import math
 import sys
 import types
 from pathlib import Path
@@ -1197,10 +1198,20 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1, max_pages=None)
         assert bfs.call_args.kwargs["max_pages"] == 10
 
-    async def test_zero_max_pages_raises(self):
-        """max_pages=0 is invalid (callers should pass None for unbounded)."""
-        with pytest.raises(ValueError, match="positive"):
+    async def test_zero_max_pages_is_unlimited(self):
+        """max_pages=0 (CRAWL_PAGES_UNLIMITED) is an explicit no-limit, even past cfg."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        cfg.crawl_max_pages = 10
+        modules = self._setup_crawl4ai(mock_instance)
+        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=0)
+        # Unbounded reaches the BFS strategy as inf, the same convention as depth.
+        assert bfs.call_args.kwargs["max_pages"] == math.inf
 
     async def test_quiet_passes_verbose_false(self):
         """quiet=True passes verbose=False to AsyncWebCrawler."""

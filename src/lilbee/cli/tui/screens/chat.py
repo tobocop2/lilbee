@@ -738,19 +738,11 @@ class ChatScreen(Screen[None]):
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
-        from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, SetupProgressEvent
+        from lilbee.runtime.progress import CrawlPageEvent, SetupProgressEvent
 
         reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
-        cap_hit: dict[str, int] = {}
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            if (
-                event_type == EventType.CRAWL_DONE
-                and isinstance(data, CrawlDoneEvent)
-                and data.stopped_at_safety_cap
-                and data.safety_cap is not None
-            ):
-                cap_hit["cap"] = data.safety_cap
             if event_type == EventType.SETUP_START:
                 reporter.update(0, msg.SETUP_CHROMIUM_NAME)
             elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
@@ -798,24 +790,6 @@ class ChatScreen(Screen[None]):
             )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
-        if "cap" in cap_hit:
-            call_from_thread(self, self._prompt_raise_crawl_cap, cap_hit["cap"], len(paths))
-
-    def _prompt_raise_crawl_cap(self, cap: int, count: int) -> None:
-        """Offer to re-open the crawl dialog when an unbounded crawl hit the safety cap."""
-        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-
-        def _on_confirm(raise_it: bool | None) -> None:
-            if raise_it:
-                self._open_crawl_dialog()
-
-        self.app.push_screen(
-            ConfirmDialog(
-                msg.CMD_CRAWL_CAP_TITLE,
-                msg.CMD_CRAWL_CAP_PROMPT.format(cap=cap, count=count),
-            ),
-            _on_confirm,
-        )
 
     def _cmd_catalog(self, _args: str) -> None:
         self.app.switch_view("Catalog")

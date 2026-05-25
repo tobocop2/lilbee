@@ -124,10 +124,6 @@ class CrawlDoneEvent(BaseModel):
 
     pages_crawled: int
     files_written: int
-    # Set when an unbounded crawl stopped at cfg.crawl_safety_max_pages with more
-    # pages likely available; surfaces tell the user how to raise it.
-    stopped_at_safety_cap: bool = False
-    safety_cap: int | None = None
 
 
 class SyncDoneEvent(BaseModel):
