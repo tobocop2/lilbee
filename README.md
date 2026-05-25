@@ -69,14 +69,14 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
-- **A real retrieval pipeline, not keyword search.** Hybrid keyword + vector, a concept graph, optional reranking, all from published research. [50+ settings](docs/usage.md) to tune.
+- **Finds what you mean, not just what you typed.** lilbee matches on meaning, so the right passage surfaces even when your wording doesn't line up with the document's. The retrieval is built on published research (semantic and keyword search, reranking), with [50+ settings](docs/usage.md) to tune if you want them.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
+- **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Indexes anything textual.** PDFs, Office, ebooks, code in 150+ languages, scanned pages (OCR), crawled sites.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
-- **One file instead of an Electron app.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps are multi-hundred-MB to multi-GB Electron bundles that do less.
+- **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Wire lilbee into any MCP-aware agent and it searches your library and answers from your actual files, citations and all; it can even widen retrieval or swap models mid-conversation via `lilbee_settings_set`.
-- **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
 
@@ -86,13 +86,13 @@ The first evening with a local model is fun. What makes it more than a novelty i
 
 Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, driven from the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
 
-> **The long-term goal:** make local AI practical and useful, for questions and for code, on hardware you already own. No token budgets to ration, no provider to depend on; the cloud's there when you want it. An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files, your code, even the web pages you save: read it yourself, or have your agent read it for you.
+> **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a grounding layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
 ## What you can do with it
 
 ### A library of your own files
 
-Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searchable library, with citations that click back to the source line. The pattern works for anything you have a lot of text about: a medical-textbook collection, a field's research papers, a car's service manuals, your company's internal wiki. Whatever you give it becomes searchable, and you can talk to it.
+Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searchable library, with citations that click back to the source line. The pattern works for anything you have a lot of text about: a shelf of appliance manuals, a field's research papers, a car's service manuals, your company's internal wiki. Whatever you give it becomes searchable, and you can talk to it.
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
