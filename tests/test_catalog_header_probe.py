@@ -114,11 +114,10 @@ def test_probe_handles_array_value_in_skip(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_probe_releases_memmap_before_unlink(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The GGUFReader memmap must be closed before the tempfile is unlinked.
+    """The GGUFReader memmap is closed before the tempfile is unlinked.
 
-    On Windows an open numpy.memmap blocks os.unlink with PermissionError
-    (the historically flaky test). We assert the unlink happens only after
-    the reader's memmap is released.
+    An open numpy.memmap blocks os.unlink with PermissionError on Windows, so
+    this asserts the unlink runs only after the reader's memmap is released.
     """
     blob = make_minimal_gguf("llama")
     monkeypatch.setattr(

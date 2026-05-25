@@ -256,8 +256,8 @@ class TestCrawlRecursiveOrchestration:
         with pytest.raises(ValueError, match="http"):
             await crawl_recursive("ftp://example.com", max_depth=1)
 
-    async def test_unbounded_request_is_clamped_to_safety_ceiling(self):
-        """A hostile site requested with no caps cannot exceed the safety ceiling."""
+    async def test_unbounded_request_is_bounded_by_safety_cap(self):
+        """A hostile site requested with no caps is bounded by the safety cap."""
         cfg.crawl_max_pages = None
         cfg.crawl_safety_max_pages = 4
         # The fetcher would happily stream forever; the orchestrator must hand
@@ -271,8 +271,8 @@ class TestCrawlRecursiveOrchestration:
         assert fake.recursive_calls[0]["max_pages"] == 4
         assert len(results) == 4
 
-    async def test_explicit_request_above_ceiling_is_clamped(self):
-        """An explicit caller cap above the safety ceiling is still clamped down."""
+    async def test_explicit_request_above_cap_is_honored(self):
+        """An explicit caller cap above the safety cap is the user's choice, not clamped."""
         cfg.crawl_safety_max_pages = 3
         pages = [
             FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
@@ -280,8 +280,8 @@ class TestCrawlRecursiveOrchestration:
         fake = FakeFetcher(pages=pages)
         with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
-        assert fake.recursive_calls[0]["max_pages"] == 3
-        assert len(results) == 3
+        assert fake.recursive_calls[0]["max_pages"] == 100
+        assert len(results) == 19
 
     async def test_request_below_ceiling_is_respected(self):
         """A caller cap below the safety ceiling wins (the ceiling is only an upper bound)."""
@@ -362,6 +362,44 @@ class TestCrawlAndSaveOrchestration:
         done = events[-1][1]
         assert isinstance(done, CrawlDoneEvent)
         assert done.pages_crawled == 0
+
+    async def test_done_event_flags_safety_cap_when_unbounded_hits_it(self):
+        """An unbounded crawl that reaches the safety cap flags it so a surface can prompt."""
+        cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 3
+        events: list[tuple[EventType, Any]] = []
+
+        async def _full_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
+            return [
+                CrawlResult(url=f"https://example.com/p{i}", markdown=f"# {i}") for i in range(3)
+            ]
+
+        with patch("lilbee.crawler.runner.crawl_recursive", side_effect=_full_recursive):
+            await crawl_and_save(
+                "https://example.com", depth=1, on_progress=lambda t, d: events.append((t, d))
+            )
+        done = events[-1][1]
+        assert done.stopped_at_safety_cap is True
+        assert done.safety_cap == 3
+
+    async def test_done_event_no_cap_flag_for_explicit_request(self):
+        """An explicit max_pages is the user's choice; the cap flag stays off."""
+        cfg.crawl_safety_max_pages = 3
+        events: list[tuple[EventType, Any]] = []
+
+        async def _two_recursive(*args: Any, **kwargs: Any) -> list[CrawlResult]:
+            return [CrawlResult(url="https://example.com/a", markdown="# A")]
+
+        with patch("lilbee.crawler.runner.crawl_recursive", side_effect=_two_recursive):
+            await crawl_and_save(
+                "https://example.com",
+                depth=1,
+                max_pages=100,
+                on_progress=lambda t, d: events.append((t, d)),
+            )
+        done = events[-1][1]
+        assert done.stopped_at_safety_cap is False
+        assert done.safety_cap is None
 
     async def test_cancel_skips_periodic_sync(self):
         cancel = threading.Event()

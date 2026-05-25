@@ -219,8 +219,9 @@ class Config(BaseSettings):
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
 
-    # Hard upper bound on pages fetched per crawl, always enforced even when
-    # crawl_max_pages is unset, so a hostile site can't exhaust memory/disk.
+    # Default page bound for an unbounded crawl (no explicit max_pages /
+    # crawl_max_pages), so a hostile site can't exhaust the disk by default.
+    # An explicit limit overrides it; raise this to crawl larger sites unbounded.
     crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, writable=True)
 
     # Per-URL fetch timeout, seconds.

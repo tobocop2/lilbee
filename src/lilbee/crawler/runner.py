@@ -62,17 +62,21 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
-def _clamp_to_safety_ceiling(pages: int | None) -> int:
-    """Clamp a resolved page count to ``cfg.crawl_safety_max_pages``.
+def _resolve_page_limit(max_pages: int | None) -> tuple[int, int | None]:
+    """Resolve the page count to crawl and the safety cap, if one applies.
 
-    ``None`` (caller asked for unbounded) becomes the ceiling, and any
-    explicit value above it is capped, so a hostile site can never exhaust
-    memory/disk regardless of caller or per-crawl settings.
+    An explicit limit (caller ``max_pages`` or ``cfg.crawl_max_pages``) is the
+    user's choice and is honored as-is, even above ``cfg.crawl_safety_max_pages``.
+    Only a fully unbounded crawl (both unset) is bounded by the safety cap, so a
+    hostile site can't exhaust the disk by default while an explicit request can
+    still exceed it. The second element is the safety cap when it was the source
+    of the bound (so a caller can tell the user it was hit), else ``None``.
     """
-    ceiling = cfg.crawl_safety_max_pages
-    if pages is None:
-        return ceiling
-    return min(pages, ceiling)
+    explicit = _resolve_limit(max_pages, cfg.crawl_max_pages)
+    if explicit is not None:
+        return explicit, None
+    cap = cfg.crawl_safety_max_pages
+    return cap, cap
 
 
 def _looks_like_missing_chromium(exc: BaseException) -> bool:
@@ -130,10 +134,10 @@ async def crawl_recursive(
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
-    ``max_depth`` of None means unbounded depth. ``max_pages`` is always
-    bounded by ``cfg.crawl_safety_max_pages``; None / a higher value is
-    clamped to that ceiling so a hostile site can't exhaust memory/disk.
-    ``CRAWL_PAGE`` events fire as each page completes; total is
+    ``max_depth`` of None means unbounded depth. An explicit ``max_pages``
+    (or ``cfg.crawl_max_pages``) is honored as-is; only a fully unbounded
+    crawl is bounded by ``cfg.crawl_safety_max_pages`` so a hostile site can't
+    exhaust the disk by default. ``CRAWL_PAGE`` events fire as each page completes; total is
     ``CRAWL_TOTAL_UNKNOWN`` by default and promoted to the sitemap count
     when available.
 
@@ -144,7 +148,7 @@ async def crawl_recursive(
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
-    pages = _clamp_to_safety_ceiling(_resolve_limit(max_pages, cfg.crawl_max_pages))
+    pages, _ = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
@@ -384,9 +388,16 @@ async def crawl_and_save(
             await _maybe_periodic_sync(tasks)
 
         if on_progress:
+            _, safety_cap = _resolve_page_limit(max_pages)
+            stopped_at_cap = safety_cap is not None and pages_seen >= safety_cap
             on_progress(
                 EventType.CRAWL_DONE,
-                CrawlDoneEvent(pages_crawled=pages_seen, files_written=len(written_paths)),
+                CrawlDoneEvent(
+                    pages_crawled=pages_seen,
+                    files_written=len(written_paths),
+                    stopped_at_safety_cap=stopped_at_cap,
+                    safety_cap=safety_cap if stopped_at_cap else None,
+                ),
             )
 
         return written_paths

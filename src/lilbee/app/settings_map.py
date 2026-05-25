@@ -467,8 +467,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Hard upper bound on pages per crawl, always enforced so a hostile site "
-        "cannot exhaust memory or disk.",
+        help_text="Default page bound for an unbounded crawl, so a hostile site cannot "
+        "exhaust the disk. An explicit max-pages overrides it; raise this to crawl "
+        "larger sites unbounded.",
     ),
     "crawl_timeout": SettingDef(
         int,

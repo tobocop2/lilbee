@@ -26,6 +26,11 @@ MODEL_FALLBACK_NOTICE = (
     "Pick a different model or restore the original to clear this notice."
 )
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
+CMD_CRAWL_CAP_TITLE = "Crawl limit reached"
+CMD_CRAWL_CAP_PROMPT = (
+    "Stopped at the {cap}-page safety limit ({count} saved). The site has more pages. "
+    "Open the crawl dialog to set a higher --max-pages and continue?"
+)
 CMD_CRAWL_FAILED = "Crawl failed: {error}"
 CMD_CRAWL_SYNCING = "Syncing crawled pages..."
 SETUP_CHROMIUM_NAME = "Install Chromium browser"

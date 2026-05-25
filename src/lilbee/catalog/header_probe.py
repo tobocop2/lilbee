@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import struct
 import tempfile
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any
 
 import httpx
 from gguf import GGUFReader, GGUFValueType
@@ -62,13 +62,11 @@ def _parse_arch(blob: bytes) -> str:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
-        # GGUFReader holds an open numpy.memmap on the file; close the underlying
-        # mmap before unlink or Windows raises PermissionError on the mapped handle.
-        # Cleanup must never mask the architecture already read above, so a failed
-        # unlink is tolerated (the OS reclaims the temp file).
+        # GGUFReader maps the file via numpy.memmap; close the underlying mmap so
+        # Windows can unlink (dropping the reference alone doesn't release the handle
+        # promptly). numpy exposes no public close, so reach the documented private
+        # handle through a typed-Any local; it fails loudly if numpy restructures.
         if reader is not None:
-            mmap_obj = getattr(getattr(reader, "data", None), "_mmap", None)
-            if mmap_obj is not None:
-                mmap_obj.close()
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+            memmap: Any = reader.data
+            memmap._mmap.close()
+        tmp.unlink(missing_ok=True)

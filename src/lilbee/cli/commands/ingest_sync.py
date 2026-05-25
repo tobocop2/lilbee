@@ -122,6 +122,7 @@ def _crawl_urls_blocking(
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
+        CrawlDoneEvent,
         CrawlPageEvent,
         EventType,
         ProgressEvent,
@@ -151,8 +152,11 @@ def _crawl_urls_blocking(
             if cancel_event.is_set():
                 break
             ptask = progress.add_task(f"Crawling {url}...", total=None)
+            cap_hit: dict[str, int] = {}
 
-            def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
+            def _make_callback(
+                _t: TaskID = ptask, _cap: dict[str, int] = cap_hit
+            ) -> DetailedProgressCallback:
                 def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
                         if not isinstance(data, CrawlPageEvent):
@@ -162,6 +166,13 @@ def _crawl_urls_blocking(
                             _t,
                             description=f"Crawled {data.current}/{total_str}: {data.url}",
                         )
+                    elif (
+                        event_type == EventType.CRAWL_DONE
+                        and isinstance(data, CrawlDoneEvent)
+                        and data.stopped_at_safety_cap
+                        and data.safety_cap is not None
+                    ):
+                        _cap["cap"] = data.safety_cap
 
                 return on_progress
 
@@ -176,6 +187,11 @@ def _crawl_urls_blocking(
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
+            if "cap" in cap_hit and not cfg.json_mode:
+                err_console.print(
+                    f"Stopped at the {cap_hit['cap']}-page safety limit; more pages remain. "
+                    f"Re-run with --max-pages N (or raise crawl_max_pages) to crawl more."
+                )
     return all_paths
 
 

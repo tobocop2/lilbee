@@ -114,18 +114,23 @@ _SINGLE_CLASS_RERANK = 1
 
 
 def _read_context_n_seq_max(llm: Any) -> int | None:
-    """Read ``n_seq_max`` back off a constructed Llama, or None if unreadable."""
-    context_params = getattr(llm, "context_params", None)
-    if context_params is None:
+    """Read ``n_seq_max`` back off a constructed Llama, or None if unreadable.
+
+    AttributeError means llama-cpp restructured its internals (the signal to
+    revisit against the pin); the caller treats None as "could not verify".
+    """
+    try:
+        value = llm.context_params.n_seq_max
+    except AttributeError:
         return None
-    value = getattr(context_params, "n_seq_max", None)
     return int(value) if isinstance(value, int) else None
 
 
 def _read_rerank_class_count(llm: Any) -> int | None:
     """Read a reranker's classifier-output count, or None if unreadable."""
-    model = getattr(getattr(llm, "_model", None), "model", None)
-    if model is None:
+    try:
+        model = llm._model.model
+    except AttributeError:
         return None
     from llama_cpp import llama_cpp as _llc
 
