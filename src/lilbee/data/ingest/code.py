@@ -7,7 +7,7 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.data.code_chunker import CodeChunk, chunk_code
 from lilbee.data.ingest.types import ChunkRecord
-from lilbee.data.store import CHUNK_TYPE_RAW
+from lilbee.data.store import ChunkType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 
@@ -29,7 +29,7 @@ def ingest_code_sync(
         ChunkRecord(
             source=source_name,
             content_type="code",
-            chunk_type=CHUNK_TYPE_RAW,
+            chunk_type=ChunkType.RAW,
             page_start=0,
             page_end=0,
             line_start=cc.line_start,

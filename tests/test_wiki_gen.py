@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.core.config import CHUNKS_TABLE, cfg
 from lilbee.core.text import make_slug
-from lilbee.data.store import CHUNK_TYPE_WIKI, SearchChunk, Store
+from lilbee.data.store import ChunkType, SearchChunk, Store
 from lilbee.wiki.batch import (
     _group_chunks_by_page,
     _unwrap_archived_links,
@@ -1172,13 +1172,13 @@ class TestWikiIndexing:
         assert call_args.args[0] == CHUNKS_TABLE
         predicate = call_args.args[1]
         assert target.wiki_source in predicate
-        assert CHUNK_TYPE_WIKI in predicate
+        assert ChunkType.WIKI in predicate
 
         store.add_chunks.assert_called_once()
         records = store.add_chunks.call_args.args[0]
         assert len(records) == 1
         rec = records[0]
-        assert rec["chunk_type"] == CHUNK_TYPE_WIKI
+        assert rec["chunk_type"] == ChunkType.WIKI
         assert rec["source"] == target.wiki_source
         assert rec["content_type"] == "text"
         # page/line positions follow the markdown ingest convention: all zero

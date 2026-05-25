@@ -12,6 +12,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
+from lilbee.data.store import ChunkType
 from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
     CapNotice,
@@ -35,7 +36,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[DocumentResult]:
+async def search(
+    q: str, top_k: int = 5, chunk_type: ChunkType | None = None
+) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
         raise ValueError("query must not be empty")
@@ -48,7 +51,7 @@ async def ask(
     question: str,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
     if not question or not question.strip():
@@ -105,7 +108,7 @@ async def _stream_rag_response(
     history: list[ChatMessage] | None = None,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
@@ -149,7 +152,7 @@ def ask_stream(
     question: str,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events: token, sources, done."""
     return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
@@ -160,7 +163,7 @@ async def chat(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources."""
     opts = _resolve_generation_options(options)
@@ -178,7 +181,7 @@ def chat_stream(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
     return _stream_rag_response(

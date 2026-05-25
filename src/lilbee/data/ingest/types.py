@@ -9,6 +9,8 @@ from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel
 
+from lilbee.data.store import ChunkType
+
 
 class FileToProcess(NamedTuple):
     """A file queued for ingestion with its metadata."""
@@ -44,7 +46,7 @@ class ChunkRecord(TypedDict):
 
     source: str
     content_type: str
-    chunk_type: str
+    chunk_type: ChunkType
     page_start: int
     page_end: int
     line_start: int

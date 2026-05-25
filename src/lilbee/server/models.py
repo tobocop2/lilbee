@@ -10,26 +10,25 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
-from lilbee.data.store import SearchScope
+from lilbee.data.store import ChunkType, SearchScope
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
-_VALID_CHUNK_TYPES = frozenset({SearchScope.RAW.value, SearchScope.WIKI.value})
 
-
-def _validate_chunk_type(value: str | None) -> str | None:
-    """Reject unknown ``chunk_type`` values at the HTTP boundary.
+def _validate_chunk_type(value: str | None) -> ChunkType | None:
+    """Decode a ``chunk_type`` string into a ``ChunkType`` at the HTTP boundary.
 
     Matches the CLI/MCP behaviour: only ``"raw"`` or ``"wiki"`` filter the
     pool; everything else (including ``None`` and the UI-side ``"both"``)
-    means no filter.
+    means no filter. Any other string raises ``ValueError``.
     """
     if value is None or value == SearchScope.BOTH.value:
         return None
-    if value not in _VALID_CHUNK_TYPES:
+    try:
+        return ChunkType(value)
+    except ValueError as exc:
         raise ValueError(
             f"chunk_type must be one of 'raw', 'wiki', 'both', or omitted; got {value!r}"
-        )
-    return value
+        ) from exc
 
 
 class AskRequest(BaseModel):
@@ -38,11 +37,11 @@ class AskRequest(BaseModel):
     question: str
     top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
-    chunk_type: str | None = None
+    chunk_type: ChunkType | None = None
 
-    @field_validator("chunk_type")
+    @field_validator("chunk_type", mode="before")
     @classmethod
-    def _check_chunk_type(cls, v: str | None) -> str | None:
+    def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
         return _validate_chunk_type(v)
 
 
@@ -53,11 +52,11 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
     top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
-    chunk_type: str | None = None
+    chunk_type: ChunkType | None = None
 
-    @field_validator("chunk_type")
+    @field_validator("chunk_type", mode="before")
     @classmethod
-    def _check_chunk_type(cls, v: str | None) -> str | None:
+    def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
         return _validate_chunk_type(v)
 
 
