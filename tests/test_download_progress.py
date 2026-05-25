@@ -417,9 +417,7 @@ class TestDownloadModelProgressChain:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
         # HF says the file is 1000 bytes; the cached copy is truncated to 10.
-        monkeypatch.setattr(
-            download_mod, "fetch_expected_file_size", lambda repo, name: 1000
-        )
+        monkeypatch.setattr(download_mod, "fetch_expected_file_size", lambda repo, name: 1000)
 
         entry = _test_entry()
         truncated = tmp_path / entry.gguf_filename

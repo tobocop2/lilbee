@@ -121,7 +121,9 @@ def test_probe_releases_memmap_before_unlink(monkeypatch: pytest.MonkeyPatch) ->
     the reader's memmap is released.
     """
     blob = make_minimal_gguf("llama")
-    monkeypatch.setattr(header_probe.httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
+    monkeypatch.setattr(
+        header_probe.httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob)
+    )
 
     captured: dict[str, object] = {}
     real_reader = header_probe.GGUFReader
