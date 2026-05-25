@@ -84,7 +84,7 @@ def download_model(
 
     filename = resolve_filename(entry)
     dest = cfg.models_dir / filename
-    if dest.exists():
+    if dest.exists() and _cached_file_is_complete(entry.hf_repo, filename, dest):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
             size = dest.stat().st_size
@@ -272,6 +272,56 @@ def _pick_best_gguf(filenames: list[str]) -> str:
             if quant in f:
                 return f
     return filenames[0]
+
+
+_SIZE_UNKNOWN = 0
+
+
+def _cached_file_is_complete(hf_repo: str, filename: str, dest: Path) -> bool:
+    """Decide whether an existing cached file may be accepted as complete.
+
+    Verifies the on-disk byte size against the size HuggingFace reports for
+    *filename*. A mismatch means a truncated / corrupt download, so the file
+    is rejected and re-fetched. When the size can't be fetched (offline, API
+    error) it stays unknown and the cached file is accepted: there's nothing
+    to verify against and refusing would block all offline reuse.
+    """
+    expected = fetch_expected_file_size(hf_repo, filename)
+    if expected == _SIZE_UNKNOWN:
+        return True
+    actual = dest.stat().st_size
+    if actual == expected:
+        return True
+    log.warning(
+        "Cached %s is %d bytes but HuggingFace reports %d; re-downloading",
+        dest,
+        actual,
+        expected,
+    )
+    return False
+
+
+def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
+    """Return the byte size HuggingFace reports for *filename* in *hf_repo*.
+
+    Returns ``_SIZE_UNKNOWN`` (0) when the file isn't listed or the API
+    can't be reached. LFS-backed GGUFs carry the real size under ``lfs``.
+    """
+    try:
+        resp = httpx.get(
+            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
+            timeout=DEFAULT_TIMEOUT,
+            headers=hf_headers(),
+        )
+        resp.raise_for_status()
+        files = resp.json()
+    except Exception:
+        return _SIZE_UNKNOWN
+
+    for f in files:
+        if isinstance(f, dict) and f.get("path", "") == filename:
+            return int(f.get("lfs", {}).get("size", 0) or f.get("size", 0) or _SIZE_UNKNOWN)
+    return _SIZE_UNKNOWN
 
 
 def fetch_model_file_size(hf_repo: str) -> float:
