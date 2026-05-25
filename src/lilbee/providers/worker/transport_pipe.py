@@ -399,9 +399,12 @@ class PipeChannel:
         try:
             with contextlib.suppress(TimeoutError, WorkerError):
                 await self._health_round_trip(WireKind.SHUTDOWN, None, timeout=timeout)
-            await asyncio.get_running_loop().run_in_executor(
-                self._executor, self._join_process, timeout
-            )
+            # Join on the loop's default executor, never the channel's own:
+            # a stalled stream / timed-out health recv leaves the channel
+            # executor's threads blocked in conn.recv until the process dies,
+            # and terminate() is what unblocks them. Scheduling the join there
+            # too would deadlock when both worker threads are saturated.
+            await asyncio.get_running_loop().run_in_executor(None, self._join_process, timeout)
         finally:
             with contextlib.suppress(Exception):
                 self._conn.close()
