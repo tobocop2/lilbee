@@ -107,6 +107,33 @@ class TestBlockedNetworks:
         networks = get_blocked_networks()
         assert any(_ip.ip_address("10.1.2.3") in n for n in networks)
 
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "fe80::1",  # link-local (fe80::/10)
+            "fc00::1",  # unique local address (fc00::/7)
+            "fd12:3456:789a::1",  # ULA inside fc00::/7
+            "ff02::1",  # multicast (ff00::/8)
+        ],
+    )
+    def test_contains_ipv6_reserved_ranges(self, addr):
+        import ipaddress as _ip
+
+        networks = get_blocked_networks()
+        assert any(_ip.ip_address(addr) in n for n in networks)
+
+    @pytest.mark.parametrize(
+        "addr",
+        ["fe80::dead:beef", "fc00::5", "ff00::abcd"],
+    )
+    def test_rejects_ipv6_reserved_targets(self, monkeypatch, addr):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://ipv6.example.com")
+
 
 class TestHostInScope:
     def test_exact_match(self):
@@ -142,8 +169,31 @@ class TestSitemapFetch:
 
     def test_returns_body_on_success(self, monkeypatch):
         fake = MagicMock(status_code=200, text="<urlset></urlset>")
+        fake.url = "https://example.com/sitemap.xml"
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         assert _fetch_sitemap_text("https://example.com/start") == "<urlset></urlset>"
+
+    def test_rejects_redirect_to_private_ip(self, monkeypatch):
+        """A 30x to a private/metadata host must drop the body (SSRF)."""
+        fake = MagicMock(status_code=200, text="<urlset></urlset>")
+        # httpx exposes the FINAL resolved URL after following redirects.
+        fake.url = "http://169.254.169.254/latest/meta-data/"
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+
+        def _resolve(host, *a, **kw):
+            if host == "169.254.169.254":
+                return [(2, 1, 6, "", ("169.254.169.254", 0))]
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        assert _fetch_sitemap_text("https://example.com/start") is None
+
+    def test_rejects_redirect_to_non_http_scheme(self, monkeypatch):
+        """A redirect that lands on a file:// target is rejected."""
+        fake = MagicMock(status_code=200, text="<urlset></urlset>")
+        fake.url = "file:///etc/passwd"
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+        assert _fetch_sitemap_text("https://example.com/start") is None
 
 
 class TestSitemapCount:

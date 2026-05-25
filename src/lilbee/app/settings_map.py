@@ -463,6 +463,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.CRAWLING,
         help_text="Optional global cap on total pages per crawl (blank = no cap).",
     ),
+    "crawl_safety_max_pages": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text="Hard upper bound on pages per crawl, always enforced so a hostile site "
+        "cannot exhaust memory or disk.",
+    ),
     "crawl_timeout": SettingDef(
         int,
         nullable=False,

@@ -1311,6 +1311,14 @@ def _stub_crawl4ai_filters(monkeypatch):
 class TestHostScopeFilter:
     """whole-site crawl must scope to the exact host by default."""
 
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch):
+        """The filter re-validates each link's IP; resolve to a public IP by default."""
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+
     def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
         from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
@@ -1330,6 +1338,48 @@ class TestHostScopeFilter:
         from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
         assert _host_scope_filter("not-a-url", include_subdomains=False) is None
+
+    def test_exact_host_rejects_link_resolving_to_private_ip(
+        self, _stub_crawl4ai_filters, monkeypatch
+    ):
+        """A discovered in-host link that resolves to a private IP is dropped (DNS-rebind)."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        def _resolve(host, *a, **kw):
+            if host == "internal.example.com":
+                return [(2, 1, 6, "", ("10.0.0.9", 0))]
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        f = _host_scope_filter("https://internal.example.com/a", include_subdomains=False)
+        # Same host, but it resolves to a private IP: must be rejected.
+        assert f.apply("https://internal.example.com/b") is False
+
+    def test_include_subdomains_rejects_link_resolving_to_private_ip(
+        self, _stub_crawl4ai_filters, monkeypatch
+    ):
+        """Subdomain-scope crawls also re-validate each discovered link's IP."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        def _resolve(host, *a, **kw):
+            if host == "rebind.example.com":
+                return [(2, 1, 6, "", ("127.0.0.1", 0))]
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        f = _host_scope_filter("https://example.com/a", include_subdomains=True)
+        assert f.apply("https://rebind.example.com/x") is False
+
+    def test_public_in_host_link_still_allowed(self, _stub_crawl4ai_filters, monkeypatch):
+        """A normal public in-host link passes both scope and IP checks."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        f = _host_scope_filter("https://example.com/a", include_subdomains=False)
+        assert f.apply("https://example.com/b") is True
 
 
 class TestSitemapCounting:
