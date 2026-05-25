@@ -30,7 +30,11 @@ from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
 )
-from lilbee.crawler.save import _save_single_result, _update_single_metadata
+from lilbee.crawler.save import (
+    _save_single_result,
+    _update_single_metadata,
+    normalize_crawled_markdown,
+)
 from lilbee.runtime.progress import EventType
 
 
@@ -2138,6 +2142,28 @@ class TestSaveSingleResult:
         assert outcome.path.read_text(encoding="utf-8") == "# New"
         assert outcome.filename.endswith("index.md")
         assert outcome.content_hash == content_hash("# New")
+
+    def test_normalize_crawled_markdown_collapses_reference_links(self):
+        ref = "[[2]](https://en.wikipedia.org/wiki/Foo#cite_note-2)"
+        md = f"Car of the Year.{ref} Production ended."
+        # Double brackets collapse to single; text and URL are preserved.
+        expected = (
+            "Car of the Year.[2](https://en.wikipedia.org/wiki/Foo#cite_note-2) Production ended."
+        )
+        assert normalize_crawled_markdown(md) == expected
+        # Ordinary single-bracket links are left untouched.
+        keep = 'See the [trim package](https://en.wikipedia.org/wiki/Trim "title") here.'
+        assert normalize_crawled_markdown(keep) == keep
+
+    def test_writes_normalized_markdown(self, isolated_env):
+        from lilbee.crawler.save import _save_single_result
+
+        raw = "9C1[[1]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        expected = "9C1[1](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        outcome = _save_single_result(CrawlResult(url="https://example.com/ref", markdown=raw), {})
+        assert outcome is not None
+        assert outcome.path.read_text(encoding="utf-8") == expected
+        assert outcome.content_hash == content_hash(expected)
 
     def test_returns_none_on_failure(self, isolated_env):
         from lilbee.crawler.save import _save_single_result
