@@ -13,8 +13,12 @@ backend="${BACKEND:?BACKEND is required}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 
 linux_install_vulkan() {
+  # spirv-headers provides <spirv/unified1/spirv.hpp> (the `spv` namespace);
+  # ggml-vulkan.cpp needs it to patch SPIR-V, and apt's libvulkan-dev does
+  # not pull it in. The LunarG SDK bundles it, which is why Windows builds
+  # without this. Without it the build fails: "'spv' has not been declared".
   sudo apt-get update
-  sudo apt-get install -y libvulkan-dev libvulkan1 glslc
+  sudo apt-get install -y libvulkan-dev libvulkan1 glslc spirv-headers
 }
 
 linux_install_cuda() {
