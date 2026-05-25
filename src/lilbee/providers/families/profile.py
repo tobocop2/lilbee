@@ -43,6 +43,11 @@ class FamilyProfile:
     chat_format_override: LlamaCppChatFormatPreset | None = None
     hf_tokenizer_repo: str | None = None
     render_with_hf_template: bool = False
+    # When rendering via the HF template, most templates iterate or ``tojson`` the
+    # tool-call ``arguments`` as a dict (the apply_chat_template default). A few
+    # instead concatenate them as a string (functionary's ``'>>>' + arguments``);
+    # those set this True so lilbee re-serialises the dict back to a JSON string.
+    stringify_hf_tool_args: bool = False
     context_length_override: int | None = None
     streaming_policy: StreamingPolicy = StreamingPolicy.NATIVE
     output_format: OutputFormat = OutputFormat.NATIVE

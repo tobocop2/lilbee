@@ -16,5 +16,6 @@ PROFILE = FamilyProfile(
     template_markers=("<function_calls>",),
     hf_tokenizer_repo="allenai/Olmo-3-7B-Instruct",
     render_with_hf_template=True,
+    stringify_hf_tool_args=True,  # preserve historical render shape for this family
     output_format=OutputFormat.NATIVE,
 )

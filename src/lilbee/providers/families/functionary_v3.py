@@ -21,6 +21,7 @@ PROFILE = FamilyProfile(
     ref_patterns=(re.compile(r"functionary[^/]*v3", re.IGNORECASE),),
     hf_tokenizer_repo="meetkai/functionary-small-v3.2",
     render_with_hf_template=True,
+    stringify_hf_tool_args=True,  # template concatenates arguments as a string
     streaming_policy=StreamingPolicy.DOWNGRADE_AUTO_TOOL_CHOICE,
     output_format=OutputFormat.NATIVE,
 )

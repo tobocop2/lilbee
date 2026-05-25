@@ -24,6 +24,7 @@ PROFILE = FamilyProfile(
     template_markers=("<|START_ACTION|>",),
     hf_tokenizer_repo="CohereLabs/c4ai-command-r7b-12-2024",
     render_with_hf_template=True,
+    stringify_hf_tool_args=True,  # preserve the verified Command-R render shape
     context_length_override=_COMMAND_R7B_CONTEXT,
     output_format=OutputFormat.NATIVE,
 )

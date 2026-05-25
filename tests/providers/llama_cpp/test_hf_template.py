@@ -41,3 +41,21 @@ def test_plain_messages_untouched() -> None:
     """Messages without tool calls are returned as-is."""
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
     assert _tool_args_as_json_strings(messages) == messages
+
+
+def test_hf_template_tool_arg_shape_per_family() -> None:
+    """GLM renders args as a dict; functionary/cohere concatenate them as strings.
+
+    GLM-4.5's template iterates ``arguments.items()`` and breaks on a string
+    ('str object has no attribute items'), so it must keep lilbee's normalised
+    dict. Functionary and Command-R concatenate the args, so they re-stringify.
+    Flipping these flips a working family back to a 500.
+    """
+    from lilbee.providers.families.cohere import PROFILE as COHERE
+    from lilbee.providers.families.functionary_v3 import PROFILE as FUNCTIONARY
+    from lilbee.providers.families.glm46 import PROFILE as GLM46
+
+    assert GLM46.render_with_hf_template is True
+    assert GLM46.stringify_hf_tool_args is False
+    assert FUNCTIONARY.stringify_hf_tool_args is True
+    assert COHERE.stringify_hf_tool_args is True

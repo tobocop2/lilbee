@@ -1053,7 +1053,9 @@ def _tool_args_as_json_strings(messages: Any) -> Any:
     return rendered
 
 
-def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: str) -> bool:
+def _apply_hf_template_chat_handler(
+    kwargs: dict[str, Any], hf_tokenizer_repo: str, *, stringify_tool_args: bool
+) -> bool:
     """Render with the HF tokenizer's own jinja chat template, not the GGUF's.
 
     Some GGUFs ship a stripped template that drops tool definitions (functionary)
@@ -1063,6 +1065,10 @@ def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: s
     lilbee's own response parser extracts the tool calls from the generated text,
     so this stays independent of llama-cpp's per-preset tool parsing. Returns
     True when the handler was installed.
+
+    *stringify_tool_args* re-serialises prior tool-call arguments to JSON strings
+    for the rare template that concatenates them; templates that iterate the args
+    (``.items()``) need the dict and pass it through unchanged.
     """
     try:
         from llama_cpp.llama_chat_format import ChatFormatterResponse, Jinja2ChatFormatter
@@ -1093,10 +1099,11 @@ def _apply_hf_template_chat_handler(kwargs: dict[str, Any], hf_tokenizer_repo: s
                 self, *, messages: Any, tools: Any = None, **_: Any
             ) -> ChatFormatterResponse:
                 # tokenize=False makes apply_chat_template return the rendered str.
+                rendered = _tool_args_as_json_strings(messages) if stringify_tool_args else messages
                 prompt = cast(
                     str,
                     self._tokenizer.apply_chat_template(
-                        _tool_args_as_json_strings(messages),
+                        rendered,
                         tools=tools,
                         add_generation_prompt=True,
                         tokenize=False,
@@ -1126,7 +1133,11 @@ def _apply_chat_format_override(
     if (
         profile.render_with_hf_template
         and profile.hf_tokenizer_repo is not None
-        and _apply_hf_template_chat_handler(kwargs, profile.hf_tokenizer_repo)
+        and _apply_hf_template_chat_handler(
+            kwargs,
+            profile.hf_tokenizer_repo,
+            stringify_tool_args=profile.stringify_hf_tool_args,
+        )
     ):
         return
     if profile.chat_format_override is None:
