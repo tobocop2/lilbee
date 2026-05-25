@@ -69,17 +69,17 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
+- **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
+- **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you straight into chat.
 - **Reads almost anything you point it at.** Documents, scanned pages, spreadsheets, ebooks, web pages, and source code — [90+ formats and 150+ languages](#supported-formats) in all. Whatever you give it becomes searchable.
 - **Splits it into pieces that stand on their own.** [Prose and code are chunked differently](#documents-code-and-scanned-images), so each piece keeps its meaning instead of getting cut mid-thought. This is where most of the quality lives — a search engine is only as good as the chunks underneath it.
-- **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the right passage comes back first. [Tune it](docs/usage.md#retrieval-tuning) with 50+ settings, or take the sane defaults.
+- **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the right passage comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
 - **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
-- **Works with your coding agent.** Wire lilbee into any MCP-aware agent and it searches your library and answers from your actual files, citations and all; it can even widen retrieval or swap models mid-conversation via `lilbee_settings_set`.
-- **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
-- **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
+- **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code — with citations — instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
 
