@@ -114,6 +114,13 @@ def _handle_stream(conn: Any, payload: Any, _abort: Any) -> None:
     conn.send(("stream_end", None))
 
 
+def _handle_stream_then_stall(conn: Any, _payload: Any, _abort: Any) -> None:
+    """Emit one chunk, then block forever without sending the terminator."""
+    conn.send(("stream_chunk", "first"))
+    while True:
+        time.sleep(60.0)
+
+
 def _handle_abort_loop(conn: Any, _payload: Any, abort: Any) -> None:
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
@@ -133,6 +140,7 @@ _ECHO_DISPATCH = {
     "raise": _handle_raise,
     "stream": _handle_stream,
     "stream_error": _handle_stream_error,
+    "stream_then_stall": _handle_stream_then_stall,
     "abort_loop": _handle_abort_loop,
     "bad_kind": _handle_bad_kind,
 }
@@ -294,6 +302,28 @@ async def test_stream_yields_chunks_then_terminates(echo_channel: PipeChannel) -
 
 
 @pytest.mark.asyncio
+async def test_stream_raises_when_worker_stalls_mid_stream(
+    echo_channel: PipeChannel,
+) -> None:
+    """A worker that stops emitting frames mid-stream must release the consumer.
+
+    Without a per-chunk timeout the consumer hangs forever (the health pipe
+    still pongs alive). With the timeout the stall surfaces as
+    ``WorkerCrashError`` within ``stream_chunk_timeout`` seconds, so the pool
+    can recycle the worker instead of deadlocking the caller.
+    """
+    seen: list[Any] = []
+    start = time.monotonic()
+    with pytest.raises(WorkerCrashError):
+        async for chunk in echo_channel.stream("stream_then_stall", None, stream_chunk_timeout=0.5):
+            seen.append(chunk)
+    elapsed = time.monotonic() - start
+    assert seen == ["first"]
+    assert elapsed < 5.0
+    assert echo_channel.in_flight == 0
+
+
+@pytest.mark.asyncio
 async def test_stream_raises_on_worker_error_terminator(
     echo_channel: PipeChannel,
 ) -> None:
@@ -422,6 +452,29 @@ async def test_close_terminates_hung_worker_within_timeout(
             return
         await asyncio.sleep(0.05)
     pytest.fail(f"Hung worker pid={pid} survived close()")
+
+
+@pytest.mark.asyncio
+async def test_close_after_stream_stall_does_not_deadlock(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """Closing a channel whose stream stalled must terminate within the timeout.
+
+    A stalled stream leaves an executor thread blocked in ``conn.recv``; the
+    timed-out health shutdown leaves a second one blocked too. ``close`` must
+    still make progress (it joins on the loop default executor, not the
+    saturated channel executor) and bring the worker down.
+    """
+    channel, _handle = spawner.spawn(_echo_worker_main, role_config)
+    with pytest.raises(WorkerCrashError):
+        async for _chunk in channel.stream("stream_then_stall", None, stream_chunk_timeout=0.5):
+            pass
+    start = time.monotonic()
+    await channel.close(timeout=1.0)
+    elapsed = time.monotonic() - start
+    assert elapsed < 8.0
+    assert channel.is_alive is False
 
 
 @pytest.mark.asyncio
