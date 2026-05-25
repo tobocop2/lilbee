@@ -211,3 +211,85 @@ class TestTranslateOptions:
         ref = parse_model_ref("openai/gpt-4o")
         result = translate_options({}, ref)
         assert result == {}
+
+
+# Options a chat caller can supply; both backends must agree on num_predict and
+# never emit a key the receiving SDK errors on.
+_SHARED_OPTIONS = {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "seed": 123,
+    "num_predict": 1024,
+    "repeat_penalty": 1.1,
+    "num_ctx": 4096,
+}
+
+# llama_cpp.Llama.create_chat_completion accepts these and nothing else from the
+# option set; the in-process worker splats kwargs straight into it, so any extra
+# key (num_ctx, num_predict) would raise TypeError.
+_LLAMA_CPP_ACCEPTED = frozenset(
+    {"temperature", "top_p", "top_k", "seed", "max_tokens", "repeat_penalty"}
+)
+
+
+class TestChatOptionTranslationParity:
+    """Differential gate: same options through in-process vs API translation.
+
+    Pins the intentional divergence so the two paths can't silently drift:
+    the local llama.cpp path keeps top_k/repeat_penalty and renames
+    num_predict->max_tokens; the API path additionally strips top_k/num_ctx.
+    Both rename num_predict consistently and neither leaks a key its backend
+    would reject.
+    """
+
+    def _in_process(self) -> dict[str, object]:
+        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+
+        return LlamaCppProvider._chat_kwargs_from_options(dict(_SHARED_OPTIONS))
+
+    def _api(self) -> dict[str, object]:
+        ref = parse_model_ref("openai/gpt-4o")
+        return translate_options(dict(_SHARED_OPTIONS), ref)
+
+    def test_num_predict_renamed_consistently(self) -> None:
+        """Both backends speak max_tokens, not num_predict."""
+        for translated in (self._in_process(), self._api()):
+            assert translated["max_tokens"] == 1024
+            assert "num_predict" not in translated
+
+    def test_in_process_keeps_local_only_params(self) -> None:
+        """Local llama.cpp honors top_k and repeat_penalty, so they survive."""
+        translated = self._in_process()
+        assert translated["top_k"] == 40
+        assert translated["repeat_penalty"] == 1.1
+
+    def test_api_drops_top_k(self) -> None:
+        """Hosted providers ignore top_k, so the API path strips it."""
+        assert "top_k" not in self._api()
+
+    def test_neither_path_leaks_num_ctx(self) -> None:
+        """num_ctx is a model-load param; it must never reach a per-call request."""
+        assert "num_ctx" not in self._in_process()
+        assert "num_ctx" not in self._api()
+
+    def test_in_process_emits_no_key_create_chat_completion_rejects(self) -> None:
+        """Every emitted key is a real create_chat_completion kwarg."""
+        translated = self._in_process()
+        assert set(translated) <= _LLAMA_CPP_ACCEPTED
+
+    def test_api_translation_does_not_error_in_litellm(self) -> None:
+        """litellm accepts the API-translated kwargs without raising.
+
+        Confirms the audit finding empirically: litellm 1.x forwards
+        repeat_penalty (into extra_body for OpenAI-compatible providers)
+        rather than rejecting it, so keeping it is not a correctness bug.
+        """
+        litellm = pytest.importorskip("litellm")
+        translated = self._api()
+        params = litellm.utils.get_optional_params(
+            model="gpt-4o", custom_llm_provider="openai", **translated
+        )
+        assert params["max_tokens"] == 1024
+        # repeat_penalty is forwarded, not dropped or errored on.
+        assert params.get("extra_body", {}).get("repeat_penalty") == 1.1
