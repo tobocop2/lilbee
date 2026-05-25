@@ -150,6 +150,30 @@ def test_compute_rerank_scores_raises_on_response_size_mismatch() -> None:
         compute_rerank_scores(_BadLlama(), "q", ["a", "b"])
 
 
+def test_embed_batch_raises_on_response_size_mismatch() -> None:
+    """A short embed response (fewer vectors than inputs) fails loudly, not silently.
+
+    llama-cpp-python returns one embedding per input; a count mismatch means the
+    SDK response format drifted and silently dropped vectors. Without the guard
+    the caller would map the wrong vector to the wrong chunk.
+    """
+
+    class _BadLlama:
+        n_batch = 8192
+
+        def tokenize(
+            self, text: bytes, *, add_bos: bool = True, special: bool = False
+        ) -> list[int]:
+            return [0] * 4
+
+        def create_embedding(self, *, input: list[str]) -> dict[str, Any]:
+            # Returns one vector for two inputs.
+            return {"data": [{"embedding": [1.0, 2.0]}]}
+
+    with pytest.raises(ProviderError, match="returned 1 vectors for 2 inputs"):
+        embed_batch(_BadLlama(), ["a", "b"])
+
+
 def test_compute_rerank_scores_raises_on_unexpected_score_shape() -> None:
     class _BadLlama:
         n_batch = 8192
