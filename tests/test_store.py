@@ -7,6 +7,7 @@ import pytest
 
 from lilbee.core.config import META_TABLE, cfg
 from lilbee.data.store import (
+    ChunkType,
     CitationRecord,
     SearchChunk,
     SearchScope,
@@ -992,16 +993,55 @@ class TestScopeResolution:
         assert scope_to_chunk_type(SearchScope.BOTH) is None
 
     def test_raw_maps_to_raw(self):
-        assert scope_to_chunk_type("raw") == "raw"
-        assert scope_to_chunk_type(SearchScope.RAW) == "raw"
+        assert scope_to_chunk_type("raw") is ChunkType.RAW
+        assert scope_to_chunk_type(SearchScope.RAW) is ChunkType.RAW
 
     def test_wiki_maps_to_wiki(self):
-        assert scope_to_chunk_type("wiki") == "wiki"
-        assert scope_to_chunk_type(SearchScope.WIKI) == "wiki"
+        assert scope_to_chunk_type("wiki") is ChunkType.WIKI
+        assert scope_to_chunk_type(SearchScope.WIKI) is ChunkType.WIKI
 
     def test_invalid_scope_raises(self):
         with pytest.raises(ValueError):
             scope_to_chunk_type("bogus")
+
+
+class TestChunkTypeEnum:
+    """ChunkType is a closed StrEnum whose members serialize as their values."""
+
+    def test_members_are_str_values(self):
+        assert ChunkType.RAW == "raw"
+        assert ChunkType.WIKI == "wiki"
+        assert f"{ChunkType.WIKI}" == "wiki"
+
+    def test_decode_round_trip(self):
+        assert ChunkType("raw") is ChunkType.RAW
+        assert ChunkType("wiki") is ChunkType.WIKI
+
+    def test_unknown_value_raises(self):
+        with pytest.raises(ValueError):
+            ChunkType("bogus")
+
+
+class TestHttpChunkTypeBoundary:
+    """The HTTP request models decode chunk_type into ChunkType, rejecting junk."""
+
+    def test_ask_request_decodes_wiki(self):
+        from lilbee.server.models import AskRequest
+
+        assert AskRequest(question="q", chunk_type="wiki").chunk_type is ChunkType.WIKI
+
+    def test_ask_request_both_means_no_filter(self):
+        from lilbee.server.models import AskRequest
+
+        assert AskRequest(question="q", chunk_type="both").chunk_type is None
+
+    def test_ask_request_rejects_unknown(self):
+        from pydantic import ValidationError
+
+        from lilbee.server.models import AskRequest
+
+        with pytest.raises(ValidationError):
+            AskRequest(question="q", chunk_type="bogus")
 
 
 class TestChunkTypePredicate:

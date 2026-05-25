@@ -37,6 +37,7 @@ from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
+    ChunkType,
     CitationRecord,
     EmbeddingModelMismatchError,
     RemoveResult,
@@ -57,7 +58,7 @@ def _hybrid_search(
     query_text: str,
     query_vector: list[float],
     top_k: int,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> list[SearchChunk]:
     """Run hybrid (vector + FTS) search with RRF reranking.
 
@@ -383,7 +384,7 @@ class Store:
         top_k: int | None = None,
         max_distance: float | None = None,
         query_text: str | None = None,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         """Search for similar chunks. Hybrid when FTS available, else vector-only.
 
