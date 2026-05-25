@@ -83,9 +83,9 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 
 ## Why lilbee
 
-The first evening with a local model is fun. What makes it more than a novelty is grounding: the model needs context from your notes, your files, your code. lilbee pairs the chat with a real search engine over documents you choose, so a local model can reason over your world and answer with citations you can click back to the source.
+A small local model is fun, but there's only so much you can do with one on its own. Give it properly processed documents and a search engine over them, and it suddenly becomes incredibly powerful. Without those, it never gets past being a fun novelty.
 
-Standing this up used to mean a background daemon, a separate inference server, model files fetched by hand, and a retrieval layer glued on top. lilbee folds all of it into one install, driven from the terminal. Run it globally, or scope a library per project by dropping a `.lilbee/` next to `.git/`, the same pattern git uses; a focused library answers better than one catch-all pile of everything.
+lilbee is those two things — the document processing and the search engine — built around a model it runs for you, all in one install. Point it at your files and start asking.
 
 > **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a grounding layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
