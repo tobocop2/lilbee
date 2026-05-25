@@ -5174,3 +5174,17 @@ class TestSdkLLMProviderPdfOcr:
         provider = SdkLLMProvider(LitellmSdkBackend())
         with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
+
+
+class TestProviderReadHelpers:
+    """The SDK-shape readers degrade to None when the attribute is unreadable."""
+
+    def test_read_context_n_seq_max_none_without_context_params(self) -> None:
+        from lilbee.providers.llama_cpp.provider import _read_context_n_seq_max
+
+        assert _read_context_n_seq_max(object()) is None
+
+    def test_read_rerank_class_count_none_without_model(self) -> None:
+        from lilbee.providers.llama_cpp.provider import _read_rerank_class_count
+
+        assert _read_rerank_class_count(object()) is None
