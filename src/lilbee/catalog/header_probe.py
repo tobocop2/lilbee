@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import struct
 import tempfile
@@ -61,9 +62,13 @@ def _parse_arch(blob: bytes) -> str:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
-        # GGUFReader holds an open numpy.memmap on the file; release it before
-        # unlink or Windows raises PermissionError on the still-mapped handle.
+        # GGUFReader holds an open numpy.memmap on the file; close the underlying
+        # mmap before unlink or Windows raises PermissionError on the mapped handle.
+        # Cleanup must never mask the architecture already read above, so a failed
+        # unlink is tolerated (the OS reclaims the temp file).
         if reader is not None:
-            del reader.data
-            del reader
-        tmp.unlink(missing_ok=True)
+            mmap_obj = getattr(getattr(reader, "data", None), "_mmap", None)
+            if mmap_obj is not None:
+                mmap_obj.close()
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)

@@ -139,8 +139,9 @@ def test_probe_releases_memmap_before_unlink(monkeypatch: pytest.MonkeyPatch) ->
 
     def _checking_unlink(self: header_probe.Path, *args: object, **kwargs: object) -> None:
         reader = captured.get("reader")
-        # Reader must have had its memmap released before unlink runs.
-        assert reader is None or not hasattr(reader, "data")
+        # The memmap must be closed before unlink runs (Windows file-lock fix).
+        mmap_obj = getattr(getattr(reader, "data", None), "_mmap", None)
+        assert mmap_obj is None or mmap_obj.closed
         return real_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(header_probe.Path, "unlink", _checking_unlink)
