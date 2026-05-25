@@ -310,7 +310,12 @@ See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](do
 
 ## Experimental
 
-Two opt-in features that work but are still finding their final shape. Generation quality and retrieval behavior depend on your library, models, and knobs; expect to iterate. Feedback is welcome.
+<details>
+<summary>Two opt-in features that work but are still finding their final shape: <strong>Wiki</strong> and <strong>semantic chunking</strong>. Click to expand.</summary>
+
+<br>
+
+Generation quality and retrieval behavior depend on your library, models, and knobs; expect to iterate. Feedback is welcome.
 
 ### Wiki
 
@@ -323,6 +328,8 @@ See the [Wiki section of the usage guide](docs/usage.md#wiki) for the full comma
 A semantic-chunking mode is available as an opt-in alternative to the default fixed-size chunker. It uses embedding similarity to find topic boundaries, so each chunk is one coherent thought instead of a fragment that cuts through an argument. The benefit shows up on prose-heavy collections like novels, essays, long-form research papers, or interview transcripts. The trade-off is roughly 9x more embedding calls during indexing.
 
 See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-chunking) for trade-offs and how to enable it.
+
+</details>
 
 ## Built on
 
