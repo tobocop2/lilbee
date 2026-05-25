@@ -106,6 +106,66 @@ _CTX_FLOOR = 512
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
 
+# Classifier-output count a reranker must have for lilbee's single-scalar
+# score extraction (batching._extract_rerank_score reads embedding[0]).
+# llama-cpp-python's RANK pooling slices ptr[:n_embd] regardless of n_cls_out,
+# so the response gives no in-band signal; the model's count is the only check.
+_SINGLE_CLASS_RERANK = 1
+
+
+def _read_context_n_seq_max(llm: Any) -> int | None:
+    """Read ``n_seq_max`` back off a constructed Llama, or None if unreadable."""
+    context_params = getattr(llm, "context_params", None)
+    if context_params is None:
+        return None
+    value = getattr(context_params, "n_seq_max", None)
+    return int(value) if isinstance(value, int) else None
+
+
+def _read_rerank_class_count(llm: Any) -> int | None:
+    """Read a reranker's classifier-output count, or None if unreadable."""
+    model = getattr(getattr(llm, "_model", None), "model", None)
+    if model is None:
+        return None
+    from llama_cpp import llama_cpp as _llc
+
+    return int(_llc.llama_model_n_cls_out(model))
+
+
+def _verify_embed_n_seq_max(llm: Any, expected: int) -> None:
+    """Fail loudly if the ``_llama_n_seq_max`` shim did not take effect.
+
+    Without this, a future llama-cpp-python that moves ``LlamaContext``
+    internals leaves ``n_seq_max`` at the C default (1) and batched 2+ embed
+    silently returns ``llama_decode -1`` at inference time instead of here.
+    """
+    applied = _read_context_n_seq_max(llm)
+    if applied is not None and applied != expected:
+        raise ProviderError(
+            f"Embedding context n_seq_max={applied}, expected {expected}; "
+            "the llama-cpp-python n_seq_max workaround did not apply "
+            "(internals may have changed). Batched embed would fail at decode.",
+            provider="llama-cpp",
+        )
+
+
+def _verify_single_class_reranker(llm: Any) -> None:
+    """Fail loudly if the reranker emits more than one classifier output.
+
+    lilbee reads ``embedding[0]`` as the relevance score, which is the model's
+    only output for a single-class cross-encoder. A multi-class reranker would
+    silently score on class 0 alone, so reject it instead of producing
+    plausible-but-wrong rankings.
+    """
+    count = _read_rerank_class_count(llm)
+    if count is not None and count != _SINGLE_CLASS_RERANK:
+        raise ProviderError(
+            f"Reranker has {count} classifier outputs; lilbee supports only "
+            "single-class (n_cls_out=1) rerankers. A multi-class model would "
+            "be scored on class 0 alone and rank incorrectly.",
+            provider="llama-cpp",
+        )
+
 
 class LlamaCppProvider(LLMProvider):
     """Provider backed by llama-cpp-python for local GGUF model inference."""
@@ -775,7 +835,11 @@ def load_llama(
         from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
 
         with _llama_n_seq_max(EMBED_N_SEQ_MAX):
-            return _construct_llama(Llama, model_path, kwargs)
+            llm = _construct_llama(Llama, model_path, kwargs)
+        _verify_embed_n_seq_max(llm, EMBED_N_SEQ_MAX)
+        if mode == LoaderMode.RERANK:
+            _verify_single_class_reranker(llm)
+        return llm
     return _construct_llama(Llama, model_path, kwargs)
 
 

@@ -109,6 +109,12 @@ def compute_rerank_scores(llm: Any, query: str, candidates: list[str]) -> list[f
 def _embed_one_call(llm: Any, sub_batch: list[str]) -> list[list[float]]:
     response = llm.create_embedding(input=sub_batch)
     data = response.get("data") or []
+    if len(data) != len(sub_batch):
+        raise ProviderError(
+            f"Embedder returned {len(data)} vectors for {len(sub_batch)} inputs; "
+            "llama-cpp-python may have changed its response format",
+            provider="llama-cpp",
+        )
     return [item["embedding"] for item in data]
 
 
