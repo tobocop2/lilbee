@@ -69,7 +69,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
-- **Finds what you mean, not just what you typed.** lilbee matches on meaning, so the right passage surfaces even when your wording doesn't line up with the document's. The retrieval is built on published research (semantic and keyword search, reranking), with [50+ settings](docs/usage.md) to tune if you want them.
+- **A sophisticated [search engine](docs/architecture.md#search-pipeline), built on published research.** It weighs every result by how well it answers your question and brings the best passage back first. Semantic search and reranking do the heavy lifting, with [50+ settings](docs/usage.md#retrieval-tuning) to tune and sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Indexes anything textual.** PDFs, Office, ebooks, code in 150+ languages, scanned pages (OCR), crawled sites.
