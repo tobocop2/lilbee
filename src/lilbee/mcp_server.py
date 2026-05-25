@@ -34,7 +34,11 @@ from lilbee.wiki.shared import (
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
+mcp = FastMCP(
+    "lilbee",
+    instructions="Local search engine over your files, code, and crawled pages. "
+    "Search indexed documents for answers with file and line citations.",
+)
 
 
 def _error(msg: str) -> dict[str, Any]:
