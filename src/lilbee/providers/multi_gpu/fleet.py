@@ -11,6 +11,7 @@ one. See docs/architecture.md for the device/placement rationale.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import socket
@@ -21,9 +22,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.providers.base import ProviderError
 from lilbee.providers.multi_gpu.client import LlamaServerClient
 from lilbee.providers.worker.transport import WorkerRole
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 _READY_TIMEOUT_S = 180.0
@@ -33,6 +35,12 @@ _MONITOR_POLL_S = 2.0
 _PORT_BIND_RETRIES = 8
 # Restart backoff (seconds), clamped to the last entry for repeated crashes.
 _RESTART_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 30.0)
+# Give up restarting a server after this many CONSECUTIVE failed (re)starts; the
+# role then stays in in-process fallback instead of crash-looping forever (e.g. a
+# model that OOMs at launch because the VRAM estimate under-shot).
+_MAX_RESTART_ATTEMPTS = 5
+# How much of a failed server's captured stderr to surface in the warning log.
+_STDERR_TAIL_CHARS = 2000
 # Windows puts the child in a new process group via creationflags; POSIX uses
 # start_new_session. The constant is Windows-only in stdlib (0 = no-op on POSIX).
 _CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -67,9 +75,22 @@ class FleetServer:
         self._proc: subprocess.Popen[bytes] | None = None
         self.client: LlamaServerClient | None = None
         self.restarts = 0
+        # Consecutive failed (re)starts; reset to 0 on a successful ready. Bounds
+        # the crash-loop so a server that can't start stops being respawned.
+        self.consecutive_failures = 0
         # ``ready`` gates routing: True only after wait_ready passes, so a server
         # mid-(re)start (alive but model still loading) is never routed to.
         self.ready = False
+
+    @property
+    def _stderr_log(self) -> Path:
+        """Per-instance stderr capture file (sibling of the port file)."""
+        return self._launch.port_file.with_suffix(".log")
+
+    @property
+    def gave_up(self) -> bool:
+        """True once consecutive failures hit the cap; the role stays in-process."""
+        return self.consecutive_failures >= _MAX_RESTART_ATTEMPTS
 
     @property
     def role(self) -> WorkerRole:
@@ -80,14 +101,22 @@ class FleetServer:
         port = pick_free_port()
         argv = [*self._launch.argv, "--port", str(port)]
         env = {**os.environ, **self._launch.env_overrides}
-        self._proc = subprocess.Popen(  # noqa: S603 - argv is a fixed template
-            argv,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=sys.platform != "win32",
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
-        )
+        # Capture stderr to a per-instance file (truncated each spawn) so a failed
+        # launch is diagnosable; a file (not a pipe) needs no parent drain and
+        # cannot deadlock the child. The parent's handle is closed immediately --
+        # the child keeps its own dup.
+        stderr_fh = self._stderr_log.open("wb")
+        try:
+            self._proc = subprocess.Popen(  # noqa: S603 - argv is a fixed template
+                argv,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_fh,
+                start_new_session=sys.platform != "win32",
+                creationflags=_CREATE_NEW_PROCESS_GROUP,
+            )
+        finally:
+            stderr_fh.close()
         # parent_pid identifies the owning lilbee, so reaping never kills a
         # concurrent instance's servers (only a dead parent's orphans).
         self._launch.port_file.write_text(
@@ -129,14 +158,29 @@ class FleetServer:
         if self.client is not None:
             self.client.close()
         self._launch.port_file.unlink(missing_ok=True)
+        self._stderr_log.unlink(missing_ok=True)
 
     def restart(self) -> bool:
-        """Stop the dead process and respawn on a fresh port; True if ready."""
+        """Stop the dead process and respawn on a fresh port; True if ready.
+
+        Tracks consecutive failures so the monitor can stop respawning a server
+        that never comes up (see ``gave_up``); a success resets the count.
+        """
         self.restarts += 1
         if self._proc is not None and self._proc.poll() is None:
             _terminate_group(self._proc)
         self.spawn()
-        return self.wait_ready()
+        ready = self.wait_ready()
+        self.consecutive_failures = 0 if ready else self.consecutive_failures + 1
+        return ready
+
+    def failed_start_detail(self) -> str:
+        """Tail of the server's captured stderr, for diagnosing a failed launch."""
+        try:
+            text = self._stderr_log.read_text(errors="replace")
+        except OSError:
+            return ""
+        return text.strip()[-_STDERR_TAIL_CHARS:]
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
@@ -233,19 +277,26 @@ class Fleet:
     def start(self, launches: list[InstanceLaunch]) -> None:
         """Reap prior orphans, spawn every launch, wait for readiness, monitor.
 
-        On any instance failing to become ready, tears the whole fleet down and
-        raises, so a partial fleet never serves.
+        Each role is independent (mirroring the in-process per-role workers): a
+        server that fails to become ready is left not-ready so its role falls back
+        to in-process, while the others still serve. The monitor keeps retrying a
+        dead one (bounded by the restart cap) rather than denying all inference.
         """
         if self.data_dir is not None:
             reap_orphans(self.data_dir)
         for launch in launches:
             server = FleetServer(launch)
-            server.spawn()
             self._servers.append(server)
-            if not server.wait_ready(timeout=self.ready_timeout):
-                self.shutdown()
-                raise ProviderError(f"llama-server for role {launch.role} failed to become ready")
-            server.ready = True
+            server.spawn()
+            server.ready = server.wait_ready(timeout=self.ready_timeout)
+            if not server.ready:
+                server.consecutive_failures += 1
+                log.warning(
+                    "llama-server for role %s did not become ready; that role uses "
+                    "in-process until it recovers. stderr tail: %s",
+                    launch.role,
+                    server.failed_start_detail(),
+                )
         if self._servers:  # nothing to supervise when every role degraded to in-process
             self._start_monitor()
 
@@ -267,14 +318,16 @@ class Fleet:
             self._restart_dead()
 
     def _restart_dead(self) -> None:
-        """Restart any server whose process has exited, with per-server backoff.
+        """Restart any dead server that hasn't hit the restart cap, with backoff.
 
         The slow respawn (spawn + wait_ready) runs OUTSIDE the lock; the server is
         marked not-ready first so routing skips it, and ready again only once it is.
         Holding the lock across wait_ready would block all routing for the timeout.
+        A server past the cap is left dead (its role stays in in-process fallback)
+        instead of being respawned forever.
         """
         with self._lock:
-            dead = [s for s in self._servers if not s.is_alive()]
+            dead = [s for s in self._servers if not s.is_alive() and not s.gave_up]
             for server in dead:
                 server.ready = False
         for server in dead:
@@ -287,8 +340,16 @@ class Fleet:
             with self._lock:
                 if self._stop_monitor.is_set():
                     server.stop()  # shutdown raced our respawn; don't strand it
-                else:
-                    server.ready = ready and server.is_alive()
+                    continue
+                server.ready = ready and server.is_alive()
+            if not server.ready and server.gave_up:
+                log.warning(
+                    "llama-server for role %s failed %d consecutive restarts; leaving "
+                    "that role in-process. stderr tail: %s",
+                    server.role,
+                    server.consecutive_failures,
+                    server.failed_start_detail(),
+                )
 
     @staticmethod
     def _backoff(restarts: int) -> None:

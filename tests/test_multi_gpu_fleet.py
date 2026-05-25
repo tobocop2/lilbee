@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers import base as base_mod
 from lilbee.providers.multi_gpu import fleet as fleet_mod
 from lilbee.providers.multi_gpu.fleet import (
     Fleet,
@@ -298,16 +297,69 @@ def test_empty_placement_starts_no_monitor(tmp_path: Path, patched: dict) -> Non
         fleet.shutdown()
 
 
-def test_fleet_start_raises_and_tears_down_when_not_ready(
+def test_fleet_start_degrades_unready_role_without_raising(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(fleet_mod.LlamaServerClient, "health", lambda self: False)
+    # A role that never becomes ready must NOT take down the whole fleet (no
+    # raise); it degrades to in-process (no healthy client). Other healthy roles
+    # serving is covered by test_fleet_start_reaps_then_serves_healthy_clients.
     monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(fleet_mod.subprocess, "Popen", lambda *a, **k: FakeProc(alive=True))
+    monkeypatch.setattr(fleet_mod.LlamaServerClient, "health", lambda self: False)
     fleet = Fleet(ready_timeout=0.02, data_dir=tmp_path)
-    with pytest.raises(base_mod.ProviderError, match="failed to become ready"):
-        fleet.start([_launch(tmp_path)])
-    assert fleet.healthy_clients(WorkerRole.CHAT) == []
+    fleet.start([_launch(tmp_path, WorkerRole.CHAT)])  # does not raise
+    try:
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []  # degraded -> in-process
+    finally:
+        fleet.shutdown()
+
+
+def test_restart_dead_gives_up_after_cap_and_leaves_role_in_process(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A server that never becomes ready stops being respawned after the cap, so a
+    # doomed model (e.g. OOM at launch) doesn't crash-loop forever. wait_ready is
+    # stubbed False to isolate the cap logic from its (real) readiness timeout.
+    monkeypatch.setattr(fleet_mod, "_RESTART_BACKOFF_S", (0.0,))
+    monkeypatch.setattr(fleet_mod.FleetServer, "wait_ready", lambda self, timeout=None: False)
+    fleet = Fleet(data_dir=tmp_path)
+    server = FleetServer(_launch(tmp_path))
+    fleet._servers.append(server)
+    server.spawn()
+    for _ in range(fleet_mod._MAX_RESTART_ATTEMPTS + 2):
+        server._proc._alive = False  # crash before each monitor tick
+        fleet._restart_dead()
+    assert server.gave_up
+    assert server.consecutive_failures == fleet_mod._MAX_RESTART_ATTEMPTS
+    assert fleet.healthy_clients(WorkerRole.CHAT) == []  # role stays in-process
+
+
+def test_restart_resets_failure_count_on_success(tmp_path: Path, patched: dict) -> None:
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    server.consecutive_failures = 3
+    server._proc._alive = False
+    assert server.restart() is True  # patched health returns True
+    assert server.consecutive_failures == 0  # success resets the count
+
+
+def test_failed_start_detail_returns_stderr_tail(tmp_path: Path, patched: dict) -> None:
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()  # creates the (empty) stderr log
+    server._stderr_log.write_text("ggml_backend_cuda: out of memory")
+    assert "out of memory" in server.failed_start_detail()
+
+
+def test_failed_start_detail_empty_when_no_log(tmp_path: Path, patched: dict) -> None:
+    server = FleetServer(_launch(tmp_path))  # never spawned -> no log file
+    assert server.failed_start_detail() == ""
+
+
+def test_stop_removes_stderr_log(tmp_path: Path, patched: dict) -> None:
+    server = FleetServer(_launch(tmp_path))
+    server.spawn()
+    assert server._stderr_log.exists()
+    server.stop()
+    assert not server._stderr_log.exists()
 
 
 def test_restart_dead_respawns_and_remarks_ready(
