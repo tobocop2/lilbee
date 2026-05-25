@@ -30,7 +30,11 @@ from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
 )
-from lilbee.crawler.save import _save_single_result, _update_single_metadata
+from lilbee.crawler.save import (
+    _save_single_result,
+    _update_single_metadata,
+    normalize_crawled_markdown,
+)
 from lilbee.runtime.progress import EventType
 
 
@@ -407,6 +411,26 @@ class TestCrawlSingle:
             result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
+
+    async def test_emits_setup_bracket_around_warmup(self):
+        """The browser warmup is bracketed by setup events so the Task Center
+        shows a 'preparing crawler' stage instead of a silent stall."""
+        mock_result = _make_crawl4ai_result()
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=mock_result)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+
+        events: list[tuple] = []
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single(
+                "https://example.com", on_progress=lambda e, d: events.append((e, d))
+            )
+        assert result.success
+        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
@@ -1046,12 +1070,18 @@ class TestCrawlRecursive:
         assert len(results) == 2
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
-        assert len(progress_calls) == 2
         # Streaming semantics: total is unknown during BFS, counter advances per page.
         from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
-        assert [c[1].current for c in progress_calls] == [1, 2]
-        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
+        page_events = [c for c in progress_calls if c[0] == EventType.CRAWL_PAGE]
+        assert [c[1].current for c in page_events] == [1, 2]
+        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in page_events)
+        # The browser warmup is bracketed by setup events so the Task Center
+        # shows a "preparing crawler" stage instead of a silent stall.
+        setup_types = [
+            e for e, _ in progress_calls if e in (EventType.SETUP_START, EventType.SETUP_DONE)
+        ]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
@@ -1510,7 +1540,9 @@ class TestCrawlAndSave:
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
-        mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
+        mock_crawl_single.assert_awaited_once()
+        assert mock_crawl_single.await_args.args == ("https://example.com",)
+        assert mock_crawl_single.await_args.kwargs["quiet"] is True
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
@@ -2139,6 +2171,28 @@ class TestSaveSingleResult:
         assert outcome.filename.endswith("index.md")
         assert outcome.content_hash == content_hash("# New")
 
+    def test_normalize_crawled_markdown_collapses_reference_links(self):
+        ref = "[[2]](https://en.wikipedia.org/wiki/Foo#cite_note-2)"
+        md = f"Car of the Year.{ref} Production ended."
+        # Double brackets collapse to single; text and URL are preserved.
+        expected = (
+            "Car of the Year.[2](https://en.wikipedia.org/wiki/Foo#cite_note-2) Production ended."
+        )
+        assert normalize_crawled_markdown(md) == expected
+        # Ordinary single-bracket links are left untouched.
+        keep = 'See the [trim package](https://en.wikipedia.org/wiki/Trim "title") here.'
+        assert normalize_crawled_markdown(keep) == keep
+
+    def test_writes_normalized_markdown(self, isolated_env):
+        from lilbee.crawler.save import _save_single_result
+
+        raw = "9C1[[1]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        expected = "9C1[1](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        outcome = _save_single_result(CrawlResult(url="https://example.com/ref", markdown=raw), {})
+        assert outcome is not None
+        assert outcome.path.read_text(encoding="utf-8") == expected
+        assert outcome.content_hash == content_hash(expected)
+
     def test_returns_none_on_failure(self, isolated_env):
         from lilbee.crawler.save import _save_single_result
 
@@ -2496,7 +2550,7 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(url: str, *, quiet: bool = False) -> CrawlResult:
+        async def _fake_single(url: str, *, quiet: bool = False, on_progress=None) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 
