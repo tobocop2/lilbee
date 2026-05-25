@@ -3524,6 +3524,65 @@ async def test_chat_scroll_to_bottom():
             assert mock_end.called or log.max_scroll_y - log.scroll_y >= 5
 
 
+async def test_chat_auto_scroll_stays_pinned_as_content_grows():
+    """Regression: streamed content grows between scroll ticks. scroll_end does
+    not move scroll_y synchronously and Textual keeps scroll_y put as content
+    grows above it, so max_scroll_y races ahead of scroll_y. Auto-follow must
+    stay pinned to the bottom instead of disabling itself once that gap exceeds
+    the tail tolerance.
+    """
+    from textual.containers import VerticalScroll
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        with (
+            patch.object(type(log), "max_scroll_y", new_callable=PropertyMock) as max_y,
+            patch.object(type(log), "scroll_y", new_callable=PropertyMock) as scroll_y,
+            patch.object(log, "scroll_end") as mock_end,
+        ):
+            # Tick 1: user parked at the bottom (10/10), auto-scroll fires.
+            max_y.return_value = 10
+            scroll_y.return_value = 10.0
+            app.screen._scroll_to_bottom()
+            assert mock_end.call_count == 1
+
+            # 70 more lines stream in before the next tick. scroll_y stays at
+            # the parked spot (10) while max_scroll_y races to 80.
+            max_y.return_value = 80
+            scroll_y.return_value = 10.0
+            app.screen._scroll_to_bottom()
+            # Comparing the live gap (80 - 10 = 70 >= 5) would suppress this and
+            # never recover. The user never scrolled up, so we must still follow.
+            assert mock_end.call_count == 2
+
+
+async def test_chat_auto_scroll_stops_when_user_scrolls_up():
+    """Auto-follow must release the bottom once the user scrolls up to read."""
+    from textual.containers import VerticalScroll
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        with (
+            patch.object(type(log), "max_scroll_y", new_callable=PropertyMock) as max_y,
+            patch.object(type(log), "scroll_y", new_callable=PropertyMock) as scroll_y,
+            patch.object(log, "scroll_end") as mock_end,
+        ):
+            # Park at the bottom.
+            max_y.return_value = 80
+            scroll_y.return_value = 80.0
+            app.screen._scroll_to_bottom()
+            assert mock_end.call_count == 1
+
+            # User scrolls well up from the parked bottom; more content arrives.
+            max_y.return_value = 120
+            scroll_y.return_value = 20.0
+            app.screen._scroll_to_bottom()
+            # We must not yank the reader back down.
+            assert mock_end.call_count == 1
+
+
 async def test_chat_trim_history_drops_oldest_pairs_over_token_budget():
     """History windows by token budget, dropping oldest user/assistant pairs."""
     from lilbee.core.config import cfg
