@@ -2,7 +2,7 @@
 # Installed in the dedicated QA venv (not the dev venv).
 # Runs on Linux/macOS/Windows; platform-specific PTY backends below.
 
-pytest>=8.3
+pytest>=9.0.3
 pytest-xdist>=3.8
 pytest-asyncio>=0.24
 pytest-timeout>=2.3

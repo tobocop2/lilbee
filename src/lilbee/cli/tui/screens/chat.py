@@ -80,8 +80,9 @@ fraction so the assembled prompt never approaches ``n_ctx`` and llama-cpp
 never errors with "Requested tokens exceed context window."
 """
 
-# Treat the user as "still at the bottom" when within this many lines so a tiny
-# stray scroll doesn't disable auto-follow during streaming.
+# Auto-follow tolerance, in lines: the user counts as "at the bottom" within
+# this many lines of it, so a tiny stray scroll doesn't disable auto-follow and
+# scrolling back near the bottom re-engages it.
 _AUTO_SCROLL_TAIL_LINES = 5
 
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
@@ -197,6 +198,8 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
+        self._tail_scroll_y: float = 0.0
+        self._auto_follow: bool = True
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -1038,6 +1041,10 @@ class ChatScreen(Screen[None]):
         assistant_msg = AssistantMessage()
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
+        # A fresh turn always follows its own answer, even if the user had
+        # scrolled up during the previous response.
+        self._auto_follow = True
+        self._tail_scroll_y = 0.0
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
@@ -1173,10 +1180,19 @@ class ChatScreen(Screen[None]):
 
     def _scroll_to_bottom(self) -> None:
         log_widget = self._chat_log
-        # Only auto-scroll while the user is still tailing the output.
-        # If they scrolled up to read, don't yank them back.
-        if log_widget.max_scroll_y - log_widget.scroll_y < _AUTO_SCROLL_TAIL_LINES:
+        # Re-engage auto-follow when the user is at the live bottom; disengage
+        # when they scroll up from where the last auto-scroll parked them. The
+        # disengage test compares against that parked position, not the live
+        # max_scroll_y: content is appended between scroll ticks, so max_scroll_y
+        # races ahead of a parked scroll_y, and a live-gap test would read that
+        # as a scroll-up and stop auto-follow for the rest of the response.
+        if log_widget.scroll_y >= log_widget.max_scroll_y - _AUTO_SCROLL_TAIL_LINES:
+            self._auto_follow = True
+        elif log_widget.scroll_y < self._tail_scroll_y - _AUTO_SCROLL_TAIL_LINES:
+            self._auto_follow = False
+        if self._auto_follow:
             log_widget.scroll_end(animate=False)
+            self._tail_scroll_y = log_widget.max_scroll_y
 
     def action_scroll_up(self) -> None:
         self._chat_log.scroll_page_up()

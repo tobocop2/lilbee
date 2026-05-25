@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import struct
 import tempfile
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
 
 import httpx
 from gguf import GGUFReader, GGUFValueType
@@ -49,24 +49,30 @@ def _parse_arch(blob: bytes) -> str:
     with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
         f.write(bytes(patched))
         tmp = Path(f.name)
-    reader: GGUFReader | None = None
     try:
-        reader = GGUFReader(str(tmp))
-        field = reader.fields.get(GGUF_ARCH_KEY)
-        if field is None or not field.data:
-            return ""
-        if not field.types or field.types[-1] != GGUFValueType.STRING:
-            return ""
-        return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+        return _read_architecture(tmp)
     except (ValueError, struct.error, IndexError, OSError, UnicodeDecodeError) as exc:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
-        # GGUFReader maps the file via numpy.memmap; close the underlying mmap so
-        # Windows can unlink (dropping the reference alone doesn't release the handle
-        # promptly). numpy exposes no public close, so reach the documented private
-        # handle through a typed-Any local; it fails loudly if numpy restructures.
-        if reader is not None:
-            memmap: Any = reader.data
-            memmap._mmap.close()
-        tmp.unlink(missing_ok=True)
+        # GGUFReader memory-maps the file; on Windows the mapping must be released
+        # before the file can be deleted (a held mapping raises PermissionError /
+        # WinError 32, which missing_ok does not cover). _read_architecture scopes
+        # the reader so it is freed on return; suppress is a best-effort backstop.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _read_architecture(path: Path) -> str:
+    """Return general.architecture from the GGUF file at *path*, or empty string.
+
+    Kept separate so the ``GGUFReader`` (and its memory map of *path*) is released
+    when this returns, letting the caller delete the temp file on Windows.
+    """
+    reader = GGUFReader(str(path))
+    field = reader.fields.get(GGUF_ARCH_KEY)
+    if field is None or not field.data:
+        return ""
+    if not field.types or field.types[-1] != GGUFValueType.STRING:
+        return ""
+    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
