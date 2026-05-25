@@ -106,10 +106,9 @@ _CTX_FLOOR = 512
 # Sentinel passed to ``llama-cpp-python`` for "offload all layers".
 _N_GPU_LAYERS_AUTO = -1
 
-# Classifier-output count a reranker must have for lilbee's single-scalar
-# score extraction (batching._extract_rerank_score reads embedding[0]).
-# llama-cpp-python's RANK pooling slices ptr[:n_embd] regardless of n_cls_out,
-# so the response gives no in-band signal; the model's count is the only check.
+# lilbee extracts a single scalar rerank score, so a multi-class reranker would
+# be silently scored on one logit. The response can't reveal the class count, so
+# it's checked at load.
 _SINGLE_CLASS_RERANK = 1
 
 

@@ -684,41 +684,32 @@ class TestProgressTracker:
 
 
 class TestFetchExpectedFileSize:
-    """fetch_expected_file_size parses the HF tree API and degrades to unknown."""
+    """fetch_expected_file_size reads hf_hub file metadata and degrades to unknown."""
 
-    def _patch_tree(
-        self, monkeypatch: pytest.MonkeyPatch, *, payload: Any = None, raises: bool = False
+    def _patch_meta(
+        self, monkeypatch: pytest.MonkeyPatch, *, size: int | None = None, raises: bool = False
     ) -> None:
-        import lilbee.catalog.download as dl
-
-        class _Resp:
-            def raise_for_status(self) -> None:
-                pass
-
-            def json(self) -> Any:
-                return payload
-
-        def _get(*_a: Any, **_kw: Any) -> Any:
+        def _size(*_a: Any, **_kw: Any) -> int | None:
             if raises:
                 raise RuntimeError("offline")
-            return _Resp()
+            return size
 
-        monkeypatch.setattr(dl.httpx, "get", _get)
+        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", _size)
 
-    def test_returns_lfs_size_for_listed_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_reported_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.catalog.download import fetch_expected_file_size
 
-        self._patch_tree(monkeypatch, payload=[{"path": "m.gguf", "lfs": {"size": 4096}}])
+        self._patch_meta(monkeypatch, size=4096)
         assert fetch_expected_file_size("org/repo", "m.gguf") == 4096
 
-    def test_unknown_when_file_not_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_when_size_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_expected_file_size
 
-        self._patch_tree(monkeypatch, payload=[{"path": "other.gguf"}])
+        self._patch_meta(monkeypatch, size=None)
         assert fetch_expected_file_size("org/repo", "m.gguf") == _SIZE_UNKNOWN
 
-    def test_unknown_when_api_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_when_metadata_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_expected_file_size
 
-        self._patch_tree(monkeypatch, raises=True)
+        self._patch_meta(monkeypatch, raises=True)
         assert fetch_expected_file_size("org/repo", "m.gguf") == _SIZE_UNKNOWN

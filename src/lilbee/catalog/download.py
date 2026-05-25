@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
-from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, hf_headers, hf_token
+from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers, hf_token
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
@@ -170,7 +170,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
 
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{hf_repo}",
+            f"{HF_API_URL}/{hf_repo}",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
@@ -240,7 +240,7 @@ def resolve_filename(entry: CatalogModel) -> str:
 
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{entry.hf_repo}",
+            f"{HF_API_URL}/{entry.hf_repo}",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
@@ -301,27 +301,24 @@ def _cached_file_is_complete(hf_repo: str, filename: str, dest: Path) -> bool:
     return False
 
 
-def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
-    """Return the byte size HuggingFace reports for *filename* in *hf_repo*.
+def _hf_file_size(hf_repo: str, filename: str) -> int | None:
+    """Byte size huggingface_hub resolves for *filename* (None if unreported)."""
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
-    Returns ``_SIZE_UNKNOWN`` (0) when the file isn't listed or the API
-    can't be reached. LFS-backed GGUFs carry the real size under ``lfs``.
+    return get_hf_file_metadata(hf_hub_url(hf_repo, filename), token=hf_token()).size
+
+
+def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
+    """Return the byte size huggingface_hub reports for *filename*, or _SIZE_UNKNOWN.
+
+    Resolves via hf_hub's own file metadata (correct revision, redirects, and
+    LFS/Xet handled uniformly) instead of scraping the repo tree. Returns 0 when
+    offline or unresolvable, in which case the caller keeps the cached file.
     """
     try:
-        resp = httpx.get(
-            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        resp.raise_for_status()
-        files = resp.json()
+        return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
     except Exception:
         return _SIZE_UNKNOWN
-
-    for f in files:
-        if isinstance(f, dict) and f.get("path", "") == filename:
-            return int(f.get("lfs", {}).get("size", 0) or f.get("size", 0) or _SIZE_UNKNOWN)
-    return _SIZE_UNKNOWN
 
 
 def fetch_model_file_size(hf_repo: str) -> float:
@@ -330,7 +327,7 @@ def fetch_model_file_size(hf_repo: str) -> float:
     """
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
+            f"{HF_API_URL}/{hf_repo}/tree/main",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
