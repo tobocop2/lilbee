@@ -1,5 +1,6 @@
 """Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
@@ -463,8 +464,7 @@ class TestRemoveDocuments:
     def test_removes_known_files(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "delete_by_source") as mock_del,
-            mock.patch.object(store, "delete_source"),
+            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
@@ -480,8 +480,7 @@ class TestRemoveDocuments:
     def test_deletes_physical_file(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "delete_by_source"),
-            mock.patch.object(store, "delete_source"),
+            mock.patch.object(store, "_remove_one_unlocked"),
         ):
             f = tmp_path / "a.md"
             f.write_text("content")
@@ -494,8 +493,7 @@ class TestRemoveDocuments:
             mock.patch.object(
                 store, "get_sources", return_value=[{"filename": "../../../etc/passwd"}]
             ),
-            mock.patch.object(store, "delete_by_source"),
-            mock.patch.object(store, "delete_source"),
+            mock.patch.object(store, "_remove_one_unlocked"),
         ):
             secret = tmp_path.parent / "secret.txt"
             secret.write_text("don't delete me")
@@ -508,8 +506,7 @@ class TestRemoveDocuments:
     def test_nonexistent_file_still_removes_from_store(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
-            mock.patch.object(store, "delete_by_source") as mock_del,
-            mock.patch.object(store, "delete_source"),
+            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
         ):
             result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
             assert result.removed == ["gone.md"]
@@ -518,11 +515,50 @@ class TestRemoveDocuments:
     def test_uses_default_documents_dir(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "delete_by_source"),
-            mock.patch.object(store, "delete_source"),
+            mock.patch.object(store, "_remove_one_unlocked"),
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
+
+    def test_chunk_and_source_deleted_under_single_lock(self, store):
+        """Both deletes for one document run inside one write_lock acquisition.
+
+        Guards against the inconsistency window where chunks were visible
+        after their source record had already been deleted.
+        """
+        acquisitions: list[str] = []
+
+        @contextmanager
+        def _tracking_lock(*args, **kwargs):
+            acquisitions.append("acquire")
+            yield
+
+        with (
+            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
+            mock.patch.object(store, "_delete_by_source_unlocked") as mock_chunks,
+            mock.patch.object(store, "_delete_source_unlocked") as mock_source,
+            mock.patch("lilbee.data.store.core.write_lock", _tracking_lock),
+        ):
+            result = store.remove_documents(["a.md"])
+
+        assert result.removed == ["a.md"]
+        mock_chunks.assert_called_once_with("a.md")
+        mock_source.assert_called_once_with("a.md")
+        # Exactly one lock acquisition covers both deletes for the document.
+        assert acquisitions == ["acquire"]
+
+    def test_removes_chunks_and_source_atomically(self, store):
+        """End-to-end: a real removal clears both the chunk and source rows."""
+        store.add_chunks(_make_records(n=2))
+        store.upsert_source("doc0.md", "hash0", chunk_count=1)
+        store.upsert_source("doc1.md", "hash1", chunk_count=1)
+
+        result = store.remove_documents(["doc0.md"])
+
+        assert result.removed == ["doc0.md"]
+        assert {s["filename"] for s in store.get_sources()} == {"doc1.md"}
+        assert store.get_chunks_by_source("doc0.md") == []
+        assert len(store.get_chunks_by_source("doc1.md")) == 1
 
 
 class TestBm25Probe:
