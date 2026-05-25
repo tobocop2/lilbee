@@ -39,6 +39,7 @@ model itself or the bundled runtime, not the lilbee tool plumbing:
 | Functionary v3 | dispatches now that lilbee renders from the HF tokenizer's tool template, but multi-turn is still inconsistent |
 | OLMo-3 | the tool-trained Olmo-3-7B-Instruct still describes the call in prose instead of emitting a structured one |
 | InternLM2.5 | describes the search it would run instead of emitting a tool call |
+| DeepSeek R1-Distill (Qwen, Llama) | reasoning distills that aren't tool-trained; they describe the search inside their reasoning instead of emitting a tool call |
 | Phi-4-mini | the bundled llama.cpp aborts (SIGABRT) building the compute graph for this architecture |
 | GLM-4-9B-chat | the bundled llama.cpp aborts (SIGABRT) loading this GGUF |
 | GLM-4.5-Air | the Q4_K_M GGUF is 68 GB and runs out of memory loading on an 80 GB GPU; a smaller quant would fit but trades quality |

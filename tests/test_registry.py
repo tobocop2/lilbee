@@ -71,8 +71,11 @@ def _seed_hf_cache(
     blob = cache / "blobs" / digest
     blob.write_bytes(content)
     snap = cache / "snapshots" / _FAKE_REV
-    snap.mkdir(parents=True, exist_ok=True)
-    (snap / filename).symlink_to(blob)
+    # *filename* may carry a quant subdir (e.g. ``Q4_K_M/m-Q4_K_M.gguf``), which
+    # HF preserves in the snapshot tree; mirror that nesting here.
+    link = snap / filename
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(blob)
     (cache / "refs").mkdir(parents=True, exist_ok=True)
     (cache / "refs" / "main").write_text(_FAKE_REV)
     return blob
@@ -258,6 +261,78 @@ class TestModelRegistryResolve:
         ref = f"{repo}/m-mxfp4-00001-of-00003.gguf"
         assert registry.is_installed(ref) is True
         assert registry.resolve(ref).exists()
+
+    def test_split_gguf_resolves_to_snapshot_symlink_with_siblings(self, tmp_path: Path) -> None:
+        """A split GGUF resolves to its first shard's snapshot symlink, not its blob.
+
+        llama.cpp loads the whole set from the first shard and finds the siblings
+        by filename next to it; only the snapshot dir co-locates them under their
+        real ``-0000k-of-0000N`` names (blobs are hash-named). Returning the blob
+        path is what made gpt-oss-120b fail to load on the H200.
+        """
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        resolved = registry.resolve(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+        assert resolved.name == "m-mxfp4-00001-of-00003.gguf"  # the symlink, not a hash blob
+        assert resolved.parent.name == _FAKE_REV  # under snapshots/<rev>/, not blobs/
+        # Every sibling shard sits next to it under its real name.
+        for n in (2, 3):
+            assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
+
+    def test_subdir_quant_single_file_resolves(self, tmp_path: Path) -> None:
+        """A single-file quant nested in a ``Q4_K_M/`` subdir resolves by basename.
+
+        unsloth-style repos store each quant in its own subdir; the lilbee ref
+        keys on the basename, so cache lookup must find it wherever HF nested it.
+        """
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/SomeModel-GGUF"
+        _seed_hf_cache(
+            tmp_path, repo=repo, filename="Q4_K_M/SomeModel-Q4_K_M.gguf", content=b"single"
+        )
+        resolved = registry.resolve(f"{repo}/SomeModel-Q4_K_M.gguf")
+        assert resolved.exists()
+
+    def test_subdir_split_gguf_resolves_to_snapshot_symlink(self, tmp_path: Path) -> None:
+        """The glm-air case: a split quant under ``Q4_K_M/`` resolves to its
+        snapshot symlink with both shards co-located, addressed by basename ref."""
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/GLM-4.5-Air-GGUF"
+        for n in (1, 2):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"Q4_K_M/GLM-4.5-Air-Q4_K_M-0000{n}-of-00002.gguf",
+                content=f"glm-shard-{n}".encode(),
+            )
+        ref = f"{repo}/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert registry.is_installed(ref) is True
+        resolved = registry.resolve(ref)
+        assert resolved.name == "GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert resolved.parent.name == "Q4_K_M"  # subdir preserved in the snapshot tree
+        assert (resolved.parent / "GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf").exists()
+
+    def test_subdir_split_gguf_missing_shard_not_installed(self, tmp_path: Path) -> None:
+        """A subdir split quant missing its second shard reads as not installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/GLM-4.5-Air-GGUF"
+        _seed_hf_cache(
+            tmp_path,
+            repo=repo,
+            filename="Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
+            content=b"glm-shard-1",
+        )
+        ref = f"{repo}/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert registry.is_installed(ref) is False
+        with pytest.raises(KeyError, match="missing shards"):
+            registry.resolve(ref)
 
     def test_resolve_missing_cache_dir(self, tmp_path: Path) -> None:
         """Manifest exists but the cache folder was deleted out from under us."""

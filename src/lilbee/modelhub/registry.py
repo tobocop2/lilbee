@@ -106,7 +106,10 @@ class ModelRegistry:
         return self._root / f"models--{repo_to_dir(hf_repo)}"
 
     def resolve(self, ref: str) -> Path:
-        """Return the blob path for *ref*; ``KeyError`` if not installed.
+        """Return the loadable GGUF path for *ref*; ``KeyError`` if not installed.
+
+        A single-file GGUF resolves to its content-hashed blob; a split GGUF to
+        its first shard's snapshot symlink (so llama.cpp finds the sibling shards).
 
         The canonical *ref* is ``<org>/<repo>/<file>.gguf`` resolved via the
         lilbee manifest. Two other shapes are accepted as a backwards-compat
@@ -119,25 +122,23 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
+        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
+
         if not ref.endswith(".gguf") and ref.count("/") == 1:
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
+        shards = split_shard_filenames(gguf_filename)
+        if len(shards) > 1:
+            return self._resolve_split(ref, hf_repo, shards)
         manifest = self._read_manifest(hf_repo, gguf_filename)
-        # A split GGUF only loads when every shard is on disk. The first shard
-        # alone (plus its manifest) used to read as installed, so a pull
-        # interrupted between shards registered an unloadable model and a re-pull
-        # said "already installed". Treat an incomplete shard set as not installed.
-        shards_complete = self._split_shards_present(hf_repo, gguf_filename)
         if manifest is not None and manifest.blob is not None:
             blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
-            if blob_file.exists() and shards_complete:
+            if blob_file.exists():
                 return blob_file
         recovered = self._find_cached_gguf(hf_repo, gguf_filename)
-        if recovered is not None and shards_complete:
+        if recovered is not None:
             self._reregister_from_cache(hf_repo, gguf_filename, recovered)
             return recovered
-        if not shards_complete:
-            raise KeyError(f"Split GGUF {ref} is missing shards; re-pull to fetch the full set")
         if manifest is None:
             raise KeyError(f"Model {ref} not installed")
         # Manifest present but neither it nor the cache yields a blob; keep the
@@ -148,6 +149,23 @@ class ModelRegistry:
         if manifest.blob is None:
             raise KeyError(f"Manifest for {ref} has no blob hash; install incomplete")
         raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
+
+    def _resolve_split(self, ref: str, hf_repo: str, shards: list[str]) -> Path:
+        """Resolve a split GGUF to its first shard's snapshot symlink.
+
+        llama.cpp loads the whole set from the first shard, locating the siblings
+        by filename next to it. Only the snapshot dir co-locates the shards under
+        their real names (the blobs dir names them by hash), so hand back the
+        symlink, not the blob. Every shard must be present first: the first shard
+        alone used to read as installed, registering an unloadable model that a
+        re-pull then skipped.
+        """
+        if not self._split_shards_present(hf_repo, shards[0]):
+            raise KeyError(f"Split GGUF {ref} is missing shards; re-pull to fetch the full set")
+        first_shard = self._snapshot_gguf_path(hf_repo, shards[0])
+        if first_shard is None:
+            raise KeyError(f"Model {ref} not installed")
+        return first_shard
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
         """Resolve a bare ``<org>/<repo>`` ref to the GGUF of that repo on disk.
@@ -190,26 +208,49 @@ class ModelRegistry:
             if f.file_name.endswith(".gguf")
         }
 
-    def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
-        """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
+    def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
+        """Return the snapshot *symlink* path for a cached GGUF, or None.
 
-        Uses ``huggingface_hub.try_to_load_from_cache`` so we honor whatever
-        cache layout HF uses, then resolves the returned snapshot symlink to the
-        blob, bounded to the cache directory.
+        HF caches a file at ``snapshots/<rev>/[<subdir>/]<name>`` as a symlink to
+        a content-hashed blob. ``try_to_load_from_cache`` needs the exact
+        repo-relative name, but lilbee keys models by basename, so an unsloth-style
+        quant in a ``Q4_K_M/`` subdir misses the exact lookup; fall back to finding
+        the basename anywhere in the repo's snapshot tree.
+
+        Unlike :meth:`_find_cached_gguf` this returns the *symlink*, not its blob:
+        a split GGUF must load from the snapshot path so llama.cpp finds its
+        sibling shards (``-0000k-of-0000N``) co-located under their real names,
+        which only the snapshot dir provides (blobs are named by hash).
         """
         from huggingface_hub import try_to_load_from_cache
 
         hit = try_to_load_from_cache(
             repo_id=hf_repo, filename=gguf_filename, cache_dir=str(self._root)
         )
-        if not isinstance(hit, str):  # None (not cached) or the _CACHED_NO_EXIST sentinel
+        candidate: Path | None = None
+        if isinstance(hit, str):  # exact repo-relative match
+            candidate = Path(hit)
+        else:  # None or the _CACHED_NO_EXIST sentinel: locate the basename instead
+            snapshots = self._repo_cache_dir(hf_repo) / "snapshots"
+            if snapshots.is_dir():
+                basename = Path(gguf_filename).name
+                candidate = next(iter(sorted(snapshots.rglob(basename))), None)
+        if candidate is None:
             return None
-        resolved = Path(hit).resolve()
         try:
-            validate_path_within(resolved, self._root)
+            validate_path_within(candidate.resolve(), self._root)
         except ValueError:
             return None
-        return resolved
+        return candidate
+
+    def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
+        """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
+
+        Locates the snapshot symlink (subdir-aware) and resolves it to its blob,
+        bounded to the cache directory.
+        """
+        symlink = self._snapshot_gguf_path(hf_repo, gguf_filename)
+        return symlink.resolve() if symlink is not None else None
 
     def _split_shards_present(self, hf_repo: str, gguf_filename: str) -> bool:
         """True unless *gguf_filename* is a split GGUF missing one of its shards.
