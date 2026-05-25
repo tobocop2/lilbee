@@ -1149,8 +1149,8 @@ class TestCrawlRecursive:
         assert len(results) == 1
         assert not results[0].success
 
-    async def test_defaults_to_unbounded(self):
-        """With no max_depth / max_pages and no cfg ceiling, strategy gets math.inf."""
+    async def test_defaults_to_unbounded_depth_but_capped_pages(self):
+        """No max_depth / max_pages: depth is math.inf, pages clamps to the safety ceiling."""
         import math
 
         mock_instance = AsyncMock()
@@ -1160,13 +1160,14 @@ class TestCrawlRecursive:
 
         cfg.crawl_max_depth = None
         cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 5_000
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
         with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com")
         kwargs = bfs.call_args.kwargs
         assert kwargs["max_depth"] == math.inf
-        assert kwargs["max_pages"] == math.inf
+        assert kwargs["max_pages"] == 5_000
 
     async def test_explicit_cap_overrides_cfg_ceiling(self):
         """An explicit int wins even when cfg sets a lower ceiling."""
@@ -1385,6 +1386,14 @@ class TestHostScopeFilter:
 class TestSitemapCounting:
     """best-effort sitemap lookup bounds the crawl progress total."""
 
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch):
+        """The fetch re-validates the resolved sitemap URL; resolve to a public IP."""
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+
     def test_returns_unknown_on_http_error(self, monkeypatch):
         import httpx
 
@@ -1422,7 +1431,7 @@ class TestSitemapCounting:
             "<url><loc>https://sub.example.com/d</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 2
@@ -1437,7 +1446,7 @@ class TestSitemapCounting:
             "<url><loc>https://other.com/c</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
         assert count == 2
@@ -1463,7 +1472,7 @@ class TestSitemapCounting:
             "<url><loc>https://example.com/a</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 1
@@ -1475,7 +1484,11 @@ class TestSitemapCounting:
 
         monkeypatch.setattr(sitemap_mod, "_SITEMAP_MAX_URLS", 3)
         entries = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
-        fake = MagicMock(status_code=200, text=f"<urlset>{entries}</urlset>")
+        fake = MagicMock(
+            status_code=200,
+            text=f"<urlset>{entries}</urlset>",
+            url="https://example.com/sitemap.xml",
+        )
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 3

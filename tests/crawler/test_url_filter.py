@@ -215,7 +215,12 @@ class TestSitemapCount:
             "<url><loc>https://other.com/c</loc></url>"
             "</urlset>"
         )
-        monkeypatch.setattr("httpx.get", lambda *a, **kw: MagicMock(status_code=200, text=body))
+        monkeypatch.setattr(
+            "httpx.get",
+            lambda *a, **kw: MagicMock(
+                status_code=200, text=body, url="https://example.com/sitemap.xml"
+            ),
+        )
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 2
 
@@ -226,7 +231,12 @@ class TestSitemapCount:
             "<url><loc>https://sub.example.com/d</loc></url>"
             "</urlset>"
         )
-        monkeypatch.setattr("httpx.get", lambda *a, **kw: MagicMock(status_code=200, text=body))
+        monkeypatch.setattr(
+            "httpx.get",
+            lambda *a, **kw: MagicMock(
+                status_code=200, text=body, url="https://example.com/sitemap.xml"
+            ),
+        )
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
         assert count == 2
 
@@ -246,7 +256,11 @@ class TestSitemapCount:
         body = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
         monkeypatch.setattr(
             "httpx.get",
-            lambda *a, **kw: MagicMock(status_code=200, text=f"<urlset>{body}</urlset>"),
+            lambda *a, **kw: MagicMock(
+                status_code=200,
+                text=f"<urlset>{body}</urlset>",
+                url="https://example.com/sitemap.xml",
+            ),
         )
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 2
