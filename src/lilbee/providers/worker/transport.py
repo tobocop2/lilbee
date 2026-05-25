@@ -184,8 +184,10 @@ class WorkerChannel(Protocol):
         """Send one request, await one reply. Raises on worker error or timeout."""
         ...
 
-    def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
-        """Send one request, yield streamed chunks until the worker terminates the stream."""
+    def stream(
+        self, kind: WireKind, payload: Any, *, stream_chunk_timeout: float = ...
+    ) -> AsyncIterator[Any]:
+        """Stream chunks until the worker ends the stream; a per-chunk stall raises."""
         ...
 
     def ping(self, *, timeout: float) -> Awaitable[None]:
