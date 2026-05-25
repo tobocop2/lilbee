@@ -457,6 +457,29 @@ async def test_close_terminates_hung_worker_within_timeout(
 
 
 @pytest.mark.asyncio
+async def test_close_after_stream_stall_does_not_deadlock(
+    spawner: PipeSpawner,
+    role_config: RoleConfig,
+) -> None:
+    """Closing a channel whose stream stalled must terminate within the timeout.
+
+    A stalled stream leaves an executor thread blocked in ``conn.recv``; the
+    timed-out health shutdown leaves a second one blocked too. ``close`` must
+    still make progress (it joins on the loop default executor, not the
+    saturated channel executor) and bring the worker down.
+    """
+    channel, _handle = spawner.spawn(_echo_worker_main, role_config)
+    with pytest.raises(WorkerCrashError):
+        async for _chunk in channel.stream("stream_then_stall", None, stream_chunk_timeout=0.5):
+            pass
+    start = time.monotonic()
+    await channel.close(timeout=1.0)
+    elapsed = time.monotonic() - start
+    assert elapsed < 8.0
+    assert channel.is_alive is False
+
+
+@pytest.mark.asyncio
 async def test_close_is_idempotent(echo_channel: PipeChannel) -> None:
     await echo_channel.close(timeout=_TEST_SHUTDOWN_TIMEOUT_S)
     # Second call must be a no-op (no error).
