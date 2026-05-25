@@ -27,7 +27,7 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 ![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
-It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container — lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
+It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container. lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html).
 
@@ -71,21 +71,21 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
 - **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you straight into chat.
-- **Reads almost anything you point it at.** Documents, scanned pages, spreadsheets, ebooks, web pages, and source code — [90+ formats and 150+ languages](#supported-formats) in all. Whatever you give it becomes searchable.
-- **Splits it into pieces that stand on their own.** [Prose and code are chunked differently](#documents-code-and-scanned-images), so each piece keeps its meaning instead of getting cut mid-thought. This is where most of the quality lives — a search engine is only as good as the chunks underneath it.
+- **Reads almost anything you point it at.** Documents, scanned pages, spreadsheets, ebooks, web pages, and source code: [90+ formats and 150+ languages](#supported-formats) in all. Whatever you give it becomes searchable.
+- **Splits it into pieces that stand on their own.** [Prose and code are chunked differently](#documents-code-and-scanned-images), so each piece keeps its meaning instead of getting cut mid-thought. This is where most of the quality lives. A search engine is only as good as the chunks underneath it.
 - **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the right passage comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
 - **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
-- **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code — with citations — instead of guessing. It can even adjust its own search as it works.
+- **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
 
 A small local model is fun, but there's only so much you can do with one on its own. Give it properly processed documents and a search engine over them, and it suddenly becomes incredibly powerful. Without those, it never gets past being a fun novelty.
 
-lilbee is those two things — the [document processing](#built-on) and the search engine — built around a model it runs for you, all in one install. Point it at your files and start asking.
+lilbee does all of it, in one install: it finds and runs the models for you, processes your [documents](#built-on) and crawls the web pages you point it at, and searches it all with a real engine. Use it yourself in the terminal, or wire it into your coding agent so it answers from your files with citations instead of guessing.
 
 > **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a grounding layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
@@ -193,7 +193,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 **Two routes, and the difference matters:**
 
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Uses the Python and tooling you already have, picks the fastest CPU code path for your machine at runtime, and upgrades like any other package. Recommended if you have Python.
-- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install. The trade-off is a single large download — it bundles its own Python runtime, `llama.cpp`, and the optional extras — and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
+- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
 
 Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default Vulkan path. Skip to [On NVIDIA hardware](#on-nvidia-hardware).
 
