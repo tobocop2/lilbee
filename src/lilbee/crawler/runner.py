@@ -37,7 +37,15 @@ from lilbee.runtime.progress import (
     CrawlStartEvent,
     DetailedProgressCallback,
     EventType,
+    SetupDoneEvent,
+    SetupStartEvent,
 )
+
+# Component name for the browser-warmup setup phase (distinct from the
+# Chromium download, whose component is "chromium"). The crawl emits a
+# start/done bracket around opening the crawler so the Task Center shows a
+# "preparing crawler" stage instead of a silent stall on first use.
+_BROWSER_SETUP_COMPONENT = "browser"
 
 log = logging.getLogger(__name__)
 
@@ -160,8 +168,19 @@ async def crawl_recursive(
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
+    # Opening the crawler launches the browser; on first use crawl4ai's
+    # one-time warmup can take many seconds with no other signal. Bracket it
+    # with setup events (no size estimate -> indeterminate) so the Task
+    # Center shows a "preparing crawler" stage instead of a silent stall.
+    if on_progress:
+        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+            if on_progress:
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
+                )
             # Hold an explicit reference to the generator so we can aclose
             # it deterministically on break. Without this, the generator's
             # finally block (which also short-circuits the BFS strategy) only

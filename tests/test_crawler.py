@@ -1050,12 +1050,18 @@ class TestCrawlRecursive:
         assert len(results) == 2
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
-        assert len(progress_calls) == 2
         # Streaming semantics: total is unknown during BFS, counter advances per page.
         from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
-        assert [c[1].current for c in progress_calls] == [1, 2]
-        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
+        page_events = [c for c in progress_calls if c[0] == EventType.CRAWL_PAGE]
+        assert [c[1].current for c in page_events] == [1, 2]
+        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in page_events)
+        # The browser warmup is bracketed by setup events so the Task Center
+        # shows a "preparing crawler" stage instead of a silent stall.
+        setup_types = [
+            e for e, _ in progress_calls if e in (EventType.SETUP_START, EventType.SETUP_DONE)
+        ]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
