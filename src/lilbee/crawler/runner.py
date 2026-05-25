@@ -75,7 +75,9 @@ def _looks_like_missing_chromium(exc: BaseException) -> bool:
     return "Executable doesn't exist" in str(exc)
 
 
-async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
+async def crawl_single(
+    url: str, *, quiet: bool = False, on_progress: DetailedProgressCallback | None = None
+) -> CrawlResult:
     """Fetch a single URL.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
@@ -83,6 +85,10 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     bootstrap once and retries -- ``chromium_installed()`` can return True
     when the wrong revision lives in the cache root, in which case the
     launch fails the first attempt.
+
+    ``on_progress`` receives a setup_start/setup_done bracket around opening
+    the crawler so the first crawl's browser warmup is visible rather than a
+    silent stall.
     """
     validate_crawl_url(url)
     from lilbee.crawler import crawler_available
@@ -91,8 +97,15 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
         raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
+    if on_progress:
+        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+            if on_progress:
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
+                )
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
         return _fetched_to_result(page)
     except CrawlerBrowserError:
@@ -309,7 +322,7 @@ async def _run_crawl(
 ) -> int:
     """Run the single-URL or recursive crawl. Returns ``pages_seen``."""
     if depth == 0:
-        result = await crawl_single(url, quiet=quiet)
+        result = await crawl_single(url, quiet=quiet, on_progress=on_progress)
         try:
             await flush_page(result)
         except OSError:

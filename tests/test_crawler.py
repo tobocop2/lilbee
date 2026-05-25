@@ -412,6 +412,26 @@ class TestCrawlSingle:
         assert result.success
         assert result.markdown == "# Test"
 
+    async def test_emits_setup_bracket_around_warmup(self):
+        """The browser warmup is bracketed by setup events so the Task Center
+        shows a 'preparing crawler' stage instead of a silent stall."""
+        mock_result = _make_crawl4ai_result()
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=mock_result)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+
+        events: list[tuple] = []
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single(
+                "https://example.com", on_progress=lambda e, d: events.append((e, d))
+            )
+        assert result.success
+        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
+
     async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
         mock_instance = AsyncMock()
@@ -1520,7 +1540,9 @@ class TestCrawlAndSave:
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
-        mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
+        mock_crawl_single.assert_awaited_once()
+        assert mock_crawl_single.await_args.args == ("https://example.com",)
+        assert mock_crawl_single.await_args.kwargs["quiet"] is True
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
@@ -2528,7 +2550,7 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(url: str, *, quiet: bool = False) -> CrawlResult:
+        async def _fake_single(url: str, *, quiet: bool = False, on_progress=None) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 
