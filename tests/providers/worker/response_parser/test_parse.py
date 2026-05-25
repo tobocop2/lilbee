@@ -569,6 +569,59 @@ def test_harmony_output_format_extracts_commentary_channel_calls() -> None:
     assert json.loads(parsed.tool_calls[0].arguments) == {"q": "x"}
 
 
+def test_harmony_tool_call_with_constrain_hint_and_no_call_terminator() -> None:
+    """Real gpt-oss-120b output: a ``<|constrain|>json`` hint sits between the
+    function name and ``<|message|>``, and the stream ends after the JSON with no
+    ``<|call|>`` terminator. Both broke the original regex (it skipped with
+    ``[^<]`` and required ``<|call|>``), so the call was dropped on the H200."""
+    text = (
+        "<|channel|>analysis<|message|>Let's use lilbee_search.<|end|>"
+        "<|start|>assistant<|channel|>commentary to=functions.lilbee_search "
+        '<|constrain|>json<|message|>{\n  "query": "chat worker",\n  '
+        '"top_k": 10,\n  "scope": "both"\n}'
+    )
+    parsed = parse_response(
+        text, get_schemas()[TemplateFamily.GPT_OSS], output_format=OutputFormat.HARMONY
+    )
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "lilbee_search"
+    assert json.loads(parsed.tool_calls[0].arguments) == {
+        "query": "chat worker",
+        "top_k": 10,
+        "scope": "both",
+    }
+
+
+def test_harmony_content_is_final_message_only() -> None:
+    """Content is the final-channel message, never the analysis/commentary scaffolding."""
+    text = (
+        "<|channel|>analysis<|message|>thinking out loud<|end|>"
+        "<|channel|>final<|message|>Here is the answer.<|end|>"
+    )
+    parsed = parse_response(
+        text, get_schemas()[TemplateFamily.GPT_OSS], output_format=OutputFormat.HARMONY
+    )
+    assert parsed.content == "Here is the answer."
+    assert "<|channel|>" not in parsed.content
+
+
+def test_harmony_tool_turn_content_has_no_channel_scaffolding() -> None:
+    """An analysis+tool turn with no final message yields empty content, not the raw
+    Harmony text. Storing the raw text as assistant content made the next turn's
+    template render reject it ('message containing <|channel|> tags')."""
+    text = (
+        "<|channel|>analysis<|message|>I'll search.<|end|>"
+        "<|start|>assistant<|channel|>commentary to=functions.lilbee_search "
+        '<|constrain|>json<|message|>{"query": "x"}<|call|>'
+    )
+    parsed = parse_response(
+        text, get_schemas()[TemplateFamily.GPT_OSS], output_format=OutputFormat.HARMONY
+    )
+    assert len(parsed.tool_calls) == 1
+    assert parsed.content == ""
+    assert "<|channel|>" not in parsed.content
+
+
 def test_bare_json_scanner_handles_nested_objects() -> None:
     """The bare-JSON extractor must walk nested objects via ``json.JSONDecoder.raw_decode``."""
     text = '{"name": "search", "arguments": {"filter": {"deep": {"nested": {"v": 1}}}}}'

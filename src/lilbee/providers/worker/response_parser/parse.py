@@ -30,8 +30,16 @@ _CHATML_TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 _HARMONY_TOOL_CALL_RE = re.compile(
+    # gpt-oss names the tool in the commentary header, optionally separated from
+    # <|message|> by a <|constrain|>json hint (which contains '<', so the skip
+    # can't be [^<]). The call ends at <|call|>, but some builds stream the args
+    # and stop without it, so also terminate at <|end|> or end-of-text.
     r"<\|channel\|>commentary\s+to=(?:functions\.)?(?P<name>[A-Za-z0-9_.-]+)"
-    r"[^<]*?<\|message\|>(?P<args>\{.*?\})\s*<\|call\|>",
+    r".*?<\|message\|>(?P<args>\{.*?\})\s*(?:<\|call\|>|<\|end\|>|$)",
+    re.DOTALL,
+)
+_HARMONY_FINAL_RE = re.compile(
+    r"<\|channel\|>final<\|message\|>(?P<final>.*?)(?:<\|end\|>|<\|return\|>|$)",
     re.DOTALL,
 )
 
@@ -147,6 +155,30 @@ def _harmony_tool_call_from_match(match: re.Match[str]) -> ToolCall | None:
     return ToolCall(id="", name=match.group("name"), arguments=match.group("args"))
 
 
+def _parse_harmony(text: str) -> ParsedResponse:
+    """Extract tool calls and the final-channel message from gpt-oss Harmony output.
+
+    Harmony interleaves channels: ``analysis`` (chain-of-thought), ``commentary``
+    (tool calls), and ``final`` (the user-facing answer). Only the final message
+    may surface as assistant content; passing the raw ``<|channel|>`` scaffolding
+    back as content makes the next turn's chat-template render reject it
+    ("message containing <|channel|> tags in the content field").
+    """
+    calls = tuple(
+        call
+        for match in _HARMONY_TOOL_CALL_RE.finditer(text)
+        if (call := _harmony_tool_call_from_match(match)) is not None
+    )
+    final = _HARMONY_FINAL_RE.search(text)
+    if final is not None:
+        content = final.group("final").strip()
+    elif "<|channel|>" in text:
+        content = ""  # an analysis/tool turn with no final message yet
+    else:
+        content = text  # not harmony-framed; pass the text through untouched
+    return ParsedResponse(content=content, tool_calls=calls)
+
+
 def _tool_calls_from_parsed(raw: object) -> tuple[ToolCall, ...]:
     if not isinstance(raw, list):
         return ()
@@ -188,7 +220,5 @@ _EXTRACTORS: dict[OutputFormat, _Extractor] = {
     OutputFormat.CHATML_TOOL_CALL: lambda text: _parse_with_regex(
         text, _CHATML_TOOL_CALL_RE, _chatml_tool_call_from_match
     ),
-    OutputFormat.HARMONY: lambda text: _parse_with_regex(
-        text, _HARMONY_TOOL_CALL_RE, _harmony_tool_call_from_match
-    ),
+    OutputFormat.HARMONY: _parse_harmony,
 }
