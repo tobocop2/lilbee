@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
-from lilbee.providers.multi_gpu.binary import resolve_llama_server_binary
+from lilbee.providers.multi_gpu.binary import llama_server_runtime_env, resolve_llama_server_binary
 from lilbee.providers.multi_gpu.client import LlamaServerClient
 from lilbee.providers.multi_gpu.devices import FleetDevice, probe_devices, visible_env
 from lilbee.providers.multi_gpu.fleet import Fleet, InstanceLaunch
@@ -433,7 +433,9 @@ def _launch_for(
     return InstanceLaunch(
         role=plan.role,
         argv=argv,
-        env_overrides=visible_env(chosen),
+        # Device pinning plus, for the bundled server, the lib path that lets it
+        # share llama-cpp-python's ggml/llama backend instead of carrying its own.
+        env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
         model=model_ref,
         # Stamp the owning lilbee pid so a concurrent instance's reaper won't
         # touch this server (only a dead parent's orphans get reaped).

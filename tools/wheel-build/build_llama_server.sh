@@ -39,15 +39,40 @@ fi
 # target verbatim), plus the server target itself. SSL/CURL off: the fleet only
 # talks to localhost sidecars, so we avoid the OpenSSL/libcurl link deps (the
 # reason cmake_args.sh disables OpenSSL find on the Intel-Mac wheel cell).
+#
+# BUILD_SHARED_LIBS=ON: the server dynamically links ggml/llama/mtmd instead of
+# statically baking them in. At runtime lilbee points it at the SAME shared libs
+# that llama-cpp-python already bundles (same source tag => same soname, see
+# below), so the sidecar shares the backend -- including the ~300MB CUDA fatbins
+# -- rather than carrying a second copy. We therefore bundle ONLY the server's
+# own artifacts here, not ggml/llama/mtmd.
 eval "$(BACKEND="${backend}" TARGET_ARCH="${target_arch}" "${script_dir}/cmake_args.sh")"
 # shellcheck disable=SC2086
 cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
-  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON \
+  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF ${CMAKE_ARGS}
 cmake --build "${src}/server-build" --target llama-server --config Release -j
 
 binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
 [ -n "${binary}" ] || { echo "llama-server binary not found after build" >&2; exit 1; }
+bindir=$(dirname "${binary}")
+# Reset the bundle dir so a stale lib from a previous build can't ship.
+rm -rf "${pkg_bin_dir}"
 mkdir -p "${pkg_bin_dir}"
 cp "${binary}" "${pkg_bin_dir}/"
-echo "Built llama-server (${backend}) -> ${pkg_bin_dir}/$(basename "${binary}")"
+# Bundle the server's own shared libs (e.g. a split-out server-impl) but NOT the
+# ggml/llama/mtmd backend libs -- those are provided at runtime by the
+# version-matched llama-cpp-python lilbee already ships. build_llama_cpp.sh and
+# this script build from the SAME llama-cpp-python tag (the uv.lock pin), so the
+# vendored llama.cpp commit -- and thus the soname the server links -- matches
+# what that wheel installs; the dynamic link resolves against the shipped libs.
+shopt -s nullglob
+for lib in "${bindir}"/*server*.so* "${bindir}"/*server*.dylib "${bindir}"/*server*.dll; do
+  case "$(basename "${lib}")" in
+    *ggml*|*llama.*|*mtmd*) continue ;;  # backend libs come from llama-cpp-python
+  esac
+  cp "${lib}" "${pkg_bin_dir}/"
+done
+shopt -u nullglob
+echo "Built llama-server (${backend}, shared) -> ${pkg_bin_dir}/"
+ls -lh "${pkg_bin_dir}/"
