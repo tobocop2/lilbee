@@ -3501,6 +3501,39 @@ class TestAdaptGgufTemplate:
         template = "plain {{ content.image_url.url }} template"
         assert adapt_gguf_template_for_mtmd(template) == template
 
+    def test_text_only_template_unaffected(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "<|im_start|>user\n{{ content.text }}<|im_end|>"
+        assert adapt_gguf_template_for_mtmd(template) == template
+
+    def test_unknown_image_token_raises(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
+        with pytest.raises(ValueError, match="<vision_pad>") as exc:
+            adapt_gguf_template_for_mtmd(template)
+        assert "<|image_pad|>" in str(exc.value)
+
+    def test_unknown_media_token_raises(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        with pytest.raises(ValueError, match="<media>"):
+            adapt_gguf_template_for_mtmd("A <media> B")
+
+    def test_build_handler_raises_on_unknown_token(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=template,
+            ),
+            pytest.raises(ValueError, match="<vision_pad>"),
+        ):
+            build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+
 
 # ---------------------------------------------------------------------------
 # LLMOptions / filter_options
