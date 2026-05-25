@@ -2236,16 +2236,17 @@ class TestResolveGenerationOptions:
         assert result["temperature"] == 0.5
 
 
+_INJECTED_OPTIONS = {"api_base": "http://evil", "api_key": "x", "temperature": 0.5}
+
+
 class TestOptionInjectionBoundary:
     """HTTP-supplied options must not smuggle endpoint/credential keys to a provider."""
-
-    _INJECTED = {"api_base": "http://evil", "api_key": "x", "temperature": 0.5}
 
     async def test_ask_strips_injected_keys(self, mock_svc):
         from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
-        await handlers.ask("q", options=dict(self._INJECTED))
+        await handlers.ask("q", options=dict(_INJECTED_OPTIONS))
         forwarded = mock_svc.searcher.ask_raw.call_args.kwargs["options"]
         assert "api_base" not in forwarded
         assert "api_key" not in forwarded
@@ -2255,7 +2256,7 @@ class TestOptionInjectionBoundary:
         from lilbee.retrieval.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
-        await handlers.chat("q", history=[], options=dict(self._INJECTED))
+        await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))
         forwarded = mock_svc.searcher.ask_raw.call_args.kwargs["options"]
         assert "api_base" not in forwarded
         assert "api_key" not in forwarded
