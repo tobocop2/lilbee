@@ -27,7 +27,7 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 ![lilbee chat with cited answers from a Crown Victoria owner's manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
-It's all one program: you never stand up a separate model server, a vector database, or a container — lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
+It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container — lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html).
 
@@ -85,7 +85,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 
 A small local model is fun, but there's only so much you can do with one on its own. Give it properly processed documents and a search engine over them, and it suddenly becomes incredibly powerful. Without those, it never gets past being a fun novelty.
 
-lilbee is those two things — the document processing and the search engine — built around a model it runs for you, all in one install. Point it at your files and start asking.
+lilbee is those two things — the [document processing](#built-on) and the search engine — built around a model it runs for you, all in one install. Point it at your files and start asking.
 
 > **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a grounding layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
