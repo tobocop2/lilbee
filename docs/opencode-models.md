@@ -23,6 +23,8 @@ results. Each family below completed that loop.
 | Gemma | `unsloth/gemma-4-E2B-it-GGUF` | |
 | SmolLM3 | `bartowski/HuggingFaceTB_SmolLM3-3B-GGUF` | |
 | Cohere Command-R7B | `bartowski/c4ai-command-r7b-12-2024-GGUF` | renders from the HF tokenizer's template; needs the GGUF's wrong 8192 context corrected to the real 128K |
+| gpt-oss | `ggml-org/gpt-oss-120b-GGUF` | Harmony tool-call format; the 120B is split across shards and needs a >80 GB GPU |
+| GLM-4.5-Air | `unsloth/GLM-4.5-Air-GGUF` | renders from the HF tokenizer's template; split GGUF, needs a >80 GB GPU |
 
 How reliably a model reaches for a tool depends on the model and its size, not
 on lilbee: a smaller model may answer some prompts directly instead of
@@ -42,7 +44,6 @@ model itself or the bundled runtime, not the lilbee tool plumbing:
 | DeepSeek R1-Distill (Qwen, Llama) | reasoning distills that aren't tool-trained; they describe the search inside their reasoning instead of emitting a tool call |
 | Phi-4-mini | the bundled llama.cpp aborts (SIGABRT) building the compute graph for this architecture |
 | GLM-4-9B-chat | the bundled llama.cpp aborts (SIGABRT) loading this GGUF |
-| GLM-4.5-Air | the Q4_K_M GGUF is 68 GB and runs out of memory loading on an 80 GB GPU; a smaller quant would fit but trades quality |
 | ERNIE-4.5 0.3B, LFM2 1.2B | too small to call tools reliably |
 
 ## How this was measured
