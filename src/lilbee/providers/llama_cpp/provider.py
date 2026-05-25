@@ -422,6 +422,8 @@ class LlamaCppProvider(LLMProvider):
         if "num_predict" in filtered:
             filtered["max_tokens"] = filtered.pop("num_predict")
         filtered.pop("num_ctx", None)  # model-load param, not per-call
+        # top_k kept here (local llama.cpp honors it); the API path in
+        # translate_options strips it since hosted providers ignore it.
         return filtered
 
     def list_models(self) -> list[str]:
