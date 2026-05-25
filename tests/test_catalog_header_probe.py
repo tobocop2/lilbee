@@ -113,6 +113,39 @@ def test_probe_handles_array_value_in_skip(monkeypatch: pytest.MonkeyPatch) -> N
     assert probe_architecture("https://example.test/model.gguf") == "gemma3"
 
 
+def test_probe_releases_memmap_before_unlink(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GGUFReader memmap must be closed before the tempfile is unlinked.
+
+    On Windows an open numpy.memmap blocks os.unlink with PermissionError
+    (the historically flaky test). We assert the unlink happens only after
+    the reader's memmap is released.
+    """
+    blob = make_minimal_gguf("llama")
+    monkeypatch.setattr(header_probe.httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
+
+    captured: dict[str, object] = {}
+    real_reader = header_probe.GGUFReader
+
+    def _capturing_reader(path: str, *args: object, **kwargs: object) -> object:
+        reader = real_reader(path, *args, **kwargs)
+        captured["reader"] = reader
+        return reader
+
+    monkeypatch.setattr(header_probe, "GGUFReader", _capturing_reader)
+
+    real_unlink = header_probe.Path.unlink
+
+    def _checking_unlink(self: header_probe.Path, *args: object, **kwargs: object) -> None:
+        reader = captured.get("reader")
+        # Reader must have had its memmap released before unlink runs.
+        assert reader is None or not hasattr(reader, "data")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(header_probe.Path, "unlink", _checking_unlink)
+
+    assert probe_architecture("https://example.test/model.gguf") == "llama"
+
+
 def test_probe_returns_empty_on_unknown_value_type_in_skip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
