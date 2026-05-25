@@ -69,10 +69,11 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.
-- **A sophisticated [search engine](docs/architecture.md#search-pipeline), built on published research.** It weighs every result by how well it answers your question and brings the best passage back first. Semantic search and reranking do the heavy lifting, with [50+ settings](docs/usage.md#retrieval-tuning) to tune and sane defaults if you'd rather not.
+- **Reads almost anything you point it at.** PDFs and scanned pages (OCR), Office files, ebooks, HTML, spreadsheets and structured data, and source code in 150+ languages — 90+ formats in all. Whatever you give it becomes searchable.
+- **Splits it into pieces that stand on their own.** Prose is cut along headings, with the section path kept attached to each piece; code is split by its syntax tree into whole functions and classes, each tagged with its file and line. This is where most of the quality lives — a search engine is only as good as the chunks underneath it.
+- **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It blends keyword and meaning-based matching, then ranks so the passage that answers you comes back first. Optional reranking and a concept graph go further; [50+ settings](docs/usage.md#retrieval-tuning) tune it, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
-- **Indexes anything textual.** PDFs, Office, ebooks, code in 150+ languages, scanned pages (OCR), crawled sites.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
 - **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
