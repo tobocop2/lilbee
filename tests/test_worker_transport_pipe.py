@@ -315,9 +315,7 @@ async def test_stream_raises_when_worker_stalls_mid_stream(
     seen: list[Any] = []
     start = time.monotonic()
     with pytest.raises(WorkerCrashError):
-        async for chunk in echo_channel.stream(
-            "stream_then_stall", None, stream_chunk_timeout=0.5
-        ):
+        async for chunk in echo_channel.stream("stream_then_stall", None, stream_chunk_timeout=0.5):
             seen.append(chunk)
     elapsed = time.monotonic() - start
     assert seen == ["first"]
