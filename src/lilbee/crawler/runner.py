@@ -181,10 +181,10 @@ async def crawl_recursive(
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
-    # Opening the crawler launches the browser; on first use crawl4ai's
-    # one-time warmup can take many seconds with no other signal. Bracket it
-    # with setup events (no size estimate -> indeterminate) so the Task
-    # Center shows a "preparing crawler" stage instead of a silent stall.
+    # Opening the crawler launches the browser; on first use its one-time
+    # warmup can take many seconds with no other signal. Bracket it with
+    # setup events (no size estimate -> indeterminate) so the Task Center
+    # shows a "preparing crawler" stage instead of a silent stall.
     if on_progress:
         on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
