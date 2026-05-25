@@ -133,6 +133,23 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+# Reference-style nested-bracket links, e.g. Wikipedia footnote markers like
+# ``[[1]](https://en.wikipedia.org/wiki/Foo#cite_note-1)``. The inner brackets
+# make this a normal Markdown link with the text ``[1]``, but readers that
+# treat ``[[...]]`` as a wikilink (Obsidian) mis-parse it as a broken wikilink
+# followed by the literal URL.
+_REFERENCE_LINK_RE = re.compile(r"\[\[([^\]]*)\]\]\(([^)]*)\)")
+
+
+def normalize_crawled_markdown(markdown: str) -> str:
+    """Collapse reference-style ``[[N]](url)`` links to plain ``[N](url)``.
+
+    This fixes the double-bracket/wikilink collision without dropping the
+    link text or URL. Ordinary single-bracket links are left untouched.
+    """
+    return _REFERENCE_LINK_RE.sub(r"[\1](\2)", markdown)
+
+
 @dataclass(frozen=True)
 class SaveOutcome:
     """Return value of ``_save_single_result``: written path and the hash/filename used."""
@@ -151,6 +168,7 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
     """
     if not result.success or not result.markdown.strip():
         return None
+    markdown = normalize_crawled_markdown(result.markdown)
     filename = url_to_filename(result.url)
     web_dir = _web_dir()
     file_path = web_dir / filename
@@ -160,13 +178,13 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
     except ValueError:
         log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
         return None
-    new_hash = content_hash(result.markdown)
+    new_hash = content_hash(markdown)
     prev = meta.get(result.url)
     if prev is not None and prev.content_hash == new_hash and file_path.exists():
         log.info("Content unchanged, skipping save: %s", result.url)
         return None
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(result.markdown, encoding="utf-8")
+    file_path.write_text(markdown, encoding="utf-8")
     return SaveOutcome(path=file_path, filename=filename, content_hash=new_hash)
 
 
