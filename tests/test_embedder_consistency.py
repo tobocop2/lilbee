@@ -51,14 +51,14 @@ class TestQueryIndexConsistency:
         assert provider.calls == [[text], [text]]
 
     def test_both_paths_apply_identical_truncation(self, embedder, provider):
-        """No path embeds beyond max_embed_chars; truncation is symmetric."""
-        long_text = "a" * (cfg.max_embed_chars + 2000)
+        """No path embeds beyond the shared char budget; truncation is symmetric."""
+        long_text = "a" * (embedder.embed_char_budget + 2000)
         embedder.embed(long_text)
         embedder.embed_batch([long_text])
         query_arg = provider.calls[0][0]
         ingest_arg = provider.calls[1][0]
         assert query_arg == ingest_arg
-        assert len(query_arg) == cfg.max_embed_chars
+        assert len(query_arg) == embedder.embed_char_budget
 
     def test_no_extra_normalization_in_either_path(self, embedder, provider):
         """Neither path post-processes the provider vector (no silent renorm)."""
