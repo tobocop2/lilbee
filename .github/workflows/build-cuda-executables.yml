@@ -44,10 +44,13 @@ jobs:
       matrix:
         include:
           # Linux CUDA cells run on ubuntu-22.04, not the manylinux container: install_gpu_toolkit.sh is apt-based, and glibc 2.35 stays above the README's 2.28 floor.
+          # cu121 pins llama-cpp-python to 0.3.20: CUDA 12.1's nvcc can't compile
+          # the newer llama.cpp CUDA kernels (half-conversion in allreduce.cu).
           - os: ubuntu-22.04
             backend: cu121
             cuda: "12.1.0"
             asset_name: lilbee-linux-x86_64-cu121
+            llama-cpp-version: "0.3.20"
           - os: ubuntu-22.04
             backend: cu124
             cuda: "12.4.0"
@@ -121,6 +124,8 @@ jobs:
         env:
           BACKEND: ${{ matrix.backend }}
           LLAMA_BUILD_DIR: "/tmp/llama-build"
+          # Per-cell pin (cu121) wins; else blank -> build_llama_cpp.sh reads uv.lock.
+          LLAMA_CPP_VERSION: ${{ matrix.llama-cpp-version }}
         run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Install the freshly-built llama-cpp-python into the venv
