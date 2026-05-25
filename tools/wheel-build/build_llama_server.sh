@@ -28,6 +28,9 @@ fi
 
 # llama-cpp-python vendors llama.cpp as a submodule; clone at the matching tag so
 # the server is byte-compatible with the in-process library's GGUF support.
+# Windows MAX_PATH (260 chars): llama.cpp's vendored server webui has paths long
+# enough to fail submodule checkout without long-path support. No-op elsewhere.
+git config --global core.longpaths true
 src="${build_dir}/llama-cpp-python-${version}"
 mkdir -p "${build_dir}"
 if [ ! -d "${src}" ]; then
