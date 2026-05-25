@@ -11,6 +11,8 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
     ingest as _ingest_h,
@@ -245,7 +247,7 @@ class TestAskStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
 
-    async def test_provider_error_yields_error_event(self, mock_svc):
+    async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = RuntimeError("model missing")
         events = [e async for e in handlers.ask_stream("question")]
@@ -255,6 +257,41 @@ class TestAskStream:
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
         parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "code" not in parsed
+
+    async def test_provider_error_surfaces_its_message(self, mock_svc):
+        # A ProviderError already carries a user-facing message (rate limit,
+        # bad key, ...); it must reach the client, not collapse to "Internal error".
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "gemini/m is rate-limited or out of quota. That's a limit on your "
+            "provider API key, not a lilbee problem.",
+            provider="litellm",
+            kind=ProviderErrorKind.RATE_LIMIT,
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "rate-limited or out of quota" in parsed["message"]
+        assert "lilbee" in parsed["message"]
+        assert "Internal error" not in parsed["message"]
+        # The kind reaches the client as a machine-readable code to branch on.
+        assert parsed["code"] == "rate_limit"
+
+    async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
+        # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "Chat failed: something odd", provider="litellm"
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "something odd" in parsed["message"]
         assert "code" not in parsed
 
     async def test_oom_load_error_yields_structured_code(self, mock_svc):
@@ -379,7 +416,7 @@ class TestChatStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
-    async def test_provider_error_yields_error_event(self, mock_svc):
+    async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = ConnectionError("provider down")
         events = [e async for e in handlers.chat_stream("q", [])]
@@ -388,6 +425,19 @@ class TestChatStream:
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
+
+    async def test_provider_error_surfaces_its_message(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "gemini/m rejected your API key.", provider="litellm", kind=ProviderErrorKind.AUTH
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "rejected your API key" in parsed["message"]
+        assert parsed["code"] == "auth"
 
     async def test_cancel_sets_cancel_event(self, mock_svc):
         """Closing the chat_stream generator mid-stream signals the thread to stop."""
@@ -2200,21 +2250,37 @@ class TestClassifyLoadError:
             "Host has 1.2 GB free RAM. Try a smaller model."
         )
         code, user_message = handlers.classify_load_error(msg)
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
         assert user_message == "Model too large for available RAM"
 
     def test_llama_context_signature_is_classified(self):
         code, _ = handlers.classify_load_error("llama_context: failed to allocate")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
     def test_unknown_message_falls_back_to_internal(self):
         code, user_message = handlers.classify_load_error("Network unreachable")
         assert code is None
         assert user_message == "Internal error"
 
+    def test_not_in_registry_is_classified_as_model_not_installed(self):
+        msg = (
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
+            "Install it via the catalog or 'lilbee model pull'."
+        )
+        code, user_message = handlers.classify_load_error(msg)
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
+    def test_not_available_is_classified_as_model_not_installed(self):
+        code, user_message = handlers.classify_load_error(
+            "Model 'foo' is not available. Pull it first or check the name."
+        )
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
     def test_classifier_is_case_insensitive(self):
         code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
 
 class TestResolveGenerationOptions:
@@ -2300,7 +2366,7 @@ class TestRunLlmStreamCancel:
         cancel.set()  # pre-set cancel
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
-        error_holder: list[str] = []
+        error_holder: list[Exception] = []
 
         mock_provider = MagicMock()
         # Return some stream tokens that would normally be emitted
@@ -2353,7 +2419,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[str] = []
+            error_holder: list[Exception] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2388,7 +2454,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[str] = []
+            error_holder: list[Exception] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2428,7 +2494,7 @@ class TestReasoningCapHandling:
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
             cancel.set()
-            error_holder: list[str] = []
+            error_holder: list[Exception] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -2462,7 +2528,7 @@ class TestReasoningCapHandling:
 
             mock_provider.chat.side_effect = [iter([long_reasoning]), second_pass()]
             queue: asyncio.Queue[str | None] = asyncio.Queue()
-            error_holder: list[str] = []
+            error_holder: list[Exception] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
