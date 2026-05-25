@@ -244,11 +244,10 @@ async def sync(
     skipped: list[str] = []
 
     # Find files to remove (in DB but not on disk)
-    for name in existing_sources:
-        if name not in disk_files:
-            _store.delete_by_source(name)
-            _store.delete_source(name)
-            removed.append(name)
+    to_remove = [name for name in existing_sources if name not in disk_files]
+    if to_remove:
+        _store.remove_documents(to_remove)
+        removed.extend(to_remove)
 
     files_to_process, added, updated, unchanged = _plan_file_changes(
         disk_files, existing_sources, cancel, skip_markers=skip_markers
