@@ -402,6 +402,69 @@ class TestDownloadModelProgressChain:
         assert len(calls) == 1
         assert calls[0][0] == calls[0][1]  # downloaded == total
 
+    def test_truncated_cached_file_is_re_downloaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cached file shorter than the HF-reported size is re-fetched, not accepted.
+
+        The fast-path must verify the on-disk size against HuggingFace
+        metadata; a truncated/corrupt cached file must not be reported as
+        100% complete.
+        """
+        from lilbee import catalog
+        from lilbee.catalog import download as download_mod
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        # HF says the file is 1000 bytes; the cached copy is truncated to 10.
+        monkeypatch.setattr(
+            download_mod, "fetch_expected_file_size", lambda repo, name: 1000
+        )
+
+        entry = _test_entry()
+        truncated = tmp_path / entry.gguf_filename
+        truncated.write_bytes(b"x" * 10)
+
+        downloaded: dict[str, bool] = {"called": False}
+
+        def fake_download(**kwargs: Any) -> str:
+            downloaded["called"] = True
+            content = b"x" * 1000
+            digest = __import__("hashlib").sha256(content).hexdigest()
+            repo_id = kwargs.get("repo_id", "")
+            model_dir = Path(kwargs["cache_dir"]) / f"models--{repo_id.replace('/', '--')}"
+            blobs = model_dir / "blobs"
+            blobs.mkdir(parents=True, exist_ok=True)
+            dest = blobs / digest
+            dest.write_bytes(content)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        download_model(entry, on_progress=lambda d, t: None)
+        assert downloaded["called"]  # truncated cache was rejected and re-fetched
+
+    def test_intact_cached_file_is_not_re_downloaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cached file whose size matches HF metadata is accepted without re-fetching."""
+        from lilbee import catalog
+        from lilbee.catalog import download as download_mod
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(download_mod, "fetch_expected_file_size", lambda repo, name: 1000)
+
+        entry = _test_entry()
+        (tmp_path / entry.gguf_filename).write_bytes(b"x" * 1000)
+
+        def fail_download(**kwargs: Any) -> str:
+            raise AssertionError("intact cache must not trigger a re-download")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fail_download)
+        calls: list[tuple[int, int]] = []
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        assert calls and calls[-1][0] == calls[-1][1]
+
     def test_hf_cache_hit_detected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When hf_hub_download returns instantly (HF cache hit), progress still reports."""
         import hashlib
