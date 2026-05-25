@@ -62,6 +62,19 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
+def _clamp_to_safety_ceiling(pages: int | None) -> int:
+    """Clamp a resolved page count to ``cfg.crawl_safety_max_pages``.
+
+    ``None`` (caller asked for unbounded) becomes the ceiling, and any
+    explicit value above it is capped, so a hostile site can never exhaust
+    memory/disk regardless of caller or per-crawl settings.
+    """
+    ceiling = cfg.crawl_safety_max_pages
+    if pages is None:
+        return ceiling
+    return min(pages, ceiling)
+
+
 def _looks_like_missing_chromium(exc: BaseException) -> bool:
     """Heuristic for the Playwright "Executable doesn't exist" launch failure."""
     return "Executable doesn't exist" in str(exc)
@@ -117,11 +130,12 @@ async def crawl_recursive(
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
-    None values for ``max_depth`` / ``max_pages`` mean unbounded (constrained
-    only by whatever ceiling the user has set in ``cfg.crawl_max_{depth,pages}``,
-    if any). Positive ints are explicit caps. ``CRAWL_PAGE`` events fire as
-    each page completes; total is ``CRAWL_TOTAL_UNKNOWN`` by default and
-    promoted to the sitemap count when available.
+    ``max_depth`` of None means unbounded depth. ``max_pages`` is always
+    bounded by ``cfg.crawl_safety_max_pages``; None / a higher value is
+    clamped to that ceiling so a hostile site can't exhaust memory/disk.
+    ``CRAWL_PAGE`` events fire as each page completes; total is
+    ``CRAWL_TOTAL_UNKNOWN`` by default and promoted to the sitemap count
+    when available.
 
     Pass ``include_subdomains=True`` to broaden scope from the exact host to the
     host plus any subdomains. If ``on_result`` is provided, it's called for each
@@ -130,7 +144,7 @@ async def crawl_recursive(
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
-    pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+    pages = _clamp_to_safety_ceiling(_resolve_limit(max_pages, cfg.crawl_max_pages))
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
