@@ -32,6 +32,19 @@ def _patch_setup_ram(ram_gb: float = 16.0):
     return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
 
 
+def _no_api_fallback():
+    """Suppress startup canonicalization's cloud-model fallback.
+
+    Tests that boot ``LilbeeApp`` to assert the setup wizard appears must run as
+    a clean install. An ambient cloud API key (common in a dev config) would
+    otherwise let canonicalization adopt a cloud chat model and skip setup.
+    """
+    return patch(
+        "lilbee.modelhub.model_manager.validation._first_available_api_chat_ref",
+        return_value=None,
+    )
+
+
 class _PlainApp(LilbeeAppHost):
     """Minimal host so the wizard can mount without LilbeeApp's auto-wizard."""
 
@@ -73,9 +86,8 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
     from lilbee.core.config import cfg
 
     app = LilbeeApp()
-    chat_default = cfg.chat_model
     captured: dict[str, object] = {}
-    with _patch_setup_scan(), _patch_setup_ram():
+    with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
             for _ in range(10):
                 await pilot.pause()
@@ -87,6 +99,11 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
             first = chat_cards[0]
             assert not first.row.installed
             mock_grid = GridSelect()
+            # Capture after mount: startup canonicalization may already have
+            # adjusted the configured model. The contract under test is that
+            # picking a not-yet-downloaded card does not change it further until
+            # the download's on_success fires.
+            chat_default = cfg.chat_model
 
             def _capture(_pending, **kwargs):
                 captured["on_success"] = kwargs.get("on_success")
@@ -189,7 +206,10 @@ async def test_commit_selection_with_no_ref_returns_early() -> None:
     from lilbee.catalog.types import ModelTask
 
     app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
+    # Force fresh-install state: without this, an ambient cloud API key in the
+    # dev config lets startup canonicalization adopt a cloud chat model, so the
+    # app boots to the chat screen instead of the setup wizard. CI has no key.
+    with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
             for _ in range(10):
                 await pilot.pause()

@@ -91,6 +91,12 @@ def _read_architecture(path: Path) -> str:
 
     Kept separate so the ``GGUFReader`` (and its memory map of *path*) is released
     when this returns, letting the caller delete the temp file on Windows.
+
+    Architecture is a string by spec; a field present under a non-STRING type is
+    malformed, so it yields an empty string rather than a stringified number.
     """
     reader = GGUFReader(str(path))
-    return gguf_scalar_str(reader.fields.get(GGUF_ARCH_KEY)) or ""
+    field = reader.fields.get(GGUF_ARCH_KEY)
+    if field is None or not field.types or field.types[-1] != GGUFValueType.STRING:
+        return ""
+    return gguf_scalar_str(field) or ""
