@@ -14,10 +14,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # on slow media (HDD) at the cost of serving slightly stale data.
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
-# Values for the ``chunk_type`` column. Everything goes in as raw except wiki
-# pages written by the wiki producer; callers filter with ``Store.search(chunk_type=...)``.
-CHUNK_TYPE_RAW = "raw"
-CHUNK_TYPE_WIKI = "wiki"
+
+class ChunkType(StrEnum):
+    """Values for the ``chunk_type`` column.
+
+    Everything ingests as ``RAW`` except wiki pages written by the wiki
+    producer; callers filter with ``Store.search(chunk_type=...)``.
+    """
+
+    RAW = "raw"
+    WIKI = "wiki"
+
 
 # ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
 # add or rename a meta column without forcing every store to drop_all.
@@ -37,23 +44,23 @@ class SearchScope(StrEnum):
     others map 1:1 to the chunks-table values.
     """
 
-    RAW = CHUNK_TYPE_RAW
-    WIKI = CHUNK_TYPE_WIKI
+    RAW = ChunkType.RAW
+    WIKI = ChunkType.WIKI
     BOTH = "both"
 
 
-def scope_to_chunk_type(scope: SearchScope | str | None) -> str | None:
+def scope_to_chunk_type(scope: SearchScope | str | None) -> ChunkType | None:
     """Translate a user-facing scope into a ``Store.search`` ``chunk_type`` arg.
 
     ``None``/``"both"`` → no filter. ``"raw"`` / ``"wiki"`` → the matching
-    chunks-table value. Raises ``ValueError`` on any other string.
+    ``ChunkType``. Raises ``ValueError`` on any other string.
     """
     if scope is None:
         return None
     normalized = SearchScope(scope)
     if normalized is SearchScope.BOTH:
         return None
-    return normalized.value
+    return ChunkType(normalized.value)
 
 
 class SearchChunk(BaseModel):
@@ -66,13 +73,13 @@ class SearchChunk(BaseModel):
 
     source: str
     content_type: str
-    chunk_type: str = CHUNK_TYPE_RAW
+    chunk_type: ChunkType = ChunkType.RAW
 
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _coerce_none_chunk_type(cls, v: str | None) -> str:
         """LanceDB rows from before the chunk_type column was added return None."""
-        return v if v is not None else CHUNK_TYPE_RAW
+        return v if v is not None else ChunkType.RAW
 
     page_start: int
     page_end: int

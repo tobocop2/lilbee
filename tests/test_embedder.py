@@ -25,12 +25,12 @@ class TestTruncate:
         assert embedder.truncate(text) == text
 
     def test_long_text_truncated(self, embedder):
-        text = "x" * (cfg.max_embed_chars + 500)
+        text = "x" * (embedder.embed_char_budget + 500)
         result = embedder.truncate(text)
-        assert len(result) == cfg.max_embed_chars
+        assert len(result) == embedder.embed_char_budget
 
     def test_exact_limit_unchanged(self, embedder):
-        text = "a" * cfg.max_embed_chars
+        text = "a" * embedder.embed_char_budget
         assert embedder.truncate(text) == text
 
 
@@ -47,10 +47,10 @@ class TestEmbed:
 
     def test_truncates_long_input(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768]
-        long_text = "a" * (cfg.max_embed_chars + 1000)
+        long_text = "a" * (embedder.embed_char_budget + 1000)
         embedder.embed(long_text)
         call_args = mock_provider.embed.call_args[0][0]
-        assert len(call_args[0]) == cfg.max_embed_chars
+        assert len(call_args[0]) == embedder.embed_char_budget
 
 
 class TestEmbedBatch:
@@ -82,12 +82,12 @@ class TestEmbedBatch:
 
     def test_truncates_long_texts_in_batch(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768, [0.0] * 768]
-        texts = ["short", "x" * (cfg.max_embed_chars + 500)]
+        texts = ["short", "x" * (embedder.embed_char_budget + 500)]
         embedder.embed_batch(texts)
         mock_provider.embed.assert_called_once()
         call_input = mock_provider.embed.call_args[0][0]
         assert call_input[0] == "short"
-        assert len(call_input[1]) == cfg.max_embed_chars
+        assert len(call_input[1]) == embedder.embed_char_budget
 
 
 class TestValidateVector:

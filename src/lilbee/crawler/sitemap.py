@@ -6,7 +6,7 @@ import re
 from http import HTTPStatus
 from urllib.parse import urlparse
 
-from lilbee.crawler.url_filter import host_in_scope
+from lilbee.crawler.url_filter import host_in_scope, require_valid_crawl_url
 from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
 # Sitemap lookups are best-effort progress hints; never block the actual crawl.
@@ -26,6 +26,12 @@ def _fetch_sitemap_text(start_url: str) -> str | None:
     except (httpx.HTTPError, OSError):
         return None
     if resp.status_code >= HTTPStatus.BAD_REQUEST:
+        return None
+    # Redirects can steer the fetch to a private/metadata host (SSRF), so
+    # re-validate the final resolved URL before trusting the body.
+    try:
+        require_valid_crawl_url(str(resp.url))
+    except ValueError:
         return None
     return resp.text
 

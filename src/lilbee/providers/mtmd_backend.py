@@ -5,6 +5,7 @@ own chat template, so there's no projector-type-to-handler lookup table.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,14 @@ _GGUF_IMAGE_TOKENS: tuple[str, ...] = (
 )
 _IMAGE_URL_JINJA = "{{ content.image_url.url }}"
 
+# Angle-bracket placeholder whose inner text names an image/media slot, e.g.
+# ``<start_of_image>`` or ``<media>``. Used after the known-token rewrite to
+# catch an unrecognized image placeholder; the adapted ``{{ ... }}`` Jinja marker
+# uses braces, not angle brackets, so it never matches here.
+_UNKNOWN_IMAGE_TOKEN_RE = re.compile(
+    r"<\|?[^<>]*(?:image|img|media|vision)[^<>]*\|?>", re.IGNORECASE
+)
+
 _TOKENIZER_CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
 
 _VISION_FALLBACK_N_CTX = 4096
@@ -67,10 +76,21 @@ def read_chat_template(model_path: Path) -> str | None:
 
 
 def adapt_gguf_template_for_mtmd(template: str) -> str:
-    """Rewrite known image-placeholder tokens to ``{{ content.image_url.url }}``."""
+    """Rewrite known image-placeholder tokens to ``{{ content.image_url.url }}``.
+
+    Raises ``ValueError`` if an unrecognized image/media placeholder survives,
+    so a corrupted vision prompt fails at load rather than degrading OCR silently.
+    """
     for token in _GGUF_IMAGE_TOKENS:
         if token in template:
             template = template.replace(token, _IMAGE_URL_JINJA)
+    leftover = _UNKNOWN_IMAGE_TOKEN_RE.search(template)
+    if leftover is not None:
+        supported = ", ".join(_GGUF_IMAGE_TOKENS)
+        raise ValueError(
+            f"Unrecognized image placeholder {leftover.group()!r} in GGUF chat template; "
+            f"supported tokens are: {supported}"
+        )
     return template
 
 

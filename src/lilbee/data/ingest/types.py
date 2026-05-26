@@ -9,6 +9,8 @@ from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel
 
+from lilbee.data.store import ChunkType
+
 
 class FileToProcess(NamedTuple):
     """A file queued for ingestion with its metadata."""
@@ -44,7 +46,7 @@ class ChunkRecord(TypedDict):
 
     source: str
     content_type: str
-    chunk_type: str
+    chunk_type: ChunkType
     page_start: int
     page_end: int
     line_start: int
@@ -63,6 +65,9 @@ class SyncResult(BaseModel):
     unchanged: int = 0
     failed: list[str] = []
     skipped: list[str] = []
+    # Chunks whose text exceeded the embedder's char budget and were truncated
+    # before embedding. Non-zero means some tail content did not reach the index.
+    truncated: int = 0
 
     def __str__(self) -> str:
         lines = [
@@ -72,6 +77,7 @@ class SyncResult(BaseModel):
             f"Unchanged: {self.unchanged}",
             f"Skipped: {len(self.skipped)}",
             f"Failed: {len(self.failed)}",
+            f"Truncated: {self.truncated}",
         ]
         for f in self.skipped:
             lines.append(f"  [yellow]{f}[/yellow]")
@@ -83,7 +89,8 @@ class SyncResult(BaseModel):
         return (
             f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
             f"removed={len(self.removed)}, unchanged={self.unchanged}, "
-            f"skipped={len(self.skipped)}, failed={len(self.failed)})"
+            f"skipped={len(self.skipped)}, failed={len(self.failed)}, "
+            f"truncated={self.truncated})"
         )
 
     def __rich__(self) -> str:

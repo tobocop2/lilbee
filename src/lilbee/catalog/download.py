@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
-from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, hf_headers, hf_token
+from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers, hf_token
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
@@ -84,7 +84,7 @@ def download_model(
 
     filename = resolve_filename(entry)
     dest = cfg.models_dir / filename
-    if dest.exists():
+    if dest.exists() and _cached_file_is_complete(entry.hf_repo, filename, dest):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
             size = dest.stat().st_size
@@ -170,7 +170,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
 
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{hf_repo}",
+            f"{HF_API_URL}/{hf_repo}",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
@@ -240,7 +240,7 @@ def resolve_filename(entry: CatalogModel) -> str:
 
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{entry.hf_repo}",
+            f"{HF_API_URL}/{entry.hf_repo}",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )
@@ -274,13 +274,60 @@ def _pick_best_gguf(filenames: list[str]) -> str:
     return filenames[0]
 
 
+_SIZE_UNKNOWN = 0
+
+
+def _cached_file_is_complete(hf_repo: str, filename: str, dest: Path) -> bool:
+    """Decide whether an existing cached file may be accepted as complete.
+
+    Verifies the on-disk byte size against the size HuggingFace reports for
+    *filename*. A mismatch means a truncated / corrupt download, so the file
+    is rejected and re-fetched. When the size can't be fetched (offline, API
+    error) it stays unknown and the cached file is accepted: there's nothing
+    to verify against and refusing would block all offline reuse.
+    """
+    expected = fetch_expected_file_size(hf_repo, filename)
+    if expected == _SIZE_UNKNOWN:
+        return True
+    actual = dest.stat().st_size
+    if actual == expected:
+        return True
+    log.warning(
+        "Cached %s is %d bytes but HuggingFace reports %d; re-downloading",
+        dest,
+        actual,
+        expected,
+    )
+    return False
+
+
+def _hf_file_size(hf_repo: str, filename: str) -> int | None:
+    """Byte size huggingface_hub resolves for *filename* (None if unreported)."""
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+    return get_hf_file_metadata(hf_hub_url(hf_repo, filename), token=hf_token()).size
+
+
+def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
+    """Return the byte size huggingface_hub reports for *filename*, or _SIZE_UNKNOWN.
+
+    Resolves via hf_hub's own file metadata (correct revision, redirects, and
+    LFS/Xet handled uniformly) instead of scraping the repo tree. Returns 0 when
+    offline or unresolvable, in which case the caller keeps the cached file.
+    """
+    try:
+        return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
+    except Exception:
+        return _SIZE_UNKNOWN
+
+
 def fetch_model_file_size(hf_repo: str) -> float:
     """Fetch the best GGUF file size from HuggingFace tree API.
     Returns size in GB, or 0.0 if unavailable.
     """
     try:
         resp = httpx.get(
-            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
+            f"{HF_API_URL}/{hf_repo}/tree/main",
             timeout=DEFAULT_TIMEOUT,
             headers=hf_headers(),
         )

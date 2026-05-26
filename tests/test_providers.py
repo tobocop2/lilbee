@@ -388,6 +388,125 @@ class TestLlamaCppProvider:
             load_llama(models_dir / "test-model.gguf", mode="rerank")
             assert fake_llama.call_args[1]["pooling_type"] == 4
 
+    def testload_llama_embedding_asserts_n_seq_max_applied(self, models_dir: Path) -> None:
+        """A successful embed load reads ``n_seq_max`` back and accepts the expected value.
+
+        The ``_llama_n_seq_max`` shim mutates ``LlamaContext.__init__`` to set
+        ``context_params.n_seq_max``; this load-time readback proves the shim
+        took effect instead of silently leaving the C default (1), which would
+        make batched 2+ embed return ``llama_decode -1`` at inference time.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        llm = mock.MagicMock()
+        llm.context_params.n_seq_max = EMBED_N_SEQ_MAX
+        with (
+            patch("llama_cpp.Llama", return_value=llm),
+            patch(
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            assert load_llama(models_dir / "test-model.gguf", mode="embed") is llm
+
+    def testload_llama_embedding_raises_when_n_seq_max_not_applied(self, models_dir: Path) -> None:
+        """If the shim silently fails to apply, load fails loudly instead of at decode."""
+        from unittest.mock import patch
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        cfg.num_ctx = None
+        llm = mock.MagicMock()
+        llm.context_params.n_seq_max = 1  # C default: shim did not take effect.
+        with (
+            patch("llama_cpp.Llama", return_value=llm),
+            patch(
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+            pytest.raises(ProviderError, match="n_seq_max"),
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="embed")
+
+    def testload_llama_rerank_raises_on_multi_class_reranker(self, models_dir: Path) -> None:
+        """A multi-class reranker fails loudly: ``embedding[0]`` is not its score.
+
+        llama-cpp-python's RANK pooling path slices ``ptr[:n_embd]`` regardless
+        of ``n_cls_out``, so the response gives no in-band signal. The only
+        reliable check is the model's classifier-output count at load time;
+        lilbee's single-scalar extraction is valid only for ``n_cls_out == 1``.
+        """
+        from unittest.mock import patch
+
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        fake_llama = mock.MagicMock()
+        fake_module = mock.MagicMock()
+        fake_module.Llama = fake_llama
+        fake_module.LLAMA_POOLING_TYPE_RANK = 4
+        fake_module.llama_cpp.llama_model_n_cls_out.return_value = 3
+
+        class _StubCtx:
+            def __init__(self, *_a, **_kw) -> None:
+                pass
+
+        fake_module.internals.LlamaContext = _StubCtx
+        llm = mock.MagicMock()
+        llm.context_params.n_seq_max = 64
+        fake_llama.return_value = llm
+        with (
+            patch(
+                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
+                return_value=fake_module,
+            ),
+            patch.dict("sys.modules", {"llama_cpp": fake_module}),
+            patch(
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+            pytest.raises(ProviderError, match="classifier outputs"),
+        ):
+            load_llama(models_dir / "test-model.gguf", mode="rerank")
+
+    def testload_llama_rerank_accepts_single_class_reranker(self, models_dir: Path) -> None:
+        """A standard single-class reranker (``n_cls_out == 1``) loads cleanly."""
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp.provider import load_llama
+
+        fake_llama = mock.MagicMock()
+        fake_module = mock.MagicMock()
+        fake_module.Llama = fake_llama
+        fake_module.LLAMA_POOLING_TYPE_RANK = 4
+        fake_module.llama_cpp.llama_model_n_cls_out.return_value = 1
+
+        class _StubCtx:
+            def __init__(self, *_a, **_kw) -> None:
+                pass
+
+        fake_module.internals.LlamaContext = _StubCtx
+        llm = mock.MagicMock()
+        llm.context_params.n_seq_max = 64
+        fake_llama.return_value = llm
+        with (
+            patch(
+                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
+                return_value=fake_module,
+            ),
+            patch.dict("sys.modules", {"llama_cpp": fake_module}),
+            patch(
+                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            assert load_llama(models_dir / "test-model.gguf", mode="rerank") is llm
+
     def testload_llama_abort_callback_override_replaces_default(self, models_dir: Path) -> None:
         """abort_callback_override threads a worker-side callback into Llama kwargs."""
         from unittest.mock import patch
@@ -3501,6 +3620,39 @@ class TestAdaptGgufTemplate:
         template = "plain {{ content.image_url.url }} template"
         assert adapt_gguf_template_for_mtmd(template) == template
 
+    def test_text_only_template_unaffected(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "<|im_start|>user\n{{ content.text }}<|im_end|>"
+        assert adapt_gguf_template_for_mtmd(template) == template
+
+    def test_unknown_image_token_raises(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
+        with pytest.raises(ValueError, match="<vision_pad>") as exc:
+            adapt_gguf_template_for_mtmd(template)
+        assert "<|image_pad|>" in str(exc.value)
+
+    def test_unknown_media_token_raises(self) -> None:
+        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
+
+        with pytest.raises(ValueError, match="<media>"):
+            adapt_gguf_template_for_mtmd("A <media> B")
+
+    def test_build_handler_raises_on_unknown_token(self, tmp_path: Path) -> None:
+        from lilbee.providers.mtmd_backend import build_vision_chat_handler
+
+        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
+        with (
+            mock.patch(
+                "lilbee.providers.mtmd_backend.read_chat_template",
+                return_value=template,
+            ),
+            pytest.raises(ValueError, match="<vision_pad>"),
+        ):
+            build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
+
 
 # ---------------------------------------------------------------------------
 # LLMOptions / filter_options
@@ -5022,3 +5174,17 @@ class TestSdkLLMProviderPdfOcr:
         provider = SdkLLMProvider(LitellmSdkBackend())
         with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
+
+
+class TestProviderReadHelpers:
+    """The SDK-shape readers degrade to None when the attribute is unreadable."""
+
+    def test_read_context_n_seq_max_none_without_context_params(self) -> None:
+        from lilbee.providers.llama_cpp.provider import _read_context_n_seq_max
+
+        assert _read_context_n_seq_max(object()) is None
+
+    def test_read_rerank_class_count_none_without_model(self) -> None:
+        from lilbee.providers.llama_cpp.provider import _read_rerank_class_count
+
+        assert _read_rerank_class_count(object()) is None

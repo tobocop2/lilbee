@@ -20,6 +20,7 @@ from lilbee.crawler.models import (
     FetchedPage,
     FilterSpec,
 )
+from lilbee.crawler.url_filter import validate_crawl_url
 
 if TYPE_CHECKING:
     from lilbee.crawler.fetcher import WebFetcher
@@ -148,35 +149,47 @@ async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:
     yield stream
 
 
+def _link_passes_ssrf(url: str) -> bool:
+    """Return True when a discovered link resolves to a public, http(s) target.
+
+    Re-validates every followed link against the IP blocklist so a discovered
+    or DNS-rebound link to a private/metadata host is dropped before fetch.
+    """
+    try:
+        validate_crawl_url(url)
+    except ValueError:
+        return False
+    return True
+
+
 def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
     """Build a URLFilter that scopes a crawl to the starting URL's host.
 
     Default behavior (``include_subdomains=False``) restricts link-following to
-    the exact host of *start_url*. For ``https://en.wikipedia.org/...`` this
-    excludes ``af.wikipedia.org`` and every other language subdomain.
-
-    When ``include_subdomains=True``, crawl4ai's DomainFilter matches the host
-    plus any of its subdomains (``foo.example.com`` matches ``example.com``),
-    which is the loose "whole registrable domain" behavior users may want.
+    the exact host of *start_url*. When ``include_subdomains=True`` the host
+    plus any subdomain is in scope. Either way every followed link is also
+    re-validated against the SSRF blocklist, since the host scope check alone
+    would let a same-host link that resolves to a private IP through.
     """
-    from crawl4ai.deep_crawling.filters import DomainFilter, URLFilter
+    from crawl4ai.deep_crawling.filters import URLFilter
 
     host = (urlparse(start_url).hostname or "").lower()
-    if include_subdomains:
-        return DomainFilter(allowed_domains=host) if host else None
+    if not host:
+        return None
 
-    class _ExactHostFilter(URLFilter):  # type: ignore[misc]
-        def __init__(self, allowed_host: str) -> None:
-            super().__init__()
-            self._host = allowed_host
+    def _in_scope(link_host: str) -> bool:
+        if link_host == host:
+            return True
+        return include_subdomains and link_host.endswith(f".{host}")
 
+    class _ScopedSsrfFilter(URLFilter):  # type: ignore[misc]
         def apply(self, url: str) -> bool:
             link_host = (urlparse(url).hostname or "").lower()
-            ok = link_host == self._host
+            ok = _in_scope(link_host) and _link_passes_ssrf(url)
             self._update_stats(ok)
             return ok
 
-    return _ExactHostFilter(host) if host else None
+    return _ScopedSsrfFilter()
 
 
 class Crawl4aiFetcher:

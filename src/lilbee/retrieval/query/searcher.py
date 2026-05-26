@@ -13,8 +13,7 @@ from typing_extensions import TypedDict
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.store import (
-    CHUNK_TYPE_RAW,
-    CHUNK_TYPE_WIKI,
+    ChunkType,
     SearchChunk,
     Store,
     cosine_sim,
@@ -236,14 +235,14 @@ class Searcher:
             log.debug("HyDE search failed", exc_info=True)
             return []
 
-    def _normalize_chunk_type(self, chunk_type: str | None) -> str | None:
-        """Drop ``chunk_type="wiki"`` when wiki generation is disabled.
+    def _normalize_chunk_type(self, chunk_type: ChunkType | None) -> ChunkType | None:
+        """Drop ``chunk_type=ChunkType.WIKI`` when wiki generation is disabled.
 
         With wiki off the chunks table contains only raw rows, so the
         filter would return empty. Logging once keeps the surprise out
         of the user's way while surfacing the misuse in logs.
         """
-        if chunk_type == CHUNK_TYPE_WIKI and not self._config.wiki:
+        if chunk_type == ChunkType.WIKI and not self._config.wiki:
             log.warning(
                 "wiki scope requested but wiki is disabled; searching the full pool instead"
             )
@@ -261,7 +260,7 @@ class Searcher:
         mode: str,
         query: str,
         top_k: int,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         if mode == "term":
             return self._store.bm25_probe(query, top_k=top_k)
@@ -270,9 +269,9 @@ class Searcher:
             return self._store.search(query_vec, top_k=top_k, query_text=None)
         if mode == "hyde":
             return self._hyde_search(query, top_k)
-        if mode in (CHUNK_TYPE_WIKI, CHUNK_TYPE_RAW):
-            # Explicit ``chunk_type`` arg beats the prefix shortcut.
-            effective = chunk_type if chunk_type is not None else mode
+        if mode in (ChunkType.WIKI, ChunkType.RAW):
+            # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
+            effective = chunk_type if chunk_type is not None else ChunkType(mode)
             query_vec = self._embedder.embed(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=query, chunk_type=effective
@@ -309,7 +308,7 @@ class Searcher:
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
-        chunk_type: str | None,
+        chunk_type: ChunkType | None,
     ) -> None:
         """Append unseen variant-search hits to ``results`` (in place)."""
         for variant, variant_vec in self._expand_query(question, query_vec):
@@ -347,7 +346,7 @@ class Searcher:
         question: str,
         top_k: int = 0,
         *,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for downstream filtering.
@@ -390,7 +389,7 @@ class Searcher:
         top_k: int = 0,
         history: list[ChatMessage] | None = None,
         *,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
         """Build RAG context from search results.
 
@@ -454,7 +453,7 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
         *,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> AskResult:
         """Ask a question. Skips retrieval when chat_mode is 'chat' or
         when no embedding model is configured."""
@@ -480,7 +479,7 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
         *,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> str:
         """Ask a question and get a formatted answer with citations."""
         result = self.ask_raw(
@@ -525,7 +524,7 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         options: dict[str, Any] | None = None,
         *,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
         if (
