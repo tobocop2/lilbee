@@ -39,10 +39,12 @@ embedding_model = "$EMBED_REF"
 TOML
   "$LILBEE" model pull "$EMBED_REF"
   "$LILBEE" model pull "$TINY_CHAT"
-  # Index lilbee's retrieval stack -- the code the demo questions are about
+  # Index ONLY lilbee's retrieval stack -- the code the demo questions are about
   # (chunking, embedding, search, reranking, query expansion, concept graph).
-  # This is the stable value-prop code, not the in-flux model-families parser.
-  for d in retrieval data/ingest server/chat_completions_api; do
+  # Deliberately NOT server/chat_completions_api: its response-parser/API code
+  # ranks high for some queries and distracts weaker models into "the retrieval
+  # code isn't here" (seen with gpt-oss-120b and GLM-4.5-Air).
+  for d in retrieval data/ingest; do
     [ -d "$LM/src/lilbee/$d" ] && "$LILBEE" add "$LM/src/lilbee/$d" || true
   done
   touch "$WS/.lilbee/.demo_indexed"
