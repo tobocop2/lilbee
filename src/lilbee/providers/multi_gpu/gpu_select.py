@@ -38,7 +38,7 @@ from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
-from lilbee.providers.llama_cpp.vulkan_icd_discovery import (
+from lilbee.providers.multi_gpu.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
 )
 

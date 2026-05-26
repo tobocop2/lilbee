@@ -690,7 +690,7 @@ def test_chat_session_ensure_loaded_swaps_on_per_call_model(monkeypatch, tmp_pat
         fake_load_llama,
     )
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         fake_resolve,
     )
     first = session._ensure_loaded(None)

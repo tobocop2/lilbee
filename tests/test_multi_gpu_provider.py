@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import LlmProvider
 from lilbee.providers.multi_gpu import provider as prov_mod
 from lilbee.providers.multi_gpu.devices import FleetDevice, visible_env
 from lilbee.providers.multi_gpu.placement import InstancePlan, ModelPlacementInput, Placement
@@ -182,7 +181,7 @@ def test_vision_call_rejects_non_text() -> None:
 
 def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: Path("/m/v.gguf")
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
     )
     monkeypatch.setattr(
         "lilbee.providers.gguf_meta.find_mmproj_for_model",
@@ -195,7 +194,7 @@ def test_vision_mmproj_returns_none_when_absent(monkeypatch) -> None:
     from lilbee.providers.base import ProviderError
 
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: Path("/m/v.gguf")
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
     )
 
     def _raise(_p: Path) -> Path:
@@ -212,9 +211,7 @@ def test_role_ctx_chat_honors_configured_num_ctx(monkeypatch) -> None:
 
 def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", None)
-    monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.provider._resolve_chat_ctx", lambda _p, _m: 4096
-    )
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda _p, _m: 4096)
     assert prov_mod._role_ctx(WorkerRole.CHAT, Path("/m/c.gguf"), None) == 4096
 
 
@@ -233,7 +230,7 @@ def test_role_gpu_layers_marks_embed_roles(monkeypatch) -> None:
         seen["embedding"] = embedding
         return 7
 
-    monkeypatch.setattr("lilbee.providers.llama_cpp.provider._resolve_n_gpu_layers", _fake)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", _fake)
     assert prov_mod._role_gpu_layers(WorkerRole.RERANK) == 7
     assert seen["embedding"] is True  # rerank is embedding-class
     assert prov_mod._role_gpu_layers(WorkerRole.CHAT) == 7
@@ -249,7 +246,7 @@ def test_role_gpu_layers_vision_offloads_all_layers(monkeypatch) -> None:
         seen["embedding"] = embedding
         return -1
 
-    monkeypatch.setattr("lilbee.providers.llama_cpp.provider._resolve_n_gpu_layers", _fake)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", _fake)
     assert prov_mod._role_gpu_layers(WorkerRole.VISION) == -1
     assert seen["embedding"] is True  # vision => all layers
 
@@ -258,7 +255,7 @@ def test_role_ctx_vision_uses_vision_picker(monkeypatch) -> None:
     # Vision must use the vision loader's training-ctx picker, not cfg.num_ctx
     # or the chat-ctx dynamic picker.
     monkeypatch.setattr(cfg, "num_ctx", 16384)  # would be wrong for vision
-    monkeypatch.setattr("lilbee.providers.mtmd_backend._resolve_vision_n_ctx", lambda _p: 4321)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_vision_ctx", lambda _p: 4321)
     assert prov_mod._role_ctx(WorkerRole.VISION, Path("/m/v.gguf"), {}) == 4321
 
 
@@ -365,14 +362,13 @@ def test_local_provider_is_lazy_and_cached(monkeypatch) -> None:
     assert p._local_provider() is sentinel  # cached
 
 
-def test_factory_returns_fleet_provider_for_multi_gpu() -> None:
-    from lilbee.providers.factory import create_provider
+def test_routing_provider_local_engine_is_fleet() -> None:
+    # The fleet is the sole local engine now: AUTO routes local refs through
+    # RoutingProvider, whose local engine is a FleetProvider (a single machine
+    # is a fleet-of-one). Construction is side-effect-free; no fleet is spawned.
+    from lilbee.providers.routing_provider import RoutingProvider
 
-    cfg.llm_provider = LlmProvider.MULTI_GPU
-    try:
-        assert isinstance(create_provider(cfg), FleetProvider)
-    finally:
-        cfg.llm_provider = LlmProvider.AUTO
+    assert isinstance(RoutingProvider()._get_local(), FleetProvider)
 
 
 class TestBuildFleetWiring:
@@ -413,12 +409,8 @@ class TestBuildFleetWiring:
         model.write_bytes(b"x" * 1000)
         mmproj = tmp_path / "mmproj.gguf"
         mmproj.write_bytes(b"y" * 500)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: model
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
-        )
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 16)
         inp = prov_mod._estimate_role(WorkerRole.VISION, "ref", slots=1)
@@ -431,9 +423,7 @@ class TestBuildFleetWiring:
 
         model = tmp_path / "e.gguf"
         model.write_bytes(b"x" * 1000)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: model
-        )
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr(
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "8", "embedding_length": "16"},
@@ -447,13 +437,11 @@ class TestBuildFleetWiring:
 
     def test_launch_for_vision_passes_mmproj(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: Path("/m/v.gguf"),
         )
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -466,9 +454,7 @@ class TestBuildFleetWiring:
     def test_estimate_role_reads_weights_and_meta(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 1000)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _ref: model
-        )
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: model)
         monkeypatch.setattr(
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "4", "embedding_length": "8"},
@@ -480,12 +466,10 @@ class TestBuildFleetWiring:
 
     def test_launch_for_builds_instance_with_pinning(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             lambda ref: Path("/models/chat.gguf"),
         )
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
@@ -501,12 +485,10 @@ class TestBuildFleetWiring:
 
     def _launch_role(self, monkeypatch, role: WorkerRole, ctx: int = 4096) -> list[str]:
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: Path("/models/m.gguf"),
         )
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -548,12 +530,10 @@ class TestBuildFleetWiring:
 
     def _launch_for_role(self, monkeypatch, role: WorkerRole, ctx: int = 4096):
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: Path("/models/m.gguf"),
         )
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -618,7 +598,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(prov_mod, "probe_devices", lambda _binary: [])  # binary can't enumerate
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.enumerate_gpu_vram",
+            "lilbee.providers.multi_gpu.gpu_select.enumerate_gpu_vram",
             lambda: [(0, 24 * _GB)],
         )
         seen: dict[str, list] = {}

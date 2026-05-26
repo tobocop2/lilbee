@@ -1,4 +1,4 @@
-"""Routing provider: prefix-based dispatch between the SDK backend and the local llama-server engine."""
+"""Routing provider: prefix-based dispatch between the SDK backend and the local engine."""
 
 from __future__ import annotations
 

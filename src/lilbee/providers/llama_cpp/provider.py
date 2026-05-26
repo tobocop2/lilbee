@@ -15,12 +15,12 @@ from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError, filter_options
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
     train_ctx_from_meta,
 )
+from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
 from lilbee.providers.llama_cpp.log_dispatch import (
     import_llama_cpp,
     install_llama_log_handler,

@@ -38,6 +38,28 @@ TEST_MODEL_FILE = "test-model.gguf"
 TEST_MODEL_REF = f"{TEST_MODEL_REPO}/{TEST_MODEL_FILE}"
 
 
+def write_test_gguf(path: Path, *, arch: str | None, fields: dict[str, object]) -> Path:
+    """Write a real (tensor-less) GGUF file for header-read tests.
+
+    ``read_gguf_metadata`` parses headers with the ``gguf`` library, so these
+    tests exercise the actual parser instead of mocking a native binding. Each
+    field value is written as a string or a uint32 by its Python type; the
+    architecture (when given) becomes ``general.architecture``.
+    """
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), arch=arch or "")
+    for key, value in fields.items():
+        if isinstance(value, str):
+            writer.add_string(key, value)
+        else:
+            writer.add_uint32(key, int(value))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.close()
+    return path
+
+
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
     """Create a temporary models directory with a registered test model."""
@@ -281,26 +303,26 @@ class TestLlamaCppProvider:
             assert provider.get_capabilities("missing") == ["completion"]
 
     def testread_gguf_metadata(self, models_dir: Path) -> None:
-        from unittest.mock import MagicMock, patch
-
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = MagicMock()
-        mock_llm.metadata = {
-            "general.architecture": "qwen3",
-            "general.name": "Qwen3 8B",
-            "general.file_type": "15",
-            "qwen3.context_length": "32768",
-            "qwen3.embedding_length": "4096",
-            "qwen3.block_count": "32",
-            "qwen3.attention.head_count_kv": "8",
-            "qwen3.attention.head_count": "32",
-            "qwen3.attention.key_length": "128",
-            "qwen3.attention.value_length": "128",
-            "tokenizer.chat_template": "{% if messages %}...",
-        }
-        with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = read_gguf_metadata(models_dir / "test-model.gguf")
+        path = write_test_gguf(
+            models_dir / "test-model.gguf",
+            arch="qwen3",
+            fields={
+                "general.name": "Qwen3 8B",
+                "general.file_type": 15,
+                "qwen3.context_length": 32768,
+                "qwen3.embedding_length": 4096,
+                "qwen3.block_count": 32,
+                "qwen3.attention.head_count_kv": 8,
+                "qwen3.attention.head_count": 32,
+                "qwen3.attention.key_length": 128,
+                "qwen3.attention.value_length": 128,
+                "tokenizer.chat_template": "{% if messages %}...",
+            },
+        )
+        result = read_gguf_metadata(path)
+        assert result is not None
         assert result["architecture"] == "qwen3"
         assert result["context_length"] == "32768"
         assert result["embedding_length"] == "4096"
@@ -312,18 +334,19 @@ class TestLlamaCppProvider:
         assert result["head_count"] == "32"
         assert result["key_length"] == "128"
         assert result["value_length"] == "128"
-        mock_llm.close.assert_called_once()
 
     def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
-        from unittest.mock import MagicMock, patch
+        from unittest import mock
 
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = MagicMock()
-        mock_llm.metadata = {}
-        with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = read_gguf_metadata(models_dir / "test-model.gguf")
-        assert result is None
+        # A GGUF carrying no recognized header fields reads back as None. Real
+        # GGUFs always have general.architecture, so the empty case is exercised
+        # by an empty fields map from the parser.
+        reader = mock.MagicMock()
+        reader.fields = {}
+        with mock.patch("lilbee.providers.gguf_meta.GGUFReader", return_value=reader):
+            assert read_gguf_metadata(models_dir / "test-model.gguf") is None
 
     def testload_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
         from unittest.mock import patch
@@ -1000,24 +1023,33 @@ class TestFactory:
         provider = create_provider(cfg)
         assert isinstance(provider, RoutingProvider)
 
-    def test_explicit_llama_cpp(self) -> None:
+    def test_retired_llama_cpp_string_canonicalizes_to_auto(self) -> None:
+        # The retired "llama-cpp" value (still present in old config.toml files)
+        # canonicalizes to AUTO at the config boundary, so it routes through the
+        # local engine via RoutingProvider rather than raising.
+        from lilbee.core.config.enums import LlmProvider
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.routing_provider import RoutingProvider
 
         cfg.llm_provider = "llama-cpp"
-        provider = create_provider(cfg)
-        assert isinstance(provider, LlamaCppProvider)
+        try:
+            assert cfg.llm_provider is LlmProvider.AUTO
+            assert isinstance(create_provider(cfg), RoutingProvider)
+        finally:
+            cfg.llm_provider = "auto"
 
-    def test_explicit_multi_gpu_via_string(self) -> None:
-        # The TUI Select, MCP settings_set, and HTTP PATCH /api/config all pass
-        # the value as a string; it must coerce to the StrEnum and select the
-        # fleet provider, so multi-gpu is reachable without the env var.
+    def test_retired_multi_gpu_string_canonicalizes_to_auto(self) -> None:
+        # "multi-gpu" was the opt-in fleet provider before it became the default
+        # local engine. A persisted "multi-gpu" canonicalizes to AUTO and routes
+        # through RoutingProvider, so old configs keep working without the value.
+        from lilbee.core.config.enums import LlmProvider
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.multi_gpu.provider import FleetProvider
+        from lilbee.providers.routing_provider import RoutingProvider
 
         cfg.llm_provider = "multi-gpu"
         try:
-            assert isinstance(create_provider(cfg), FleetProvider)
+            assert cfg.llm_provider is LlmProvider.AUTO
+            assert isinstance(create_provider(cfg), RoutingProvider)
         finally:
             cfg.llm_provider = "auto"
 
@@ -1125,8 +1157,8 @@ class TestRoutingProvider:
 
         rp = RoutingProvider()
         # Track the real llama-cpp provider for shutdown (tests replace it with mocks)
-        if rp._llama_cpp is not None:
-            self._to_shutdown.append(rp._llama_cpp)
+        if rp._local is not None:
+            self._to_shutdown.append(rp._local)
         self._to_shutdown.append(rp)
         return rp
 
@@ -1183,7 +1215,7 @@ class TestRoutingProvider:
         mock_litellm.chat.return_value = "ok"
         rp._sdk_provider = mock_litellm
 
-        with mock.patch("lilbee.providers.llama_cpp.provider._resolve_chat_ctx") as resolve_ctx:
+        with mock.patch("lilbee.providers.engine_params.resolve_chat_ctx") as resolve_ctx:
             rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         resolve_ctx.assert_not_called()
 
@@ -1193,7 +1225,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_llama.vision_ocr.return_value = "page text"
         mock_litellm = mock.MagicMock()
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_litellm
 
         result = rp.vision_ocr(
@@ -1213,7 +1245,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_litellm = mock.MagicMock()
         mock_litellm.vision_ocr.return_value = "remote text"
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_litellm
 
         result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0)
@@ -1235,7 +1267,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.chat_model = "org/Local-GGUF/local-model.gguf"
         result = rp.chat([{"role": "user", "content": "hi"}])
@@ -1258,7 +1290,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.embedding_model = (
             "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -1278,7 +1310,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.9, 1.0]]
         rp._sdk_provider = mock_litellm
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.embedding_model = "org/Local-GGUF/embed.gguf"
         result = rp.embed(["test"])
@@ -1291,7 +1323,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = False
@@ -1307,7 +1339,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = True
@@ -1323,7 +1355,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = True
@@ -1333,15 +1365,15 @@ class TestRoutingProvider:
         result = rp.list_models()
         assert result == ["local.gguf"]
 
-    def test_get_llama_cpp_caches_instance(self) -> None:
-        """``_get_llama_cpp`` memoizes the LlamaCppProvider on first call."""
+    def test_get_local_caches_instance(self) -> None:
+        """``_get_local`` memoizes the local engine (FleetProvider) on first call."""
         from lilbee.providers.routing_provider import RoutingProvider
 
         rp = RoutingProvider()
         self._to_shutdown.append(rp)
-        first = rp._get_llama_cpp()
+        first = rp._get_local()
         self._to_shutdown.append(first)
-        second = rp._get_llama_cpp()
+        second = rp._get_local()
         assert first is second
 
     def test_get_sdk_provider_caches_instance(self) -> None:
@@ -1392,7 +1424,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         ref = "org/Local-GGUF/local.gguf"
         result = rp.show_model(ref)
@@ -1454,7 +1486,7 @@ class TestRoutingProvider:
         """``invalidate_load_cache`` releases the native side; SDK has no cache."""
         rp = self._make_provider()
         mock_native = mock.MagicMock()
-        rp._llama_cpp = mock_native
+        rp._local = mock_native
 
         rp.invalidate_load_cache()
         mock_native.invalidate_load_cache.assert_called_once_with(None)
@@ -1463,7 +1495,7 @@ class TestRoutingProvider:
         """``warm_up_pool`` lazily constructs the native provider and warms it."""
         rp = self._make_provider()
         mock_native = mock.MagicMock()
-        with mock.patch.object(rp, "_get_llama_cpp", return_value=mock_native):
+        with mock.patch.object(rp, "_get_local", return_value=mock_native):
             rp.warm_up_pool()
         mock_native.warm_up_pool.assert_called_once_with()
 
@@ -2003,7 +2035,7 @@ class TestVulkanGpuSelect:
     """``autoselect_best_gpu_index`` probes libvulkan via ctypes and picks discrete."""
 
     def test_pick_best_prefers_discrete_over_integrated(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
             _pick_best_device,
@@ -2022,7 +2054,7 @@ class TestVulkanGpuSelect:
         assert best.index == 1
 
     def test_pick_best_returns_none_for_cpu_only(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
             _pick_best_device,
@@ -2036,21 +2068,21 @@ class TestVulkanGpuSelect:
         assert _pick_best_device(devices) is None
 
     def test_pick_best_returns_none_for_empty_list(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _pick_best_device
+        from lilbee.providers.multi_gpu.gpu_select import _pick_best_device
 
         assert _pick_best_device([]) is None
 
     def test_rank_for_unknown_device_type_returns_zero(self) -> None:
         """Drivers may report a deviceType outside the Vulkan 1.0 enum; we treat as CPU-rank."""
-        from lilbee.providers.llama_cpp.gpu_select import _rank_for
+        from lilbee.providers.multi_gpu.gpu_select import _rank_for
 
         assert _rank_for(999) == 0
 
     def test_autoselect_returns_discrete_index_for_dual_gpu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2079,8 +2111,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Single-device hosts keep the default ordering; auto-pin would be churn."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2102,7 +2134,7 @@ class TestVulkanGpuSelect:
     def test_autoselect_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2111,8 +2143,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """All-CPU adapter list shouldn't force a pin: software rendering is never right."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2135,8 +2167,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Two discrete GPUs of equal rank: no auto-pin (no decision to make)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2163,7 +2195,7 @@ class TestVulkanGpuSelect:
 
     def test_loader_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal; the Vulkan probe explicitly skips."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
         assert gpu_select._load_vulkan_loader() is None
@@ -2171,7 +2203,7 @@ class TestVulkanGpuSelect:
     def test_loader_returns_none_when_library_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
 
@@ -2183,7 +2215,7 @@ class TestVulkanGpuSelect:
         assert gpu_select._load_vulkan_loader() is None
 
     def test_loader_falls_back_to_find_library(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
         attempts: list[str] = []
@@ -2204,13 +2236,13 @@ class TestVulkanGpuSelect:
     def test_enumerate_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: None)
         assert gpu_select._enumerate_vulkan_devices() is None
 
     def test_enumerate_catches_oserror_from_ctypes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
 
@@ -2222,7 +2254,7 @@ class TestVulkanGpuSelect:
 
     def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
         """``_resolve_vk_symbols`` reads five named attributes off the loader."""
-        from lilbee.providers.llama_cpp.gpu_select import _resolve_vk_symbols
+        from lilbee.providers.multi_gpu.gpu_select import _resolve_vk_symbols
 
         fake_lib = mock.MagicMock()
         create, destroy, enum_phys, get_props, get_mem = _resolve_vk_symbols(fake_lib)
@@ -2236,8 +2268,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Happy path: simulated VK calls populate the device list."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import (
             VkDeviceType,
             _list_devices_with_instance,
         )
@@ -2296,8 +2328,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_create_instance_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import _list_devices_with_instance
 
         monkeypatch.setattr(
             gpu_select,
@@ -2315,8 +2347,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_first_enum_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2338,8 +2370,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_count_is_zero(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2365,8 +2397,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_second_enum_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2395,7 +2427,7 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """find_library succeeds but CDLL on that path still raises -> overall None."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
 
@@ -2409,8 +2441,8 @@ class TestVulkanGpuSelect:
     def test_enumerate_gpu_vram_returns_index_vram_pairs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import VkDeviceType, VulkanDevice
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import VkDeviceType, VulkanDevice
 
         monkeypatch.setattr(
             gpu_select,
@@ -2437,13 +2469,13 @@ class TestVulkanGpuSelect:
     def test_enumerate_gpu_vram_none_when_probe_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
         assert gpu_select.enumerate_gpu_vram() is None
 
     def test_device_local_vram_sums_device_local_heaps_only(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             _device_local_vram,
             _VkPhysicalDeviceMemoryProperties,
         )
@@ -2461,7 +2493,7 @@ class TestClassifyManifestVendor:
     """``_classify_manifest_vendor`` maps an ICD manifest filename to a vendor."""
 
     def test_nvidia_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2469,7 +2501,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("nv-vk64.json") is PCIVendorID.NVIDIA
 
     def test_amdvlk_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2477,7 +2509,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("amdvlk64.json") is PCIVendorID.AMD
 
     def test_radeon_manifest_is_classified_as_amd(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2485,7 +2517,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("radeon_icd.x64.json") is PCIVendorID.AMD
 
     def test_intel_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2495,7 +2527,7 @@ class TestClassifyManifestVendor:
 
     def test_classifier_is_case_insensitive(self) -> None:
         """Windows file paths are case-insensitive; the loader's match is too."""
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2505,7 +2537,7 @@ class TestClassifyManifestVendor:
 
     def test_unknown_manifest_returns_none(self) -> None:
         """A manifest filename we don't recognise has no glob we can disable, so skip it."""
-        from lilbee.providers.llama_cpp.gpu_select import _classify_manifest_vendor
+        from lilbee.providers.multi_gpu.gpu_select import _classify_manifest_vendor
 
         assert _classify_manifest_vendor("mesa_dzn.json") is None
         assert _classify_manifest_vendor("microsoft_dozen.json") is None
@@ -2515,7 +2547,7 @@ class TestSelectBestVendor:
     """``_select_best_vendor`` walks the hardcoded preference order."""
 
     def test_nvidia_wins_over_amd(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _select_best_vendor,
         )
@@ -2524,7 +2556,7 @@ class TestSelectBestVendor:
 
     def test_amd_wins_over_intel(self) -> None:
         """AMD discrete + Intel iGPU laptops: keep the discrete card."""
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.multi_gpu.gpu_select import (
             PCIVendorID,
             _select_best_vendor,
         )
@@ -2532,7 +2564,7 @@ class TestSelectBestVendor:
         assert _select_best_vendor({PCIVendorID.AMD, PCIVendorID.INTEL}) is PCIVendorID.AMD
 
     def test_returns_none_on_empty_set(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _select_best_vendor
+        from lilbee.providers.multi_gpu.gpu_select import _select_best_vendor
 
         assert _select_best_vendor(set()) is None
 
@@ -2542,8 +2574,8 @@ class TestVulkanVendorsPresent:
 
     def test_collects_vendors_from_windows_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Windows-style backslash paths classify by filename correctly."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         manifests = [
             r"C:\Windows\System32\nv-vk64.json",
@@ -2565,8 +2597,8 @@ class TestVulkanVendorsPresent:
         Mesa RADV ships ``radeon_icd.x86_64.json`` (matches ``radeon*``),
         NVIDIA proprietary ships ``nvidia_icd.json`` (matches ``nv*``).
         """
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         manifests = [
             "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
@@ -2586,8 +2618,8 @@ class TestVulkanVendorsPresent:
 
     def test_linux_amdvlk_manifest_classifies_as_amd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Linux AMDVLK ships as ``amd_icd64.json`` (no leading ``amdvlk`` prefix)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(
             gpu_select,
@@ -2598,8 +2630,8 @@ class TestVulkanVendorsPresent:
 
     def test_drops_unknown_manifest_filenames(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """We can only disable manifests we have a glob for; unknown ones are dropped."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         manifests = [
             r"C:\Windows\System32\nv-vk64.json",
@@ -2614,7 +2646,7 @@ class TestVulkanVendorsPresent:
         assert gpu_select._vulkan_vendors_present() == {PCIVendorID.NVIDIA}
 
     def test_returns_empty_set_when_no_manifests(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(
             gpu_select,
@@ -2629,13 +2661,13 @@ class TestIterVulkanManifestPaths:
 
     def test_darwin_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "darwin")
         assert list(vulkan_icd_discovery.iter_vulkan_manifest_paths()) == []
 
     def test_windows_dispatches_to_registry_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "win32")
         monkeypatch.setattr(
@@ -2653,7 +2685,7 @@ class TestIterVulkanManifestPaths:
         ]
 
     def test_linux_dispatches_to_xdg_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "linux")
         monkeypatch.setattr(
@@ -2681,7 +2713,7 @@ class TestIterWindowsVulkanManifestPaths:
         the PnP path) or Microsoft software ICDs (live under
         ``Khronos\\Vulkan\\Drivers``).
         """
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg_stub = mock.MagicMock(name="winreg")
         monkeypatch.setitem(sys.modules, "winreg", winreg_stub)
@@ -2718,7 +2750,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_yields_json_files_from_real_directory(self, tmp_path: Path) -> None:
         """Globs ``*.json`` in each yielded directory, skips non-json names."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2738,7 +2770,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_duplicate_directories_are_deduped(self, tmp_path: Path) -> None:
         """A directory yielded twice must not produce duplicate manifest paths."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2755,7 +2787,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_missing_directories_are_silently_skipped(self, tmp_path: Path) -> None:
         """A nonexistent directory doesn't raise; the walk continues."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         with mock.patch.object(
             vulkan_icd_discovery,
@@ -2766,7 +2798,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_directory_with_dot_json_suffix_is_filtered_out(self, tmp_path: Path) -> None:
         """``foo.json`` directories match the glob but ``is_file`` rejects them."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2782,7 +2814,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_unreadable_directory_does_not_abort_walk(self, tmp_path: Path) -> None:
         """``Path.glob`` raising OSError logs and continues to the next directory."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         readable = tmp_path / "ok"
         readable.mkdir()
@@ -2810,7 +2842,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_unexpandable_path_does_not_abort_walk(self, tmp_path: Path) -> None:
         """``Path.expanduser`` raising ``RuntimeError`` (HOME unset) skips and continues."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         good_dir = tmp_path / "ok"
         good_dir.mkdir()
@@ -2847,7 +2879,7 @@ class TestLinuxVulkanIcdDirectories:
         """All XDG_* vars unset -> spec defaults plus fixed /etc and Flatpak trees."""
         from pathlib import PurePosixPath
 
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"):
             monkeypatch.delenv(var, raising=False)
@@ -2881,14 +2913,14 @@ class TestXdgDirs:
     """
 
     def test_uses_default_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.delenv("X_UNSET_TEST", raising=False)
         out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "default", "sub"))
         assert out == [Path("default") / "sub"]
 
     def test_splits_colon_delimited_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.setenv("X_LIST_TEST", "share:opt")
         out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "default", "sub"))
@@ -2896,7 +2928,7 @@ class TestXdgDirs:
 
     def test_empty_components_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Vulkan-Loader#2331: ``"a::b"`` and trailing colons must not yield ``Path("")``."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         monkeypatch.setenv("X_EXTRA_COLON_TEST", "::share:")
         out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "default", "sub"))
@@ -2907,7 +2939,7 @@ class TestIterKhronosSoftwareManifests:
     """``_iter_khronos_software_manifests`` honours the Khronos REG_DWORD = 0 enabled flag."""
 
     def test_yields_only_enabled_entries(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0  # any sentinel; OpenKey is mocked
@@ -2946,7 +2978,7 @@ class TestIterKhronosSoftwareManifests:
         assert r"C:\disabled.json" not in result
 
     def test_missing_key_is_skipped(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -2959,7 +2991,7 @@ class TestIterPnpClassManifests:
     """``_iter_pnp_class_manifests`` reads VulkanDriverName{,Wow} off PnP adapter keys."""
 
     def test_yields_strings_and_multi_sz_lists(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -2995,7 +3027,7 @@ class TestIterPnpClassManifests:
         assert "" not in result
 
     def test_missing_root_returns_nothing(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3012,7 +3044,7 @@ class TestIterPnpClassManifests:
 
     def test_unopenable_subkey_is_skipped(self) -> None:
         """A subkey that EnumKey returned but OpenKey fails on must not abort the walk."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.multi_gpu import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3049,8 +3081,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_pins_nvidia_when_amd_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """NVIDIA + AMD installed on Windows -> disable AMD ICD globs, keep NVIDIA."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3068,8 +3100,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_pins_amd_when_intel_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """AMD-discrete + Intel-iGPU laptops keep AMD; the documented crash is AMD vs NVIDIA."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3089,8 +3121,8 @@ class TestDisableConflictingVulkanIcds:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Triple-vendor host: NVIDIA wins per ``_PREFERRED_VENDOR_ORDER``."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3107,15 +3139,15 @@ class TestDisableConflictingVulkanIcds:
 
     def test_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
         assert gpu_select.disable_conflicting_vulkan_icds() is None
 
     def test_active_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Linux gets the same dual-vendor pin (Steam overlay + AMDVLK/RADV are documented)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3136,8 +3168,8 @@ class TestDisableConflictingVulkanIcds:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Single-vendor systems aren't at risk; no pin needed."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3150,7 +3182,7 @@ class TestDisableConflictingVulkanIcds:
 
     def test_returns_none_when_no_vendors_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No matching manifests in the registry -> no pin (e.g. no Vulkan installed)."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.multi_gpu import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3159,8 +3191,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_user_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If the user set any Vulkan ICD-selection env var, we don't override it."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(
@@ -3186,8 +3218,8 @@ class TestDisableConflictingVulkanIcds:
         get its AMD ICD disabled by the NVIDIA-first preference.
         """
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.multi_gpu import gpu_select
+        from lilbee.providers.multi_gpu.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3253,10 +3285,8 @@ class TestImportLlamaCpp:
     def test_gpu_devices_sets_visibility_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``cfg.gpu_devices`` propagates to every backend's visible-devices env var."""
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _GPU_VISIBLE_ENV_VARS,
-            import_llama_cpp,
-        )
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu.gpu_env import _GPU_VISIBLE_ENV_VARS
 
         for name in _GPU_VISIBLE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
@@ -3272,16 +3302,14 @@ class TestImportLlamaCpp:
     ) -> None:
         """With ``gpu_devices=None`` and autoselect returning None, env stays clean."""
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _GPU_VISIBLE_ENV_VARS,
-            import_llama_cpp,
-        )
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu.gpu_env import _GPU_VISIBLE_ENV_VARS
 
         for name in _GPU_VISIBLE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr(cfg, "gpu_devices", None)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3297,17 +3325,17 @@ class TestImportLlamaCpp:
         list silently rewritten from a Vulkan-loader index.
         """
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu.gpu_env import (
             _GPU_VISIBLE_ENV_VARS,
             _VULKAN_AUTODETECT_ENV_VARS,
-            import_llama_cpp,
         )
 
         for name in _GPU_VISIBLE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr(cfg, "gpu_devices", None)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: "1",
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3325,7 +3353,7 @@ class TestImportLlamaCpp:
         monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
         monkeypatch.setattr(cfg, "gpu_devices", "0")
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3337,16 +3365,16 @@ class TestImportLlamaCpp:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When the dual-vendor probe returns a glob, it lands in VK_LOADER_DRIVERS_DISABLE."""
-        from lilbee.providers.llama_cpp.gpu_select import VulkanIcdEnvVar
         from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu.gpu_select import VulkanIcdEnvVar
 
         monkeypatch.delenv(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, raising=False)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
             lambda: "amdvlk*,radeon*",
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3356,21 +3384,21 @@ class TestImportLlamaCpp:
 
     def test_curated_layer_globs_written_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On Windows the layer-disable env var holds the curated overlay glob list."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu import gpu_env
+        from lilbee.providers.multi_gpu.gpu_env import (
             _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
             _VK_LOADER_LAYERS_DISABLE_VALUE,
-            import_llama_cpp,
         )
 
-        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_env.sys, "platform", "win32")
         monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
             lambda: None,
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3380,21 +3408,21 @@ class TestImportLlamaCpp:
 
     def test_curated_layer_globs_written_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On Linux the same curated overlay list lands."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu import gpu_env
+        from lilbee.providers.multi_gpu.gpu_env import (
             _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
             _VK_LOADER_LAYERS_DISABLE_VALUE,
-            import_llama_cpp,
         )
 
-        monkeypatch.setattr(log_dispatch.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_env.sys, "platform", "linux")
         monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
             lambda: None,
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3410,7 +3438,7 @@ class TestImportLlamaCpp:
         that don't match what other Vulkan apps see, and disabling MangoHud
         / Mesa overlay would surprise users who explicitly opted into them.
         """
-        from lilbee.providers.llama_cpp.log_dispatch import (
+        from lilbee.providers.multi_gpu.gpu_env import (
             _VK_LOADER_LAYERS_DISABLE_GLOBS,
         )
 
@@ -3428,20 +3456,18 @@ class TestImportLlamaCpp:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            import_llama_cpp,
-        )
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu import gpu_env
+        from lilbee.providers.multi_gpu.gpu_env import _VK_LOADER_LAYERS_DISABLE_ENV_VAR
 
         monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
-        monkeypatch.setattr(log_dispatch.sys, "platform", "darwin")
+        monkeypatch.setattr(gpu_env.sys, "platform", "darwin")
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
             lambda: None,
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3451,20 +3477,18 @@ class TestImportLlamaCpp:
 
     def test_user_layer_disable_setting_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A pre-set ``VK_LOADER_LAYERS_DISABLE`` survives our ~implicit~ default."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            import_llama_cpp,
-        )
+        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
+        from lilbee.providers.multi_gpu import gpu_env
+        from lilbee.providers.multi_gpu.gpu_env import _VK_LOADER_LAYERS_DISABLE_ENV_VAR
 
-        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
+        monkeypatch.setattr(gpu_env.sys, "platform", "win32")
         monkeypatch.setenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, "VK_LAYER_MyDebugLayer")
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
+            "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
             lambda: None,
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
+            "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
             lambda: None,
         )
         monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
@@ -3684,24 +3708,23 @@ class TestTrainCtxFromMeta:
 
 
 class TestReadGgufMetadata:
-    def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns parsed fields."""
+    def test_reads_all_fields(self, tmp_path: Path) -> None:
+        """read_gguf_metadata returns the parsed header fields."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {
-            "general.architecture": "llama",
-            "llama.context_length": 4096,
-            "llama.embedding_length": 4096,
-            "tokenizer.chat_template": "template",
-            "general.file_type": "7",
-            "general.name": "Test Model",
-        }
-        mock_llama_cpp.Llama.return_value = mock_llm
+        path = write_test_gguf(
+            tmp_path / "model.gguf",
+            arch="llama",
+            fields={
+                "llama.context_length": 4096,
+                "llama.embedding_length": 4096,
+                "tokenizer.chat_template": "template",
+                "general.file_type": 7,
+                "general.name": "Test Model",
+            },
+        )
 
-        result = read_gguf_metadata(Path("/test.gguf"))
-
-        assert result == {
+        assert read_gguf_metadata(path) == {
             "architecture": "llama",
             "context_length": "4096",
             "embedding_length": "4096",
@@ -3709,29 +3732,15 @@ class TestReadGgufMetadata:
             "file_type": "7",
             "name": "Test Model",
         }
-        mock_llm.close.assert_called_once()
 
-    def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns None when no fields found."""
+    def test_returns_none_for_empty_metadata(self, tmp_path: Path) -> None:
+        """read_gguf_metadata returns None when the header carries no fields."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {}
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
-        assert result is None
-
-    def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata handles None metadata."""
-        from lilbee.providers.gguf_meta import read_gguf_metadata
-
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = None
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
-        assert result is None
+        reader = mock.MagicMock()
+        reader.fields = {}
+        with mock.patch("lilbee.providers.gguf_meta.GGUFReader", return_value=reader):
+            assert read_gguf_metadata(tmp_path / "model.gguf") is None
 
 
 class TestLoadLlama:
@@ -4660,7 +4669,7 @@ class TestRoutingProviderRerank:
         mock_sdk = mock.MagicMock()
         mock_sdk.supports_rerank.return_value = True
         mock_sdk.rerank.return_value = [0.9, 0.1]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
@@ -4676,7 +4685,7 @@ class TestRoutingProviderRerank:
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
         mock_sdk.supports_rerank.return_value = False
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
@@ -4693,7 +4702,7 @@ class TestRoutingProviderRerank:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.supports_rerank.return_value = True
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
         assert rp.supports_rerank() is True
@@ -4715,7 +4724,7 @@ class TestRoutingProviderRerank:
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
         mock_llama.rerank.return_value = [0.5, 0.5]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
@@ -5058,7 +5067,7 @@ class TestRoutingProviderPdfOcr:
         rp = RoutingProvider()
         mock_native = mock.MagicMock()
         mock_native.pdf_ocr.return_value = ["p1", "p2"]
-        rp._llama_cpp = mock_native
+        rp._local = mock_native
         progress = mock.MagicMock()
         native_ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 

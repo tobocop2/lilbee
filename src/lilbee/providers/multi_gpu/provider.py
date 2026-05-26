@@ -317,7 +317,7 @@ class FleetProvider:
 def _build_fleet() -> Fleet:
     """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
     from lilbee.core.config import cfg
-    from lilbee.providers.llama_cpp.gpu_select import enumerate_gpu_vram
+    from lilbee.providers.multi_gpu.gpu_select import enumerate_gpu_vram
 
     binary = resolve_llama_server_binary()
     devices = probe_devices(binary)
@@ -363,8 +363,8 @@ def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, 
 def _vision_mmproj(model_ref: str) -> Path | None:
     """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.gguf_meta import find_mmproj_for_model
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
 
     try:
         return find_mmproj_for_model(resolve_model_path(model_ref))
@@ -375,8 +375,8 @@ def _vision_mmproj(model_ref: str) -> Path | None:
 def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlacementInput:
     """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
     from lilbee.core.config import cfg
-    from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     path = resolve_model_path(model_ref)
     weights = path.stat().st_size
@@ -404,8 +404,8 @@ def _launch_for(
     by_index: dict[int, FleetDevice],
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
 
     slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]
     model_path = resolve_model_path(model_ref)

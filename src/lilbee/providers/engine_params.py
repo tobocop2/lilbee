@@ -129,7 +129,7 @@ def resolve_vision_ctx(model_path: Path) -> int:
     """
     try:
         meta = read_gguf_metadata(model_path)
-    except Exception:  # noqa: BLE001 - any GGUF read failure falls back to the constant
+    except Exception:
         log.debug("read_gguf_metadata failed for vision %s", model_path, exc_info=True)
         meta = None
     return train_ctx_from_meta(meta, fallback=_VISION_FALLBACK_N_CTX, model_path=model_path)

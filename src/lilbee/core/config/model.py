@@ -330,7 +330,7 @@ class Config(BaseSettings):
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
     # only take effect after a restart). ``None`` (default) hands off
-    # to the autodetect in ``providers/llama_cpp/gpu_select.py``,
+    # to the autodetect in ``providers/multi_gpu/gpu_select.py``,
     # which parses ``vulkaninfo --summary`` and pins the discrete
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
