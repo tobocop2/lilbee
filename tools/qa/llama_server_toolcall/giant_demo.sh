@@ -139,7 +139,10 @@ cat > "$PROJ/opencode.json" <<JSON
   "tools": {
     "write": false, "edit": false, "patch": false, "bash": false,
     "read": false, "glob": false, "grep": false, "list": false,
-    "webfetch": false, "todowrite": false, "todoread": false, "task": false
+    "webfetch": false, "todowrite": false, "todoread": false, "task": false,
+    "lilbee_crawl": false, "lilbee_crawl_status": false,
+    "lilbee_wiki_build": false, "lilbee_wiki_synthesize": false,
+    "lilbee_wiki_status": false, "lilbee_wiki_list": false, "lilbee_wiki_lint": false
   }
 }
 JSON
