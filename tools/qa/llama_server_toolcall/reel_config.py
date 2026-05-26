@@ -31,8 +31,8 @@ PROMPTS: dict[str, str] = {
         "Look it up in the code, explain it briefly, and cite the file."
     ),
     "gemma4": (
-        "What does lilbee use to turn text into embeddings for search? "
-        "Find it in the code and name the file."
+        "Search lilbee's code for how it creates text embeddings, then name the "
+        "file in one sentence."
     ),
     "llama3": (
         "When I search lilbee, how does it find the chunks that match my query? "
@@ -52,8 +52,8 @@ PROMPTS: dict[str, str] = {
     ),
     # --- mid: code-flavored for the coder model ---
     "qwen3-coder": (
-        "How does lilbee chunk source code differently from prose? Find the "
-        "relevant code and walk me through the difference, citing the functions."
+        "Find lilbee's code chunker. In two or three sentences, say how it splits "
+        "source code differently from prose, and cite the file. Do one search."
     ),
     # --- large single-GPU: practical, multi-stage dev questions ---
     "gpt-oss": (
