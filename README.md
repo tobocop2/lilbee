@@ -1,8 +1,10 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/lilbee-logo-dark.svg">
-    <img alt="lilbee" src="docs/lilbee-logo-light.svg" width="340">
-  </picture>
+  <a href="https://lilbee.sh/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/lilbee-logo-dark.svg">
+      <img alt="lilbee" src="docs/lilbee-logo-light.svg" width="340">
+    </picture>
+  </a>
 </p>
 
 <p align="center"><strong>Run and manage local AI models, and search everything you own with them, all in one program.</strong></p>
