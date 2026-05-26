@@ -256,6 +256,60 @@ class TestCrawlRecursiveOrchestration:
         with pytest.raises(ValueError, match="http"):
             await crawl_recursive("ftp://example.com", max_depth=1)
 
+    async def test_unspecified_request_falls_back_to_safety_default(self):
+        """max_pages=None is unspecified, so a crawl nobody bounded uses the default."""
+        cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 4
+        # The fetcher would happily stream forever; the orchestrator must hand
+        # it a bounded ``max_pages`` and stop draining at the cap.
+        pages = [
+            FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 50)
+        ]
+        fake = FakeFetcher(pages=pages)
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+            results = await crawl_recursive("https://example.com", max_depth=None, max_pages=None)
+        assert fake.recursive_calls[0]["max_pages"] == 4
+        assert len(results) == 4
+
+    async def test_explicit_request_above_cap_is_honored(self):
+        """An explicit caller cap above the safety cap is the user's choice, not clamped."""
+        cfg.crawl_safety_max_pages = 3
+        pages = [
+            FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
+        ]
+        fake = FakeFetcher(pages=pages)
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=100)
+        assert fake.recursive_calls[0]["max_pages"] == 100
+        assert len(results) == 19
+
+    async def test_request_below_ceiling_is_respected(self):
+        """A caller cap below the safety ceiling wins (the ceiling is only an upper bound)."""
+        cfg.crawl_safety_max_pages = 100
+        pages = [
+            FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
+        ]
+        fake = FakeFetcher(pages=pages)
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        assert fake.recursive_calls[0]["max_pages"] == 5
+
+    async def test_unlimited_sentinel_crawls_unbounded(self):
+        """CRAWL_PAGES_UNLIMITED (0) is explicit no-limit and bypasses the default cap."""
+        from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED
+
+        cfg.crawl_safety_max_pages = 3
+        pages = [
+            FetchedPage(url=f"https://example.com/p{i}", markdown=f"# P{i}") for i in range(1, 20)
+        ]
+        fake = FakeFetcher(pages=pages)
+        with patch.object(runner_mod, "Crawl4aiFetcher", return_value=fake):
+            results = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=CRAWL_PAGES_UNLIMITED
+            )
+        assert fake.recursive_calls[0]["max_pages"] is None
+        assert len(results) == 19
+
     async def test_raises_when_chromium_missing(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         from lilbee.crawler import CrawlerBrowserError

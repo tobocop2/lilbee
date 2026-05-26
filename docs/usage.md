@@ -106,7 +106,7 @@ the button at all times so you can see what's loaded without opening the
 picker.
 
 The pickers list everything the role can run: native GGUFs you already have
-installed plus, when the `remote` extra is installed and an API key is set,
+installed plus, when the `litellm` extra is installed and an API key is set,
 whatever the SDK backend exposes for that provider. There is no separate
 "local-only" picker; routing happens automatically once the model is selected.
 
@@ -139,7 +139,7 @@ override individual values at runtime without touching the file.
 
 Tabs for features that aren't installed are hidden, not greyed out:
 
-- **API-Keys** appears only when the `remote` extra is installed.
+- **API-Keys** appears only when the `litellm` extra is installed.
 - **Crawling** appears only when the `crawler` extra is installed.
 - **Wiki** appears only when the experimental wiki layer is enabled
   (`cfg.wiki = true` in `config.toml` or `LILBEE_WIKI=1`).
@@ -242,6 +242,7 @@ lilbee --json topics "auth"                    # concept-graph view of a query
 lilbee --json model list                       # installed models
 lilbee --json model show <ref>                 # catalog + installed metadata for a model
 lilbee --json version
+lilbee --json self-check                       # runtime + model self-check
 ```
 
 **Write (LLM calls or long ops):**
@@ -312,28 +313,6 @@ per-key settings management. Use `add <url>` for one-shot URL ingest. For
 continuous crawling or programmatic settings, the HTTP server exposes both: see
 the [REST API reference](https://lilbee.sh/api/).
 
-### Use lilbee as a local model server
-
-opencode is the supported agent integration today.
-
-Pull a chat model first via the TUI: run `lilbee`, open the catalog
-(`/models`), and pick something tool-capable. You can also let an agent
-discover and pull models for you via MCP; the TUI's catalog is built for
-browsing interactively.
-
-Then, one command:
-
-```bash
-lilbee launch opencode
-```
-
-opencode opens with your local lilbee models in the picker and the
-`lilbee-mcp` skill installed. `lilbee launch opencode --help` covers
-the flags. `lilbee agent-config opencode` prints the same config block
-if you prefer to wire opencode up yourself, and `lilbee agent-config
-litellm` prints a [litellm](https://docs.litellm.ai/) provider block
-for any other agent that consumes litellm-style configs.
-
 > [!CAUTION]
 > **Private data and cloud agents**
 >
@@ -375,7 +354,7 @@ in the TUI (or `lilbee status` from the shell) shows which database is active.
 lilbee runs entirely on your machine by default. There are two ways to use
 cloud models when you want to:
 
-- **Bring your own key, inside lilbee.** Install the `[remote]` extra and add
+- **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add
   an API key in `/settings` → API-Keys, then pick a cloud model from the model
   bar picker or the Frontier tab in `/catalog`. The TUI shows a persistent
   warning whenever a cloud role is active.
@@ -569,7 +548,7 @@ reranker_model = "Qwen/Qwen3-Reranker-0.6B-GGUF/qwen3-reranker-0.6b.Q8_0.gguf"
 
 [generation]
 temperature = 0.2
-num_ctx_max = 65536
+num_ctx_max = 32768
 ```
 
 You don't have to write the file by hand: the TUI's `/settings` screen and the
@@ -650,12 +629,10 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
 | `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `≥64 GiB → 24576`. 8192 is the floor on smaller hosts. The picker still clamps the result to the model's training context and available memory at worker start. Set explicitly to override |
 | `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
-| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
+| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
-| `LILBEE_WORKER_POOL_EAGER_START` | `true` | Pre-spawn worker subprocesses at TUI mount so the first chat lands on a warm pool. Set `false` for headless scripts where mount time matters more than first-call latency |
-| `LILBEE_WORKER_POOL_MAX_IDLE_S` | `300` | Reap an idle worker after this many seconds. Lower on memory-constrained hosts; raise to keep models hot longer |
 
 ### Server
 
@@ -710,8 +687,8 @@ uv tool install --prerelease=allow 'lilbee[remote]'
 Install multiple at once:
 
 ```bash
-pip install --pre 'lilbee[graph,crawler,remote]'
-uv tool install --prerelease=allow 'lilbee[graph,crawler,remote]'
+pip install --pre 'lilbee[graph,crawler,litellm]'
+uv tool install --prerelease=allow 'lilbee[graph,crawler,litellm]'
 ```
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
@@ -843,7 +820,7 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 ### Remote providers (SDK backend)
 
 Connect to hosted or local OpenAI-compatible LLM backends alongside lilbee's
-native in-process inference.
+managed local llama-server engine.
 
 **What it does:** Routes chat and embedding calls to any provider reachable
 via the SDK backend. The routing provider automatically detects which models
@@ -854,8 +831,7 @@ embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
 **Install:** `pip install --pre 'lilbee[remote]'` or
-`uv tool install --prerelease=allow 'lilbee[remote]'` (the extra retains the
-adapter library name).
+`uv tool install --prerelease=allow 'lilbee[remote]'`.
 
 **Configuration:**
 
@@ -988,10 +964,10 @@ sudo apt install tesseract-ocr  # Ubuntu/Debian
 
 lilbee runs vision OCR in one of two ways:
 
-1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
-   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly, in-process. This is the recommended path and supports an SSE
-   heartbeat for long scans.
+1. **Local vision model.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
+   (e.g. `lightonocr`) and lilbee serves it on `llama-server` with an `--mmproj`
+   projector. This is the recommended path and supports an SSE heartbeat for
+   long scans.
 2. **Remote vision model.** With `pip install --pre 'lilbee[remote]'` (or
    `uv tool install --prerelease=allow 'lilbee[remote]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route

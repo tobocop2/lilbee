@@ -5287,8 +5287,9 @@ async def test_crawl_dialog_input_submitted():
 
 
 async def test_crawl_dialog_defaults():
-    """Default submit (recursive checked, advanced blank) yields None caps."""
+    """Default submit uses the prefilled safety cap for max pages, unbounded depth."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+    from lilbee.core.config import cfg
 
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
@@ -5303,7 +5304,7 @@ async def test_crawl_dialog_defaults():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.depth is None
-    assert result.max_pages is None
+    assert result.max_pages == cfg.crawl_safety_max_pages
 
 
 async def test_crawl_dialog_negative_max_pages_shows_error():
@@ -5324,7 +5325,7 @@ async def test_crawl_dialog_negative_max_pages_shows_error():
 
 
 async def test_crawl_dialog_zero_max_pages_shows_error():
-    """Zero max pages is invalid (blank means unbounded; 0 is nonsense)."""
+    """Typing 0 is invalid; unlimited is expressed by clearing the field, not typing 0."""
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
@@ -5340,9 +5341,10 @@ async def test_crawl_dialog_zero_max_pages_shows_error():
             assert "max pages" in str(error.render()).lower()
 
 
-async def test_crawl_dialog_empty_advanced_fields_are_unbounded():
-    """Empty Advanced fields submit as None (unbounded)."""
+async def test_crawl_dialog_cleared_max_pages_is_unlimited():
+    """Clearing the max-pages field submits the unlimited sentinel; blank depth is unbounded."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+    from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED
 
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
@@ -5361,7 +5363,7 @@ async def test_crawl_dialog_empty_advanced_fields_are_unbounded():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.depth is None
-    assert result.max_pages is None
+    assert result.max_pages == CRAWL_PAGES_UNLIMITED
 
 
 async def test_crawl_dialog_unchecking_recursive_submits_depth_zero():
@@ -5369,6 +5371,7 @@ async def test_crawl_dialog_unchecking_recursive_submits_depth_zero():
     from textual.widgets import Checkbox
 
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+    from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED
 
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
@@ -5385,7 +5388,7 @@ async def test_crawl_dialog_unchecking_recursive_submits_depth_zero():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.depth == 0
-    assert result.max_pages is None
+    assert result.max_pages == CRAWL_PAGES_UNLIMITED
 
 
 async def test_crawl_dialog_recursive_checkbox_default_checked():

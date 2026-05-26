@@ -42,11 +42,12 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
-# Bundle the multi-GPU llama-server sidecar when its package is installed. The
-# release build installs packaging/llama-server-wheel after build_llama_server.sh
-# fills its bin/; the package data is just the server executable (the ggml/llama
-# backend libs come from the bundled llama_cpp at runtime). Optional so a build
-# without multi-GPU wiring still succeeds.
+# Bundle the local inference engine when its package is installed. The release
+# build installs packaging/llama-server-wheel after build_llama_server.sh fills
+# its bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs
+# with a baked rpath), so --include-package-data ships the whole engine inside
+# the onefile and the runtime resolver finds it via get_binary_path(). Optional
+# so a build without the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_llama_server" >/dev/null 2>&1; then
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_llama_server)
@@ -66,7 +67,6 @@ uv run --no-sync python -m nuitka \
     --nofollow-import-to=*.tests.* \
     --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
     --include-package=lancedb            --include-package-data=lancedb \
-    --include-package=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \

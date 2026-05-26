@@ -104,7 +104,16 @@ def plan_placement(
     fits one GPU takes a single instance; one too big for any single GPU is
     tensor-split across the fewest GPUs whose combined headroom fits; a model that
     fits nowhere is returned as an unplaceable role (it gets no server).
+
+    No GPU devices is the CPU-only case (a GPU-less host, or a Metal/Vulkan box
+    where the probe found nothing): every role runs as a single un-pinned CPU
+    instance, so a fleet-of-one works without a GPU.
     """
+    if not devices:
+        return Placement(
+            instances=tuple(InstancePlan(role=m.role, devices=()) for m in models),
+            unplaceable_roles=(),
+        )
     remaining: dict[int, float] = {idx: vram * _VRAM_USABLE_FRACTION for idx, vram in devices}
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []

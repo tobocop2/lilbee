@@ -1,4 +1,4 @@
-"""Config-field key sets shared by the settings boundary and worker pool."""
+"""Config-field key sets shared by the settings boundary and the engine."""
 
 from __future__ import annotations
 

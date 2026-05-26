@@ -1,36 +1,35 @@
 # lilbee-llama-server
 
-A per-platform wheel that bundles the compiled llama.cpp `llama-server` binary,
-pulled by the `lilbee[multi-gpu]` extra. Kept separate from `lilbee` so the heavy
-binary ships only to users who opt into the multi-GPU fleet.
+A per-platform, self-contained wheel that bundles the compiled llama.cpp
+`llama-server` together with its `ggml`/`llama`/`mtmd` shared libraries (rpath
+baked, so it carries everything it needs). This is lilbee's local inference
+engine; `lilbee` depends on it, so `pip install lilbee` brings it.
 
 ## How it is built (CI)
 
-`.github/workflows/build-multigpu.yml` is this artifact's own, supplementary build
-path. It is fully decoupled from the default-wheel / extra-wheel / executable
-release jobs and is `continue-on-error`, so a failure here never blocks a release.
-Per backend cell (CUDA / Vulkan / ROCm / Metal / cpu):
+`.github/workflows/build-multigpu.yml` builds it per backend cell (CUDA /
+Vulkan / ROCm / Metal / CPU); cells are `continue-on-error` so a slow GPU cell
+never holds up a release.
 
-1. `tools/wheel-build/build_llama_server.sh` compiles `llama-server` from the same
-   pinned llama.cpp source `build_llama_cpp.sh` uses (matched to the
-   `llama-cpp-python` version), with the per-backend flags from `cmake_args.sh`
-   (SSL/CURL off, since the fleet only talks to localhost sidecars).
-2. The binary is copied into `lilbee_llama_server/bin/`; the wheel version is set
-   to the lilbee version, the wheel is built and retagged to the platform.
-3. Two artifacts are uploaded on their own paths: the platform-tagged wheel
-   (`wheel-multigpu-*`) and the standalone binary (`multigpu-exe-*`).
-4. `attach-multigpu` in `release-candidate.yml` attaches both to the GH release
-   (wheels get a backend build tag so same-platform variants coexist).
+1. `tools/wheel-build/build_llama_server.sh` compiles `llama-server` from a
+   pinned llama.cpp source with the per-backend flags from `cmake_args.sh`
+   (SSL/CURL off, since the fleet only talks to localhost), bundles the
+   `ggml`/`llama`/`mtmd` libs next to the binary, and bakes the rpath
+   (`$ORIGIN` / `@loader_path`).
+2. `bin/` is filled, the wheel version is set to the lilbee version, and the
+   wheel is built and retagged to the platform.
+3. The wheel uploads as `wheel-multigpu-*`.
 
-Once published, `lilbee`'s `pyproject.toml` gains
-`multi-gpu = ["lilbee-llama-server"]`, and CI test jobs switch from
-`uv sync --all-extras` to enumerated extras so the heavy wheel is not pulled into
-every run.
+## How it is distributed
 
-The standalone binary path exists for channels that cannot `pip install` the
-extra (frozen exe, Docker, BYO): download the matching `llama-server-*` asset and
-point `LILBEE_LLAMA_SERVER_PATH` at it.
+- **Default backends** (Vulkan on Linux/Win, Metal on macOS) publish to PyPI, so
+  a plain `pip install lilbee` resolves the matching engine.
+- **CUDA / ROCm / CPU** variants live on the per-backend PEP 503 index at
+  `lilbee.sh/<backend>/`; opt in with `pip install lilbee --extra-index-url
+  https://lilbee.sh/<backend>/`.
+- The **standalone executables** (brew / Docker / AUR) bundle this same
+  self-contained engine via Nuitka, so those channels carry it too.
 
 At runtime, `lilbee.providers.multi_gpu.binary.resolve_llama_server_binary()`
-calls `lilbee_llama_server.get_binary_path()`; if the extra is not installed it
+calls `lilbee_llama_server.get_binary_path()`; for a bring-your-own setup it
 falls back to `LILBEE_LLAMA_SERVER_PATH` / `PATH`.

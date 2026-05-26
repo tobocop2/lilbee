@@ -2454,6 +2454,44 @@ class TestResolveGenerationOptions:
         result = _sse_h._resolve_generation_options(None)
         assert result is None
 
+    def test_strips_injected_endpoint_keys(self):
+        result = _sse_h._resolve_generation_options(
+            {"api_base": "http://evil", "api_key": "x", "temperature": 0.5}
+        )
+        assert result is not None
+        assert "api_base" not in result
+        assert "api_key" not in result
+        assert result["temperature"] == 0.5
+
+
+_INJECTED_OPTIONS = {"api_base": "http://evil", "api_key": "x", "temperature": 0.5}
+
+
+class TestOptionInjectionBoundary:
+    """HTTP-supplied options must not smuggle endpoint/credential keys to a provider."""
+
+    async def test_ask_strips_injected_keys(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        await handlers.ask("q", options=dict(_INJECTED_OPTIONS))
+        forwarded = mock_svc.searcher.ask_raw.call_args.kwargs["options"]
+        assert "api_base" not in forwarded
+        assert "api_key" not in forwarded
+        assert forwarded["temperature"] == 0.5
+
+    async def test_chat_strips_injected_keys(self, mock_svc):
+        # chat() routes through canonical dispatch (not ask_raw): injected
+        # endpoint/credential keys must never reach the dispatched request, while
+        # a legitimate generation option (temperature) still flows through.
+        with patch("lilbee.server.handlers.rag.dispatch_chat") as mock_dispatch:
+            mock_dispatch.return_value = MagicMock(content=[])
+            await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))
+        req = mock_dispatch.call_args.args[0]
+        assert req.temperature == 0.5  # a legitimate generation option flows through
+        assert "http://evil" not in repr(req)  # the injected endpoint never reaches dispatch
+        assert "api_key" not in repr(req)  # nor the injected credential
+
 
 class TestListExternalModels:
     """Tests for the external model discovery handler."""

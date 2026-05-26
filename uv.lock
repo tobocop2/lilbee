@@ -1655,7 +1655,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
-    { name = "kreuzberg", specifier = ">=4.9.1" },
+    { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "remote", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-llama-server", directory = "packaging/llama-server-wheel" },

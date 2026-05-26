@@ -185,6 +185,44 @@ jobs:
           choco install tesseract -y
           echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # Integration tests run real local inference, which now means a real
+      # llama-server. The lilbee-llama-server wheel ships empty bin/ in this lane
+      # (CI fills it only in the release wheel build), so download a prebuilt
+      # llama.cpp release binary; resolve_llama_server_binary() finds it on PATH.
+      - name: Install llama-server (engine)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          # Anchored to the suffix: ubuntu/macos ship .tar.gz, windows .zip, and
+          # the bare -x64/-arm64 names must not match the vulkan/kleidiai variants.
+          case "${{ runner.os }}" in
+            Linux)   pat="bin-ubuntu-x64.tar.gz$" ;;
+            macOS)   pat="bin-macos-arm64.tar.gz$" ;;
+            Windows) pat="bin-win-cpu-x64.zip$" ;;
+          esac
+          url=$(gh api repos/ggml-org/llama.cpp/releases/latest \
+            --jq ".assets[] | select(.name | test(\"${pat}\")) | .browser_download_url" | head -1)
+          [ -n "${url}" ] || { echo "no llama.cpp release asset matching ${pat}" >&2; exit 1; }
+          mkdir -p "${HOME}/llama-engine"
+          case "${url}" in
+            *.zip)    curl -fsSL "${url}" -o engine.zip && unzip -q engine.zip -d "${HOME}/llama-engine" ;;
+            *.tar.gz) curl -fsSL "${url}" | tar -xz -C "${HOME}/llama-engine" ;;
+          esac
+          bindir=$(dirname "$(find "${HOME}/llama-engine" \( -name llama-server -o -name llama-server.exe \) | head -1)")
+          [ -n "${bindir}" ] || { echo "llama-server not found in the release archive" >&2; exit 1; }
+          # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
+          # /c/... form, or Python's shutil.which won't find the binary. cygpath
+          # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
+          if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "${bindir}" >> "${GITHUB_PATH}"
+          else
+            echo "${bindir}" >> "${GITHUB_PATH}"
+            echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+            echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+          fi
+
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
@@ -345,6 +383,6 @@ jobs:
         run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_LLM_PROVIDER: llama-cpp
+          LILBEE_LLM_PROVIDER: auto
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers

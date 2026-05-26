@@ -19,7 +19,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
 from lilbee.data.chunk import chunk_text
 from lilbee.data.store import (
-    CHUNK_TYPE_WIKI,
+    ChunkType,
     CitationRecord,
     SearchChunk,
     Store,
@@ -232,7 +232,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
     body = extract_body(content).strip()
     store.clear_table(
         CHUNKS_TABLE,
-        f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{CHUNK_TYPE_WIKI}'",
+        f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'",
     )
     if not body:
         return 0
@@ -246,7 +246,7 @@ def index_wiki_page(content: str, wiki_source: str, store: Store) -> int:
         {
             "source": wiki_source,
             "content_type": "text",
-            "chunk_type": CHUNK_TYPE_WIKI,
+            "chunk_type": ChunkType.WIKI,
             "page_start": 0,
             "page_end": 0,
             "line_start": 0,

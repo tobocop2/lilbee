@@ -75,13 +75,27 @@ class TestPlanPlacement:
         assert plan.instances[0].devices == (0, 1)
         assert plan.instances[0].tensor_split == (21, 14)
 
-    def test_in_process_when_model_fits_nowhere(self) -> None:
+    def test_unplaceable_when_model_fits_nowhere(self) -> None:
         plan = plan_placement(
             [ModelPlacementInput(WorkerRole.CHAT, 100 * _GB)],
             [(0, 24 * _GB), (1, 24 * _GB)],
         )
         assert plan.instances == ()
         assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+
+    def test_no_gpu_devices_places_every_role_on_cpu(self) -> None:
+        # A GPU-less host (or a probe that found nothing): each role runs as a
+        # single un-pinned CPU instance so a fleet-of-one works without a GPU.
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ],
+            [],
+        )
+        assert {i.role for i in plan.instances} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert all(i.devices == () and i.tensor_split == () for i in plan.instances)
+        assert plan.unplaceable_roles == ()
 
     def test_first_fit_decreasing_places_largest_first(self) -> None:
         plan = plan_placement(

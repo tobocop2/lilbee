@@ -204,6 +204,30 @@ class TestModelRegistryInstall:
         second = registry.install(_REPO, _FILENAME, src, manifest)
         assert first == second
 
+    def test_install_blob_copy_is_atomic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-copy leaves no partial blob at the final blob path.
+
+        The blob is written to a temp path and atomically renamed, so an
+        interrupted install never exposes a truncated blob under its digest.
+        """
+        from lilbee.modelhub import registry as registry_mod
+
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path, content=b"GGUF" + b"\x07" * 256)
+        digest = _sha256_file(src)
+
+        def boom(*_a: object, **_k: object) -> None:
+            raise OSError("disk full mid-copy")
+
+        monkeypatch.setattr(registry_mod.shutil, "copyfileobj", boom)
+        with pytest.raises(OSError, match="disk full mid-copy"):
+            registry.install(_REPO, _FILENAME, src, _make_manifest())
+
+        blob_path = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs" / digest
+        assert not blob_path.exists()  # no partial blob at the final path
+
     def test_install_records_blob_digest(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         content = b"GGUF" + b"\x00" * 256
@@ -486,6 +510,22 @@ class TestModelRegistryIsInstalled:
         # resolve() raises on unparseable refs; is_installed swallows that.
         assert not registry.is_installed("qwen3:0.6b")
 
+    def test_is_installed_false_for_truncated_blob(self, tmp_path: Path) -> None:
+        """A blob truncated below its manifest size_bytes is not 'installed'.
+
+        A partial/corrupt blob on disk must not count as usable, otherwise
+        the runtime loads a truncated GGUF and fails far from the cause.
+        """
+        registry = ModelRegistry(tmp_path)
+        content = b"GGUF" + b"\x00" * 512
+        src = tmp_path / "source.gguf"
+        src.write_bytes(content)
+        registry.install(_REPO, _FILENAME, src, _make_manifest(size_bytes=len(content)))
+        blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        blob = next(blob_dir.iterdir())
+        blob.write_bytes(content[: len(content) // 2])  # truncate on disk
+        assert not registry.is_installed(_REF)
+
 
 class TestModelRegistryRemove:
     def test_remove_existing(self, tmp_path: Path) -> None:
@@ -659,6 +699,17 @@ class TestModelRegistryList:
         blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
         for blob in blob_dir.iterdir():
             blob.unlink()
+        assert registry.list_installed() == []
+
+    def test_list_skips_truncated_blob(self, tmp_path: Path) -> None:
+        """A blob truncated below its recorded size_bytes is hidden from pickers."""
+        registry = ModelRegistry(tmp_path)
+        content = b"GGUF" + b"\x01" * 512
+        src = tmp_path / "source.gguf"
+        src.write_bytes(content)
+        registry.install(_REPO, _FILENAME, src, _make_manifest(size_bytes=len(content)))
+        blob_dir = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        next(blob_dir.iterdir()).write_bytes(content[:10])
         assert registry.list_installed() == []
 
     def test_list_skips_manifest_when_cache_dir_missing(self, tmp_path: Path) -> None:

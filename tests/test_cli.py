@@ -3951,3 +3951,61 @@ class TestDownloadSelfCheckModel:
 
         assert urlopen.call_count == 2
         assert path.read_bytes() == b"ok"
+
+
+class TestCrawlDefaultCapNotice:
+    """A bare --crawl that fills the protective default tells the user how to go unlimited."""
+
+    def test_prints_notice_when_default_filled(self, monkeypatch, capsys) -> None:
+        from pathlib import Path
+
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
+        from lilbee.core.config import cfg
+        from lilbee.runtime.progress import CrawlDoneEvent, EventType
+
+        cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 5
+
+        async def fake_crawl_and_save(url, *, on_progress, **kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=5, files_written=5))
+            return [Path("p0.md")]
+
+        monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        out = capsys.readouterr().err
+        assert "--max-pages 0" in out and "5-page" in out
+
+    def test_no_notice_when_under_default(self, monkeypatch, capsys) -> None:
+        from pathlib import Path
+
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
+        from lilbee.core.config import cfg
+        from lilbee.runtime.progress import CrawlDoneEvent, EventType
+
+        cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 5
+
+        async def fake_crawl_and_save(url, *, on_progress, **kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=2, files_written=2))
+            return [Path("p0.md")]
+
+        monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        assert "--max-pages 0" not in capsys.readouterr().err
+
+    def test_no_notice_when_explicit_max_pages(self, monkeypatch, capsys) -> None:
+        from pathlib import Path
+
+        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
+        from lilbee.core.config import cfg
+        from lilbee.runtime.progress import CrawlDoneEvent, EventType
+
+        cfg.crawl_safety_max_pages = 5
+
+        async def fake_crawl_and_save(url, *, on_progress, **kwargs):
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=9, files_written=9))
+            return [Path("p0.md")]
+
+        monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=9)
+        assert "--max-pages 0" not in capsys.readouterr().err

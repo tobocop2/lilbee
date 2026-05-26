@@ -1,6 +1,7 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import math
 import sys
 import types
 from pathlib import Path
@@ -30,7 +31,11 @@ from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
 )
-from lilbee.crawler.save import _save_single_result, _update_single_metadata
+from lilbee.crawler.save import (
+    _save_single_result,
+    _update_single_metadata,
+    normalize_crawled_markdown,
+)
 from lilbee.runtime.progress import EventType
 
 
@@ -407,6 +412,26 @@ class TestCrawlSingle:
             result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
+
+    async def test_emits_setup_bracket_around_warmup(self):
+        """The browser warmup is bracketed by setup events so the Task Center
+        shows a 'preparing crawler' stage instead of a silent stall."""
+        mock_result = _make_crawl4ai_result()
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=mock_result)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+
+        events: list[tuple] = []
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single(
+                "https://example.com", on_progress=lambda e, d: events.append((e, d))
+            )
+        assert result.success
+        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
@@ -1046,12 +1071,18 @@ class TestCrawlRecursive:
         assert len(results) == 2
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
-        assert len(progress_calls) == 2
         # Streaming semantics: total is unknown during BFS, counter advances per page.
         from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
-        assert [c[1].current for c in progress_calls] == [1, 2]
-        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in progress_calls)
+        page_events = [c for c in progress_calls if c[0] == EventType.CRAWL_PAGE]
+        assert [c[1].current for c in page_events] == [1, 2]
+        assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in page_events)
+        # The browser warmup is bracketed by setup events so the Task Center
+        # shows a "preparing crawler" stage instead of a silent stall.
+        setup_types = [
+            e for e, _ in progress_calls if e in (EventType.SETUP_START, EventType.SETUP_DONE)
+        ]
+        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
@@ -1149,8 +1180,8 @@ class TestCrawlRecursive:
         assert len(results) == 1
         assert not results[0].success
 
-    async def test_defaults_to_unbounded(self):
-        """With no max_depth / max_pages and no cfg ceiling, strategy gets math.inf."""
+    async def test_defaults_to_unbounded_depth_but_capped_pages(self):
+        """No max_depth / max_pages: depth is math.inf, pages clamps to the safety ceiling."""
         import math
 
         mock_instance = AsyncMock()
@@ -1160,13 +1191,14 @@ class TestCrawlRecursive:
 
         cfg.crawl_max_depth = None
         cfg.crawl_max_pages = None
+        cfg.crawl_safety_max_pages = 5_000
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
         with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com")
         kwargs = bfs.call_args.kwargs
         assert kwargs["max_depth"] == math.inf
-        assert kwargs["max_pages"] == math.inf
+        assert kwargs["max_pages"] == 5_000
 
     async def test_explicit_cap_overrides_cfg_ceiling(self):
         """An explicit int wins even when cfg sets a lower ceiling."""
@@ -1196,10 +1228,20 @@ class TestCrawlRecursive:
             await crawl_recursive("https://example.com", max_depth=1, max_pages=None)
         assert bfs.call_args.kwargs["max_pages"] == 10
 
-    async def test_zero_max_pages_raises(self):
-        """max_pages=0 is invalid (callers should pass None for unbounded)."""
-        with pytest.raises(ValueError, match="positive"):
+    async def test_zero_max_pages_is_unlimited(self):
+        """max_pages=0 (CRAWL_PAGES_UNLIMITED) is an explicit no-limit, even past cfg."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+
+        cfg.crawl_max_pages = 10
+        modules = self._setup_crawl4ai(mock_instance)
+        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
+        with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=0)
+        # Unbounded reaches the BFS strategy as inf, the same convention as depth.
+        assert bfs.call_args.kwargs["max_pages"] == math.inf
 
     async def test_quiet_passes_verbose_false(self):
         """quiet=True passes verbose=False to AsyncWebCrawler."""
@@ -1311,6 +1353,14 @@ def _stub_crawl4ai_filters(monkeypatch):
 class TestHostScopeFilter:
     """whole-site crawl must scope to the exact host by default."""
 
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch):
+        """The filter re-validates each link's IP; resolve to a public IP by default."""
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+
     def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
         from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
 
@@ -1331,9 +1381,59 @@ class TestHostScopeFilter:
 
         assert _host_scope_filter("not-a-url", include_subdomains=False) is None
 
+    def test_exact_host_rejects_link_resolving_to_private_ip(
+        self, _stub_crawl4ai_filters, monkeypatch
+    ):
+        """A discovered in-host link that resolves to a private IP is dropped (DNS-rebind)."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        def _resolve(host, *a, **kw):
+            if host == "internal.example.com":
+                return [(2, 1, 6, "", ("10.0.0.9", 0))]
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        f = _host_scope_filter("https://internal.example.com/a", include_subdomains=False)
+        # Same host, but it resolves to a private IP: must be rejected.
+        assert f.apply("https://internal.example.com/b") is False
+
+    def test_include_subdomains_rejects_link_resolving_to_private_ip(
+        self, _stub_crawl4ai_filters, monkeypatch
+    ):
+        """Subdomain-scope crawls also re-validate each discovered link's IP."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        def _resolve(host, *a, **kw):
+            if host == "rebind.example.com":
+                return [(2, 1, 6, "", ("127.0.0.1", 0))]
+            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        f = _host_scope_filter("https://example.com/a", include_subdomains=True)
+        assert f.apply("https://rebind.example.com/x") is False
+
+    def test_public_in_host_link_still_allowed(self, _stub_crawl4ai_filters, monkeypatch):
+        """A normal public in-host link passes both scope and IP checks."""
+        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
+
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        f = _host_scope_filter("https://example.com/a", include_subdomains=False)
+        assert f.apply("https://example.com/b") is True
+
 
 class TestSitemapCounting:
     """best-effort sitemap lookup bounds the crawl progress total."""
+
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch):
+        """The fetch re-validates the resolved sitemap URL; resolve to a public IP."""
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
 
     def test_returns_unknown_on_http_error(self, monkeypatch):
         import httpx
@@ -1372,7 +1472,7 @@ class TestSitemapCounting:
             "<url><loc>https://sub.example.com/d</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 2
@@ -1387,7 +1487,7 @@ class TestSitemapCounting:
             "<url><loc>https://other.com/c</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=True)
         assert count == 2
@@ -1413,7 +1513,7 @@ class TestSitemapCounting:
             "<url><loc>https://example.com/a</loc></url>"
             "</urlset>"
         )
-        fake = MagicMock(status_code=200, text=body)
+        fake = MagicMock(status_code=200, text=body, url="https://example.com/sitemap.xml")
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 1
@@ -1425,7 +1525,11 @@ class TestSitemapCounting:
 
         monkeypatch.setattr(sitemap_mod, "_SITEMAP_MAX_URLS", 3)
         entries = "".join(f"<url><loc>https://example.com/{i}</loc></url>" for i in range(10))
-        fake = MagicMock(status_code=200, text=f"<urlset>{entries}</urlset>")
+        fake = MagicMock(
+            status_code=200,
+            text=f"<urlset>{entries}</urlset>",
+            url="https://example.com/sitemap.xml",
+        )
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         count = _count_sitemap_urls("https://example.com/start", include_subdomains=False)
         assert count == 3
@@ -1510,7 +1614,9 @@ class TestCrawlAndSave:
         """quiet=True is forwarded to crawl_single (depth=0 path)."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         await crawl_and_save("https://example.com", depth=0, quiet=True)
-        mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
+        mock_crawl_single.assert_awaited_once()
+        assert mock_crawl_single.await_args.args == ("https://example.com",)
+        assert mock_crawl_single.await_args.kwargs["quiet"] is True
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
@@ -2139,6 +2245,28 @@ class TestSaveSingleResult:
         assert outcome.filename.endswith("index.md")
         assert outcome.content_hash == content_hash("# New")
 
+    def test_normalize_crawled_markdown_collapses_reference_links(self):
+        ref = "[[2]](https://en.wikipedia.org/wiki/Foo#cite_note-2)"
+        md = f"Car of the Year.{ref} Production ended."
+        # Double brackets collapse to single; text and URL are preserved.
+        expected = (
+            "Car of the Year.[2](https://en.wikipedia.org/wiki/Foo#cite_note-2) Production ended."
+        )
+        assert normalize_crawled_markdown(md) == expected
+        # Ordinary single-bracket links are left untouched.
+        keep = 'See the [trim package](https://en.wikipedia.org/wiki/Trim "title") here.'
+        assert normalize_crawled_markdown(keep) == keep
+
+    def test_writes_normalized_markdown(self, isolated_env):
+        from lilbee.crawler.save import _save_single_result
+
+        raw = "9C1[[1]](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        expected = "9C1[1](https://en.wikipedia.org/wiki/Caprice#cite_note-1) introduced for 1986."
+        outcome = _save_single_result(CrawlResult(url="https://example.com/ref", markdown=raw), {})
+        assert outcome is not None
+        assert outcome.path.read_text(encoding="utf-8") == expected
+        assert outcome.content_hash == content_hash(expected)
+
     def test_returns_none_on_failure(self, isolated_env):
         from lilbee.crawler.save import _save_single_result
 
@@ -2496,7 +2624,7 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(url: str, *, quiet: bool = False) -> CrawlResult:
+        async def _fake_single(url: str, *, quiet: bool = False, on_progress=None) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 

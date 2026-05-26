@@ -15,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
+from lilbee.data.store import ChunkType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
@@ -76,7 +77,9 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
     return classify_load_error(str(exc))
 
 
-async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[DocumentResult]:
+async def search(
+    q: str, top_k: int = 5, chunk_type: ChunkType | None = None
+) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
         raise ValueError("query must not be empty")
@@ -89,7 +92,7 @@ async def ask(
     question: str,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
     if not question or not question.strip():
@@ -146,7 +149,7 @@ async def _stream_rag_response(
     history: list[ChatMessage] | None = None,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
@@ -191,7 +194,7 @@ def ask_stream(
     question: str,
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events: token, sources, done."""
     return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
@@ -202,7 +205,7 @@ async def chat(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
     sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
@@ -221,7 +224,7 @@ def chat_stream(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream RAG chat tokens through canonical dispatch as token/sources/done events."""
     return _stream_chat_response(
@@ -234,7 +237,7 @@ async def _stream_chat_response(
     history: list[ChatMessage],
     top_k: int,
     options: dict[str, Any] | None,
-    chunk_type: str | None,
+    chunk_type: ChunkType | None,
 ) -> AsyncGenerator[str, None]:
     """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
     rag = get_services().searcher.build_rag_context(
@@ -363,7 +366,7 @@ def _build_chat_messages(
     question: str,
     history: list[ChatMessage],
     top_k: int,
-    chunk_type: str | None,
+    chunk_type: ChunkType | None,
 ) -> tuple[list[SearchChunk], list[ChatMessage]]:
     """Run retrieval and return (sources, message_list).
 

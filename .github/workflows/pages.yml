@@ -38,8 +38,8 @@ permissions:
 jobs:
   build-site:
     # Skip only on cancelled RCs. Success and failure both produce valid wheel
-    # artifacts (the build-default-wheels / build-extra-wheels legs run well
-    # before QA or attach), so a flaky QA shouldn't strand the wheel indexes.
+    # artifacts (the build-default-wheels / build-multigpu legs run well before
+    # QA or attach), so a flaky QA shouldn't strand the wheel indexes.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:

@@ -226,6 +226,11 @@ class Config(BaseSettings):
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
 
+    # Default page bound for an unbounded crawl (no explicit max_pages /
+    # crawl_max_pages), so a hostile site can't exhaust the disk by default.
+    # An explicit limit overrides it; raise this to crawl larger sites unbounded.
+    crawl_safety_max_pages: int = ConfigField(default=5_000, ge=1, writable=True)
+
     # Per-URL fetch timeout, seconds.
     crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
 
@@ -262,23 +267,12 @@ class Config(BaseSettings):
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Per-call deadline for one pool round-trip (send + recv). Embed batches
-    # larger than this on slow machines surface as TimeoutError; raise for
-    # heavy ingest jobs.
-    worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
-
-    # Spawn every configured role at startup instead of on first use. Trades
-    # a slower TUI mount (~1-3s per worker, cold-started in parallel) for a
-    # responsive first interaction. Roles whose model is unset are skipped,
-    # so a setup with only chat + embed never spawns rerank or vision.
-    # Set to false for headless / scripted use where the first call doesn't
-    # need to be fast.
+    # Spawn every configured role server at startup instead of on first use.
+    # Trades a slower TUI mount (the role servers cold-start in parallel) for a
+    # responsive first interaction. Roles whose model is unset are skipped, so a
+    # setup with only chat + embed never spawns rerank or vision. Set to false
+    # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
-
-    # Idle worker reap. A worker that has been quiet for this many seconds
-    # is shut down to free RAM/VRAM; the next request respawns it.
-    # ``0`` disables reaping (workers stay up until TUI exit).
-    worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):

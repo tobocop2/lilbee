@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.base import ProviderErrorKind, filter_options
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -78,8 +78,13 @@ def sse_done(data: dict[str, Any]) -> str:
 
 
 def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Convert raw options dict to GenerationOptions, or None."""
-    return cfg.generation_options(**options) if options else None
+    """Merge HTTP-supplied options with config, allowlisting sampling keys only.
+
+    ``filter_options`` is the validation boundary for untrusted callers: it
+    drops anything outside the sampling allowlist (e.g. injected ``api_base`` /
+    ``api_key``) before the values reach a provider.
+    """
+    return cfg.generation_options(**filter_options(options)) if options else None
 
 
 class SseStream:

@@ -1,9 +1,9 @@
 # lilbee — Development Guide
 
 ## Project
-Local knowledge base. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+Local search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
-**Framing:** Lead with "knowledge base" — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
+**Framing:** Lead with "search engine" (a local search engine you can talk to) — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
 ## Task Tracking (beads)
 ```bash
@@ -161,7 +161,7 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 **Permitted reasons for a function-local import:**
 
 1. **Circular import.** Module A's top-level already imports module B, and module B needs a symbol from A. Put A's import of B inside the one function in B that needs it, with a comment `# circular: B -> A via <symbol>`.
-2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `llama_cpp` (native dylibs, Metal/CUDA), `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `kreuzberg` (OCR stack), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. Use importtime before declaring a lib heavy.
+2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `kreuzberg` (OCR stack), `gguf` (numpy), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. (The local inference engine is the out-of-process `llama-server`, reached over HTTP, so it adds no heavy Python import.) Use importtime before declaring a lib heavy.
 3. **CLI startup path.** The import lives inside a Typer command body so `lilbee --help` stays fast. Treat this as a sub-case of (2): the CLI loader stays lean so unused subcommands don't pay for their dependencies.
 
 **Never lazy-import the following:**

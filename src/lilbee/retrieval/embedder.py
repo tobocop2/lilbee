@@ -1,10 +1,12 @@
 """Thin wrapper around LLM provider embeddings API."""
 
 import logging
+import threading
 
 import numpy as np
 
 from lilbee.core.config import Config
+from lilbee.data.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
@@ -55,22 +57,40 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
 
 
 class Embedder:
-    """Embedding wrapper: truncates, batches, and validates vectors."""
+    """Embedding wrapper: truncates, batches, validates vectors, and counts truncations."""
 
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config
         self._provider = provider
+        self.last_batch_truncated = 0
+        self._truncated_total = 0
+        self._truncated_lock = threading.Lock()
+
+    @property
+    def embed_char_budget(self) -> int:
+        """Effective char limit, never below the chunker's max chunk size.
+
+        ``max_embed_chars`` guards the embed model's context; clamping it up to
+        ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
+        silently losing its tail to a limit set below what the chunker emits.
+        """
+        return max(self._config.max_embed_chars, self._config.chunk_size * CHARS_PER_TOKEN)
+
+    @property
+    def truncated_total(self) -> int:
+        """Cumulative count of chunks truncated since process start (thread-safe read)."""
+        with self._truncated_lock:
+            return self._truncated_total
 
     def truncate(self, text: str) -> str:
-        """Truncate text to stay within the embedding model's context window."""
-        if len(text) <= self._config.max_embed_chars:
+        """Truncate text to the embed char budget, counting any truncation."""
+        budget = self.embed_char_budget
+        if len(text) <= budget:
             return text
-        log.debug(
-            "Truncating chunk from %d to %d chars for embedding",
-            len(text),
-            self._config.max_embed_chars,
-        )
-        return text[: self._config.max_embed_chars]
+        log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
+        with self._truncated_lock:
+            self._truncated_total += 1
+        return text[:budget]
 
     def validate_vector(self, vector: list[float]) -> None:
         """Validate embedding vector dimension and values."""
@@ -115,7 +135,9 @@ class Embedder:
         Fires ``embed`` progress events per batch when *on_progress* is provided.
         """
         if not texts:
+            self.last_batch_truncated = 0
             return []
+        truncated_before = self.truncated_total
         total_chunks = len(texts)
         vectors: list[list[float]] = []
         batch: list[str] = []
@@ -141,4 +163,5 @@ class Embedder:
             )
         for vec in vectors:
             self.validate_vector(vec)
+        self.last_batch_truncated = self.truncated_total - truncated_before
         return vectors
