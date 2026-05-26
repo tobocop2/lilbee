@@ -2298,7 +2298,7 @@ def test_status_read_chat_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
@@ -2308,7 +2308,7 @@ def test_status_read_chat_arch_success():
     ):
         result = _read_chat_arch(info)
     assert result.chat_arch == "llama"
-    assert result.active_handler == "llama-cpp"
+    assert result.active_handler == "llama-server"
 
 
 def test_status_read_embed_arch_success():
@@ -2317,7 +2317,7 @@ def test_status_read_embed_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
@@ -2336,7 +2336,7 @@ def test_status_read_vision_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
@@ -2368,27 +2368,11 @@ def test_status_read_vision_arch_swallows_errors():
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=RuntimeError("boom"),
     ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
-
-
-def test_status_read_model_arch_import_error():
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    with patch(
-        "builtins.__import__",
-        side_effect=lambda name, *a, **kw: (
-            (_ for _ in ()).throw(ImportError("no llama-cpp"))
-            if "llama_cpp" in name
-            else __import__(name, *a, **kw)
-        ),
-    ):
-        result = get_model_architecture()
-    assert result.chat_arch == "unknown"
 
 
 def test_get_model_architecture_caches_within_session():
@@ -10677,7 +10661,7 @@ async def test_chat_embedding_ready_false_on_exception():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         with patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             side_effect=FileNotFoundError("not found"),
         ):
             assert screen._embedding_ready() is False
@@ -10964,7 +10948,7 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=FileNotFoundError("not found"),
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -10980,7 +10964,7 @@ def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/fake/path/to/model.gguf",
     ):
         assert _real_embedding_ready(sentinel) is True
