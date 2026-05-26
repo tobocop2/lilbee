@@ -50,12 +50,14 @@ ROSTER: tuple[ModelSpec, ...] = (
         "bartowski/Hermes-3-Llama-3.1-8B-GGUF",
         "Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
         family="hermes",
+        template_repo="NousResearch/Hermes-3-Llama-3.1-8B",
         inprocess="pass",
     ),
     _q4(
         "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF",
         "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
         family="smollm",
+        template_repo="HuggingFaceTB/SmolLM3-3B",
         inprocess="pass",
     ),
     _q4(
@@ -77,6 +79,7 @@ ROSTER: tuple[ModelSpec, ...] = (
         "ibm-granite/granite-3.3-8b-instruct-GGUF",
         "granite-3.3-8b-instruct-Q4_K_M.gguf",
         family="granite",
+        template_repo="ibm-granite/granite-3.3-8b-instruct",
         inprocess="pass(untested-this-session)",
     ),
     # --- in-process exceptions: do better natively? ---
@@ -98,18 +101,21 @@ ROSTER: tuple[ModelSpec, ...] = (
         "internlm/internlm2_5-7b-chat-gguf",
         "internlm2_5-7b-chat-q4_k_m.gguf",
         family="internlm2",
+        template_repo="internlm/internlm2_5-7b-chat",
         inprocess="model-limit (narrates)",
     ),
     _q4(
         "bartowski/microsoft_Phi-4-mini-instruct-GGUF",
         "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
         family="phi4mini",
+        template_repo="microsoft/Phi-4-mini-instruct",
         inprocess="upstream SIGABRT in llama-cpp-python",
     ),
     _q4(
         "legraphista/glm-4-9b-chat-GGUF",
         "glm-4-9b-chat.Q4_K.gguf",  # this repo names it .Q4_K (no _M)
         family="glm-4-9b",
+        template_repo="THUDM/glm-4-9b-chat",
         inprocess="upstream SIGABRT in llama-cpp-python",
     ),
     _q4(
