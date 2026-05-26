@@ -68,7 +68,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 
 ## Highlights
 
-- **It brings and runs the models itself.** Browse Hugging Face, pull a model, assign it to a role; it runs in-process on Metal, Vulkan, or CUDA, no separate server.
+- **It brings and runs the models itself.** Browse Hugging Face, pull a model, assign it to a role; it runs locally on Metal, Vulkan, or CUDA, started and managed for you with nothing to set up.
 - **It works, and the demos prove it.** Every GIF and tutorial reel here is recorded live on real hardware, nothing staged. Backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **Up and running in one command.** Install, run `lilbee`, and a first-run wizard pulls a model and drops you into chat.
 - **A real retrieval pipeline, not keyword search.** Hybrid keyword + vector, a concept graph, optional reranking, all from published research. [50+ settings](docs/usage.md) to tune.
@@ -325,9 +325,9 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 ## Built on
 
-lilbee stands on a stack of established open-source projects, all embedded in one process:
+lilbee stands on a stack of established open-source projects:
 
-- [llama.cpp] (via [llama-cpp-python]) is the local model runtime. Every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
+- [llama.cpp] is the local model runtime. lilbee bundles its `llama-server` and starts it for you; every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
 - [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [Kreuzberg] parses 90+ document formats with heading-aware chunking.
 - [LanceDB] is the embedded vector store.
@@ -344,7 +344,6 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
 [llama.cpp]: https://github.com/ggml-org/llama.cpp
-[llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
 [Hugging Face Hub]: https://huggingface.co
 [huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawl4ai]: https://github.com/unclecode/crawl4ai

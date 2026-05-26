@@ -3207,3 +3207,37 @@ class TestChatWithToolsRouting:
         )
         backend.chat_with_tools.assert_called_once()
         assert backend.chat_with_tools.call_args.kwargs["tool_choice"] == "auto"
+
+
+class TestRoutingLifecycleForwarding:
+    def test_cancel_and_reload_forward_to_local_when_present(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        rp._local = local
+        rp.cancel_inference()
+        local.cancel_inference.assert_called_once_with()
+        rp.reload_role(WorkerRole.EMBED)
+        local.reload_role.assert_called_once_with(WorkerRole.EMBED)
+
+    def test_cancel_and_reload_are_noop_without_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()  # _local is None
+        rp.cancel_inference()  # must not raise
+        rp.reload_role(WorkerRole.CHAT)  # must not raise
+
+
+def test_gguf_scalar_str_array_field_returns_none() -> None:
+    from types import SimpleNamespace
+
+    from gguf import GGUFValueType
+
+    from lilbee.catalog.header_probe import gguf_scalar_str
+
+    # An ARRAY-typed scalar field is not renderable as a single value.
+    field = SimpleNamespace(types=[GGUFValueType.ARRAY], data=[0], parts=[b"x"])
+    assert gguf_scalar_str(field) is None

@@ -23,14 +23,6 @@ _GPU_VISIBLE_ENV_VARS = (
     "ROCR_VISIBLE_DEVICES",
 )
 
-# Subset the Vulkan autodetect applies to. CUDA and HIP/ROCm enumerate
-# single-vendor adapter sets (NVIDIA-only, AMD-only); a Vulkan device index
-# doesn't translate, so writing the autodetect result to
-# ``CUDA_VISIBLE_DEVICES`` on a CUDA wheel + dual-GPU host would hide the only
-# NVIDIA card and silently fall back to CPU.
-_VULKAN_AUTODETECT_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES",)
-
-
 _VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
 
 # Layers with documented crashes against multi-VkDevice apps:
@@ -94,27 +86,6 @@ def _apply_gpu_devices_pin() -> bool:
     for name in _GPU_VISIBLE_ENV_VARS:
         os.environ.setdefault(name, cfg.gpu_devices)
     return True
-
-
-def apply_gpu_device_env() -> None:
-    """In-process engine bootstrap: loader safety, then ``cfg.gpu_devices`` or autodetect.
-
-    Resolution order: an explicit visible-devices env var always wins (set via
-    ``setdefault``); else ``cfg.gpu_devices``; else the Vulkan autodetect picks
-    the highest-ranked adapter and writes only ``GGML_VK_VISIBLE_DEVICES`` (the
-    Vulkan index doesn't translate to CUDA / HIP / ROCm order, so writing it to
-    those could mask the only visible card on a single-vendor wheel).
-    """
-    from lilbee.providers.multi_gpu.gpu_select import autoselect_best_gpu_index
-
-    _apply_vulkan_loader_safety()
-    if _apply_gpu_devices_pin():
-        return
-    autoselected = autoselect_best_gpu_index()
-    if not autoselected:
-        return
-    for name in _VULKAN_AUTODETECT_ENV_VARS:
-        os.environ.setdefault(name, autoselected)
 
 
 def apply_fleet_gpu_env() -> None:
