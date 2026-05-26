@@ -154,10 +154,10 @@ def load_vision_llama(
 
     import os
 
-    # llama-cpp-python defaults n_threads to ~cpu_count()//2 which leaves the
-    # GPU starved on prompt-eval work (image projection through the vision
-    # adapter is CPU-bound on the encode side even with all layers on GPU).
-    # Ollama runs full-core. Match that here for perf parity.
+    # mtmd offloads the vision encoder to the GPU (use_gpu=True), but the
+    # CPU side still runs image preprocessing, tokenization, and sampling.
+    # llama-cpp-python defaults n_threads to ~cpu_count()//2, which starves
+    # those steps; Ollama runs full-core, so match that here.
     n_threads = os.cpu_count() or 4
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
@@ -168,6 +168,12 @@ def load_vision_llama(
         "n_threads": n_threads,
         "n_threads_batch": n_threads,
     }
+    # mtmd only enables flash attention for the vision pass when the backing
+    # Llama already has it ENABLED; left unset it defaults to DISABLED, which
+    # makes the image-token prefill (thousands of tokens per page) far slower.
+    # Mirror the chat loader and honor cfg.flash_attention (None/auto -> on).
+    if cfg.flash_attention is not False:
+        kwargs["flash_attn"] = True
     if cfg.main_gpu is not None:
         kwargs["main_gpu"] = cfg.main_gpu
     if abort_callback_override is not None:
