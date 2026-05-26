@@ -53,7 +53,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp

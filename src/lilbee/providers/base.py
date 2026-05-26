@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from lilbee.providers.worker.transport import OcrBackend
+    from lilbee.providers.roles import OcrBackend
     from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)

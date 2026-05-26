@@ -27,7 +27,7 @@ from lilbee.providers.multi_gpu.placement import (
     estimate_model_vram,
     plan_placement,
 )
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence

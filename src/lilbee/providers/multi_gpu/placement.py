@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 # Mirrors vLLM's gpu_memory_utilization default: never pack a GPU past 90%.
 _VRAM_USABLE_FRACTION = 0.9

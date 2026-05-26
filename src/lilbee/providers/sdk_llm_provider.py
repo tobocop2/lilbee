@@ -29,7 +29,7 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.providers.worker.transport import OcrBackend
+from lilbee.providers.roles import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)

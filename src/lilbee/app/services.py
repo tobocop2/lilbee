@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
     from lilbee.providers.worker.health_ticker import HealthTickerHandle
     from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder

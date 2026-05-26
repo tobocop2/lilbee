@@ -14,7 +14,7 @@ from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-from lilbee.providers.worker.transport import OcrBackend
+from lilbee.providers.roles import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)

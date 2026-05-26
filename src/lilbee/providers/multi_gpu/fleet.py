@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lilbee.providers.multi_gpu.client import LlamaServerClient
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
 
