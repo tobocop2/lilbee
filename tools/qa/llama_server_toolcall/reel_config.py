@@ -57,10 +57,9 @@ PROMPTS: dict[str, str] = {
     ),
     # --- large single-GPU: practical, multi-stage dev questions ---
     "gpt-oss": (
-        "I'm evaluating lilbee for retrieval over a mixed code-and-docs corpus. "
-        "Walk me through its pipeline from a raw file to a search result -- "
-        "chunking, embedding, vector search, and reranking -- and cite the key "
-        "file for each stage."
+        "How does lilbee search its index to find the most relevant chunks for a "
+        "query? Use lilbee_search to read the actual code, then explain the search "
+        "step based on what you find, citing the file."
     ),
     "glm-air": (
         "Explain how lilbee builds a concept graph from an indexed corpus and how "
