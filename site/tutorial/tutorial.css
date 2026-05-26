@@ -1,0 +1,13 @@
+.tutorial-intro { color: var(--mute); font-size: 0.95rem; margin: 0.5rem 0 2rem; }
+.tutorial-toc { margin: 0 0 2.5rem; padding: 1rem 1.25rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }
+.tutorial-toc ol { margin: 0; padding-left: 1.4rem; }
+.tutorial-toc li { margin: 0.2rem 0; }
+.tutorial-section { margin: 2.5rem 0 3rem; }
+.tutorial-section h2 { font-size: 1.15rem; margin: 0 0 0.5rem; }
+.tutorial-section .extras-label { font-size: 0.8rem; color: var(--mute); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.4rem; }
+.tutorial-section p { margin: 0.4rem 0 1rem; line-height: 1.55; }
+.tutorial-clip { background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 1400 / 900; margin: 0.75rem 0; }
+.tutorial-clip video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.extras-divider { border: 0; border-top: 1px dashed rgba(255,255,255,0.1); margin: 3rem 0; }
+.tutorial-backlink { display: inline-block; margin: 0.5rem 0 1.5rem; color: var(--mute); font-size: 0.9rem; }
+.tutorial-backlink:hover { color: var(--fg); }
