@@ -15,7 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
-from lilbee.providers.base import ContextWindowExceededError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -42,6 +42,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     dispatch_chat_stream,
 )
 from lilbee.server.handlers.sse import (
+    SseErrorCodeValue,
     SseStream,
     _resolve_generation_options,
     classify_load_error,
@@ -58,14 +59,20 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _classify_stream_error(exc: BaseException) -> tuple[str | None, str]:
+def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None, str]:
     """Return ``(code, user_message)`` for an SSE error event, typed-exception aware."""
-    if isinstance(exc, ContextWindowExceededError):
-        return CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED.value, str(exc)
     if isinstance(exc, ModelNotFoundError):
-        return CompletionsErrorCode.MODEL_NOT_FOUND.value, str(exc)
+        return CompletionsErrorCode.MODEL_NOT_FOUND, str(exc)
     if isinstance(exc, ModelDoesNotSupportToolsError):
-        return CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS.value, str(exc)
+        return CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc)
+    if isinstance(exc, ProviderError):
+        if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
+            return CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc)
+        # A ProviderError already carries a user-facing message (rate limit,
+        # auth, bad model). Surface it verbatim; the kind becomes a
+        # machine-readable code unless the backend couldn't classify it.
+        code = None if exc.kind is ProviderErrorKind.UNKNOWN else exc.kind
+        return code, str(exc)
     return classify_load_error(str(exc))
 
 

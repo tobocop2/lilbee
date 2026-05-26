@@ -1,0 +1,24 @@
+name: Bundle llama-server
+description: >-
+  Build the version-matched llama-server (shared libs, same llama-cpp-python tag
+  as the wheel build) and install the lilbee_llama_server package so the Nuitka
+  build can bundle it for the multi-GPU fleet. Run after llama-cpp-python is
+  installed in the build venv and before the executable is built.
+inputs:
+  backend:
+    description: "Backend matching the executable (cpu|vulkan|metal|cu121..cu125|rocm|sycl)."
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Build llama-server (shared libs, matched to llama-cpp-python)
+      shell: bash
+      env:
+        BACKEND: ${{ inputs.backend }}
+        LLAMA_BUILD_DIR: /tmp/llama-server-build
+      run: bash tools/wheel-build/build_llama_server.sh
+    - name: Install lilbee_llama_server into the build venv
+      shell: bash
+      # Carries only the server executable as package data; Nuitka bundles it and
+      # the runtime resolver finds it via lilbee_llama_server.get_binary_path().
+      run: uv pip install --no-deps ./packaging/llama-server-wheel

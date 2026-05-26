@@ -13,9 +13,24 @@ from typing import Any
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
-from lilbee.runtime.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
+from lilbee.providers.base import ProviderErrorKind
+from lilbee.runtime.progress import (
+    DetailedProgressCallback,
+    EventType,
+    ProgressEvent,
+    SseErrorCode,
+    SseEvent,
+)
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 
 log = logging.getLogger(__name__)
+
+# Machine-readable ``code`` on an SSE error event. Load-time failures use
+# SseErrorCode; failed provider calls reuse ProviderErrorKind directly; the
+# RAG chat stream reuses the wire-layer CompletionsErrorCode for typed
+# dispatch errors (unknown model, no tool support, context overflow) so a
+# single client-facing vocabulary covers both surfaces.
+SseErrorCodeValue = SseErrorCode | ProviderErrorKind | CompletionsErrorCode
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -23,7 +38,9 @@ def sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def sse_error(message: str, *, code: str | None = None, detail: str | None = None) -> str:
+def sse_error(
+    message: str, *, code: SseErrorCodeValue | None = None, detail: str | None = None
+) -> str:
     """Format an SSE error event with optional structured ``code`` / ``detail``."""
     payload: dict[str, Any] = {"message": message}
     if code is not None:
@@ -34,17 +51,24 @@ def sse_error(message: str, *, code: str | None = None, detail: str | None = Non
 
 
 _OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
+_NOT_INSTALLED_MARKERS = ("not found in registry", "is not available", "pull it first")
 
 
-def classify_load_error(message: str) -> tuple[str | None, str]:
+def classify_load_error(message: str) -> tuple[SseErrorCode | None, str]:
     """Return ``(code, user_message)`` for an SSE error event.
 
-    Recognises the llama.cpp OOM diagnostic and maps it to a stable code; any
-    other input falls back to the legacy generic shape.
+    Maps the llama.cpp out-of-memory diagnostic and the "configured model
+    isn't installed" failure to stable codes. Anything else returns a generic
+    code-less message.
     """
     lowered = message.lower()
     if any(marker in lowered for marker in _OOM_MARKERS):
-        return "model_too_large", "Model too large for available RAM"
+        return SseErrorCode.MODEL_TOO_LARGE, "Model too large for available RAM"
+    if any(marker in lowered for marker in _NOT_INSTALLED_MARKERS):
+        return (
+            SseErrorCode.MODEL_NOT_INSTALLED,
+            "Active model isn't installed. Pull it from the catalog.",
+        )
     return None, "Internal error"
 
 

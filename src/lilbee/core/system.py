@@ -2,10 +2,36 @@
 
 import os
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
 LOCAL_ROOT_DIRNAME = ".lilbee"
+
+_STDERR_LOCK = threading.Lock()
+
+
+@contextmanager
+def stderr_suppressed() -> Iterator[None]:
+    """Redirect fd 2 to /dev/null for the duration of the block.
+
+    Silences C-library stderr (native document extractors, GGUF readers) that
+    bypasses Python's logging. Holds a process lock so concurrent fd-2 swaps
+    can't clobber each other's saved descriptor. Wrap the whole native call, not
+    each inner iteration, so the lock doesn't serialize a hot loop.
+    """
+    with _STDERR_LOCK:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        os.dup2(devnull, 2)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+            os.close(old_stderr)
 
 
 def default_data_dir() -> Path:

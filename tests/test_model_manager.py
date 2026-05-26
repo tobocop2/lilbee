@@ -895,10 +895,10 @@ class TestDiscoverApiModels:
     @pytest.fixture(autouse=True)
     def _force_auto_provider(self) -> Iterator[None]:
         # discover_api_models() calls get_services().provider.list_chat_models.
-        # LlamaCppProvider.list_chat_models hard-codes []; only RoutingProvider
+        # FleetProvider.list_chat_models hard-codes []; only RoutingProvider
         # (cfg.llm_provider == "auto") delegates to the SDK backend where the
         # sys.modules["litellm"] patch these tests rely on can take effect.
-        # Developers whose config.toml pins llm_provider="llama-cpp" would
+        # Developers whose config.toml pins llm_provider="remote" would
         # otherwise see these tests fail locally while passing in CI.
         from lilbee.app.services import reset_services
         from lilbee.core.config import cfg

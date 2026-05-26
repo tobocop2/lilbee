@@ -1,4 +1,4 @@
-"""Routing provider: prefix-based dispatch between the SDK backend and llama-cpp."""
+"""Routing provider: prefix-based dispatch between the SDK backend and the local engine."""
 
 from __future__ import annotations
 
@@ -10,11 +10,18 @@ from typing import Any, Literal, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
+from lilbee.providers.base import (
+    ChatResult,
+    ChatStreamItem,
+    ChatToolResult,
+    ClosableIterator,
+    LLMProvider,
+    ProviderError,
+)
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.roles import OcrBackend, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-from lilbee.providers.worker.transport import ChatResult, ChatStreamItem, OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
@@ -28,21 +35,23 @@ class RoutingProvider(LLMProvider):
 
     ``ollama/``, ``openai/``, ``anthropic/``, ``gemini/`` go to the SDK
     provider. Other refs (the HuggingFace ``<org>/<repo>/<file>.gguf``
-    shape) go to llama-cpp, which resolves them against the native
+    shape) go to the local llama-server engine, which resolves them against the native
     registry. A registry miss surfaces the native ProviderError
     unchanged, rather than silently falling through to a remote backend.
     """
 
     def __init__(self) -> None:
-        self._llama_cpp: LLMProvider | None = None
+        self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
 
-    def _get_llama_cpp(self) -> LLMProvider:
-        if self._llama_cpp is None:
-            from lilbee.providers.llama_cpp import LlamaCppProvider
+    def _get_local(self) -> LLMProvider:
+        if self._local is None:
+            # heavy: FleetProvider composes the llama-server stack and spawns
+            # the role servers on first use.
+            from lilbee.providers.multi_gpu.provider import FleetProvider
 
-            self._llama_cpp = LlamaCppProvider()
-        return self._llama_cpp
+            self._local = FleetProvider()
+        return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
         if self._sdk_provider is None:
@@ -57,7 +66,7 @@ class RoutingProvider(LLMProvider):
         """Pick the backend for *ref* purely by prefix."""
         if ref.is_remote:
             return self._get_sdk_provider()
-        return self._get_llama_cpp()
+        return self._get_local()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         ref = parse_model_ref(cfg.embedding_model)
@@ -66,7 +75,7 @@ class RoutingProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
@@ -78,7 +87,7 @@ class RoutingProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: Literal[True],
         options: dict[str, Any] | None = None,
@@ -89,7 +98,7 @@ class RoutingProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
@@ -121,9 +130,25 @@ class RoutingProvider(LLMProvider):
         )
 
     def supports_tools(self, model_ref: str) -> bool:
-        """Delegate to the backend selected by *model_ref*'s prefix."""
-        ref = parse_model_ref(model_ref)
-        return self._pick_backend(ref).supports_tools(model_ref)
+        """Delegate the tool-capability probe to the backend the ref routes to."""
+        ref = parse_model_ref(model_ref or cfg.chat_model)
+        return self._pick_backend(ref).supports_tools(model_ref or cfg.chat_model)
+
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Dispatch a tool-enabled chat turn to the backend the ref routes to."""
+        ref = parse_model_ref(model or cfg.chat_model)
+        backend = self._pick_backend(ref)
+        return backend.chat_with_tools(
+            messages, tools=tools, tool_choice=tool_choice, options=options, model=model
+        )
 
     def vision_ocr(
         self,
@@ -151,7 +176,7 @@ class RoutingProvider(LLMProvider):
 
         Hosted refs reach :class:`SdkLLMProvider`, which raises
         ``NotImplementedError`` for PDF OCR; native refs reach the
-        llama-cpp pool worker. ``model`` is empty when the caller wants
+        local llama-server engine. ``model`` is empty when the caller wants
         the configured ``cfg.vision_model`` to drive the dispatch.
         """
         ref = parse_model_ref(model or cfg.vision_model)
@@ -172,7 +197,7 @@ class RoutingProvider(LLMProvider):
         """
         native: set[str] = set()
         with contextlib.suppress(Exception):
-            native = set(self._get_llama_cpp().list_models())
+            native = set(self._get_local().list_models())
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return sorted(native)
@@ -183,7 +208,7 @@ class RoutingProvider(LLMProvider):
         return sorted(native | remote)
 
     def list_chat_models(self, provider: str) -> list[str]:
-        """Delegate to the SDK backend; native llama-cpp has no catalog."""
+        """Delegate to the SDK backend; the native engine has no catalog."""
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return []
@@ -209,20 +234,20 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to llama-cpp; hosted refs go through the SDK
+        Native GGUF refs go to the local engine; hosted refs go through the SDK
         provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
         empty or the selected backend does not support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
         if _is_native_rerank_ref(cfg.reranker_model):
-            return self._get_llama_cpp().rerank(query, candidates)
+            return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
             raise ProviderError(
                 f"Cannot rerank with {cfg.reranker_model!r}: "
                 "hosted rerank backend not available. "
-                "Install the 'remote' extra to enable hosted reranking."
+                "Install the 'litellm' extra to enable hosted reranking."
             )
         return sdk.rerank(query, candidates)
 
@@ -240,33 +265,56 @@ class RoutingProvider(LLMProvider):
         if not model:
             return True
         if _is_native_rerank_ref(model):
-            return self._get_llama_cpp().supports_rerank()
+            return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
-        if self._llama_cpp is not None:
-            self._llama_cpp.shutdown()
+        if self._local is not None:
+            self._local.shutdown()
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Forward to the native side only; the SDK side has no local cache."""
-        if self._llama_cpp is not None:
-            self._llama_cpp.invalidate_load_cache(model_path)
+        if self._local is not None:
+            self._local.invalidate_load_cache(model_path)
 
     def warm_up_pool(self) -> None:
-        """Forward to the native side; the SDK side has no worker pool.
+        """Forward to the native side; the SDK side has no servers to warm.
 
-        Lazily constructs the llama-cpp provider if it isn't already up so
+        Lazily constructs the local engine if it isn't already up so
         eager-start during ``Services`` boot still warms the configured
         native roles, even when the user hasn't issued a chat call yet.
         """
-        self._get_llama_cpp().warm_up_pool()
+        self._get_local().warm_up_pool()
+
+    def cancel_inference(self) -> None:
+        """Forward to the native engine; the SDK side has nothing to interrupt."""
+        if self._local is not None:
+            self._local.cancel_inference()
+
+    def reload_role(self, role: WorkerRole) -> None:
+        """Forward to the native engine; the SDK side has no per-role servers."""
+        if self._local is not None:
+            self._local.reload_role(role)
+
+    def add_spawn_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Register on the native engine so its server spawns reach the TUI.
+
+        Builds the local engine if it isn't up yet so the listener is attached
+        before the first spawn, matching ``warm_up_pool``'s eager construction.
+        """
+        self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
 def _is_native_rerank_ref(model: str) -> bool:
-    """Return True iff *model* should route to the native llama-cpp rerank worker.
+    """Return True iff *model* should route to the native llama-server rerank path.
 
     Two acceptance paths:
 

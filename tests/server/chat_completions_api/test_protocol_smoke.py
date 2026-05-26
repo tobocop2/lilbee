@@ -14,7 +14,7 @@ from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
 from lilbee.app.services import get_services, set_services
-from lilbee.providers.worker.transport import ChatResult, FinishReason
+from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.concurrency import chat_lock

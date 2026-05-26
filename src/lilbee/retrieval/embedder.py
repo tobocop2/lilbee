@@ -29,7 +29,7 @@ def _remote_sees_model(ref: ProviderModelRef, provider: LLMProvider) -> bool:
 
 
 def _native_has_model(model: str) -> bool:
-    from lilbee.providers.llama_cpp.provider import resolve_model_path
+    from lilbee.providers.engine_params import resolve_model_path
 
     try:
         resolve_model_path(model)

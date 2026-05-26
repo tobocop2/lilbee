@@ -9,8 +9,11 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
     ingest as _ingest_h,
@@ -250,7 +253,7 @@ class TestAskStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
 
-    async def test_provider_error_yields_error_event(self, mock_svc):
+    async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = RuntimeError("model missing")
         events = [e async for e in handlers.ask_stream("question")]
@@ -260,6 +263,41 @@ class TestAskStream:
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
         parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "code" not in parsed
+
+    async def test_provider_error_surfaces_its_message(self, mock_svc):
+        # A ProviderError already carries a user-facing message (rate limit,
+        # bad key, ...); it must reach the client, not collapse to "Internal error".
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "gemini/m is rate-limited or out of quota. That's a limit on your "
+            "provider API key, not a lilbee problem.",
+            provider="litellm",
+            kind=ProviderErrorKind.RATE_LIMIT,
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "rate-limited or out of quota" in parsed["message"]
+        assert "lilbee" in parsed["message"]
+        assert "Internal error" not in parsed["message"]
+        # The kind reaches the client as a machine-readable code to branch on.
+        assert parsed["code"] == "rate_limit"
+
+    async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
+        # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "Chat failed: something odd", provider="litellm"
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "something odd" in parsed["message"]
         assert "code" not in parsed
 
     async def test_oom_load_error_yields_structured_code(self, mock_svc):
@@ -389,6 +427,7 @@ class TestChat:
             )
 
         monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
@@ -415,9 +454,46 @@ class TestChat:
             )
 
         monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         await handlers.chat("q", [], chunk_type="raw")
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_retrieval_ran_but_no_context_falls_back_to_direct_chat(
+        self, mock_svc, monkeypatch
+    ):
+        """Search mode + ``build_rag_context`` returning None (no relevant docs)
+        falls back to a direct-chat turn: retrieval was attempted, the answer
+        still comes back, and the response carries no sources."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        captured = []
+
+        def _fake_dispatch(req):
+            captured.append(req)
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="direct answer")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        # Retrieval runs (search mode) but finds nothing -> build_rag_context None.
+        mock_svc.searcher.build_rag_context.return_value = None
+        result = await handlers.chat("anything", [])
+        # build_rag_context WAS consulted (retrieval not skipped) yet returned None.
+        assert mock_svc.searcher.build_rag_context.call_args is not None
+        assert result.answer == "direct answer"
+        assert result.sources == []  # direct-chat fallback carries no sources
+        assert len(captured) == 1
 
 
 class TestChatStream:
@@ -446,7 +522,7 @@ class TestChatStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
-    async def test_provider_error_yields_error_event(self, mock_svc, monkeypatch):
+    async def test_unknown_error_yields_internal_error(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
 
         def _erroring_stream(_req):
@@ -463,6 +539,30 @@ class TestChatStream:
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
+
+    async def test_provider_error_surfaces_its_message(self, mock_svc, monkeypatch):
+        """A ProviderError from the dispatch reaches the client verbatim with its kind code."""
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+
+        def _erroring_stream(_req):
+            async def _gen():
+                raise ProviderError(
+                    "gemini/m rejected your API key.",
+                    provider="litellm",
+                    kind=ProviderErrorKind.AUTH,
+                )
+                yield  # pragma: no cover
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _erroring_stream)
+        events = [e async for e in handlers.chat_stream("q", [])]
+
+        error_events = [e for e in events if e and e.startswith("event: error")]
+        assert len(error_events) == 1
+        parsed = json.loads(error_events[0].split("data: ")[1].strip())
+        assert "rejected your API key" in parsed["message"]
+        assert parsed["code"] == "auth"
 
     async def test_cancel_stops_emitting(self, mock_svc, monkeypatch):
         """Closing the chat_stream generator stops further dispatch events from being emitted."""
@@ -2264,30 +2364,49 @@ class TestClassifyLoadError:
             "Host has 1.2 GB free RAM. Try a smaller model."
         )
         code, user_message = handlers.classify_load_error(msg)
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
         assert user_message == "Model too large for available RAM"
 
     def test_llama_context_signature_is_classified(self):
         code, _ = handlers.classify_load_error("llama_context: failed to allocate")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
     def test_unknown_message_falls_back_to_internal(self):
         code, user_message = handlers.classify_load_error("Network unreachable")
         assert code is None
         assert user_message == "Internal error"
 
+    def test_not_in_registry_is_classified_as_model_not_installed(self):
+        msg = (
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
+            "Install it via the catalog or 'lilbee model pull'."
+        )
+        code, user_message = handlers.classify_load_error(msg)
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
+    def test_not_available_is_classified_as_model_not_installed(self):
+        code, user_message = handlers.classify_load_error(
+            "Model 'foo' is not available. Pull it first or check the name."
+        )
+        assert code == SseErrorCode.MODEL_NOT_INSTALLED
+        assert user_message == "Active model isn't installed. Pull it from the catalog."
+
     def test_classifier_is_case_insensitive(self):
         code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
-        assert code == "model_too_large"
+        assert code == SseErrorCode.MODEL_TOO_LARGE
 
 
 class TestClassifyStreamError:
     def test_context_window_exception_routes_to_typed_code(self):
-        """`ContextWindowExceededError` produces the OpenAI-standard code."""
-        from lilbee.providers.base import ContextWindowExceededError
+        """A CONTEXT_OVERFLOW ``ProviderError`` produces the OpenAI-standard code."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
         from lilbee.server.handlers.rag import _classify_stream_error
 
-        exc = ContextWindowExceededError("Prompt of 9000 tokens exceeds 4096-token window of 'm'.")
+        exc = ProviderError(
+            "Prompt of 9000 tokens exceeds 4096-token window of 'm'.",
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+        )
         code, msg = _classify_stream_error(exc)
         assert code == "context_length_exceeded"
         assert "9000" in msg

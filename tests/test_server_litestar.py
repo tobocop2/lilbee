@@ -196,9 +196,11 @@ class TestAskRoute:
 
     @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
     def test_context_window_exceeded_returns_400(self, mock_ask, client):
-        from lilbee.providers.base import ContextWindowExceededError
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        mock_ask.side_effect = ContextWindowExceededError("Prompt of 9000 tokens exceeds...")
+        mock_ask.side_effect = ProviderError(
+            "Prompt of 9000 tokens exceeds...", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
         resp = client.post("/api/ask", json={"question": "q"})
         assert resp.status_code == 400
         assert "9000" in resp.text
@@ -270,10 +272,12 @@ class TestChatRoute:
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
     def test_context_window_exceeded_returns_400(self, mock_chat, client):
-        """``ContextWindowExceededError`` from the dispatch becomes a 400."""
-        from lilbee.providers.base import ContextWindowExceededError
+        """A CONTEXT_OVERFLOW ``ProviderError`` from the dispatch becomes a 400."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        mock_chat.side_effect = ContextWindowExceededError("Prompt of 9000 tokens exceeds...")
+        mock_chat.side_effect = ProviderError(
+            "Prompt of 9000 tokens exceeds...", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
         resp = client.post("/api/chat", json={"question": "q", "history": []})
         assert resp.status_code == 400
         assert "9000" in resp.text

@@ -6,7 +6,6 @@ from unittest import mock
 import pytest
 
 from lilbee.app.services import CrawlerSyncState, Services, set_services
-from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
 
 @pytest.fixture()
@@ -47,9 +46,6 @@ def mock_provider():
         model_manager=mock.MagicMock(),
         crawler_semaphore=None,
         crawler_sync_state=CrawlerSyncState(),
-        worker_pool=mock.MagicMock(),
-        pool_runtime=mock.MagicMock(),
-        pool_health_ticker=HealthTickerHandle(),
     )
     set_services(services)
     yield provider

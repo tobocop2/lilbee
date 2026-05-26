@@ -1053,6 +1053,22 @@ class TestDownloadModel:
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
             download_model(entry)
 
+    def test_unexpected_exception_is_wrapped_with_type_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An error class the translator doesn't special-case is wrapped in a
+        RuntimeError that names the original exception type, not leaked raw."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_download(**kwargs: Any) -> str:
+            raise KeyError("missing sibling")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(RuntimeError, match=r"Failed to download.*KeyError"):
+            download_model(entry)
+
 
 class TestResolveFilename:
     def test_exact_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:

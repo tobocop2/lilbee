@@ -5,7 +5,7 @@ import pytest
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
-from lilbee.providers.worker.transport import ChatResult, FinishReason
+from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
     build_context,

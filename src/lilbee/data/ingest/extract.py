@@ -137,7 +137,7 @@ def _run_tesseract_sync(path: Path) -> Any:
     """
     from kreuzberg import extract_file_sync
 
-    from lilbee.providers.llama_cpp.log_dispatch import stderr_suppressed
+    from lilbee.core.system import stderr_suppressed
 
     with stderr_suppressed():
         return extract_file_sync(str(path), config=extraction_config(ExtractMode.PAGINATED_OCR))

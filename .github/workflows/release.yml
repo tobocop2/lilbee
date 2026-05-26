@@ -211,6 +211,13 @@ jobs:
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
+      # Bundle the multi-GPU llama-server sidecar into this executable, sharing
+      # the backend libs the llama-cpp-python above installed (so no second copy).
+      - name: Bundle llama-server
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: ${{ matrix.backend }}
+
       - name: Build executable
         shell: bash
         env:

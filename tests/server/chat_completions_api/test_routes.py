@@ -13,7 +13,7 @@ from litestar import Litestar
 from litestar.testing import AsyncTestClient
 
 from lilbee.app.services import set_services
-from lilbee.providers.worker.transport import (
+from lilbee.providers.base import (
     ChatResult,
     FinishReason,
     ToolCall,
@@ -465,12 +465,11 @@ class TestNonStreamingCompletion:
         too large for the loaded model's context window), the wire surface
         is a 400 with ``context_length_exceeded``, not a generic 500.
         """
-        from lilbee.providers.base import ContextWindowExceededError
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        services_with_chat_model.provider.chat.side_effect = (
-            ContextWindowExceededError.from_runtime_overflow(
-                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
-            )
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            f"Prompt of 161000 tokens exceeds the 40960-token context window of {INSTALLED_REF!r}.",
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
@@ -486,6 +485,33 @@ class TestNonStreamingCompletion:
         assert body["error"]["code"] == "context_length_exceeded"
         assert body["error"]["type"] == "invalid_request_error"
         assert "161000" in body["error"]["message"]
+        assert not chat_lock().locked()
+
+    async def test_non_overflow_provider_error_returns_500_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A ProviderError whose kind is NOT context-overflow (e.g. auth) is an
+        internal_error 500 on this surface, distinct from the 400 overflow case.
+        """
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "gemini/m rejected your API key.",
+            kind=ProviderErrorKind.AUTH,
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body["error"]["code"] == "internal_error"
+        assert body["error"]["type"] == "api_error"
         assert not chat_lock().locked()
 
 
@@ -610,12 +636,11 @@ class TestStreamingCompletion:
         ``context_length_exceeded`` followed by ``[DONE]``, not a generic
         ``internal_error``.
         """
-        from lilbee.providers.base import ContextWindowExceededError
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        services_with_chat_model.provider.chat.side_effect = (
-            ContextWindowExceededError.from_runtime_overflow(
-                requested=161_000, n_ctx=40_960, model=INSTALLED_REF
-            )
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            f"Prompt of 161000 tokens exceeds the 40960-token context window of {INSTALLED_REF!r}.",
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(
@@ -637,6 +662,33 @@ class TestStreamingCompletion:
         assert chunk["choices"][0]["finish_reason"] == "length"
         assert chunk["error"]["code"] == "context_length_exceeded"
         assert chunk["error"]["type"] == "invalid_request_error"
+        assert chunks[-1] == "[DONE]"
+        assert not chat_lock().locked()
+
+    async def test_stream_non_overflow_provider_error_emits_internal_error_frame(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A non-overflow ProviderError mid-stream (e.g. auth) emits an
+        internal_error frame, not the context_length_exceeded one."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "gemini/m rejected your API key.",
+            kind=ProviderErrorKind.AUTH,
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": True,
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[0]["error"]["code"] == "internal_error"
+        assert chunks[0]["error"]["type"] == "api_error"
         assert chunks[-1] == "[DONE]"
         assert not chat_lock().locked()
 

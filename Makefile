@@ -1,14 +1,14 @@
 .PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar dns-setup
 
 lint:
-	uv run ruff check src/ tests/ tools/qa/ tools/check_upstream_schemas.py
+	uv run ruff check src/ tests/ tools/qa/
 	uv run python scripts/check_style_rules.py
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ tools/check_upstream_schemas.py
+	uv run ruff format src/ tests/ tools/qa/
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ tools/check_upstream_schemas.py
+	uv run ruff format --check src/ tests/ tools/qa/
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -32,9 +32,6 @@ test-integration:
 	uv run pytest tests/integration/ -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
-
-check-upstream-schemas:  ## Check HF Hub for response_schema population in tracked model repos
-	uv run python tools/check_upstream_schemas.py
 
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode

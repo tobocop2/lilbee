@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import struct
 import tempfile
@@ -9,7 +10,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 import httpx
-from gguf import GGUFReader, GGUFValueType
+from gguf import GGUFReader, GGUFValueType, ReaderField
 
 log = logging.getLogger(__name__)
 
@@ -48,26 +49,54 @@ def _parse_arch(blob: bytes) -> str:
     with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
         f.write(bytes(patched))
         tmp = Path(f.name)
-    reader: GGUFReader | None = None
     try:
-        reader = GGUFReader(str(tmp))
-        field = reader.fields.get(GGUF_ARCH_KEY)
-        if field is None or not field.data:
-            return ""
-        if not field.types or field.types[-1] != GGUFValueType.STRING:
-            return ""
-        return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+        return _read_architecture(tmp)
     except (ValueError, struct.error, IndexError, OSError, UnicodeDecodeError) as exc:
         log.debug("GGUFReader parse failed: %s", exc)
         return ""
     finally:
-        # ``GGUFReader`` mmaps the file via numpy; on Windows the OS-level
-        # handle blocks unlink until the underlying mmap object is closed.
-        # ``del reader.data`` alone isn't enough -- field views into the
-        # array can keep refcounts alive -- so close the mmap explicitly.
-        if reader is not None and hasattr(reader, "data"):
-            backing = getattr(reader.data, "_mmap", None)
-            if backing is not None:
-                backing.close()
-            del reader.data
-        tmp.unlink(missing_ok=True)
+        # GGUFReader memory-maps the file; on Windows the mapping must be released
+        # before the file can be deleted (a held mapping raises PermissionError /
+        # WinError 32, which missing_ok does not cover). _read_architecture scopes
+        # the reader so it is freed on return; suppress is a best-effort backstop.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def gguf_scalar_str(field: ReaderField | None) -> str | None:
+    """Render a scalar GGUF metadata field as a string, or ``None``.
+
+    Mirrors what ``Llama(vocab_only=True).metadata`` produced: STRING fields
+    decode their bytes; numeric scalars (UINT*/INT*/FLOAT*/BOOL) stringify
+    their single value. ARRAY fields and empty fields return ``None`` (callers
+    here only read scalars). This is the one place the gguf-py ReaderField shape
+    is decoded, so a gguf-py layout change breaks here, not at every call site.
+    """
+    if field is None or not field.types or not field.data:
+        return None
+    value_type = field.types[-1]
+    part = field.parts[field.data[0]]
+    if value_type == GGUFValueType.STRING:
+        return bytes(part).decode("utf-8", errors="replace")
+    if value_type == GGUFValueType.ARRAY:
+        return None
+    scalar = part.tolist() if hasattr(part, "tolist") else part
+    if isinstance(scalar, (list, tuple)):
+        scalar = scalar[0] if scalar else None
+    return None if scalar is None else str(scalar)
+
+
+def _read_architecture(path: Path) -> str:
+    """Return general.architecture from the GGUF file at *path*, or empty string.
+
+    Kept separate so the ``GGUFReader`` (and its memory map of *path*) is released
+    when this returns, letting the caller delete the temp file on Windows.
+
+    Architecture is a string by spec; a field present under a non-STRING type is
+    malformed, so it yields an empty string rather than a stringified number.
+    """
+    reader = GGUFReader(str(path))
+    field = reader.fields.get(GGUF_ARCH_KEY)
+    if field is None or not field.types or field.types[-1] != GGUFValueType.STRING:
+        return ""
+    return gguf_scalar_str(field) or ""

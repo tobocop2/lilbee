@@ -16,7 +16,7 @@ from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
-from lilbee.providers.base import ContextWindowExceededError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
@@ -136,8 +136,15 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
         return _error_response(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
     except ModelDoesNotSupportToolsError as exc:
         return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-    except ContextWindowExceededError as exc:
-        return _error_response(400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
+    except ProviderError as exc:
+        if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
+            return _error_response(400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
+        log.exception("chat_completions_endpoint failed")
+        return _error_response(
+            500,
+            CompletionsErrorCode.INTERNAL_ERROR,
+            "Internal server error. Check the server logs for details.",
+        )
     except Exception:
         log.exception("chat_completions_endpoint failed")
         return _error_response(
@@ -174,8 +181,15 @@ async def _gated_completions_stream(
             yield _sse_error_frame(CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
         except ModelDoesNotSupportToolsError as exc:
             yield _sse_error_frame(CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-        except ContextWindowExceededError as exc:
-            yield _sse_error_frame(CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
+        except ProviderError as exc:
+            if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
+                yield _sse_error_frame(CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
+            else:
+                log.exception("chat_completions stream failed")
+                yield _sse_error_frame(
+                    CompletionsErrorCode.INTERNAL_ERROR,
+                    "Internal server error. Check the server logs for details.",
+                )
         except Exception:
             log.exception("chat_completions stream failed")
             yield _sse_error_frame(

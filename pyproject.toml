@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b481"
+version = "0.6.66b484"
 description = "A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources. Per-project libraries, semantic and hybrid search, vision OCR, auto-built wiki. CLI, TUI, MCP server, REST API, and Python library in one process; no model server, no database server."
 readme = "README.md"
 license = "Elastic-2.0"
@@ -44,7 +44,7 @@ dependencies = [
     "litestar>=2.0",
     "uvicorn>=0.30",
     "httpx",
-    "llama-cpp-python",
+    "lilbee-llama-server",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
@@ -53,18 +53,6 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
     "numpy",
-    # Pinned exactly: only used for `recursive_parse` in the tool-call
-    # response parser, and HF is mid-refactor of the schema DSL
-    # (PR huggingface/transformers#45847 renames `response_schema` to
-    # `response_template` with a new regions-of-text shape). Bump
-    # deliberately when the schemas are re-validated against a newer
-    # release; do not let it float.
-    "transformers==5.8.1",
-    # JMESPath transforms used by Cohere, ERNIE, SmolLM, GPT-OSS response
-    # schemas to normalise extracted tool-call shapes. Optional in
-    # transformers' parser engine; required here because we ship schemas
-    # that use the `x-parser-args.transform` key.
-    "jmespath>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -87,6 +75,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lilbee"]
+
+# Dev resolves the bundled engine from the in-repo wheel package; CI fills its
+# bin/ with the compiled, self-contained llama-server before building. Release
+# installs (`pip install lilbee`) resolve `lilbee-llama-server` from the index
+# instead -- this source override is workspace metadata, not published deps.
+[tool.uv.sources]
+lilbee-llama-server = { path = "packaging/llama-server-wheel" }
 
 [dependency-groups]
 dev = [

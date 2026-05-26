@@ -138,31 +138,18 @@ def _reset_services_after_test():
 
     Tests that inject a mock via ``set_services(make_mock_services(...))``
     would otherwise leak into the next test's ``get_services()`` call,
-    producing confusing cross-test failures. The injected mock holds a
-    real :class:`WorkerPool` and :class:`PoolRuntime` by default, so we
-    drain those explicitly before clearing the singleton; mocks pass
-    through the same path harmlessly.
+    producing confusing cross-test failures. Shutting the provider down
+    drops any running fleet; mocks pass through the same path harmlessly.
     """
     yield
     from contextlib import suppress
 
     from lilbee.app.services import peek_services, set_services
-    from lilbee.providers.worker.health_ticker import stop_health_ticker
 
     svc = peek_services()
     if svc is not None:
-        # Stop the health ticker before draining the runtime so it cannot
-        # schedule a fresh pool op against an already-stopped loop.
         with suppress(Exception):
-            stop_health_ticker(svc.pool_health_ticker, timeout=2.0)
-        runtime = svc.pool_runtime
-        pool = svc.worker_pool
-        # Real pool/runtime have these methods. Mocks no-op safely.
-        if hasattr(runtime, "shutdown") and hasattr(pool, "shutdown"):
-            with suppress(Exception):
-                runtime.run_sync(pool.shutdown(), timeout=5.0)
-            with suppress(Exception):
-                runtime.shutdown(timeout=5.0)
+            svc.provider.shutdown()
     set_services(None)
 
 
@@ -246,8 +233,7 @@ def _default_provider_mock():
     every downstream string consumer (regex, ``strip()``, etc.). Tests that
     care about the chat output override the return value explicitly.
     """
-    from lilbee.providers.base import LLMProvider
-    from lilbee.providers.worker.transport import ChatResult, FinishReason
+    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider
 
     provider = MagicMock(spec=LLMProvider)
     provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
@@ -294,17 +280,13 @@ def _default_clusterer_mock():
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
-    The worker pool defaults to a fresh :class:`WorkerPool` so tests that
-    drive ``LlamaCppProvider.embed`` get real pool semantics; the
-    :class:`PoolRuntime` defaults to a fresh real runtime so
-    ``run_sync`` works. Lightweight tests that never touch the pool can
-    override either with a :class:`MagicMock` to skip the runtime thread
-    cost.
+    The provider defaults to a ``MagicMock`` speccing :class:`LLMProvider`, so
+    inference lifecycle calls (cancel / reload_role / add_spawn_listener) and the
+    chat/embed/rerank methods are all stubbed. Override ``provider`` with a real
+    :class:`FleetProvider` for tests that need genuine fleet behaviour.
     """
     from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.providers.worker.health_ticker import HealthTickerHandle
-    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
@@ -323,11 +305,6 @@ def make_mock_services(**overrides):
     model_manager = overrides.pop("model_manager", None) or MagicMock()
     crawler_semaphore = overrides.pop("crawler_semaphore", None)
     crawler_sync_state = overrides.pop("crawler_sync_state", None) or CrawlerSyncState()
-    worker_pool = overrides.pop("worker_pool", None) or WorkerPool()
-    pool_runtime = overrides.pop("pool_runtime", None) or PoolRuntime()
-    # Default to an idle ticker handle: tests that exercise the ticker
-    # build a real one explicitly via start_health_ticker.
-    pool_health_ticker = overrides.pop("pool_health_ticker", None) or HealthTickerHandle()
     known_models = overrides.pop("known_models", None) or _default_known_models_mock()
 
     return Services(
@@ -344,9 +321,6 @@ def make_mock_services(**overrides):
         model_manager=model_manager,
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
-        worker_pool=worker_pool,
-        pool_runtime=pool_runtime,
-        pool_health_ticker=pool_health_ticker,
         known_models=known_models,
     )
 

@@ -3412,3 +3412,542 @@ class TestSetupCrawlerCommand:
         assert result.exit_code == 1
         assert '"error"' in result.stdout
         assert "offline" in result.stdout
+
+
+class TestSelfCheck:
+    """`lilbee self-check` spawns a llama-server for each leg via ``_self_check_chat``
+    and ``_self_check_embed``. Tests stub the urllib download and those two helpers
+    so they don't hit HuggingFace or require a real llama-server binary.
+    """
+
+    @staticmethod
+    def _patch_self_check(*, chat_text: str = " 4", embed_dims: int = 768):
+        """Patch ``_self_check_chat`` and ``_self_check_embed`` with stub results."""
+        return (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=chat_text,
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                return_value=embed_dims,
+            ),
+        )
+
+    def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._download_self_check_model",
+                side_effect=AssertionError("must not download when --model-path given"),
+            ),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True
+        assert payload["chat_response"] == " 4"
+        assert payload["chat_model"] == str(chat)
+        assert payload["embedding_dims"] == 768
+        assert set(payload["provider"]) == {
+            "num_ctx",
+            "num_ctx_max",
+            "chat_n_ctx_target",
+            "flash_attention",
+            "kv_cache_type",
+            "n_gpu_layers",
+            "main_gpu",
+            "gpu_devices",
+        }
+
+    def test_downloads_when_paths_missing(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._download_self_check_model",
+                side_effect=[chat, emb],
+            ),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 0, result.output
+
+    def test_skip_embedding_short_circuits(self, tmp_path: Path) -> None:
+        """--skip-embedding must not download or load the embedding model."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        download = mock.Mock(return_value=chat)
+        chat_patch, embed_patch = self._patch_self_check()
+        with (
+            mock.patch("lilbee.cli.commands.setup._download_self_check_model", download),
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(app, ["--json", "self-check", "--skip-embedding"])
+        assert result.exit_code == 0, result.output
+        # Only the chat download fires; embed leg is skipped.
+        assert download.call_count == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True
+        assert "embedding_dims" not in payload
+
+    def test_self_check_invokes_helpers_for_each_leg(self, tmp_path: Path) -> None:
+        """Both legs must route through _self_check_chat and _self_check_embed."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat", return_value=" ok"
+            ) as check_chat,
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed", return_value=4
+            ) as check_embed,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        check_chat.assert_called_once()
+        check_embed.assert_called_once()
+
+    def test_chat_download_failure_emits_json_error(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.setup._download_self_check_model",
+            side_effect=RuntimeError("network is down"),
+        ):
+            result = runner.invoke(app, ["--json", "self-check"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "network is down" in payload["error"]
+
+    def test_chat_failure_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        with mock.patch(
+            "lilbee.cli.commands.setup._self_check_chat",
+            side_effect=RuntimeError("Shared library not found"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "Shared library not found" in payload["error"]
+
+    def test_empty_chat_response_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        chat_patch, embed_patch = self._patch_self_check(chat_text="   ")
+        with (
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": False, "error": "empty inference response"}
+
+    def test_empty_chat_response_human_mode(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        chat_patch, embed_patch = self._patch_self_check(chat_text="   ")
+        with (
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+        assert "empty inference response" in result.output
+
+    def test_embed_failure_emits_json_error(self, tmp_path: Path) -> None:
+        """The Memory-is-not-initialized class of bug: embed leg raises."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=" 4",
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                side_effect=AssertionError("Memory is not initialized"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert "Memory is not initialized" in payload["error"]
+
+    def test_empty_embedding_emits_json_error(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=" 4",
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                return_value=0,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--json",
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {"ok": False, "error": "empty embedding vector"}
+
+    def test_human_mode_on_success_with_embedding(self, tmp_path: Path) -> None:
+        """Non-JSON mode prints chat response, embedding dims, provider snapshot, and PASSED."""
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check(chat_text=" hello", embed_dims=384)
+        with (
+            chat_patch,
+            embed_patch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "SELF-CHECK PASSED" in result.output
+        assert "hello" in result.output
+        assert "384" in result.output
+        assert "Provider:" in result.output
+        assert "kv_cache_type=" in result.output
+        assert "flash_attention=" in result.output
+
+    def test_human_mode_on_failure(self, tmp_path: Path) -> None:
+        chat = tmp_path / "chat.gguf"
+        chat.write_bytes(b"chat")
+        with mock.patch(
+            "lilbee.cli.commands.setup._self_check_chat",
+            side_effect=OSError("boom"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--skip-embedding",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "SELF-CHECK FAILED" in result.output
+
+
+class TestSelfCheckHelpers:
+    """The leg helpers spawn one llama-server via the fleet primitives and run inference."""
+
+    @staticmethod
+    def _patch_fleet_primitives(monkeypatch, *, server) -> None:
+        """Stub binary resolution, metadata, ctx/layer math, argv, and FleetServer."""
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.binary.resolve_llama_server_binary",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.binary.llama_server_runtime_env", lambda: {}
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.adapters.build_server_argv",
+            lambda **_k: ["/bin/llama-server"],
+        )
+        monkeypatch.setattr("lilbee.providers.multi_gpu.fleet.FleetServer", lambda _launch: server)
+
+    def test_self_check_chat_runs_completion(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.chat.return_value = " 4"
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        result = setup._self_check_chat(tmp_path / "chat.gguf", max_tokens=5)
+        assert result == " 4"
+        server.spawn.assert_called_once()
+        server.stop.assert_called_once()  # always torn down
+
+    def test_self_check_embed_returns_dimensionality(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = [[0.1, 0.2, 0.3]]
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 3
+        server.stop.assert_called_once()
+
+    def test_self_check_embed_empty_vectors_returns_zero(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = []
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 0
+
+    def test_self_check_server_raises_when_not_ready(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        server = mock.MagicMock()
+        server.wait_ready.return_value = False
+        server.failed_start_detail.return_value = "boom: could not bind"
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        with pytest.raises(RuntimeError, match="did not become ready"):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+        server.stop.assert_called_once()  # the dead server is reaped
+
+    def test_self_check_server_raises_when_ready_without_client(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        server = mock.MagicMock(client=None)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        with pytest.raises(RuntimeError, match="without a client"):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+
+
+class TestSelfCheckExtras:
+    """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test."""
+
+    @staticmethod
+    def _import_module_stub(missing: set[str]):
+        """Return a side_effect that raises ImportError for names in *missing*."""
+
+        def _stub(name: str):
+            if name in missing:
+                raise ImportError(f"No module named {name!r}")
+            return MagicMock(__name__=name)
+
+        return _stub
+
+    def test_all_extras_present_json(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.setup.importlib.import_module",
+            side_effect=self._import_module_stub(missing=set()),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload == {
+            "ok": True,
+            "litellm": True,
+            "crawl4ai": True,
+            "spacy": True,
+            "graspologic_native": True,
+        }
+
+    def test_one_extra_missing_exits_nonzero_json(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.setup.importlib.import_module",
+            side_effect=self._import_module_stub(missing={"crawl4ai"}),
+        ):
+            result = runner.invoke(app, ["--json", "self-check-extras"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is False
+        assert payload["litellm"] is True
+        assert payload["crawl4ai"] is False
+        assert "crawl4ai_error" in payload
+        assert payload["spacy"] is True
+        assert payload["graspologic_native"] is True
+
+    def test_one_extra_missing_human_mode_reports_failure(self) -> None:
+        with mock.patch(
+            "lilbee.cli.commands.setup.importlib.import_module",
+            side_effect=self._import_module_stub(missing={"spacy"}),
+        ):
+            result = runner.invoke(app, ["self-check-extras"])
+        assert result.exit_code == 1, result.output
+        assert "spacy" in result.output
+        assert "MISSING" in result.output
+
+
+class TestDownloadSelfCheckModel:
+    """`_download_self_check_model` retries URLError up to 3 times."""
+
+    def test_successful_download_returns_path(self, tmp_path: Path) -> None:
+        from lilbee.cli.commands import setup as cmds
+
+        payload = b"gguf-bytes"
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", return_value=_Resp()),
+        ):
+            path = cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert path == tmp_path / "tiny.gguf"
+        assert path.read_bytes() == payload
+
+    def test_retries_then_raises_after_three_attempts(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli.commands import setup as cmds
+
+        err = urllib.error.URLError("dns failed")
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", side_effect=err) as opened,
+            pytest.raises(RuntimeError, match="3 attempts"),
+        ):
+            cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert opened.call_count == 3
+
+    def test_retry_then_succeed(self, tmp_path: Path) -> None:
+        import urllib.error
+
+        from lilbee.cli.commands import setup as cmds
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        urlopen = mock.Mock(
+            side_effect=[urllib.error.URLError("flaky"), _Resp()],
+        )
+        with (
+            mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+            mock.patch("urllib.request.urlopen", urlopen),
+        ):
+            path = cmds._download_self_check_model("repo/x", "tiny.gguf")
+
+        assert urlopen.call_count == 2
+        assert path.read_bytes() == b"ok"

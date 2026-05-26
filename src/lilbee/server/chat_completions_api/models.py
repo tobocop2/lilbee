@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 # Wire layer reuses the provider-layer enum so the two can never drift.
-from lilbee.providers.worker.transport import FinishReason as FinishReason
+from lilbee.providers.base import FinishReason as FinishReason
 
 
 class ToolChoiceMode(StrEnum):

@@ -11,7 +11,7 @@ from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import scope_to_chunk_type
-from lilbee.providers.base import ContextWindowExceededError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -92,8 +92,9 @@ async def ask_route(data: AskRequest) -> AskResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ModelDoesNotSupportToolsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ContextWindowExceededError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderError as exc:
+        status = 400 if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW else 503
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
@@ -138,8 +139,9 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ModelDoesNotSupportToolsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ContextWindowExceededError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderError as exc:
+        status = 400 if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW else 503
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:

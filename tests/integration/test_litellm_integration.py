@@ -13,9 +13,9 @@ import pytest
 litellm = pytest.importorskip("litellm")
 
 from lilbee.core.config import cfg  # noqa: E402
+from lilbee.providers.base import ChatResult, ToolCallDelta  # noqa: E402
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
-from lilbee.providers.worker.transport import ChatResult, ToolCallDelta  # noqa: E402
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires
@@ -144,11 +144,12 @@ class TestSdkFactory:
         assert isinstance(provider, SdkLLMProvider)
 
     def test_ollama_alias_rejected(self) -> None:
-        """'ollama' is not a valid llm_provider value; only "remote" is."""
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import create_provider
+        """'ollama' is not a valid llm_provider value (use 'remote' for Ollama).
 
-        cfg.llm_provider = "ollama"
-        cfg.remote_base_url = OLLAMA_HOST
-        with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            create_provider(cfg)
+        Now a validated ``LlmProvider`` enum, it is rejected at the config
+        boundary on assignment rather than later in ``create_provider``.
+        """
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            cfg.llm_provider = "ollama"

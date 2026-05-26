@@ -9,7 +9,13 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from lilbee.core.config.enums import (
+    ChatMode,
+    ClustererBackend,
+    KvCacheType,
+    LlmProvider,
+    WikiEntityMode,
+)
 
 
 class RenderStyle(StrEnum):
@@ -784,9 +790,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        choices=("auto", "llama-cpp", "remote"),
+        choices=tuple(p.value for p in LlmProvider),
         help_text=(
-            "Provider routing: auto picks the first key present; force a specific one when set"
+            "Inference provider: auto (default, runs models locally on llama-server) "
+            "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
     "remote_base_url": SettingDef(
@@ -794,6 +801,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         help_text="OpenAI-compatible base URL (Ollama default: http://localhost:11434)",
+    ),
+    "llama_server_path": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.API_KEYS,
+        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

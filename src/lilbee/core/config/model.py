@@ -24,7 +24,7 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from .enums import ChatMode, ClustererBackend, KvCacheType, LlmProvider, WikiEntityMode
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -34,6 +34,10 @@ log = logging.getLogger(__name__)
 # instance equal to this, so the model_validator can distinguish "user passed
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
+
+# Retired ``llm_provider`` strings that now mean "use the local llama-server
+# engine"; canonicalized to ``auto`` in the field validator.
+_RETIRED_LOCAL_PROVIDERS = frozenset({"llama-cpp", "multi-gpu"})
 
 
 class Config(BaseSettings):
@@ -131,8 +135,11 @@ class Config(BaseSettings):
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
-    llm_provider: str = ConfigField(default="auto", writable=True)
+    llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    # Path to a llama-server binary. Empty = use the bundled lilbee-llama-server
+    # wheel binary, else a llama-server on PATH.
+    llama_server_path: str = ConfigField(default="", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
@@ -311,7 +318,7 @@ class Config(BaseSettings):
     # enumerates every adapter the system exposes and may pick the
     # integrated one first, producing stalls or OOMs that look like
     # llama.cpp bugs. Setting ``gpu_devices`` constrains visibility
-    # before llama_cpp loads, pinning inference to the chosen device(s).
+    # before the servers spawn, pinning inference to the chosen device(s).
     #
     # Accepts a comma-separated list of device indexes ("0", "1",
     # "0,1") and applies it to every backend simultaneously:
@@ -323,7 +330,7 @@ class Config(BaseSettings):
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
     # only take effect after a restart). ``None`` (default) hands off
-    # to the autodetect in ``providers/llama_cpp/gpu_select.py``,
+    # to the autodetect in ``providers/multi_gpu/gpu_select.py``,
     # which parses ``vulkaninfo --summary`` and pins the discrete
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
@@ -558,6 +565,20 @@ class Config(BaseSettings):
     def _empty_string_to_none(cls, v: Any) -> Any:
         if isinstance(v, str) and v.strip() == "":
             return None
+        return v
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _canonicalize_llm_provider(cls, v: Any) -> Any:
+        """Map the retired ``llama-cpp`` / ``multi-gpu`` values to ``auto``.
+
+        Both meant "use the local engine"; llama-server is now that engine for
+        every local ref, so persisted configs carrying the old strings load as
+        ``auto`` instead of failing the enum. Canonicalized once here at the
+        write boundary, never via a read-path fallback.
+        """
+        if isinstance(v, str) and v.strip().lower() in _RETIRED_LOCAL_PROVIDERS:
+            return LlmProvider.AUTO.value
         return v
 
     @field_validator("chat_mode", mode="before")

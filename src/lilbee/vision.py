@@ -1,10 +1,10 @@
 """Helpers for PDF rasterisation and vision-model OCR.
 
-Multi-page vision OCR runs through ``LlamaCppProvider.pdf_ocr`` and the
-persistent worker pool; this module hosts the small helpers (page count,
-rasterisation, prompt + chat-message construction, and the shared
-:class:`PageText` / :class:`PdfOcrChunk` types) that both the worker and
-the parent need.
+Multi-page vision OCR runs through ``FleetProvider.pdf_ocr``, which rasterises
+each page and sends it to the vision server; this module hosts the small helpers
+(page count, rasterisation, prompt + chat-message construction, and the shared
+:class:`PageText` / :class:`PdfOcrChunk` types) that the provider and its callers
+share.
 """
 
 import logging

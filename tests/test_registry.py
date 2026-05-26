@@ -286,6 +286,27 @@ class TestModelRegistryResolve:
         for n in (2, 3):
             assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
 
+    def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shards register as present, but if the first shard's snapshot symlink
+        can't be located, resolve raises 'not installed' rather than returning None."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        # Presence check forced True; snapshot resolution forced None. This is the
+        # narrow window where every shard reports present but the first shard's
+        # snapshot symlink is gone -- resolve must surface a clean 'not installed'.
+        monkeypatch.setattr(registry, "_split_shards_present", lambda *_a, **_k: True)
+        monkeypatch.setattr(registry, "_snapshot_gguf_path", lambda *_a, **_k: None)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+
+    def test_split_shards_present_true_for_single_file_gguf(self, tmp_path: Path) -> None:
+        """A non-split filename has exactly one 'shard' and is trivially present:
+        the presence check short-circuits without touching the cache."""
+        registry = ModelRegistry(tmp_path)
+        assert registry._split_shards_present("org/repo-GGUF", "model-Q4_K_M.gguf") is True
+
     def test_subdir_quant_single_file_resolves(self, tmp_path: Path) -> None:
         """A single-file quant nested in a ``Q4_K_M/`` subdir resolves by basename.
 

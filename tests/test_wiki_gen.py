@@ -91,7 +91,7 @@ def _mock_provider(
     faith_score: str = "0.85",
     capabilities: list[str] | None = None,
 ) -> MagicMock:
-    from lilbee.providers.worker.transport import ChatResult, FinishReason
+    from lilbee.providers.base import ChatResult, FinishReason
 
     def _result(text: str) -> ChatResult:
         return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)

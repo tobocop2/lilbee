@@ -21,8 +21,8 @@ class ModelArchInfo:
 
 
 # Cache: (chat_model_ref, embed_model_ref, vision_model_ref) -> ModelArchInfo.
-# Reading GGUF headers is hundreds of ms cold (file open + parse + first
-# llama_cpp import); the result is stable as long as the configured refs
+# Reading GGUF headers is hundreds of ms cold (file open + parse); the result
+# is stable as long as the configured refs
 # stay the same. Status screen visits, MCP status calls, and any other
 # read-side caller share this cache. ``invalidate_cache`` lets settings
 # updates clear it explicitly when a model ref changes.
@@ -42,23 +42,18 @@ def get_model_architecture() -> ModelArchInfo:
     """Return architecture metadata for the currently configured models.
 
     Memoized on (chat_model, embed_model, vision_model). First call
-    reads GGUF headers for each; subsequent calls under the same refs
-    return the cached result instantly. Falls back gracefully if
-    llama-cpp-python is not installed or models are not available.
+    reads GGUF headers (binding-free) for each; subsequent calls under
+    the same refs return the cached result instantly. Each reader
+    degrades gracefully when its model is unset or unavailable.
     """
     key = _cache_key()
     cached = _arch_cache.get(key)
     if cached is not None:
         return cached
     info = ModelArchInfo()
-    try:
-        import lilbee.providers.llama_cpp  # noqa: F401
-
-        info = _read_chat_arch(info)
-        info = _read_embed_arch(info)
-        info = _read_vision_arch(info)
-    except ImportError:
-        pass  # llama_cpp is optional; arch info degrades gracefully
+    info = _read_chat_arch(info)
+    info = _read_embed_arch(info)
+    info = _read_vision_arch(info)
     _arch_cache[key] = info
     return info
 
@@ -66,14 +61,14 @@ def get_model_architecture() -> ModelArchInfo:
 def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read chat model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         path = resolve_model_path(cfg.chat_model)
         meta = read_gguf_metadata(path)
         if meta:
             info.chat_arch = meta.get("architecture", "unknown")
-            info.active_handler = "llama-cpp"
+            info.active_handler = "llama-server"
     except Exception:
         log.debug("Failed to read chat model architecture", exc_info=True)
     return info
@@ -82,8 +77,8 @@ def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
 def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read embedding model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         path = resolve_model_path(cfg.embedding_model)
         meta = read_gguf_metadata(path)
@@ -106,11 +101,11 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
     if not cfg.vision_model:
         return info
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import (
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.gguf_meta import (
             find_mmproj_for_model,
             read_mmproj_projector_type,
         )
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
 
         path = resolve_model_path(cfg.vision_model)
         mmproj = find_mmproj_for_model(path)

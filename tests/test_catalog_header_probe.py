@@ -18,6 +18,20 @@ def test_probe_reads_architecture(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_architecture("https://example.test/model.gguf") == "llama"
 
 
+def test_probe_survives_tempfile_cleanup_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On Windows the GGUFReader memory-map can keep the temp file locked, so the
+    # unlink raises PermissionError (WinError 32). The probe must still return the
+    # parsed architecture rather than propagating the cleanup error.
+    blob = make_minimal_gguf("llama")
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
+
+    def _raise_unlink(self: object, *_a: object, **_k: object) -> None:
+        raise PermissionError("WinError 32 simulated")
+
+    monkeypatch.setattr(header_probe.Path, "unlink", _raise_unlink)
+    assert probe_architecture("https://example.test/model.gguf") == "llama"
+
+
 def test_probe_handles_truncated_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=b"GGUF\x03"))
     assert probe_architecture("https://example.test/model.gguf") == ""

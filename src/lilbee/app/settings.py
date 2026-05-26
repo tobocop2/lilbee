@@ -237,7 +237,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         invalidate_arch_cache()
     load_affecting = (changed_keys & LOAD_AFFECTING_KEYS) - PER_CALL_RELOADABLE_KEYS
     if load_affecting:
-        # heavy: app.services pulls llama_cpp + lancedb (~70 ms)
+        # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         from lilbee.app.services import peek_services
 
         services = peek_services()

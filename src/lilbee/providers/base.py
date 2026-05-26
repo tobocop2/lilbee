@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from lilbee.providers.worker.transport import (
-        ChatResult,
-        ChatStreamItem,
-        OcrBackend,
-    )
+    from lilbee.providers.roles import OcrBackend, WorkerRole
     from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
@@ -25,10 +23,8 @@ class ClosableIterator(Iterator[T_co], Protocol[T_co]):
 
     Streaming chat responses use this to guarantee the upstream model lock
     is released even when callers truncate the stream before exhaustion.
-    Concrete implementations may additionally satisfy ``AsyncIterator``
-    (the llama-cpp pool wrapper does, for non-blocking dispatch in
-    ``server/chat_dispatch``); the Protocol underspecifies because some
-    backends only expose a sync generator.
+    Generators satisfy this implicitly; explicit wrappers (e.g. the llama-cpp
+    chat-lock iterator) implement it directly.
     """
 
     def close(self) -> None: ...
@@ -58,83 +54,112 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     return LLMOptions(**options).to_dict()
 
 
+class ProviderErrorKind(StrEnum):
+    """Provider-agnostic category of a failed provider call.
+
+    Classified by exception type at each backend boundary so callers can
+    branch on the kind instead of matching message strings (which are
+    provider-specific and drift between SDK versions).
+    """
+
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    CONTEXT_OVERFLOW = "context_overflow"
+    NOT_FOUND = "not_found"
+    BAD_REQUEST = "bad_request"
+    CONNECTION = "connection"
+    SERVER = "server"
+    UNKNOWN = "unknown"
+
+
 class ProviderError(Exception):
-    """Raised when an LLM provider operation fails."""
+    """Raised when an LLM provider operation fails.
 
-    def __init__(self, message: str, *, provider: str = "") -> None:
-        self.provider = provider
-        super().__init__(message)
-
-
-class ContextWindowExceededError(ProviderError):
-    """Raised when a chat prompt does not fit the loaded model's context window."""
+    ``kind`` is the provider-agnostic category; backends that can't classify a
+    failure leave it ``UNKNOWN``.
+    """
 
     def __init__(
         self,
         message: str,
         *,
-        requested: int = 0,
-        usable_budget: int = 0,
-        n_ctx: int = 0,
+        provider: str = "",
+        kind: ProviderErrorKind = ProviderErrorKind.UNKNOWN,
     ) -> None:
-        super().__init__(message, provider="llama-cpp")
-        self.requested = requested
-        self.usable_budget = usable_budget
-        self.n_ctx = n_ctx
-
-    @classmethod
-    def from_breakdown(
-        cls,
-        *,
-        requested: int,
-        n_ctx: int,
-        response_budget: int,
-        tools_overhead: int,
-        safety_margin: int,
-        model: str,
-    ) -> ContextWindowExceededError:
-        """Build the error with the full budget breakdown so the user can see
-        which lever to pull (top_k / num_predict / num_ctx).
-        """
-        usable_budget = max(0, n_ctx - response_budget - tools_overhead - safety_margin)
-        message = (
-            f"Prompt of {requested} tokens exceeds the usable budget of "
-            f"{usable_budget} tokens (n_ctx={n_ctx}, response_budget="
-            f"{response_budget}, tools_schema={tools_overhead}, safety_margin="
-            f"{safety_margin}) for model {model!r}. To fit, lower the agent's "
-            f"top_k / max_distance, reduce num_predict, or load the model with "
-            f"a larger num_ctx."
-        )
-        return cls(
-            message,
-            requested=requested,
-            usable_budget=usable_budget,
-            n_ctx=n_ctx,
-        )
-
-    @classmethod
-    def from_runtime_overflow(
-        cls, *, requested: int, n_ctx: int, model: str
-    ) -> ContextWindowExceededError:
-        """Build the error when llama-cpp raised mid-render and the breakdown
-        isn't available at the catch site (the safety-net path).
-        """
-        message = (
-            f"Prompt of {requested} tokens exceeded the {n_ctx}-token context "
-            f"window of {model!r} at render time. The pre-flight budget "
-            f"estimate undercounted; try reducing top_k / num_predict or "
-            f"loading the model with a larger num_ctx."
-        )
-        return cls(
-            message,
-            requested=requested,
-            usable_budget=n_ctx,
-            n_ctx=n_ctx,
-        )
+        self.provider = provider
+        self.kind = kind
+        super().__init__(message)
 
 
-ChatMessage = dict[str, Any]
-"""One chat message; ``content`` may be a string or a list of content blocks."""
+ChatMessage = dict[str, str]
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool/function call the model requested.
+
+    ``arguments`` is the raw JSON-encoded argument object (OpenAI's shape), left
+    as a string so the caller decides how to parse and validate it. ``id`` is the
+    server-assigned call id, echoed back in the tool result message.
+    """
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatToolResult:
+    """A chat turn that may carry tool calls alongside (or instead of) text.
+
+    ``tool_calls`` is empty for an ordinary text answer; ``content`` is empty when
+    the model returned only tool calls. Both can be populated when a model emits
+    commentary plus a call.
+    """
+
+    content: str
+    tool_calls: list[ToolCall]
+
+
+class FinishReason(StrEnum):
+    """Why a chat completion stopped, mirroring OpenAI's vocabulary."""
+
+    STOP = "stop"
+    LENGTH = "length"
+    TOOL_CALLS = "tool_calls"
+    CONTENT_FILTER = "content_filter"
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    """Structured result from a non-streaming chat call.
+
+    ``tool_calls`` is empty for an ordinary text answer; ``text`` is empty when
+    the model returned only tool calls. The canonical chat dispatch reads all
+    three fields to build its OpenAI/Anthropic-shaped response.
+    """
+
+    text: str
+    tool_calls: tuple[ToolCall, ...]
+    finish_reason: FinishReason
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    """Partial tool-call delta in a streaming response, accumulated by ``index``.
+
+    ``id`` and ``name`` arrive on the opener frame for a call; ``arguments_delta``
+    accumulates across subsequent frames at the same ``index``.
+    """
+
+    index: int
+    id: str | None
+    name: str | None
+    arguments_delta: str | None
+
+
+ChatStreamItem = str | ToolCallDelta
+"""One frame yielded by a streaming chat call: text token or tool-call delta."""
 
 
 class LLMProvider(Protocol):
@@ -180,17 +205,41 @@ class LLMProvider(Protocol):
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
         """Chat completion.
 
-        Returns :class:`ChatResult` for non-streaming requests and a
-        :class:`ClosableIterator` of :data:`ChatStreamItem` for streaming
-        requests (text deltas plus tool-call deltas). Pass ``tools`` to
-        enable tool-calling on backends whose ``supports_tools(model)``
-        returns True.
+        Non-streaming returns a :class:`ChatResult` (assistant text, any
+        tool-call frames, and a finish reason). Streaming returns a
+        :class:`ClosableIterator` of :data:`ChatStreamItem` (text tokens
+        interleaved with :class:`ToolCallDelta` frames). ``tools`` is the
+        OpenAI function-tool list; ``tool_choice`` is ``"auto"`` / ``"none"`` /
+        ``"required"`` or a ``{"type": "function", ...}`` selector. A model
+        that lacks tool support returns an empty ``tool_calls`` / yields no
+        tool deltas rather than erroring.
         """
         ...
 
     def supports_tools(self, model_ref: str) -> bool:
-        """Return True iff the backend can route tool calls for *model_ref*."""
-        ...
+        """Return True iff the backend can route tool calls for *model_ref*.
+
+        Default False so backends without a tool path are never offered tools;
+        tool-capable backends override this with a real probe.
+        """
+        return False
+
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Non-streaming chat that may return tool calls.
+
+        ``tools`` is the OpenAI function-tool list; ``tool_choice`` is ``"auto"``
+        / ``"none"`` / ``"required"`` or a specific ``{"type": "function", ...}``
+        selector. Backends without tool support raise :class:`ProviderError`.
+        """
+        raise ProviderError("This backend does not support tool calling.")
 
     def vision_ocr(
         self,
@@ -284,11 +333,43 @@ class LLMProvider(Protocol):
         return
 
     def warm_up_pool(self) -> None:
-        """Eagerly register configured roles so :meth:`WorkerPool.start_eager` has work to do.
+        """Eagerly start the configured role servers so the first call lands warm.
 
-        Default no-op so providers without a worker pool (SDK / routing
+        Default no-op so providers without managed servers (SDK / routing
         wrappers) can be passed to ``Services`` unchanged. Implemented by
-        :class:`LlamaCppProvider` to register chat / embed / rerank / vision
-        roles whose model is configured.
+        :class:`FleetProvider` to spawn the chat / embed / rerank / vision
+        servers whose model is configured.
+        """
+        return
+
+    def cancel_inference(self) -> None:
+        """Interrupt any in-flight generation. No-op default.
+
+        The fleet engine stops a llama-server mid-generation by client
+        disconnect (the caller closes the active stream), so there is no abort
+        flag to flip; SDK and routing wrappers have nothing to interrupt here.
+        """
+        return
+
+    def reload_role(self, role: WorkerRole) -> None:
+        """Drop and respawn just *role*'s model so it picks up changed cfg.
+
+        Default no-op for providers without per-role model servers. The fleet
+        respawns only that role's server; other roles and their in-flight work
+        are left untouched.
+        """
+        return
+
+    def add_spawn_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Subscribe to server (re)spawn lifecycle events. No-op default.
+
+        The fleet calls ``on_spawning`` before a role's server starts and
+        ``on_spawned`` once it is healthy, so the TUI can surface cold-start and
+        reload progress. Providers without managed servers ignore it.
         """
         return

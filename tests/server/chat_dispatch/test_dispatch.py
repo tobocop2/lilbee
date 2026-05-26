@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app.services import set_services
-from lilbee.providers.worker.transport import (
+from lilbee.providers.base import (
     ChatResult,
     FinishReason,
     ToolCall,

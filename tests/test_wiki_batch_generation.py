@@ -79,7 +79,7 @@ def stub_embedder(monkeypatch):
 
 
 def _mock_batch_provider(text: str) -> MagicMock:
-    from lilbee.providers.worker.transport import ChatResult, FinishReason
+    from lilbee.providers.base import ChatResult, FinishReason
 
     provider = MagicMock()
     provider.chat.return_value = ChatResult(

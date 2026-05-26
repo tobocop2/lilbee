@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.app.services import get_services
-from lilbee.providers.worker.transport import FinishReason, ToolCallDelta
+from lilbee.providers.base import FinishReason, ToolCallDelta
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,

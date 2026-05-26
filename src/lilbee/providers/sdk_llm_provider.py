@@ -20,8 +20,18 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
+from lilbee.providers.base import (
+    ChatResult,
+    ChatStreamItem,
+    ClosableIterator,
+    FinishReason,
+    LLMProvider,
+    ProviderError,
+    ToolCall,
+    ToolCallDelta,
+)
 from lilbee.providers.model_ref import parse_model_ref, translate_options
+from lilbee.providers.roles import OcrBackend
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -29,18 +39,9 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.providers.worker.transport import (
-    ChatResult,
-    ChatStreamItem,
-    FinishReason,
-    OcrBackend,
-    ToolCall,
-    ToolCallDelta,
-)
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
-
 
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
 
@@ -124,7 +125,7 @@ class SdkLLMProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
@@ -136,7 +137,7 @@ class SdkLLMProvider(LLMProvider):
     @overload
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: Literal[True],
         options: dict[str, Any] | None = None,
@@ -147,7 +148,7 @@ class SdkLLMProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
@@ -155,7 +156,13 @@ class SdkLLMProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatResult | ClosableIterator[ChatStreamItem]:
-        """Chat completion via the configured backend."""
+        """Chat completion via the configured backend.
+
+        Non-streaming returns a :class:`ChatResult` carrying the assistant
+        text, any tool-call frames the model emitted, and a finish reason.
+        Streaming yields :data:`ChatStreamItem` frames (text tokens and
+        tool-call deltas).
+        """
         self._ensure_initialized()
         ref = parse_model_ref(model or cfg.chat_model)
         if tools and not self.supports_tools(model or cfg.chat_model):
@@ -201,7 +208,7 @@ class SdkLLMProvider(LLMProvider):
         return self._backend.supports_tools(model_ref)
 
     def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[ChatStreamItem]:
-        """Yield content tokens from a streaming completion.
+        """Yield content tokens and tool-call deltas from a streaming completion.
 
         Exceptions surfaced by the backend at either call time or during
         iteration are re-raised as ``ProviderError`` so callers always

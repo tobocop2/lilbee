@@ -42,6 +42,17 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
+# Bundle the multi-GPU llama-server sidecar when its package is installed. The
+# release build installs packaging/llama-server-wheel after build_llama_server.sh
+# fills its bin/; the package data is just the server executable (the ggml/llama
+# backend libs come from the bundled llama_cpp at runtime). Optional so a build
+# without multi-GPU wiring still succeeds.
+LLAMA_SERVER_FLAGS=()
+if uv run --no-sync python -c "import lilbee_llama_server" >/dev/null 2>&1; then
+    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_llama_server)
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_llama_server)
+fi
+
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --no-deployment-flag=self-execution \
@@ -84,4 +95,5 @@ uv run --no-sync python -m nuitka \
     --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
     "${MYPYC_FLAGS[@]}" \
+    "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py

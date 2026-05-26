@@ -1,7 +1,7 @@
 # lilbee — Development Guide
 
 ## Project
-Local knowledge base. Python 3.11+, pluggable LLM providers (llama-cpp default, remote providers via the LiteLLM-backed SDK adapter), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+Local knowledge base. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
 **Framing:** Lead with "knowledge base" — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
@@ -55,8 +55,9 @@ All settings override via environment variables:
 - `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
 - `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
-- `LILBEE_LLM_PROVIDER` — provider: `auto` (default), `llama-cpp`, `remote` (requires `pip install lilbee[remote]`)
+- `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[remote]`). Persisted configs pinning the retired `llama-cpp`/`multi-gpu` values load as `auto`.
 - `LILBEE_REMOTE_BASE_URL` — SDK backend endpoint (default: `http://localhost:11434`)
+- `LILBEE_LLAMA_SERVER_PATH` — path to a `llama-server` binary (default: the bundled wheel's binary, else PATH)
 - `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
 - `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
 - `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)
@@ -188,6 +189,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 | `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[remote]` | SDK provider, settings TUI |
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
+| `lilbee_llama_server` | resolved in `lilbee.providers.multi_gpu.binary.resolve_llama_server_binary()` | bundled wheel | The local inference engine (managed `llama-server` fleet, all roles) |
 
 Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
 
@@ -424,7 +426,7 @@ See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the full
 - `data/store/` — LanceDB operations
 - `data/chunk.py` — Text chunking (token-based recursive)
 - `data/code_chunker.py` — Code chunking (tree-sitter AST)
-- `providers/` — LLM provider abstraction (base protocol, llama-cpp, remote via LiteLLM SDK adapter, factory)
+- `providers/` — LLM provider abstraction (base protocol, the `multi_gpu` llama-server fleet engine, litellm SDK, routing/factory)
 - `catalog/` — Model discovery from HuggingFace
 - `modelhub/model_manager/` — Model lifecycle (install, remove, list)
 - `retrieval/embedder.py` — Embedding wrapper (uses provider abstraction)
