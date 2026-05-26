@@ -67,7 +67,8 @@ class _ChatSession:
         return llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
-        from lilbee.providers.llama_cpp.provider import load_llama, resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.llama_cpp.provider import load_llama
         from lilbee.providers.model_cache import LoaderMode
 
         target_path = (

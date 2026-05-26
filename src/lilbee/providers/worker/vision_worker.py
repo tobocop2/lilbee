@@ -69,7 +69,7 @@ class _VisionSession:
         return text
 
     def _ensure_loaded(self, model_override: str | None) -> Any:
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
         from lilbee.providers.mtmd_backend import load_vision_llama
 
         target_path = (

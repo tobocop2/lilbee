@@ -76,27 +76,27 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
     ``cfg.num_ctx`` then falls back to the dynamic chat-ctx picker. Never hardcoded.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.llama_cpp.provider import _EMBED_FALLBACK_CTX, _resolve_chat_ctx
+    from lilbee.providers.engine_params import EMBED_FALLBACK_CTX, resolve_chat_ctx
 
     if role in _EMBED_ROLES:
         from lilbee.providers.gguf_meta import train_ctx_from_meta
 
-        return train_ctx_from_meta(meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path)
+        return train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
     if role is WorkerRole.VISION:
         from lilbee.providers.mtmd_backend import _resolve_vision_n_ctx
 
         return _resolve_vision_n_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
-    return _resolve_chat_ctx(model_path, meta)
+    return resolve_chat_ctx(model_path, meta)
 
 
 def _role_gpu_layers(role: WorkerRole) -> int:
     """GPU-layer offload for a role. Chat honors ``cfg.n_gpu_layers``; embed/rerank
     and vision always offload all layers, mirroring their in-process loaders."""
-    from lilbee.providers.llama_cpp.provider import _resolve_n_gpu_layers
+    from lilbee.providers.engine_params import resolve_n_gpu_layers
 
-    return _resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
+    return resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
 
 
 def _flash_attn_flag() -> str:
@@ -211,7 +211,7 @@ class FleetProvider:
         model: str | None = None,
     ) -> str | ClosableIterator[str]:
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.provider import chat_options_to_kwargs
+        from lilbee.providers.engine_params import chat_options_to_kwargs
 
         # The fleet's chat server serves cfg.chat_model; a different model override
         # must load in-process, not be silently served by the wrong server.
@@ -362,7 +362,7 @@ def _vision_mmproj(model_ref: str) -> Path | None:
     """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.gguf_meta import find_mmproj_for_model
-    from lilbee.providers.llama_cpp.provider import resolve_model_path
+    from lilbee.providers.engine_params import resolve_model_path
 
     try:
         return find_mmproj_for_model(resolve_model_path(model_ref))
@@ -374,7 +374,7 @@ def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlac
     """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
     from lilbee.core.config import cfg
     from lilbee.providers.gguf_meta import read_gguf_metadata
-    from lilbee.providers.llama_cpp.provider import resolve_model_path
+    from lilbee.providers.engine_params import resolve_model_path
 
     path = resolve_model_path(model_ref)
     weights = path.stat().st_size
@@ -403,7 +403,7 @@ def _launch_for(
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.gguf_meta import read_gguf_metadata
-    from lilbee.providers.llama_cpp.provider import resolve_model_path
+    from lilbee.providers.engine_params import resolve_model_path
 
     slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]
     model_path = resolve_model_path(model_ref)

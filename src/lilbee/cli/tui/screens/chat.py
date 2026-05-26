@@ -291,7 +291,7 @@ class ChatScreen(Screen[None]):
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
             if parse_model_ref(model).is_remote:

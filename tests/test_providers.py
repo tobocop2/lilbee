@@ -925,7 +925,7 @@ class TestLlamaCppProvider:
     def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
+            from lilbee.providers.engine_params import resolve_model_path
 
             cfg.models_dir = models_dir
             abs_model = tmp_path / "standalone.gguf"
@@ -938,7 +938,7 @@ class TestLlamaCppProvider:
     def testresolve_model_path_via_registry(self, models_dir: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
+            from lilbee.providers.engine_params import resolve_model_path
 
             cfg.models_dir = models_dir
             path = resolve_model_path(TEST_MODEL_REF)
@@ -951,7 +951,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
+            from lilbee.providers.engine_params import resolve_model_path
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
@@ -963,7 +963,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
+            from lilbee.providers.engine_params import resolve_model_path
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
@@ -975,7 +975,7 @@ class TestLlamaCppProvider:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
+            from lilbee.providers.engine_params import resolve_model_path
 
             cfg.models_dir = models_dir
             # Use a real absolute path that doesn't exist (works on all platforms)

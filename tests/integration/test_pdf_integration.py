@@ -160,7 +160,7 @@ class TestTesseractOcrFallback:
 def _vision_model_available() -> bool:
     """Check if a vision model is configured and its file exists locally."""
     try:
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
 
         if not cfg.vision_model:
             return False
