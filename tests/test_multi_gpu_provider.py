@@ -449,6 +449,32 @@ def test_server_clients_builds_fleet_once(monkeypatch) -> None:
     assert calls["n"] == 1
 
 
+def test_apply_fleet_gpu_env_skips_autoselect(monkeypatch) -> None:
+    # The fleet selects devices via placement; the in-process single-device
+    # Vulkan autoselect must NOT run here or it would pin one adapter and hide
+    # the rest from placement.
+    from lilbee.providers.multi_gpu import gpu_env
+
+    monkeypatch.setattr(cfg, "gpu_devices", None)
+    monkeypatch.setattr(
+        "lilbee.providers.multi_gpu.gpu_select.autoselect_best_gpu_index",
+        lambda: pytest.fail("autoselect must not run for the fleet"),
+    )
+    gpu_env.apply_fleet_gpu_env()  # no autoselect call -> no failure
+
+
+def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
+    from lilbee.providers.multi_gpu import gpu_env
+    from lilbee.providers.multi_gpu.gpu_env import _GPU_VISIBLE_ENV_VARS
+
+    for name in _GPU_VISIBLE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cfg, "gpu_devices", "0")
+    gpu_env.apply_fleet_gpu_env()
+    for name in _GPU_VISIBLE_ENV_VARS:
+        assert os.environ[name] == "0"
+
+
 def test_routing_provider_local_engine_is_fleet() -> None:
     # The fleet is the sole local engine now: AUTO routes local refs through
     # RoutingProvider, whose local engine is a FleetProvider (a single machine

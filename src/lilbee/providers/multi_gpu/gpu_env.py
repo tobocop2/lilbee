@@ -56,57 +56,77 @@ _VK_LOADER_LAYERS_DISABLE_GLOBS: tuple[str, ...] = (
 _VK_LOADER_LAYERS_DISABLE_VALUE = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS)
 
 
-def apply_gpu_device_env() -> None:
-    """Apply ``cfg.gpu_devices`` (or autodetect) to backend visibility env vars.
+def _apply_vulkan_loader_safety() -> None:
+    """Disable known-crashing overlay layers and conflicting dual-vendor ICDs.
 
-    Must run before the engine's first ``vkCreateInstance`` (the llama-server
-    subprocess inherits this process's environment). Resolution order:
-
-    1. Explicit env var (``GGML_VK_VISIBLE_DEVICES`` etc.) -- always wins,
-       including when the user intentionally set it empty.
-    2. ``cfg.gpu_devices`` -- the user's lilbee-level pin. Applied to every
-       backend (the user is opting in and naming indexes that match their
-       wheel's enumeration).
-    3. Vulkan autodetection -- pick the highest-ranked Vulkan device (discrete
-       > integrated). Applied **only** to ``GGML_VK_VISIBLE_DEVICES``; the
-       Vulkan index doesn't translate to CUDA / HIP / ROCm enumeration order,
-       so writing it there could mask the only visible NVIDIA / AMD card on a
-       single-vendor wheel.
-
-    Steps 2 and 3 only set vars that aren't already in the environment, so step
-    1 is preserved.
+    Must precede every ``vkCreateInstance`` (the llama-server subprocess
+    inherits this process's environment). The loader loads every registered ICD
+    and implicit layer at instance creation, before ``GGML_VK_VISIBLE_DEVICES``
+    is consulted, so device pinning alone cannot prevent a buggy second-vendor
+    ICD or overlay layer from corrupting the heap. ``setdefault`` preserves any
+    user-set value; the loader composes our globs with the user's own tokens.
     """
-    from lilbee.core.config import cfg
     from lilbee.providers.multi_gpu.gpu_select import (
         VulkanIcdEnvVar,
-        autoselect_best_gpu_index,
         disable_conflicting_vulkan_icds,
     )
 
-    # Suppress known-crashing third-party Vulkan overlay layers on Windows +
-    # Linux. Must precede every subsequent vkCreateInstance call (our own probe
-    # in autoselect plus llama.cpp's), otherwise the overlay piggy-backs on the
-    # first instance and stays resident even if disabled later. setdefault
-    # preserves a user-set VK_LOADER_LAYERS_DISABLE, and the loader composes our
-    # globs with the user's own ENABLE token per spec.
     if sys.platform == "win32" or sys.platform.startswith("linux"):
         os.environ.setdefault(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, _VK_LOADER_LAYERS_DISABLE_VALUE)
-
-    # Dual-vendor Vulkan crash mitigation runs first and unconditionally: the
-    # loader loads every registered ICD at vkCreateInstance, before
-    # GGML_VK_VISIBLE_DEVICES is consulted, so device pinning alone cannot
-    # prevent a buggy second-vendor ICD from corrupting the heap.
     disable_glob = disable_conflicting_vulkan_icds()
     if disable_glob is not None:
         os.environ.setdefault(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, disable_glob)
         log.info("Disabling conflicting Vulkan ICDs: %s", disable_glob)
 
-    if cfg.gpu_devices:
-        for name in _GPU_VISIBLE_ENV_VARS:
-            os.environ.setdefault(name, cfg.gpu_devices)
+
+def _apply_gpu_devices_pin() -> bool:
+    """Apply the user's ``cfg.gpu_devices`` pin to every backend's visible-devices var.
+
+    Returns ``True`` when a pin was applied (so the caller can skip autodetect).
+    The pin goes to all four backend vars because the user is naming indexes
+    that match their own wheel's enumeration. ``setdefault`` keeps an explicit
+    env var the user already set.
+    """
+    from lilbee.core.config import cfg
+
+    if not cfg.gpu_devices:
+        return False
+    for name in _GPU_VISIBLE_ENV_VARS:
+        os.environ.setdefault(name, cfg.gpu_devices)
+    return True
+
+
+def apply_gpu_device_env() -> None:
+    """In-process engine bootstrap: loader safety, then ``cfg.gpu_devices`` or autodetect.
+
+    Resolution order: an explicit visible-devices env var always wins (set via
+    ``setdefault``); else ``cfg.gpu_devices``; else the Vulkan autodetect picks
+    the highest-ranked adapter and writes only ``GGML_VK_VISIBLE_DEVICES`` (the
+    Vulkan index doesn't translate to CUDA / HIP / ROCm order, so writing it to
+    those could mask the only visible card on a single-vendor wheel).
+    """
+    from lilbee.providers.multi_gpu.gpu_select import autoselect_best_gpu_index
+
+    _apply_vulkan_loader_safety()
+    if _apply_gpu_devices_pin():
         return
     autoselected = autoselect_best_gpu_index()
     if not autoselected:
         return
     for name in _VULKAN_AUTODETECT_ENV_VARS:
         os.environ.setdefault(name, autoselected)
+
+
+def apply_fleet_gpu_env() -> None:
+    """Fleet engine bootstrap: loader safety plus the ``cfg.gpu_devices`` pin only.
+
+    The single-device Vulkan autodetect is intentionally skipped here. The fleet
+    selects devices through its own placement (``probe_devices`` reads the
+    binary's native index space, then ``plan_placement`` bin-packs roles across
+    them). Running the in-process autodetect would pin ``GGML_VK_VISIBLE_DEVICES``
+    to one adapter before that probe runs and hide every other GPU from
+    placement. A ``cfg.gpu_devices`` pin is still honored: ``probe_devices``
+    inherits this environment, so the binary enumerates only the pinned devices.
+    """
+    _apply_vulkan_loader_safety()
+    _apply_gpu_devices_pin()

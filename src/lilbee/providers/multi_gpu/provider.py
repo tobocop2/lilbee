@@ -400,8 +400,14 @@ class FleetProvider:
 def _build_fleet() -> Fleet:
     """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
     from lilbee.core.config import cfg
+    from lilbee.providers.multi_gpu.gpu_env import apply_fleet_gpu_env
     from lilbee.providers.multi_gpu.gpu_select import enumerate_gpu_vram
 
+    # Disable crash-prone Vulkan overlay layers / dual-vendor ICDs and apply any
+    # cfg.gpu_devices pin before the device probe and the servers spawn (both
+    # inherit this environment). This was the in-process engine's bootstrap; the
+    # fleet must carry it now that the in-process path is gone.
+    apply_fleet_gpu_env()
     binary = resolve_llama_server_binary()
     devices = probe_devices(binary)
     if not devices:
