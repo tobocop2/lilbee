@@ -138,11 +138,18 @@ cat > "$PROJ/opencode.json" <<JSON
 JSON
 
 # opencode caches the provider's discovered model list in its sqlite db and does
-# not refresh it when /v1/models changes between runs. Each model here is served
-# under a fresh --alias, so a stale cache makes `opencode -m lilbee/<name>` fail
-# with "Model not found". Clear the cache so opencode re-discovers the model now.
+# not refresh it when /v1/models changes between runs. Each model is served under
+# a fresh --alias, so a stale cache makes `opencode -m lilbee/<name>` fail with
+# "Model not found". Clear the cache, then warm discovery in a loop until opencode
+# actually lists the just-launched alias (cold discovery against a fresh server is
+# racy) so the TUI/headless run that follows resolves the model reliably.
 rm -f "$HOME/.local/share/opencode/opencode.db" \
       "$HOME/.local/share/opencode/opencode.db-wal" \
       "$HOME/.local/share/opencode/opencode.db-shm" 2>/dev/null || true
+export PATH="$HOME/.opencode/bin:$PATH"
+for _ in $(seq 1 20); do
+  opencode models 2>/dev/null | grep -qx "lilbee/$DISPLAY_NAME" && break
+  sleep 2
+done
 
 echo "READY: opencode cwd=$PROJ ; provider=lilbee model=$DISPLAY_NAME@:$LS_PORT ; mcp=lilbee@:8080 ; tools=lilbee_search-only"
