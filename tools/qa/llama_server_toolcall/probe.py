@@ -169,7 +169,9 @@ def _probe(port: int, model_name: str) -> dict[str, Any]:
             "messages": [{"role": "user", "content": PROMPT}],
             "tools": TOOLS,
             "tool_choice": "auto",
-            "max_tokens": 512,
+            # Reasoning models (Qwen3, gpt-oss, GLM) spend a long <think> block
+            # before the call; a tight budget truncates them into a false FAIL.
+            "max_tokens": 4096,
             "temperature": 0.0,
             "stream": False,
         },
@@ -191,9 +193,15 @@ def _kill(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _evaluate(family: str, inprocess: str, body: dict[str, Any]) -> ProbeResult:
-    msg = body.get("choices", [{}])[0].get("message", {})
+    choice = body.get("choices", [{}])[0]
+    finish = choice.get("finish_reason", "")
+    msg = choice.get("message", {})
     tool_calls = msg.get("tool_calls") or []
     content = (msg.get("content") or "")[:400]
+    # Reasoning models put chain-of-thought in reasoning_content; surface it so a
+    # truncation or a narrate-instead-of-call is visible in the evidence.
+    if not content:
+        content = ("[reasoning] " + (msg.get("reasoning_content") or ""))[:400]
     if tool_calls:
         fn = tool_calls[0].get("function", {})
         name = fn.get("name", "")
@@ -211,7 +219,12 @@ def _evaluate(family: str, inprocess: str, body: dict[str, Any]) -> ProbeResult:
                            name, str(raw_args)[:200], content, inprocess=inprocess)
     # No structured tool_calls. Did the model emit the call as text in content?
     looks_like_call = any(m in content for m in ("lilbee_search", "tool_call", "<|", "functions.", "```json"))
-    detail = "emitted call as TEXT, native parser missed it" if looks_like_call else "no tool call at all (model declined)"
+    if looks_like_call:
+        detail = "emitted call as TEXT, native parser missed it"
+    elif finish == "length":
+        detail = "truncated at max_tokens before any call (reasoning overflow?)"
+    else:
+        detail = "no tool call at all (model declined)"
     return ProbeResult(family, "FAIL", detail, content_excerpt=content, inprocess=inprocess)
 
 
