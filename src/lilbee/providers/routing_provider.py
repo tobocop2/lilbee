@@ -13,8 +13,8 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.roles import OcrBackend, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-from lilbee.providers.roles import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
@@ -233,13 +233,36 @@ class RoutingProvider(LLMProvider):
             self._local.invalidate_load_cache(model_path)
 
     def warm_up_pool(self) -> None:
-        """Forward to the native side; the SDK side has no worker pool.
+        """Forward to the native side; the SDK side has no servers to warm.
 
         Lazily constructs the local engine if it isn't already up so
         eager-start during ``Services`` boot still warms the configured
         native roles, even when the user hasn't issued a chat call yet.
         """
         self._get_local().warm_up_pool()
+
+    def cancel_inference(self) -> None:
+        """Forward to the native engine; the SDK side has nothing to interrupt."""
+        if self._local is not None:
+            self._local.cancel_inference()
+
+    def reload_role(self, role: WorkerRole) -> None:
+        """Forward to the native engine; the SDK side has no per-role servers."""
+        if self._local is not None:
+            self._local.reload_role(role)
+
+    def add_spawn_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Register on the native engine so its server spawns reach the TUI.
+
+        Builds the local engine if it isn't up yet so the listener is attached
+        before the first spawn, matching ``warm_up_pool``'s eager construction.
+        """
+        self._get_local().add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
 def _is_native_rerank_ref(model: str) -> bool:

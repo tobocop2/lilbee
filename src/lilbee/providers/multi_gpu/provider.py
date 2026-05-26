@@ -61,7 +61,7 @@ _PROVIDER_NAME = "llama-server"
 
 # Server roles -> (slots, model-ref accessor). chat/embed are always configured;
 # reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
-# stays in-process. Vision additionally needs an mmproj projector.
+# has no server (its calls error). Vision additionally needs an mmproj projector.
 _SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, Callable[[Any], str]]] = {
     WorkerRole.CHAT: (_CHAT_SLOTS, lambda c: str(c.chat_model)),
     WorkerRole.EMBED: (_AUX_SLOTS, lambda c: str(c.embedding_model)),
@@ -163,11 +163,15 @@ class FleetProvider:
         # first-requests must not each build a fleet (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
         self._lock = threading.RLock()
+        # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
+        # so they survive a fleet rebuild and attach to every fleet we construct.
+        self._on_spawning: Callable[[WorkerRole], None] | None = None
+        self._on_spawned: Callable[[WorkerRole], None] | None = None
 
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         with self._lock:
             if self._fleet is None:
-                self._fleet = _build_fleet()
+                self._fleet = _build_fleet(self._on_spawning, self._on_spawned)
             return self._fleet.healthy_clients(role)
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
@@ -386,7 +390,56 @@ class FleetProvider:
         """Spawn the configured role servers eagerly (idempotent)."""
         with self._lock:
             if self._fleet is None:
-                self._fleet = _build_fleet()
+                self._fleet = _build_fleet(self._on_spawning, self._on_spawned)
+
+    def cancel_inference(self) -> None:
+        """No-op: a llama-server stops generating when its client disconnects.
+
+        The caller (the TUI chat worker) triggers that disconnect by closing the
+        active stream, so there is no in-process abort flag to flip here.
+        """
+        return
+
+    def reload_role(self, role: WorkerRole) -> None:
+        """Respawn just *role*'s server(s) with current cfg; other roles keep running.
+
+        Dispatched to a background thread because the slow respawn (stop + spawn +
+        wait-ready) must not block the settings/model-picker callback that calls
+        this. If the fleet isn't built yet, the next use builds it with current cfg.
+        """
+        with self._lock:
+            if self._fleet is None:
+                return
+        threading.Thread(
+            target=self._reload_role_blocking,
+            args=(role,),
+            name=f"fleet-reload-{role.value}",
+            daemon=True,
+        ).start()
+
+    def _reload_role_blocking(self, role: WorkerRole) -> None:
+        """Re-plan and respawn one role's server(s); runs off the caller's thread."""
+        binary = resolve_llama_server_binary()
+        devices = _resolve_devices(binary)
+        by_index = {d.index: d for d in devices}
+        launches = _plan_launches((role,), binary, by_index, devices)
+        with self._lock:
+            fleet = self._fleet
+        if fleet is not None:
+            fleet.restart_role(role, launches)
+
+    def add_spawn_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Store spawn-lifecycle callbacks and attach them to the running fleet."""
+        with self._lock:
+            self._on_spawning = on_spawning
+            self._on_spawned = on_spawned
+            if self._fleet is not None:
+                self._fleet.set_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """A model or settings change respawns the affected servers: drop the fleet."""
@@ -397,11 +450,13 @@ class FleetProvider:
         self._shutdown_fleet()
 
 
-def _build_fleet() -> Fleet:
+def _build_fleet(
+    on_spawning: Callable[[WorkerRole], None] | None = None,
+    on_spawned: Callable[[WorkerRole], None] | None = None,
+) -> Fleet:
     """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
     from lilbee.core.config import cfg
     from lilbee.providers.multi_gpu.gpu_env import apply_fleet_gpu_env
-    from lilbee.providers.multi_gpu.gpu_select import enumerate_gpu_vram
 
     # Disable crash-prone Vulkan overlay layers / dual-vendor ICDs and apply any
     # cfg.gpu_devices pin before the device probe and the servers spawn (both
@@ -409,39 +464,67 @@ def _build_fleet() -> Fleet:
     # fleet must carry it now that the in-process path is gone.
     apply_fleet_gpu_env()
     binary = resolve_llama_server_binary()
-    devices = probe_devices(binary)
-    if not devices:
-        # Fallback: the binary couldn't enumerate; use the Vulkan VRAM probe and
-        # pin via the Vulkan index space (matching how the probe enumerates).
-        devices = [
-            FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
-        ]
+    devices = _resolve_devices(binary)
     by_index = {d.index: d for d in devices}
-    inputs, model_refs = _server_model_inputs()
-    placement = plan_placement(inputs, [(d.index, d.free_bytes) for d in devices])
-    launches = [
-        _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir, by_index)
-        for plan in placement.instances
-    ]
-    fleet = Fleet(data_dir=cfg.data_dir)
+    launches = _plan_launches(None, binary, by_index, devices)
+    fleet = Fleet(data_dir=cfg.data_dir, on_spawning=on_spawning, on_spawned=on_spawned)
     fleet.start(launches)
     return fleet
 
 
-def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
+def _resolve_devices(binary: Path) -> list[FleetDevice]:
+    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe.
+
+    The binary's ``--list-devices`` is authoritative (its index space is what the
+    per-server device pin uses). When it enumerates nothing, fall back to the
+    Vulkan VRAM probe, which reports the same index space.
+    """
+    from lilbee.providers.multi_gpu.gpu_select import enumerate_gpu_vram
+
+    devices = probe_devices(binary)
+    if not devices:
+        devices = [
+            FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
+        ]
+    return devices
+
+
+def _plan_launches(
+    roles: tuple[WorkerRole, ...] | None,
+    binary: Path,
+    by_index: dict[int, FleetDevice],
+    devices: list[FleetDevice],
+) -> list[InstanceLaunch]:
+    """Plan placement for *roles* (``None`` = all configured) and build their launches."""
+    from lilbee.core.config import cfg
+
+    inputs, model_refs = _server_model_inputs(roles)
+    placement = plan_placement(inputs, [(d.index, d.free_bytes) for d in devices])
+    return [
+        _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir, by_index)
+        for plan in placement.instances
+    ]
+
+
+def _server_model_inputs(
+    roles: tuple[WorkerRole, ...] | None = None,
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
-    Skips an unconfigured optional role (empty reranker_model/vision_model) and a
-    vision model with no resolvable mmproj projector, so it stays in-process.
+    When *roles* is given, only those roles are considered (used by per-role
+    reload). Skips an unconfigured optional role (empty reranker_model/
+    vision_model) and a vision model with no resolvable mmproj projector.
     """
     from lilbee.core.config import cfg
 
     inputs: list[ModelPlacementInput] = []
     model_refs: dict[WorkerRole, str] = {}
     for role, (slots, accessor) in _SERVER_ROLE_PARAMS.items():
+        if roles is not None and role not in roles:
+            continue
         ref = accessor(cfg)
         if not ref:
-            continue  # unconfigured optional role -> stays in-process
+            continue  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
         inputs.append(_estimate_role(role, ref, slots=slots))

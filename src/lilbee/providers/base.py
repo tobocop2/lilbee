@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from lilbee.providers.roles import OcrBackend
+    from lilbee.providers.roles import OcrBackend, WorkerRole
     from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
@@ -223,11 +223,43 @@ class LLMProvider(Protocol):
         return
 
     def warm_up_pool(self) -> None:
-        """Eagerly register configured roles so :meth:`WorkerPool.start_eager` has work to do.
+        """Eagerly start the configured role servers so the first call lands warm.
 
-        Default no-op so providers without a worker pool (SDK / routing
+        Default no-op so providers without managed servers (SDK / routing
         wrappers) can be passed to ``Services`` unchanged. Implemented by
-        :class:`LlamaCppProvider` to register chat / embed / rerank / vision
-        roles whose model is configured.
+        :class:`FleetProvider` to spawn the chat / embed / rerank / vision
+        servers whose model is configured.
+        """
+        return
+
+    def cancel_inference(self) -> None:
+        """Interrupt any in-flight generation. No-op default.
+
+        The fleet engine stops a llama-server mid-generation by client
+        disconnect (the caller closes the active stream), so there is no abort
+        flag to flip; SDK and routing wrappers have nothing to interrupt here.
+        """
+        return
+
+    def reload_role(self, role: WorkerRole) -> None:
+        """Drop and respawn just *role*'s model so it picks up changed cfg.
+
+        Default no-op for providers without per-role model servers. The fleet
+        respawns only that role's server; other roles and their in-flight work
+        are left untouched.
+        """
+        return
+
+    def add_spawn_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Subscribe to server (re)spawn lifecycle events. No-op default.
+
+        The fleet calls ``on_spawning`` before a role's server starts and
+        ``on_spawned`` once it is healthy, so the TUI can surface cold-start and
+        reload progress. Providers without managed servers ignore it.
         """
         return

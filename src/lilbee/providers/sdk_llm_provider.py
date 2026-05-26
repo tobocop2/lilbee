@@ -22,6 +22,7 @@ from typing import Any, Literal, overload
 from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.model_ref import parse_model_ref, translate_options
+from lilbee.providers.roles import OcrBackend
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -29,7 +30,6 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.providers.roles import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)

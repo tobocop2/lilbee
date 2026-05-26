@@ -10,6 +10,7 @@ one. See docs/architecture.md for the device/placement rationale.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,8 +38,9 @@ _PORT_BIND_RETRIES = 8
 # Restart backoff (seconds), clamped to the last entry for repeated crashes.
 _RESTART_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 30.0)
 # Give up restarting a server after this many CONSECUTIVE failed (re)starts; the
-# role then stays in in-process fallback instead of crash-looping forever (e.g. a
-# model that OOMs at launch because the VRAM estimate under-shot).
+# role then stays down (calls raise a user-facing ProviderError) instead of
+# crash-looping forever (e.g. a model that OOMs at launch because the VRAM
+# estimate under-shot).
 _MAX_RESTART_ATTEMPTS = 5
 # How much of a failed server's captured stderr to surface in the warning log.
 _STDERR_TAIL_CHARS = 2000
@@ -89,7 +92,7 @@ class FleetServer:
 
     @property
     def gave_up(self) -> bool:
-        """True once consecutive failures hit the cap; the role stays in-process."""
+        """True once consecutive failures hit the cap; the role then stays down."""
         return self.consecutive_failures >= _MAX_RESTART_ATTEMPTS
 
     @property
@@ -265,7 +268,12 @@ class Fleet:
     """Owns running server instances; restarts crashes; serves healthy clients."""
 
     def __init__(
-        self, *, ready_timeout: float = _READY_TIMEOUT_S, data_dir: Path | None = None
+        self,
+        *,
+        ready_timeout: float = _READY_TIMEOUT_S,
+        data_dir: Path | None = None,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
         self.ready_timeout = ready_timeout
         self.data_dir = data_dir
@@ -273,32 +281,90 @@ class Fleet:
         self._lock = threading.RLock()
         self._monitor: threading.Thread | None = None
         self._stop_monitor = threading.Event()
+        self._on_spawning = on_spawning
+        self._on_spawned = on_spawned
+
+    def set_listener(
+        self,
+        *,
+        on_spawning: Callable[[WorkerRole], None] | None = None,
+        on_spawned: Callable[[WorkerRole], None] | None = None,
+    ) -> None:
+        """Attach spawn-lifecycle callbacks. Used by the TUI to report reloads."""
+        self._on_spawning = on_spawning
+        self._on_spawned = on_spawned
+
+    def _notify(self, callback: Callable[[WorkerRole], None] | None, role: WorkerRole) -> None:
+        """Fire a listener callback, swallowing its errors (UI feedback is best-effort)."""
+        if callback is not None:
+            with contextlib.suppress(Exception):
+                callback(role)
+
+    def _bring_up(self, server: FleetServer) -> None:
+        """Spawn one server and wait for readiness, reporting to listeners.
+
+        A server that never becomes ready is left not-ready (routing skips it) and
+        its failure counter is bumped; the monitor keeps retrying it up to the cap.
+        """
+        self._notify(self._on_spawning, server.role)
+        server.spawn()
+        server.ready = server.wait_ready(timeout=self.ready_timeout)
+        if server.ready:
+            self._notify(self._on_spawned, server.role)
+        else:
+            server.consecutive_failures += 1
+            log.warning(
+                "llama-server for role %s did not become ready; calls to that role "
+                "will error until it recovers. stderr tail: %s",
+                server.role,
+                server.failed_start_detail(),
+            )
 
     def start(self, launches: list[InstanceLaunch]) -> None:
         """Reap prior orphans, spawn every launch, wait for readiness, monitor.
 
-        Each role is independent (mirroring the in-process per-role workers): a
-        server that fails to become ready is left not-ready so its role falls back
-        to in-process, while the others still serve. The monitor keeps retrying a
-        dead one (bounded by the restart cap) rather than denying all inference.
+        Each role is independent: a server that fails to become ready is left
+        not-ready (its calls error) while the others still serve. The monitor
+        keeps retrying a dead one (bounded by the restart cap).
         """
         if self.data_dir is not None:
             reap_orphans(self.data_dir)
         for launch in launches:
             server = FleetServer(launch)
             self._servers.append(server)
-            server.spawn()
-            server.ready = server.wait_ready(timeout=self.ready_timeout)
-            if not server.ready:
-                server.consecutive_failures += 1
-                log.warning(
-                    "llama-server for role %s did not become ready; that role uses "
-                    "in-process until it recovers. stderr tail: %s",
-                    launch.role,
-                    server.failed_start_detail(),
-                )
-        if self._servers:  # nothing to supervise when every role degraded to in-process
+            self._bring_up(server)
+        if self._servers:
             self._start_monitor()
+
+    def restart_role(self, role: WorkerRole, launches: list[InstanceLaunch]) -> None:
+        """Replace *role*'s servers with *launches*; other roles keep serving.
+
+        Stops the role's current servers first (so a model swap never holds two
+        copies' VRAM at once), then brings up the replacements outside the routing
+        lock so other roles route uninterrupted. An empty *launches* (the role was
+        unconfigured) just stops the old servers. A concurrent shutdown is honored:
+        fresh servers are stopped rather than stranded.
+        """
+        with self._lock:
+            old = [s for s in self._servers if s.role == role]
+            self._servers = [s for s in self._servers if s.role != role]
+        for server in old:
+            server.stop()
+        fresh: list[FleetServer] = []
+        for launch in launches:
+            if self._stop_monitor.is_set():
+                break
+            server = FleetServer(launch)
+            self._bring_up(server)
+            fresh.append(server)
+        with self._lock:
+            if self._stop_monitor.is_set():
+                for server in fresh:
+                    server.stop()
+                return
+            self._servers.extend(fresh)
+            if self._servers and self._monitor is None:
+                self._start_monitor()
 
     def healthy_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """Ready, live clients for *role*; a (re)starting server is excluded."""
@@ -323,8 +389,8 @@ class Fleet:
         The slow respawn (spawn + wait_ready) runs OUTSIDE the lock; the server is
         marked not-ready first so routing skips it, and ready again only once it is.
         Holding the lock across wait_ready would block all routing for the timeout.
-        A server past the cap is left dead (its role stays in in-process fallback)
-        instead of being respawned forever.
+        A server past the cap is left dead (calls to its role error) instead of
+        being respawned forever.
         """
         with self._lock:
             dead = [s for s in self._servers if not s.is_alive() and not s.gave_up]
@@ -345,7 +411,7 @@ class Fleet:
             if not server.ready and server.gave_up:
                 log.warning(
                     "llama-server for role %s failed %d consecutive restarts; leaving "
-                    "that role in-process. stderr tail: %s",
+                    "that role down. stderr tail: %s",
                     server.role,
                     server.consecutive_failures,
                     server.failed_start_detail(),

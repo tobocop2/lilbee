@@ -318,7 +318,7 @@ class Config(BaseSettings):
     # enumerates every adapter the system exposes and may pick the
     # integrated one first, producing stalls or OOMs that look like
     # llama.cpp bugs. Setting ``gpu_devices`` constrains visibility
-    # before llama_cpp loads, pinning inference to the chosen device(s).
+    # before the servers spawn, pinning inference to the chosen device(s).
     #
     # Accepts a comma-separated list of device indexes ("0", "1",
     # "0,1") and applies it to every backend simultaneously:
