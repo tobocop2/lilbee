@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.runtime.lock import write_lock
 
-from .types import CHUNK_TYPE_RAW
+from .types import ChunkType
 
 if TYPE_CHECKING:
     import lancedb
@@ -74,7 +74,7 @@ def escape_sql_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "''")
 
 
-def _chunk_type_predicate(chunk_type: str) -> str:
+def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     """SQL predicate that matches ``chunk_type`` while tolerating NULL rows.
 
     Rows written before ``chunk_type`` was populated land as NULL. They
@@ -82,7 +82,7 @@ def _chunk_type_predicate(chunk_type: str) -> str:
     ``'wiki'`` filter excludes them.
     """
     escaped = escape_sql_string(chunk_type)
-    if chunk_type == CHUNK_TYPE_RAW:
+    if chunk_type == ChunkType.RAW:
         return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
     return f"chunk_type = '{escaped}'"
 

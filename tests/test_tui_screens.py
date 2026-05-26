@@ -2751,8 +2751,7 @@ async def test_chat_slash_delete_with_match(mock_svc):
         app.screen._cmd_delete("notes.md")
         await app.screen.workers.wait_for_complete()
         await _pilot.pause()
-        mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
-        mock_svc.store.delete_source.assert_called_once_with("notes.md")
+        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
 
 
 async def test_chat_slash_delete_not_found(mock_svc):
@@ -3744,8 +3743,7 @@ async def test_command_provider_delete_doc(mock_svc):
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         provider._delete_doc("notes.md")
-        mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
-        mock_svc.store.delete_source.assert_called_once_with("notes.md")
+        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
 
 
 async def test_command_provider_action_sync():

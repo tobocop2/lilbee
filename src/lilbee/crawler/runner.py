@@ -28,7 +28,7 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
-from lilbee.crawler.models import CrawlResult
+from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CrawlResult
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
@@ -68,6 +68,24 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     if effective <= 0:
         raise ValueError("crawl limit must be a positive int or None")
     return effective
+
+
+def _resolve_page_limit(max_pages: int | None) -> int | None:
+    """Resolve the page bound the fetcher consumes (None means unbounded).
+
+    ``CRAWL_PAGES_UNLIMITED`` (0) is an explicit "no limit" and returns None.
+    ``None`` is unspecified: it falls back to ``cfg.crawl_max_pages`` if set,
+    else the protective default ``cfg.crawl_safety_max_pages`` so a hostile site
+    can't exhaust the disk on a crawl nobody bounded. A positive int is honored
+    as-is, even above the default.
+    """
+    if max_pages == CRAWL_PAGES_UNLIMITED:
+        return None
+    if max_pages is not None:
+        return max_pages
+    if cfg.crawl_max_pages is not None:
+        return cfg.crawl_max_pages
+    return cfg.crawl_safety_max_pages
 
 
 def _looks_like_missing_chromium(exc: BaseException) -> bool:
@@ -138,11 +156,13 @@ async def crawl_recursive(
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
-    None values for ``max_depth`` / ``max_pages`` mean unbounded (constrained
-    only by whatever ceiling the user has set in ``cfg.crawl_max_{depth,pages}``,
-    if any). Positive ints are explicit caps. ``CRAWL_PAGE`` events fire as
-    each page completes; total is ``CRAWL_TOTAL_UNKNOWN`` by default and
-    promoted to the sitemap count when available.
+    ``max_depth`` of None means unbounded depth. ``max_pages`` of
+    ``CRAWL_PAGES_UNLIMITED`` (0) means no page limit; a positive int is that
+    cap; None is unspecified and falls back to ``cfg.crawl_safety_max_pages`` so
+    a hostile site can't exhaust the disk on a crawl nobody bounded.
+    ``CRAWL_PAGE`` events fire as each page completes; total is
+    ``CRAWL_TOTAL_UNKNOWN`` by default and promoted to the sitemap count
+    when available.
 
     Pass ``include_subdomains=True`` to broaden scope from the exact host to the
     host plus any subdomains. If ``on_result`` is provided, it's called for each
@@ -151,7 +171,7 @@ async def crawl_recursive(
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
-    pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+    pages = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.

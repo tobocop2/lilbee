@@ -847,7 +847,12 @@ class TestDownloadModel:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         existing = tmp_path / entry.gguf_filename
-        existing.write_bytes(b"fake model")
+        content = b"fake model"
+        existing.write_bytes(content)
+        # Cached file matches HF-reported size: accepted as complete, no re-download.
+        monkeypatch.setattr(
+            catalog.download, "fetch_expected_file_size", lambda repo, name: len(content)
+        )
         result = download_model(entry)
         assert result == existing
 
@@ -858,7 +863,11 @@ class TestDownloadModel:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         existing = tmp_path / entry.gguf_filename
-        existing.write_bytes(b"fake model")
+        content = b"fake model"
+        existing.write_bytes(content)
+        monkeypatch.setattr(
+            catalog.download, "fetch_expected_file_size", lambda repo, name: len(content)
+        )
 
         progress_calls: list[tuple[int, int]] = []
 

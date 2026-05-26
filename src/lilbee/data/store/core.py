@@ -37,6 +37,7 @@ from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
+    ChunkType,
     CitationRecord,
     EmbeddingModelMismatchError,
     RemoveResult,
@@ -57,7 +58,7 @@ def _hybrid_search(
     query_text: str,
     query_vector: list[float],
     top_k: int,
-    chunk_type: str | None = None,
+    chunk_type: ChunkType | None = None,
 ) -> list[SearchChunk]:
     """Run hybrid (vector + FTS) search with RRF reranking.
 
@@ -383,7 +384,7 @@ class Store:
         top_k: int | None = None,
         max_distance: float | None = None,
         query_text: str | None = None,
-        chunk_type: str | None = None,
+        chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         """Search for similar chunks. Hybrid when FTS available, else vector-only.
 
@@ -509,12 +510,16 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
+    def _delete_by_source_unlocked(self, source: str) -> None:
+        """Delete all chunks from *source*. Caller must hold ``write_lock()``."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+
     def delete_by_source(self, source: str) -> None:
         """Delete all chunks from a given source file."""
         with write_lock():
-            table = self.open_table(CHUNKS_TABLE)
-            if table is not None:
-                _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+            self._delete_by_source_unlocked(source)
         self._invalidate_source_cache()
 
     def get_sources(
@@ -572,13 +577,26 @@ class Store:
             )
         self._invalidate_source_cache()
 
+    def _delete_source_unlocked(self, filename: str) -> None:
+        """Remove the *filename* source record. Caller must hold ``write_lock()``."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
         with write_lock():
-            table = self.open_table(SOURCES_TABLE)
-            if table is not None:
-                _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+            self._delete_source_unlocked(filename)
         self._invalidate_source_cache()
+
+    def _remove_one_unlocked(self, name: str) -> None:
+        """Delete a document's chunks and its source record together.
+
+        Both deletes run under the caller's single ``write_lock()`` so no
+        reader can observe chunks whose source record is already gone.
+        """
+        self._delete_by_source_unlocked(name)
+        self._delete_source_unlocked(name)
 
     def remove_documents(
         self,
@@ -605,8 +623,9 @@ class Store:
             if name not in known:
                 not_found.append(name)
                 continue
-            self.delete_by_source(name)
-            self.delete_source(name)
+            with write_lock():
+                self._remove_one_unlocked(name)
+            self._invalidate_source_cache()
             removed.append(name)
             if delete_files:
                 try:

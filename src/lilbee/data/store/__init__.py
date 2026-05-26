@@ -11,8 +11,7 @@ from .lance_helpers import (
 )
 from .ranking import cosine_sim, mmr_rerank
 from .types import (
-    CHUNK_TYPE_RAW,
-    CHUNK_TYPE_WIKI,
+    ChunkType,
     CitationRecord,
     EmbeddingModelMismatchError,
     RemoveResult,
@@ -23,8 +22,7 @@ from .types import (
 )
 
 __all__ = [
-    "CHUNK_TYPE_RAW",
-    "CHUNK_TYPE_WIKI",
+    "ChunkType",
     "CitationRecord",
     "EmbeddingModelMismatchError",
     "RemoveResult",

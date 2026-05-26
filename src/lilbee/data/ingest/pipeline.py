@@ -244,17 +244,20 @@ async def sync(
     skipped: list[str] = []
 
     # Find files to remove (in DB but not on disk)
-    for name in existing_sources:
-        if name not in disk_files:
-            _store.delete_by_source(name)
-            _store.delete_source(name)
-            removed.append(name)
+    to_remove = [name for name in existing_sources if name not in disk_files]
+    if to_remove:
+        _store.remove_documents(to_remove)
+        removed.extend(to_remove)
 
     files_to_process, added, updated, unchanged = _plan_file_changes(
         disk_files, existing_sources, cancel, skip_markers=skip_markers
     )
     # Track skip markers for files processed this run, keyed by name → hash.
     pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
+
+    # Snapshot the cumulative truncation counter so the delta over this sync can
+    # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
+    truncated_before = get_services().embedder.truncated_total
 
     # Ingest files (with optional progress bar)
     if files_to_process:
@@ -290,6 +293,7 @@ async def sync(
         unchanged=unchanged,
         failed=failed,
         skipped=skipped,
+        truncated=get_services().embedder.truncated_total - truncated_before,
     )
     on_progress(
         EventType.DONE,

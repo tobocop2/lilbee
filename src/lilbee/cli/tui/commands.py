@@ -113,9 +113,7 @@ class LilbeeCommandProvider(Provider):
             app.title = f"lilbee: {value}"
 
     def _delete_doc(self, name: str) -> None:
-        store = get_services().store
-        store.delete_by_source(name)
-        store.delete_source(name)
+        get_services().store.remove_documents([name])
         self.screen.app.notify(f"Deleted {name}")
 
     def _action_sync(self) -> None:

@@ -35,6 +35,17 @@ _PICKLE_MAX_BYTES = 32 * 1024 * 1024
 """``Connection.send`` raises past about 32 MiB on POSIX."""
 
 
+_STREAM_CHUNK_TIMEOUT_S = 300.0
+"""Max wait for the next frame of an in-flight stream before declaring a stall.
+
+A stalled worker keeps pinging alive on the health pipe, so without this the
+consumer would hang forever on a silent data pipe. The ceiling sits above the
+slowest legitimate single-chunk gap: PDF-OCR streams one page per chunk and a
+page can take up to ``LILBEE_OCR_TIMEOUT`` (120s default) on a cold model, so
+300s leaves headroom while still releasing the caller on a genuine hang.
+"""
+
+
 @dataclass(frozen=True)
 class _SerializedException:
     """Pickle-friendly stand-in for an exception that crossed the wire."""
@@ -276,12 +287,32 @@ class PipeChannel:
             finally:
                 self._bump_in_flight(-1)
 
-    async def stream(self, kind: WireKind, payload: Any) -> AsyncIterator[Any]:
+    async def _recv_chunk(self, timeout: float) -> tuple[WireKind, Any]:
+        """Recv the next stream frame within *timeout*; a stall is a crash.
+
+        A worker that stops emitting frames keeps the health pipe alive, so
+        a bare ``recv`` would hang the consumer forever. Bounding each frame
+        turns that silent stall into a :class:`WorkerCrashError` the pool can
+        recycle from.
+        """
+        try:
+            return await asyncio.wait_for(self._recv_data(), timeout=timeout)
+        except TimeoutError as exc:
+            raise self._crash() from exc
+
+    async def stream(
+        self,
+        kind: WireKind,
+        payload: Any,
+        *,
+        stream_chunk_timeout: float = _STREAM_CHUNK_TIMEOUT_S,
+    ) -> AsyncIterator[Any]:
         """Send one request, yield streamed chunks until the terminator arrives.
 
         The ``_call_lock`` is held for the full stream lifetime, so frames
         recv'd by this coroutine belong to this stream by construction.
-        New callers queue behind the active stream.
+        New callers queue behind the active stream. Each frame is bounded by
+        ``stream_chunk_timeout`` so a mid-stream stall releases the caller.
         """
         self._ensure_open()
         async with self._call_lock:
@@ -289,7 +320,7 @@ class PipeChannel:
             try:
                 await self._send_data(kind, payload)
                 while True:
-                    msg_kind, value = await self._recv_data()
+                    msg_kind, value = await self._recv_chunk(stream_chunk_timeout)
                     if msg_kind == WireKind.STREAM_CHUNK:
                         yield value
                     elif msg_kind == WireKind.STREAM_END:
@@ -368,9 +399,12 @@ class PipeChannel:
         try:
             with contextlib.suppress(TimeoutError, WorkerError):
                 await self._health_round_trip(WireKind.SHUTDOWN, None, timeout=timeout)
-            await asyncio.get_running_loop().run_in_executor(
-                self._executor, self._join_process, timeout
-            )
+            # Join on the loop's default executor, never the channel's own:
+            # a stalled stream / timed-out health recv leaves the channel
+            # executor's threads blocked in conn.recv until the process dies,
+            # and terminate() is what unblocks them. Scheduling the join there
+            # too would deadlock when both worker threads are saturated.
+            await asyncio.get_running_loop().run_in_executor(None, self._join_process, timeout)
         finally:
             with contextlib.suppress(Exception):
                 self._conn.close()
