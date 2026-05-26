@@ -3728,6 +3728,105 @@ class TestSelfCheck:
         assert "SELF-CHECK FAILED" in result.output
 
 
+class TestSelfCheckHelpers:
+    """The leg helpers spawn one llama-server via the fleet primitives and run inference."""
+
+    @staticmethod
+    def _patch_fleet_primitives(monkeypatch, *, server) -> None:
+        """Stub binary resolution, metadata, ctx/layer math, argv, and FleetServer."""
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.binary.resolve_llama_server_binary",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.binary.llama_server_runtime_env", lambda: {}
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
+        monkeypatch.setattr(
+            "lilbee.providers.multi_gpu.adapters.build_server_argv",
+            lambda **_k: ["/bin/llama-server"],
+        )
+        monkeypatch.setattr("lilbee.providers.multi_gpu.fleet.FleetServer", lambda _launch: server)
+
+    def test_self_check_chat_runs_completion(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.chat.return_value = " 4"
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        result = setup._self_check_chat(tmp_path / "chat.gguf", max_tokens=5)
+        assert result == " 4"
+        server.spawn.assert_called_once()
+        server.stop.assert_called_once()  # always torn down
+
+    def test_self_check_embed_returns_dimensionality(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = [[0.1, 0.2, 0.3]]
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 3
+        server.stop.assert_called_once()
+
+    def test_self_check_embed_empty_vectors_returns_zero(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = []
+        server = mock.MagicMock(client=client)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 0
+
+    def test_self_check_server_raises_when_not_ready(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        server = mock.MagicMock()
+        server.wait_ready.return_value = False
+        server.failed_start_detail.return_value = "boom: could not bind"
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        with pytest.raises(RuntimeError, match="did not become ready"):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+        server.stop.assert_called_once()  # the dead server is reaped
+
+    def test_self_check_server_raises_when_ready_without_client(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        server = mock.MagicMock(client=None)
+        server.wait_ready.return_value = True
+        self._patch_fleet_primitives(monkeypatch, server=server)
+
+        with pytest.raises(RuntimeError, match="without a client"):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+
+
 class TestSelfCheckExtras:
     """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test."""
 

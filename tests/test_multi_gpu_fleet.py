@@ -458,3 +458,95 @@ def test_monitor_thread_runs_and_stops(tmp_path: Path, patched: dict, monkeypatc
     time.sleep(0.05)  # let the monitor tick at least once with all servers alive
     fleet.shutdown()
     assert fleet._monitor is None
+
+
+def test_set_listener_attaches_callbacks() -> None:
+    fleet = Fleet()
+    spawning: list[WorkerRole] = []
+    spawned: list[WorkerRole] = []
+    fleet.set_listener(on_spawning=spawning.append, on_spawned=spawned.append)
+    fleet._notify(fleet._on_spawning, WorkerRole.CHAT)
+    fleet._notify(fleet._on_spawned, WorkerRole.CHAT)
+    assert spawning == [WorkerRole.CHAT]
+    assert spawned == [WorkerRole.CHAT]
+
+
+def test_notify_swallows_listener_errors() -> None:
+    fleet = Fleet()
+
+    def _boom(_role: WorkerRole) -> None:
+        raise RuntimeError("listener blew up")
+
+    # Must not propagate: spawn-progress feedback is best-effort.
+    fleet._notify(_boom, WorkerRole.CHAT)
+
+
+def test_notify_skips_when_no_callback() -> None:
+    Fleet()._notify(None, WorkerRole.CHAT)  # no callback -> no-op, no error
+
+
+def test_restart_role_replaces_only_that_role(tmp_path: Path, patched: dict, monkeypatch) -> None:
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start([_launch(tmp_path, WorkerRole.CHAT), _launch(tmp_path, WorkerRole.EMBED)])
+    chat_before = [s for s in fleet._servers if s.role == WorkerRole.CHAT]
+    embed_before = [s for s in fleet._servers if s.role == WorkerRole.EMBED]
+
+    fleet.restart_role(WorkerRole.CHAT, [_launch(tmp_path, WorkerRole.CHAT)])
+
+    chat_after = [s for s in fleet._servers if s.role == WorkerRole.CHAT]
+    embed_after = [s for s in fleet._servers if s.role == WorkerRole.EMBED]
+    assert chat_after and chat_after[0] not in chat_before  # chat respawned
+    assert embed_after == embed_before  # embed left running untouched
+    fleet.shutdown()
+
+
+def test_restart_role_fires_spawn_listener(tmp_path: Path, patched: dict, monkeypatch) -> None:
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    events: list[tuple[str, WorkerRole]] = []
+    fleet = Fleet(
+        data_dir=tmp_path,
+        on_spawning=lambda r: events.append(("up", r)),
+        on_spawned=lambda r: events.append(("ready", r)),
+    )
+    fleet.restart_role(WorkerRole.EMBED, [_launch(tmp_path, WorkerRole.EMBED)])
+    assert ("up", WorkerRole.EMBED) in events
+    assert ("ready", WorkerRole.EMBED) in events
+    fleet.shutdown()
+
+
+def test_restart_role_empty_launches_just_stops_old(
+    tmp_path: Path, patched: dict, monkeypatch
+) -> None:
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start([_launch(tmp_path, WorkerRole.RERANK)])
+    fleet.restart_role(WorkerRole.RERANK, [])  # role unconfigured now -> no replacement
+    assert [s for s in fleet._servers if s.role == WorkerRole.RERANK] == []
+    fleet.shutdown()
+
+
+def test_restart_role_breaks_when_shutdown_already_requested(
+    tmp_path: Path, patched: dict, monkeypatch
+) -> None:
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    fleet = Fleet(data_dir=tmp_path)
+    fleet._stop_monitor.set()  # shutdown already in flight
+    fleet.restart_role(WorkerRole.CHAT, [_launch(tmp_path, WorkerRole.CHAT)])
+    assert fleet._servers == []  # nothing brought up, nothing stranded
+
+
+def test_restart_role_stops_fresh_servers_if_shutdown_races(
+    tmp_path: Path, patched: dict, monkeypatch
+) -> None:
+    monkeypatch.setattr(fleet_mod.time, "sleep", lambda _s: None)
+    fleet = Fleet(data_dir=tmp_path)
+    original_bring_up = fleet._bring_up
+
+    def _bring_up_then_signal(server: FleetServer) -> None:
+        original_bring_up(server)
+        fleet._stop_monitor.set()  # shutdown races in right after the spawn
+
+    monkeypatch.setattr(fleet, "_bring_up", _bring_up_then_signal)
+    fleet.restart_role(WorkerRole.CHAT, [_launch(tmp_path, WorkerRole.CHAT)])
+    assert fleet._servers == []  # the freshly spawned server was stopped, not retained

@@ -735,3 +735,90 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(prov_mod.Fleet, "start", lambda self, launches: None)
         prov_mod._build_fleet()
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback
+
+
+class TestLifecycleMethods:
+    def test_cancel_inference_is_noop(self) -> None:
+        # llama-server stops on client disconnect; cancel has nothing to flip.
+        assert _provider_with_clients({}).cancel_inference() is None
+
+    def test_reload_role_noop_when_fleet_not_built(self, monkeypatch) -> None:
+        spawned = {"thread": False}
+        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
+        p = FleetProvider()  # _fleet is None
+        p.reload_role(WorkerRole.EMBED)
+        assert spawned["thread"] is False  # no background restart dispatched
+
+    def test_reload_role_dispatches_background_restart(self) -> None:
+        done = threading.Event()
+        p = FleetProvider()
+        p._fleet = _fake_fleet({})  # non-None so reload dispatches
+        p._reload_role_blocking = lambda role: done.set()  # type: ignore[method-assign]
+        p.reload_role(WorkerRole.EMBED)
+        assert done.wait(timeout=2.0)  # the spawned thread ran the blocking restart
+
+    def test_reload_role_blocking_restarts_only_that_role(self, monkeypatch) -> None:
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+        )
+        monkeypatch.setattr(prov_mod, "_resolve_devices", lambda _b: [device])
+        launch = MagicMock()
+        monkeypatch.setattr(prov_mod, "_plan_launches", lambda roles, *_a: [launch])
+        fleet = MagicMock()
+        p = FleetProvider()
+        p._fleet = fleet
+        p._reload_role_blocking(WorkerRole.EMBED)
+        fleet.restart_role.assert_called_once_with(WorkerRole.EMBED, [launch])
+
+    def test_reload_role_blocking_noop_when_fleet_cleared(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+        )
+        monkeypatch.setattr(prov_mod, "_resolve_devices", lambda _b: [])
+        monkeypatch.setattr(prov_mod, "_plan_launches", lambda *_a: [])
+        p = FleetProvider()  # _fleet stays None
+        p._reload_role_blocking(WorkerRole.EMBED)  # must not raise
+
+    def test_add_spawn_listener_stores_callbacks(self) -> None:
+        p = FleetProvider()  # no fleet yet
+
+        def on_spawning(_r: WorkerRole) -> None: ...
+
+        def on_spawned(_r: WorkerRole) -> None: ...
+
+        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        assert p._on_spawning is on_spawning
+        assert p._on_spawned is on_spawned
+
+    def test_add_spawn_listener_attaches_to_running_fleet(self) -> None:
+        fleet = MagicMock()
+        p = FleetProvider()
+        p._fleet = fleet
+
+        def on_spawning(_r: WorkerRole) -> None: ...
+
+        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=None)
+        fleet.set_listener.assert_called_once_with(on_spawning=on_spawning, on_spawned=None)
+
+
+def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    def _raise(_m: str):
+        raise ProviderError("not found")
+
+    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _raise)
+    assert FleetProvider().get_capabilities("missing/model.gguf") == ["completion"]
+
+
+def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
+    monkeypatch.setattr(
+        prov_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+    )
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+    monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+    # Only EMBED requested -> chat is filtered out even though it is configured.
+    _inputs, refs = prov_mod._server_model_inputs((WorkerRole.EMBED,))
+    assert set(refs) == {WorkerRole.EMBED}
