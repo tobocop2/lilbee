@@ -46,19 +46,19 @@ def main() -> None:
     if subprocess.run(cmd, env=env).returncode != 0:
         sys.exit("SETUP_FAIL")
     print(f"\n===== PROMPT ({disp}) =====\n{prompt}\n\n===== TRANSCRIPT =====", flush=True)
-    # Force our model so opencode doesn't fall back to its built-in build agent.
-    # Retry on the racy "Model not found" discovery 404 (see giant_demo.sh warm-up).
-    for attempt in range(4):
-        r = subprocess.run(
-            ["opencode", "run", "-m", f"lilbee/{disp}", prompt],
-            cwd=PROJ,
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
-        if "Model not found" not in r.stderr:
-            break
-        print(f"[retry {attempt + 1}] Model not found; re-running...", flush=True)
+    # opencode resolves its project (and thus the lilbee provider in opencode.json)
+    # from $PWD, NOT the process cwd. subprocess(cwd=...) doesn't update $PWD, so
+    # set it explicitly or opencode loads the wrong dir and 404s the lilbee model.
+    # -m forces our model over opencode's built-in build agent.
+    run_env = {**os.environ, "PWD": PROJ}
+    r = subprocess.run(
+        ["opencode", "run", "-m", f"lilbee/{disp}", prompt],
+        cwd=PROJ,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
     print(r.stdout)
     if r.stderr.strip():
         print("\n----- stderr (tail) -----\n" + r.stderr[-2000:])
