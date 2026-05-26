@@ -136,4 +136,13 @@ cat > "$PROJ/opencode.json" <<JSON
   }
 }
 JSON
+
+# opencode caches the provider's discovered model list in its sqlite db and does
+# not refresh it when /v1/models changes between runs. Each model here is served
+# under a fresh --alias, so a stale cache makes `opencode -m lilbee/<name>` fail
+# with "Model not found". Clear the cache so opencode re-discovers the model now.
+rm -f "$HOME/.local/share/opencode/opencode.db" \
+      "$HOME/.local/share/opencode/opencode.db-wal" \
+      "$HOME/.local/share/opencode/opencode.db-shm" 2>/dev/null || true
+
 echo "READY: opencode cwd=$PROJ ; provider=lilbee model=$DISPLAY_NAME@:$LS_PORT ; mcp=lilbee@:8080 ; tools=lilbee_search-only"
