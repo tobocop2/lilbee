@@ -211,11 +211,17 @@ jobs:
             *.tar.gz) curl -fsSL "${url}" | tar -xz -C "${HOME}/llama-engine" ;;
           esac
           bindir=$(dirname "$(find "${HOME}/llama-engine" \( -name llama-server -o -name llama-server.exe \) | head -1)")
-          [ -n "${bindir}" ] || { echo "llama-server not found in the release zip" >&2; exit 1; }
-          echo "${bindir}" >> "${GITHUB_PATH}"
-          # Co-located libs: add the bin dir to the platform library path too.
-          echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
-          echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+          [ -n "${bindir}" ] || { echo "llama-server not found in the release archive" >&2; exit 1; }
+          # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
+          # /c/... form, or Python's shutil.which won't find the binary. cygpath
+          # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
+          if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "${bindir}" >> "${GITHUB_PATH}"
+          else
+            echo "${bindir}" >> "${GITHUB_PATH}"
+            echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+            echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
