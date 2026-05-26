@@ -1603,5 +1603,9 @@ class TestEngineKnobValidators:
             assert Config().flash_attention is None
 
     def test_n_gpu_layers_cpu_alias_is_zero(self):
-        with mock.patch.dict(os.environ, {"LILBEE_N_GPU_LAYERS": "cpu"}):
-            assert Config().n_gpu_layers == 0
+        # Call the before-validator directly: the env source coerces int-typed
+        # fields before the validator runs, so "cpu" must be exercised here.
+        assert Config._parse_n_gpu_layers("cpu") == 0
+
+    def test_n_gpu_layers_auto_alias_is_none(self):
+        assert Config._parse_n_gpu_layers("auto") is None
