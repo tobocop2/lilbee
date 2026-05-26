@@ -62,14 +62,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
-          EXPECTED_WHEELS: "10"   # build-default-wheels.yml matrix size; bump if it changes
+          # The lilbee wheel is pure Python (one artifact) + sdist; the engine
+          # ships as the default-backend lilbee-llama-server wheels (vulkan on
+          # linux/win, metal on mac) so `pip install lilbee` resolves it.
+          EXPECTED_ENGINE_WHEELS: "3"
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           echo "${TAG} -> ${SHA}"
           # Most recent push-triggered RC run for this commit -- any status; we
-          # only need its default wheels + sdist, which land well before the
-          # executables / CUDA matrix / QA finish.
+          # only need the wheels + sdist, which land well before the executables /
+          # CUDA matrix / QA finish.
           RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&per_page=50" \
             --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
           if [ -z "${RC_ID}" ]; then
@@ -78,11 +81,14 @@ jobs:
           fi
           echo "release-candidate run = ${RC_ID}"
           ART=$(gh api "repos/${REPO}/actions/runs/${RC_ID}/artifacts?per_page=100")
-          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name | startswith("wheel-default-"))] | length')
+          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "wheel-default")] | length')
           N_SDIST=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "sdist")] | length')
-          echo "run ${RC_ID}: wheel-default-* = ${N_WHEELS}/${EXPECTED_WHEELS}, sdist = ${N_SDIST}/1"
-          if [ "${N_WHEELS}" -lt "${EXPECTED_WHEELS}" ] || [ "${N_SDIST}" -lt 1 ]; then
-            echo "run ${RC_ID} hasn't finished building the default wheels + sdist; wait, re-run release-candidate.yml, or use emergency-publish.yml if a cell failed and you're shipping intentionally" >&2
+          # The default engine wheels pip resolves at install time: vulkan
+          # (linux/win) + metal (mac). cpu/cuda/rocm go to the per-backend index.
+          N_ENGINE=$(echo "${ART}" | jq '[.artifacts[] | select(.name | test("^wheel-multigpu-.*(vulkan|metal)$"))] | length')
+          echo "run ${RC_ID}: wheel-default=${N_WHEELS}/1, sdist=${N_SDIST}/1, engine=${N_ENGINE}/${EXPECTED_ENGINE_WHEELS}"
+          if [ "${N_WHEELS}" -lt 1 ] || [ "${N_SDIST}" -lt 1 ] || [ "${N_ENGINE}" -lt "${EXPECTED_ENGINE_WHEELS}" ]; then
+            echo "run ${RC_ID} hasn't finished building the lilbee wheel + sdist + the default engine wheels; wait, re-run release-candidate.yml, or use emergency-publish.yml if a cell failed and you're shipping intentionally" >&2
             exit 1
           fi
           echo "rc_run_id=${RC_ID}" >> "$GITHUB_OUTPUT"
@@ -95,10 +101,20 @@ jobs:
     # it misreads GITHUB_ACTION_REPOSITORY and pulls the wrong image -- so the
     # download + upload steps live here directly, not in a wrapper action.
     steps:
-      - name: Download wheel artifacts from the release-candidate run
+      - name: Download the lilbee wheel from the release-candidate run
         uses: actions/download-artifact@v4
         with:
-          pattern: wheel-default-*
+          name: wheel-default
+          path: dist/
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      # The default-backend engine wheels (vulkan linux/win, metal mac) so a plain
+      # `pip install lilbee` resolves lilbee-llama-server from PyPI. cpu/cuda/rocm
+      # variants are not published here; they live on the per-backend PEP 503 index.
+      - name: Download the default engine wheels from the release-candidate run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-multigpu-*-@(vulkan|metal)
           path: dist/
           merge-multiple: true
           run-id: ${{ needs.guard.outputs.rc_run_id }}
