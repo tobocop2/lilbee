@@ -71,6 +71,9 @@ class ProbeResult:
     load_s: float = 0.0
     probe_s: float = 0.0
     inprocess: str = ""
+    # Verdict when re-probed with tool_choice="required" (only run if auto != PASS):
+    # PASS here but FAIL on auto means "parser works, model just declined".
+    forced: str = ""
 
 
 def _find_server_bin(explicit: str | None) -> str:
@@ -161,14 +164,17 @@ def _wait_healthy(port: int, proc: subprocess.Popen[bytes], timeout_s: float) ->
     return False
 
 
-def _probe(port: int, model_name: str) -> dict[str, Any]:
+def _probe(port: int, model_name: str, tool_choice: str) -> dict[str, Any]:
     resp = httpx.post(
         f"http://127.0.0.1:{port}/v1/chat/completions",
         json={
             "model": model_name,
             "messages": [{"role": "user", "content": PROMPT}],
             "tools": TOOLS,
-            "tool_choice": "auto",
+            # "auto" tests the realistic agent flow (does the model choose to call
+            # AND does the parser catch it). "required" forces llama.cpp's grammar
+            # to emit a call, isolating pure parser coverage from model-decline.
+            "tool_choice": tool_choice,
             # Reasoning models (Qwen3, gpt-oss, GLM) spend a long <think> block
             # before the call; a tight budget truncates them into a false FAIL.
             "max_tokens": 4096,
@@ -247,18 +253,29 @@ def run_one(spec: ModelSpec, server_bin: str, port: int, keep: bool) -> ProbeRes
             tail = (RESULTS_DIR / "_server.log").read_text(errors="replace")[-600:]
             return ProbeResult(spec.family, "LOAD_FAIL", f"server never healthy ({load_s:.0f}s); log tail: {tail}",
                                load_s=load_s, inprocess=spec.inprocess)
-        print(f"[{spec.family}] probing tool call")
+        print(f"[{spec.family}] probing tool call (auto)")
         t1 = time.time()
         try:
-            body = _probe(port, spec.gguf)
+            body = _probe(port, spec.gguf, "auto")
         except Exception as exc:  # noqa: BLE001
             return ProbeResult(spec.family, "FAIL", f"probe request error: {exc}",
                                load_s=load_s, probe_s=time.time() - t1, inprocess=spec.inprocess)
         result = _evaluate(spec.family, spec.inprocess, body)
         result.load_s = load_s
         result.probe_s = time.time() - t1
+        forced_body: dict[str, Any] | None = None
+        if result.verdict != "PASS":
+            # Same loaded server, so this is nearly free: does forcing a call make
+            # the native parser produce structured tool_calls?
+            print(f"[{spec.family}] re-probing (required)")
+            try:
+                forced_body = _probe(port, spec.gguf, "required")
+                forced = _evaluate(spec.family, spec.inprocess, forced_body)
+                result.forced = forced.verdict if forced.verdict == "PASS" else f"{forced.verdict}: {forced.detail[:48]}"
+            except Exception as exc:  # noqa: BLE001
+                result.forced = f"required-probe error: {str(exc)[:48]}"
         (RESULTS_DIR / f"{spec.family}.json").write_text(
-            json.dumps({"result": asdict(result), "raw": body}, indent=2)
+            json.dumps({"result": asdict(result), "raw": body, "forced_raw": forced_body}, indent=2)
         )
         return result
     finally:
@@ -279,11 +296,13 @@ def write_report(results: list[ProbeResult]) -> None:
     lines = [
         "# llama-server --jinja native tool-call coverage",
         "",
-        "| Family | Native verdict | Detail | In-process (lilbee parser) |",
-        "|--------|----------------|--------|----------------------------|",
+        "| Family | Native (auto) | Forced (required) | Detail | In-process (lilbee) |",
+        "|--------|---------------|-------------------|--------|---------------------|",
     ]
     for r in results:
-        lines.append(f"| {r.family} | {r.verdict} | {r.detail[:80]} | {r.inprocess} |")
+        lines.append(
+            f"| {r.family} | {r.verdict} | {r.forced or '-'} | {r.detail[:70]} | {r.inprocess} |"
+        )
     (RESULTS_DIR / "coverage.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
