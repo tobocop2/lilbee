@@ -40,16 +40,19 @@ class TestResolveModelPath:
         finally:
             set_services(None)
 
-    def test_absolute_missing_path_raises(self) -> None:
+    def test_absolute_missing_path_raises(self, tmp_path) -> None:
         from lilbee.app.services import set_services
         from tests.conftest import make_mock_services
 
+        # A child of tmp_path is absolute on every OS (a leading-slash literal is
+        # not absolute on Windows) and missing because we never create it.
+        missing = tmp_path / "missing" / "model.gguf"
         registry = MagicMock()
         registry.resolve.side_effect = KeyError("not in registry")
         set_services(make_mock_services(registry=registry))
         try:
             with pytest.raises(ProviderError, match="Model file not found"):
-                ep.resolve_model_path("/nonexistent/model.gguf")
+                ep.resolve_model_path(str(missing))
         finally:
             set_services(None)
 
