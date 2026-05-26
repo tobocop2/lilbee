@@ -1,4 +1,4 @@
-"""Routing provider: prefix-based dispatch between the SDK backend and llama-cpp."""
+"""Routing provider: prefix-based dispatch between the SDK backend and the local llama-server engine."""
 
 from __future__ import annotations
 
@@ -28,21 +28,23 @@ class RoutingProvider(LLMProvider):
 
     ``ollama/``, ``openai/``, ``anthropic/``, ``gemini/`` go to the SDK
     provider. Other refs (the HuggingFace ``<org>/<repo>/<file>.gguf``
-    shape) go to llama-cpp, which resolves them against the native
+    shape) go to the local llama-server engine, which resolves them against the native
     registry. A registry miss surfaces the native ProviderError
     unchanged, rather than silently falling through to a remote backend.
     """
 
     def __init__(self) -> None:
-        self._llama_cpp: LLMProvider | None = None
+        self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
 
-    def _get_llama_cpp(self) -> LLMProvider:
-        if self._llama_cpp is None:
-            from lilbee.providers.llama_cpp import LlamaCppProvider
+    def _get_local(self) -> LLMProvider:
+        if self._local is None:
+            # heavy: FleetProvider composes the llama-server stack and spawns
+            # sidecars on first use.
+            from lilbee.providers.multi_gpu.provider import FleetProvider
 
-            self._llama_cpp = LlamaCppProvider()
-        return self._llama_cpp
+            self._local = FleetProvider()
+        return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
         if self._sdk_provider is None:
@@ -57,7 +59,7 @@ class RoutingProvider(LLMProvider):
         """Pick the backend for *ref* purely by prefix."""
         if ref.is_remote:
             return self._get_sdk_provider()
-        return self._get_llama_cpp()
+        return self._get_local()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         ref = parse_model_ref(cfg.embedding_model)
@@ -126,7 +128,7 @@ class RoutingProvider(LLMProvider):
 
         Hosted refs reach :class:`SdkLLMProvider`, which raises
         ``NotImplementedError`` for PDF OCR; native refs reach the
-        llama-cpp pool worker. ``model`` is empty when the caller wants
+        local llama-server engine. ``model`` is empty when the caller wants
         the configured ``cfg.vision_model`` to drive the dispatch.
         """
         ref = parse_model_ref(model or cfg.vision_model)
@@ -147,7 +149,7 @@ class RoutingProvider(LLMProvider):
         """
         native: set[str] = set()
         with contextlib.suppress(Exception):
-            native = set(self._get_llama_cpp().list_models())
+            native = set(self._get_local().list_models())
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return sorted(native)
@@ -158,7 +160,7 @@ class RoutingProvider(LLMProvider):
         return sorted(native | remote)
 
     def list_chat_models(self, provider: str) -> list[str]:
-        """Delegate to the SDK backend; native llama-cpp has no catalog."""
+        """Delegate to the SDK backend; the native engine has no catalog."""
         sdk = self._get_sdk_provider()
         if not sdk.available():
             return []
@@ -184,14 +186,14 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to llama-cpp; hosted refs go through the SDK
+        Native GGUF refs go to the local engine; hosted refs go through the SDK
         provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
         empty or the selected backend does not support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
         if _is_native_rerank_ref(cfg.reranker_model):
-            return self._get_llama_cpp().rerank(query, candidates)
+            return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
             raise ProviderError(
@@ -215,33 +217,33 @@ class RoutingProvider(LLMProvider):
         if not model:
             return True
         if _is_native_rerank_ref(model):
-            return self._get_llama_cpp().supports_rerank()
+            return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
-        if self._llama_cpp is not None:
-            self._llama_cpp.shutdown()
+        if self._local is not None:
+            self._local.shutdown()
         if self._sdk_provider is not None:
             self._sdk_provider.shutdown()
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """Forward to the native side only; the SDK side has no local cache."""
-        if self._llama_cpp is not None:
-            self._llama_cpp.invalidate_load_cache(model_path)
+        if self._local is not None:
+            self._local.invalidate_load_cache(model_path)
 
     def warm_up_pool(self) -> None:
         """Forward to the native side; the SDK side has no worker pool.
 
-        Lazily constructs the llama-cpp provider if it isn't already up so
+        Lazily constructs the local engine if it isn't already up so
         eager-start during ``Services`` boot still warms the configured
         native roles, even when the user hasn't issued a chat call yet.
         """
-        self._get_llama_cpp().warm_up_pool()
+        self._get_local().warm_up_pool()
 
 
 def _is_native_rerank_ref(model: str) -> bool:
-    """Return True iff *model* should route to the native llama-cpp rerank worker.
+    """Return True iff *model* should route to the native llama-server rerank path.
 
     Two acceptance paths:
 
