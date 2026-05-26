@@ -62,8 +62,9 @@ PROMPTS: dict[str, str] = {
         "citing the file. Do not guess details that aren't in the results."
     ),
     "glm-air": (
-        "Explain how lilbee builds a concept graph from an indexed corpus and how "
-        "it uses it at query time. Reference the code."
+        "Use lilbee_search to trace how lilbee turns a search query into ranked "
+        "results -- embedding, vector search, and reranking -- and explain each "
+        "step from what you find, citing the files."
     ),
     # --- giants: open-ended, impressive practical tasks ---
     "qwen3-235b": (
