@@ -45,6 +45,21 @@ TOML
   touch "$WS/.lilbee/.demo_indexed"
 fi
 
+# AGENTS.md carries the grounding directive (like the godot demo), so the demo
+# prompt itself can be a natural dev task instead of "use lilbee_search".
+cat > "$WS/AGENTS.md" <<'AGENTS'
+# Working in the lilbee codebase
+
+lilbee is a local-first RAG engine with an OpenAI-compatible server and an
+opencode/MCP integration. Your training data does not include lilbee's internals.
+
+- Use the `lilbee_search` tool to look up lilbee's modules, classes, and
+  conventions before writing or changing code. Query the class/function/concept.
+- Confirm APIs via lilbee_search rather than guessing; match the existing style.
+- Cite the files you rely on as `path:Lstart-Lend`.
+- No clarifying questions: make reasonable assumptions and implement.
+AGENTS
+
 # --- lilbee serve (background, for /mcp) ---
 if ! curl -s "http://127.0.0.1:8080/api/health" >/dev/null 2>&1; then
   echo "[prep] starting lilbee serve"
@@ -63,8 +78,10 @@ echo "[giant] launching llama-server for $FAMILY"
 tmux kill-session -t giantsrv 2>/dev/null || true
 TMPL_ARG=""
 [ -n "$TEMPLATE" ] && TMPL_ARG="--chat-template-file $TEMPLATE"
+# --alias makes /v1/models advertise the same id opencode is configured with, so
+# the picker shows one "lilbee" model, not a duplicate from auto-discovery.
 tmux new-session -d -s giantsrv \
-  "LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
+  "LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$FAMILY' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
 for _ in $(seq 1 300); do
   curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && break; sleep 3
 done
@@ -75,11 +92,11 @@ mkdir -p "$WS/.config/opencode"
 cat > "$WS/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "giant/$FAMILY",
+  "model": "lilbee/$FAMILY",
   "provider": {
-    "giant": {
+    "lilbee": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "$FAMILY",
+      "name": "lilbee",
       "options": { "baseURL": "http://127.0.0.1:$LS_PORT/v1", "apiKey": "sk-noauth" },
       "models": { "$FAMILY": { "name": "$FAMILY" } }
     }
@@ -94,4 +111,4 @@ cat > "$WS/opencode.json" <<JSON
   }
 }
 JSON
-echo "READY: opencode.json at $WS/opencode.json ; model=$FAMILY@:$LS_PORT ; mcp=lilbee@:8080"
+echo "READY: opencode.json at $WS/opencode.json ; provider=lilbee model=$FAMILY@:$LS_PORT ; mcp=lilbee@:8080"
