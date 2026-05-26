@@ -113,12 +113,16 @@ def main() -> None:
         # Output keyed by the real model name so the published files read clearly.
         stem = str(OUT / f"opencode-{disp}")
         tape = OUT / f"{disp}.tape"
+        # The giants do several searches and generate slowly (~10-15 min); the mid
+        # coder a bit; smalls are quick. The Hide window must cover generation (it's
+        # hidden, so it only costs recording wall-clock, not gif length).
+        gensleep = "900s" if spec.multi_gpu_only else ("240s" if fam == "qwen3-coder" else "150s")
         tape.write_text(
             TAPE_TMPL.read_text()
             .replace("__OUT__", stem)
             .replace("__MODEL__", disp)
             .replace("__PROMPT__", prompt)
-            .replace("__GENSLEEP__", "90s")
+            .replace("__GENSLEEP__", gensleep)
         )
         before = _calltool_count()
         print(f"===== {fam}: record =====", flush=True)
