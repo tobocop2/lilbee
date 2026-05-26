@@ -52,8 +52,8 @@ PROMPTS: dict[str, str] = {
     ),
     # --- mid: code-flavored for the coder model ---
     "qwen3-coder": (
-        "Find lilbee's code chunker. In two or three sentences, say how it splits "
-        "source code differently from prose, and cite the file. Do one search."
+        "Search lilbee for how it chunks source code, then explain in two or three "
+        "sentences how code chunking differs from prose chunking, citing the file."
     ),
     # --- large single-GPU: practical, multi-stage dev questions ---
     "gpt-oss": (
