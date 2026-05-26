@@ -57,9 +57,9 @@ PROMPTS: dict[str, str] = {
     ),
     # --- large single-GPU: practical, multi-stage dev questions ---
     "gpt-oss": (
-        "How does lilbee search its index to find the most relevant chunks for a "
-        "query? Use lilbee_search to read the actual code, then explain the search "
-        "step based on what you find, citing the file."
+        "Use lilbee_search to find lilbee's reranker code. Quote the rerank "
+        "function and explain what it does using only what the search returns, "
+        "citing the file. Do not guess details that aren't in the results."
     ),
     "glm-air": (
         "Explain how lilbee builds a concept graph from an indexed corpus and how "
