@@ -35,7 +35,7 @@ A quick sweep through every screen.
 
 Ask the Crown Victoria owner's manual; every answer points back to the page. Inline
 `[N]` markers are clickable in mouse-supporting terminals to open a source preview
-at the exact passage.
+at the exact spot.
 
 ![chat with cited answers](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
@@ -70,7 +70,7 @@ Crawling, API-Keys, System.
 
 ## Agent: code (lilbee talking to lilbee)
 
-The headline grounding demo. An agent indexes lilbee's own source through lilbee's
+The headline demo of answering from real code. An agent indexes lilbee's own source through lilbee's
 MCP server, then answers questions about how lilbee works, citing
 `src/lilbee/.../file.py:LINE` for every claim.
 
