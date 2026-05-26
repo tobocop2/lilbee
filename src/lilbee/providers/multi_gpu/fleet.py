@@ -1,4 +1,4 @@
-"""Supervisor for the llama-server sidecar fleet.
+"""Supervisor for the managed llama-server fleet.
 
 Each instance runs in its own process group (so a stop/crash kills the whole
 group; PID-only kills strand GPU memory), claims its port at spawn time (no
@@ -71,7 +71,7 @@ class InstanceLaunch:
 
 
 class FleetServer:
-    """One supervised llama-server sidecar in its own process group."""
+    """One supervised llama-server process in its own process group."""
 
     def __init__(self, launch: InstanceLaunch) -> None:
         self._launch = launch

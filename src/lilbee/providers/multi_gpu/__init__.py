@@ -1,6 +1,7 @@
-"""Opt-in multi-GPU managed llama-server fleet.
+"""The local inference engine: a managed ``llama-server`` fleet.
 
-A sibling of the in-process llama-cpp provider: chat/embed/rerank/vision run on
-llama-server sidecars bin-packed across GPUs, reached over a thin httpx client.
-Inert unless ``llm_provider`` is ``multi-gpu``.
+Chat/embed/rerank/vision each run on a managed ``llama-server`` process, reached
+over a thin httpx client. A single machine is a fleet-of-one; the same code
+bin-packs models across N GPUs. This is the sole local engine (no in-process
+binding); ``llm_provider=auto`` routes native GGUF refs here.
 """

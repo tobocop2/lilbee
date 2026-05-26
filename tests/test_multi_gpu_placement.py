@@ -40,7 +40,7 @@ class TestPlanPlacement:
         )
         assert plan == Placement(
             instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
-            in_process_roles=(),
+            unplaceable_roles=(),
         )
 
     def test_colocates_small_models_on_one_gpu(self) -> None:
@@ -51,7 +51,7 @@ class TestPlanPlacement:
             ],
             [(0, 24 * _GB)],
         )
-        assert plan.in_process_roles == ()
+        assert plan.unplaceable_roles == ()
         assert {i.role for i in plan.instances} == {WorkerRole.EMBED, WorkerRole.RERANK}
         assert all(i.devices == (0,) for i in plan.instances)
 
@@ -63,7 +63,7 @@ class TestPlanPlacement:
         )
         # Equal cards -> equal proportion (int(24*0.9 GiB) = 21 each).
         assert plan.instances == (InstancePlan(WorkerRole.CHAT, (0, 1), (21, 21)),)
-        assert plan.in_process_roles == ()
+        assert plan.unplaceable_roles == ()
 
     def test_tensor_split_is_proportional_on_unequal_gpus(self) -> None:
         # 28 GB splits across a 24 GB + 16 GB pair; the ratio must follow free VRAM
@@ -81,7 +81,7 @@ class TestPlanPlacement:
             [(0, 24 * _GB), (1, 24 * _GB)],
         )
         assert plan.instances == ()
-        assert plan.in_process_roles == (WorkerRole.CHAT,)
+        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
 
     def test_first_fit_decreasing_places_largest_first(self) -> None:
         plan = plan_placement(
@@ -95,4 +95,4 @@ class TestPlanPlacement:
         # Largest (chat) placed first on device 0; embed then lands on the
         # now-emptier device 1. Each is a single-GPU instance.
         assert by_role == {WorkerRole.CHAT: (0,), WorkerRole.EMBED: (1,)}
-        assert plan.in_process_roles == ()
+        assert plan.unplaceable_roles == ()

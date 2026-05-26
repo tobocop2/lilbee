@@ -4,7 +4,7 @@ Estimates each role-model's VRAM footprint from GGUF metadata and bin-packs
 instances across GPUs (first-fit-decreasing): a model that fits one GPU runs as a
 single pinned instance, small models co-locate on a GPU with spare VRAM, and a
 model too big for any single GPU is tensor-split across enough GPUs to fit. A role
-that fits nowhere falls back to in-process. See docs/architecture.md for rationale.
+that fits nowhere gets no server (its calls error). See docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -43,10 +43,14 @@ class InstancePlan:
 
 @dataclass(frozen=True)
 class Placement:
-    """Planner output: server instances plus roles left to run in-process."""
+    """Planner output: server instances plus roles that fit on no device.
+
+    ``unplaceable_roles`` get no server, so a call to them surfaces a
+    ``ProviderError`` (there is no in-process fallback).
+    """
 
     instances: tuple[InstancePlan, ...]
-    in_process_roles: tuple[WorkerRole, ...]
+    unplaceable_roles: tuple[WorkerRole, ...]
 
 
 def estimate_model_vram(
@@ -99,11 +103,11 @@ def plan_placement(
     First-fit-decreasing by footprint with a 90% headroom per GPU. A model that
     fits one GPU takes a single instance; one too big for any single GPU is
     tensor-split across the fewest GPUs whose combined headroom fits; a model that
-    fits nowhere is returned as an in-process role.
+    fits nowhere is returned as an unplaceable role (it gets no server).
     """
     remaining: dict[int, float] = {idx: vram * _VRAM_USABLE_FRACTION for idx, vram in devices}
     instances: list[InstancePlan] = []
-    in_process: list[WorkerRole] = []
+    unplaceable: list[WorkerRole] = []
 
     for model in sorted(models, key=lambda m: m.est_vram_bytes, reverse=True):
         single = _best_single_device(model.est_vram_bytes, remaining)
@@ -119,9 +123,9 @@ def plan_placement(
                 InstancePlan(role=model.role, devices=tuple(split), tensor_split=ratio)
             )
             continue
-        in_process.append(model.role)
+        unplaceable.append(model.role)
 
-    return Placement(instances=tuple(instances), in_process_roles=tuple(in_process))
+    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
 
 
 def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:

@@ -331,7 +331,7 @@ def test_fleet_start_degrades_unready_role_without_raising(
         fleet.shutdown()
 
 
-def test_restart_dead_gives_up_after_cap_and_leaves_role_in_process(
+def test_restart_dead_gives_up_after_cap_and_leaves_role_down(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A server that never becomes ready stops being respawned after the cap, so a
@@ -348,7 +348,7 @@ def test_restart_dead_gives_up_after_cap_and_leaves_role_in_process(
         fleet._restart_dead()
     assert server.gave_up
     assert server.consecutive_failures == fleet_mod._MAX_RESTART_ATTEMPTS
-    assert fleet.healthy_clients(WorkerRole.CHAT) == []  # role stays in-process
+    assert fleet.healthy_clients(WorkerRole.CHAT) == []  # role stays down (calls error)
 
 
 def test_restart_resets_failure_count_on_success(tmp_path: Path, patched: dict) -> None:

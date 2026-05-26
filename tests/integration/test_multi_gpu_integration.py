@@ -88,7 +88,7 @@ def test_fleet_provider_routes_chat_to_a_real_server(
         prov_mod,
         "plan_placement",
         lambda inputs, devices: Placement(
-            instances=(InstancePlan(WorkerRole.CHAT, (0,)),), in_process_roles=()
+            instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
         ),
     )
     monkeypatch.setattr(

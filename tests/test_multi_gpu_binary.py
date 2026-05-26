@@ -52,3 +52,25 @@ def test_runtime_env_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     # libs, so the fleet injects no library search path.
     monkeypatch.setattr(binary_mod, "_bundled_binary", lambda: None)
     assert llama_server_runtime_env() == {}
+
+
+def test_bundled_binary_none_when_package_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    # Simulate the engine wheel not being installed (BYO / dev without it):
+    # the import fails and resolution falls through to the configured path / PATH.
+    monkeypatch.setitem(sys.modules, "lilbee_llama_server", None)
+    assert binary_mod._bundled_binary() is None
+
+
+def test_bundled_binary_none_when_binary_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    # Installed wheel whose bin/ has no binary yet (CI fills it at build time):
+    # get_binary_path points at a non-existent file, so resolution returns None.
+    fake = SimpleNamespace(get_binary_path=lambda: tmp_path / "llama-server")
+    monkeypatch.setitem(sys.modules, "lilbee_llama_server", fake)
+    assert binary_mod._bundled_binary() is None

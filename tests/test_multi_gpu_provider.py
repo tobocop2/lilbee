@@ -696,7 +696,7 @@ class TestBuildFleetWiring:
             prov_mod,
             "plan_placement",
             lambda inputs, devices: Placement(
-                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), in_process_roles=()
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
         monkeypatch.setattr(prov_mod, "_launch_for", lambda *a: MagicMock())
@@ -729,7 +729,7 @@ class TestBuildFleetWiring:
 
         def _capture(inputs, devices):
             seen["devices"] = devices
-            return Placement(instances=(), in_process_roles=(WorkerRole.CHAT,))
+            return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(prov_mod, "plan_placement", _capture)
         monkeypatch.setattr(prov_mod.Fleet, "start", lambda self, launches: None)

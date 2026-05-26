@@ -45,8 +45,8 @@ def _bundled_binary() -> Path | None:
         import lilbee_llama_server
     except ImportError:
         return None
-    path = Path(lilbee_llama_server.get_binary_path())  # pragma: no cover - wheel absent in tests
-    return path if path.is_file() else None  # pragma: no cover
+    path = Path(lilbee_llama_server.get_binary_path())
+    return path if path.is_file() else None
 
 
 def llama_server_runtime_env() -> dict[str, str]:

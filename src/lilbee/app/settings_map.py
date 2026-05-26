@@ -611,31 +611,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
-    "worker_pool_call_timeout_s": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Per-call deadline for one worker-pool round-trip in seconds. "
-            "Raise this for very large embed batches on slow machines"
-        ),
-    ),
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Spawn every registered worker at TUI startup instead of on first use. "
-            "Trades 1-3 seconds of cold-start per role for first-call latency"
-        ),
-    ),
-    "worker_pool_max_idle_s": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Shut a worker down after this many seconds idle to free RAM/VRAM. "
-            "0 disables idle reaping"
+            "Spawn every configured role server at TUI startup instead of on first use. "
+            "Trades cold-start time per role for first-call latency"
         ),
     ),
     "max_tokens": SettingDef(
