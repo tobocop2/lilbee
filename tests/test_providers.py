@@ -2006,6 +2006,50 @@ class TestMtmdLoadVisionLlama:
         finally:
             cfg.main_gpu = None
 
+    def test_vision_passes_flash_attn_by_default(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """mtmd only enables FA when the backing Llama has it on, so vision must opt in."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = None  # auto
+        try:
+            with (
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                    return_value={"context_length": "8192"},
+                ),
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                    return_value=mock.MagicMock(),
+                ),
+            ):
+                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+            assert mock_llama_cpp.Llama.call_args[1].get("flash_attn") is True
+        finally:
+            cfg.flash_attention = None
+
+    def test_vision_skips_flash_attn_when_disabled(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """``cfg.flash_attention = False`` keeps FA off the vision Llama kwargs."""
+        from lilbee.providers.mtmd_backend import load_vision_llama
+
+        cfg.num_ctx = None
+        cfg.flash_attention = False
+        try:
+            with (
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
+                    return_value={"context_length": "8192"},
+                ),
+                mock.patch(
+                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
+                    return_value=mock.MagicMock(),
+                ),
+            ):
+                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+            assert "flash_attn" not in mock_llama_cpp.Llama.call_args[1]
+        finally:
+            cfg.flash_attention = None
+
     def test_vision_falls_back_to_default_when_metadata_missing(
         self, mock_llama_cpp: mock.MagicMock
     ) -> None:
