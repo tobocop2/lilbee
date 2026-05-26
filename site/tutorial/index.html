@@ -5,33 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lilbee tutorial reel</title>
 <meta name="description" content="Long-form video tutorials for every part of lilbee: TUI, chat, model catalog, fine-tuning, MCP agent integration.">
-<link rel="canonical" href="https://lilbee.sh/tutorial.html">
+<link rel="canonical" href="https://lilbee.sh/tutorial">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="lilbee">
 <meta property="og:title" content="lilbee tutorial reel">
 <meta property="og:description" content="Long-form video tutorials for every part of lilbee.">
-<meta property="og:url" content="https://lilbee.sh/tutorial.html">
+<meta property="og:url" content="https://lilbee.sh/tutorial">
 <meta property="og:image" content="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.png">
 <meta property="og:image:width" content="1400">
 <meta property="og:image:height" content="900">
 
-<link rel="stylesheet" href="style.css?v=20260520">
-<style>
-  .tutorial-intro { color: var(--mute); font-size: 0.95rem; margin: 0.5rem 0 2rem; }
-  .tutorial-toc { margin: 0 0 2.5rem; padding: 1rem 1.25rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }
-  .tutorial-toc ol { margin: 0; padding-left: 1.4rem; }
-  .tutorial-toc li { margin: 0.2rem 0; }
-  .tutorial-section { margin: 2.5rem 0 3rem; }
-  .tutorial-section h2 { font-size: 1.15rem; margin: 0 0 0.5rem; }
-  .tutorial-section .extras-label { font-size: 0.8rem; color: var(--mute); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.4rem; }
-  .tutorial-section p { margin: 0.4rem 0 1rem; line-height: 1.55; }
-  .tutorial-frame { background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 1400 / 900; margin: 0.75rem 0; }
-  .tutorial-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-  .extras-divider { border: 0; border-top: 1px dashed rgba(255,255,255,0.1); margin: 3rem 0; }
-  .tutorial-backlink { display: inline-block; margin: 0.5rem 0 1.5rem; color: var(--mute); font-size: 0.9rem; }
-  .tutorial-backlink:hover { color: var(--fg); }
-</style>
+<link rel="stylesheet" href="../style.css?v=20260520">
+<link rel="stylesheet" href="tutorial.css?v=20260520">
 </head>
 <body>
 <div class="layout">
@@ -40,7 +26,7 @@
     <div class="topstrip">
       <div><span class="badge">lilbee</span> <span>tutorial reel</span></div>
       <div>
-        <a class="pill" href="/">← back to lilbee.sh</a>
+        <a class="pill" href="../">← back to lilbee.sh</a>
       </div>
     </div>
 
@@ -76,7 +62,7 @@
     <section class="tutorial-section" id="first-run">
       <h2>First run</h2>
       <p>The wizard pulls a chat model and an embedder in parallel; you can start using lilbee while they download.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4">first-run wizard (MP4)</a>
@@ -87,7 +73,7 @@
     <section class="tutorial-section" id="tui-tour">
       <h2>TUI tour</h2>
       <p>A one-minute sweep through every TUI screen.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.mp4">TUI tour (MP4)</a>
@@ -98,7 +84,7 @@
     <section class="tutorial-section" id="chat">
       <h2>Chat with cited answers</h2>
       <p>Ask the Crown Vic manual. Every answer cites a page; inline <code>[N]</code> markers open a source preview at the exact passage.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4">chat with cited answers (MP4)</a>
@@ -109,7 +95,7 @@
     <section class="tutorial-section" id="add">
       <h2>Add files</h2>
       <p><code>/add &lt;path&gt;</code> ingests a file. The Task Center shows live progress; ask once it lands.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.mp4">add files (MP4)</a>
@@ -120,7 +106,7 @@
     <section class="tutorial-section" id="crawl">
       <h2>Crawl a URL</h2>
       <p><code>/crawl &lt;url&gt;</code> fetches a page or a small site into your library, then it's chat with citations like anything else.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4">crawl (MP4)</a>
@@ -131,7 +117,7 @@
     <section class="tutorial-section" id="catalog">
       <h2>Model catalog</h2>
       <p>Browse Hugging Face Hub inside lilbee. Tab between roles, toggle grid / list, search, open model info, pull live.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4">model catalog (MP4)</a>
@@ -142,7 +128,7 @@
     <section class="tutorial-section" id="unsupported">
       <h2>Unsupported architectures, surfaced before the download</h2>
       <p>lilbee tags GGUFs the bundled llama.cpp can't load with an <code>unsupported</code> pill before you pull. Press <kbd>f</kbd> to hide them. Clip searches for <code>gemma-4</code>, an architecture upstream hasn't shipped yet.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-unsupported.mp4">unsupported architectures (MP4)</a>
@@ -153,7 +139,7 @@
     <section class="tutorial-section" id="settings">
       <h2>Settings</h2>
       <p>Tabbed editor for every knob: Models, Ingest, Generation, Retrieval, Display, Crawling, API-Keys, System.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4">settings (MP4)</a>
@@ -164,7 +150,7 @@
     <section class="tutorial-section" id="agent-code">
       <h2>Agent: code (lilbee talking to lilbee)</h2>
       <p>An agent indexes lilbee's own source through lilbee's MCP server, then answers with <code>src/lilbee/.../file.py:LINE</code> citations.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code.mp4">agent: code (MP4)</a>
@@ -175,7 +161,7 @@
     <section class="tutorial-section" id="agent-fine-tune">
       <h2>Agent fine-tunes lilbee mid-conversation</h2>
       <p>Turn 1 answers in outline. The user asks for source; the agent fine-tunes lilbee's retrieval, re-searches, and answers in full function bodies with <code>file.py:L&lt;start&gt;-L&lt;end&gt;</code> citations. Runs on a local 8B model.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.mp4">agent fine-tunes lilbee (MP4)</a>
@@ -186,7 +172,7 @@
     <section class="tutorial-section" id="agent-pdf">
       <h2>Agent: PDF</h2>
       <p>The agent finds <code>cv-manual.pdf</code>, delegates indexing to <code>lilbee-worker</code>, then answers with page citations.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.mp4">agent: PDF (MP4)</a>
@@ -200,7 +186,7 @@
       <p class="extras-label">extras</p>
       <h2>Agent: live indexing</h2>
       <p>A coding agent indexes a small Godot 4 subset, then searches and answers method-by-method against the local files.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.mp4">agent: live indexing (MP4)</a>
@@ -212,7 +198,7 @@
       <p class="extras-label">extras</p>
       <h2>Agent: Godot codegen against the full class reference</h2>
       <p>The agent indexes Godot 4's full 810-file class reference, then writes a procedural level generator with every API call backed by a <code>godot-classes/&lt;Class&gt;.xml:line</code> citation. <a href="https://github.com/tobocop2/lilbee/blob/main/docs/benchmarks/godot-level-generator.md">Benchmark vs no-RAG</a>: 4 hallucinated APIs → 0.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4">agent: Godot codegen (MP4)</a>
@@ -224,7 +210,7 @@
       <p class="extras-label">extras</p>
       <h2>Command surface</h2>
       <p><kbd>Ctrl+P</kbd> for the palette, <kbd>?</kbd> for the cheat sheet, <code>/help</code> for the slash-command catalog.</p>
-      <div class="tutorial-frame">
+      <div class="tutorial-clip">
         <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.png">
           <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.mp4" type="video/mp4">
           <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.mp4">command surface (MP4)</a>
@@ -233,7 +219,7 @@
     </section>
 
     <p style="margin: 3rem 0 1rem; color: var(--mute); font-size: 0.9rem;">
-      <a href="/">← back to lilbee.sh</a> &nbsp;·&nbsp;
+      <a href="../">← back to lilbee.sh</a> &nbsp;·&nbsp;
       <a href="https://github.com/tobocop2/lilbee">GitHub</a> &nbsp;·&nbsp;
       <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md">Usage guide</a>
     </p>
