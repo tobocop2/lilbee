@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  /** Wire every [role="tablist"] on the page (install-method tabs, demo reel,
+  /** Wire every [role="tablist"] on the page (install-method tabs, tutorial reel,
       anything else with the same ARIA shape). Click selection plus left/right
       arrow-key navigation. */
   function initTablists() {

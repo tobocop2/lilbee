@@ -4,7 +4,7 @@
 
 lilbee is a local search engine for your own documents. It runs entirely on your machine: no cloud, no API keys, no data leaving your computer.
 
-You point it at a folder (markdown, code, PDFs, Office docs, ebooks, images, anything), it indexes them, and then you can search them, chat with a model grounded in them, or let lilbee auto-build a wiki of the concepts and entities they contain. Every answer comes with citations linked back to the source chunk.
+You point it at a folder (markdown, code, PDFs, Office docs, ebooks, images, anything), it indexes them, and then you can search them, chat with a model that answers from them, or let lilbee auto-build a wiki of the concepts and entities they contain. Every answer comes with citations linked back to the source chunk.
 
 lilbee is a single executable: the same process drives the CLI, the Textual TUI, the REST API server, the MCP server for AI agents, and a Python library (`from lilbee import Lilbee`). No sidecar services to run alongside it.
 
@@ -344,22 +344,22 @@ flowchart TD
 - **Default gap**: 0.15 (top-1 must be clearly separated from top-2)
 - **Threshold derivation**: BM25 scores are normalized via sigmoid centered at ~0.5. Scores above 0.8 represent strong keyword matches. The gap ensures the match isn't ambiguous.
 - **Tradeoff**: higher threshold = expansion runs more often (better recall, more latency). Lower = expansion skipped more (faster, may miss some results).
-- **Caveat**: these are starting defaults. Calibrate per-corpus using RAGAS evaluation metrics.
+- **Caveat**: these are starting defaults. Calibrate for your library using RAGAS evaluation metrics.
 
 #### Expansion Guardrails
 **On by default.** Validates LLM-generated query variants to prevent drift.
 
-- **Technique**: cosine similarity between the question's embedding and each variant's embedding. Language-agnostic (works for any corpus the embedding model supports) and reuses the variant vectors that the multi-query search would have embedded anyway, so there are zero extra embed calls.
+- **Technique**: cosine similarity between the question's embedding and each variant's embedding. Language-agnostic (works for any library the embedding model supports) and reuses the variant vectors that the multi-query search would have embedded anyway, so there are zero extra embed calls.
 - **Threshold**: 0.5 by default via `LILBEE_EXPANSION_SIMILARITY_THRESHOLD`. Raise it to reject more variants (stricter); lower it to keep more (looser). Calibrate per embedding model. Dense 768-dim models cluster higher by default than contrastively-trained ones.
 - **Concept-graph variants bypass this check**: they come from deterministic graph traversal and are expected to be partial phrases with lower similarity to the full question.
 - **Tradeoff**: guardrails may filter out creative but valid variants. Disable via `LILBEE_EXPANSION_GUARDRAILS=false` if recall is more important than precision.
 
 #### HyDE (Hypothetical Document Embeddings)
-**Off by default.** Generates a hypothetical passage (50-100 words) that reads like a real document answering the query, embeds it, and searches with it alongside the original query vector.
+**Off by default.** Generates a hypothetical excerpt (50-100 words) that reads like a real document answering the query, embeds it, and searches with it alongside the original query vector.
 
 - **Paper**: Gao et al. 2022, "[Precise Zero-Shot Dense Retrieval without Relevance Labels](https://arxiv.org/abs/2212.10496)"
 - **Cost**: 1 additional LLM call + 1 embedding (~500ms total)
-- **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated: they approximate the answer space but aren't grounded in real content)
+- **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated: they approximate the answer space but aren't based on real content)
 - **When it helps**: vague or short queries where the user's terminology doesn't match the indexed documents. E.g. "how does the thing work" where the "thing" is described with specific technical vocabulary in the docs.
 - **When to skip**: factual lookups, keyword-heavy queries, or when latency matters.
 
@@ -427,9 +427,9 @@ Useful for benchmarking (compare BM25 vs vector on the same question), debugging
 
 ## Wiki Layer
 
-> **Experimental.** Generation quality depends on your corpus and the chat model. Expect some pages to land in `drafts/` for human review rather than publish direct.
+> **Experimental.** Generation quality depends on your library and the chat model. Expect some pages to land in `drafts/` for human review rather than publish direct.
 
-The wiki layer is lilbee's second-order index: a set of linked markdown pages auto-generated from your document corpus so that concepts and entities which show up across many sources get their own page with citations from every source that mentions them.
+The wiki layer is lilbee's second-order index: a set of linked markdown pages auto-generated from your indexed documents so that concepts and entities which show up across many sources get their own page with citations from every source that mentions them.
 
 ### Layout
 
@@ -457,7 +457,7 @@ Slugs are lowercase hyphen-separated filenames that double as the `[[link]]` tar
 
 ### Retrieval inside wiki generation
 
-Each page is grounded in the top `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` chunks returned by the same hybrid search the main pipeline uses, optionally reordered by the reranker when `LILBEE_RERANKER_MODEL` is set. Every path respects `LILBEE_DIVERSITY_MAX_PER_SOURCE` so one loud document can't monopolize a topic page.
+Each page is built from the top `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` chunks returned by the same hybrid search the main pipeline uses, optionally reordered by the reranker when `LILBEE_RERANKER_MODEL` is set. Every path respects `LILBEE_DIVERSITY_MAX_PER_SOURCE` so one loud document can't monopolize a topic page.
 
 ### `[[wiki links]]`
 
@@ -538,7 +538,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | How many extra candidates to retrieve for MMR | Higher = better diversity selection but slower. 3x is empirically effective. |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | Number of LLM-generated query variants | Each variant requires an embedding call. Set to 0 to disable expansion entirely for fastest search. |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | Distance filter widening increment | Only used when `LILBEE_ADAPTIVE_THRESHOLD=true`. Smaller = more granular adaptation but more filter iterations |
-| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 score above which expansion is skipped | 90th percentile of sigmoid-normalized BM25 scores. Calibrate per-corpus. |
+| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 score above which expansion is skipped | 90th percentile of sigmoid-normalized BM25 scores. Calibrate for your library. |
 | `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Min score gap (top-1 minus top-2) to skip expansion | Approximately 1 std dev of typical score spread. Ensures the match isn't ambiguous. |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Validate expansion variants for drift | Prevents hallucinated variants at the cost of potentially filtering valid creative expansions |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum question↔variant cosine similarity for an expansion variant to survive the guardrail | Raise for stricter filtering, lower to keep more variants. Calibrate per embedding model. |

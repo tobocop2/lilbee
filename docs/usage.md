@@ -52,7 +52,7 @@ can take is reachable from one of those three.
 The welcome screen walks you through:
 
 1. Picking an **embedding model** (required for indexing your documents).
-2. Picking a **chat model** (optional; needed for grounded answers and the
+2. Picking a **chat model** (optional; needed for cited answers and the
    conversational REPL).
 
 Both pickers show every model the role can run: native GGUFs from the built-in
@@ -77,13 +77,13 @@ The bar above the prompt has a two-state pill that toggles between **Search**
 and **Chat**. F3 flips it.
 
 - **Search** (default). Every prompt goes through document retrieval first.
-  Relevant chunks are passed to the chat model as grounding context, and the
+  Relevant chunks are passed to the chat model as context, and the
   reply ends with a Sources block of clickable citations. If retrieval finds
   nothing, lilbee falls through to a chat-only answer for that single prompt
-  and shows a one-time toast so you know the answer wasn't grounded.
+  and shows a one-time toast so you know the answer wasn't backed by your files.
 - **Chat.** Retrieval is skipped entirely; the model answers directly from
   whatever it already knows. Useful for conversational follow-ups that don't
-  need the corpus, or for talking to a model when you haven't indexed
+  need your library, or for talking to a model when you haven't indexed
   anything yet.
 
 The toggle is disabled and forced to Chat when no embedding model is
@@ -188,7 +188,7 @@ vision) runs in its own subprocess so a stuck model doesn't lock the chat.
 lilbee analyzes the documents you've indexed and writes a wiki about them,
 inspired by Andrej Karpathy's [LLM Wiki](https://karpathy.ai/llmwiki/). Pages
 compound across sources instead of being one-per-document, so concepts and
-entities that show up repeatedly in your corpus get their own page with
+entities that show up repeatedly in your library get their own page with
 citations from every source that mentions them.
 
 Open it with `/wiki`. Pages live under `$LILBEE_DATA/wiki/`:
@@ -285,7 +285,7 @@ lilbee --json wiki prune                       # archive stale pages
 **Two patterns worth knowing:**
 
 - **`search` vs `ask`.** `search` returns raw chunks without an LLM call. Use it
-  when your agent has its own LLM and just needs grounded context. `ask` runs
+  when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.
 - **Citation rule still applies.** Every fact stated from `search` results must
@@ -652,7 +652,7 @@ Only relevant if you run `lilbee wiki build`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_WIKI_INGEST_UPDATE_CAP` | `20` | Max changed sources processed by incremental wiki updates during `lilbee sync`. Prevents a big re-ingest from churning concepts |
-| `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` | `25` | Top-K chunks grounding each wiki page section |
+| `LILBEE_WIKI_CONCEPT_MAX_CHUNKS_PER_PAGE` | `25` | Top-K chunks behind each wiki page section |
 
 ### Advanced
 
@@ -764,7 +764,7 @@ configurable depth, concurrent fetching, live progress, cancel, per-domain
 rate-limit + retries on HTTP 429/503, and SSRF protection against internal
 network access.
 
-**When to use it:** When your corpus spans both local files and web content
+**When to use it:** When your library spans both local files and web content
 such as documentation sites, wikis, or internal tools. Crawled content is
 hash-tracked so re-crawling only re-indexes changed pages.
 
@@ -896,7 +896,7 @@ represent one coherent thought rather than an arbitrary slice through one. The
 benefit shows up on prose-heavy material: novels, essays, long-form research
 papers, interview transcripts, qualitative research notes, anything where an
 argument develops across paragraphs. When you ask a question, the retrieved
-chunk is more likely to contain the full passage that matches rather than the
+chunk is more likely to contain the full section that matches rather than the
 first half of it plus unrelated setup.
 
 **Trade-off:** Enabling semantic chunking triggers a one-time download of
