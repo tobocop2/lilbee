@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
-"""Emit PEP 503 simple-repository indexes for lilbee per-backend wheels.
+"""Emit PEP 503 simple-repository indexes for the per-backend engine wheels.
 
-Reads wheel artifacts produced by the build-default-wheels.yml /
-build-extra-wheels.yml reusable workflows, groups by backend tag, and
-writes per-directory ``index.html`` files. Each wheel link is rendered as
-an absolute URL into the wheel's GitHub release assets, so the static
-site itself doesn't need to host multi-gigabyte wheels. GitHub Pages has
-a 1 GB per-deployment cap, which makes self-hosting cu121/cu124/cu125 +
-cpu wheels (~6 GB total) infeasible; GitHub releases have no such cap.
+Reads the ``lilbee-llama-server`` wheels produced by build-multigpu.yml, groups
+them by backend, and writes per-directory ``index.html`` files. Each wheel link
+is an absolute URL into the GitHub release assets, so the static site need not
+host multi-gigabyte wheels (GitHub Pages caps a deployment at 1 GB; releases do
+not). A user picks a backend via ``pip install lilbee --extra-index-url
+https://lilbee.sh/<backend>/`` -- the pure lilbee wheel still comes from PyPI;
+this index supplies the matching engine for that backend.
 
-Backend disambiguation. The wheel files for cu121, cu124, cu125, and the
-Intel-Mac/Win cpu builds all share the same PEP 427 filename (project +
-version + python + abi + platform) as the default vulkan/metal wheels --
-the backend lives inside the wheel, not in its name. GitHub releases use
-a flat filename namespace, so each non-default wheel gets a PEP 427
-build-tag inserted (``1.cu125``, ``1.cu124``, ``1.cu121``, ``1.cpu``).
-Defaults stay unchanged because they also ship to PyPI, where build tags
-would break the existing pin.
+Backend disambiguation. The cu121/cu124/cu125/rocm/cpu engine wheels share the
+same PEP 427 filename (project + version + python + abi + platform) as the
+default vulkan/metal wheels -- the backend lives inside the wheel, not its name.
+GitHub releases use a flat filename namespace, so each non-default wheel gets a
+PEP 427 build tag inserted (``1.cu125``, ``1.cpu``, ...). Defaults stay unchanged
+because they also ship to PyPI, where a build tag would break the pin.
 
 Input layout (artifact-dir mode):
 
-    <input>/wheel-default-<os>-<backend>-py<ver>/lilbee-*.whl
-    <input>/wheel-extra-<os>-<backend>-py<ver>/lilbee-*.whl
+    <input>/wheel-multigpu-<os>-<backend>/lilbee_llama_server-*.whl
 
-Backend is parsed by stripping the wheel-{default,extra}- prefix and the
-trailing -py<ver> suffix, then taking the last remaining dash-segment.
-The wheel's version is parsed from its filename so the release URL can
-be constructed without an extra CLI flag for the tag.
+Backend is the last dash-segment of the artifact dir name; the wheel's version
+is parsed from its filename so the release URL needs no extra CLI flag.
 
 Output layout:
 
-    <site>/<backend>/lilbee/index.html      # absolute hrefs to <release>/<whl>
-    <site>/<backend>/index.html             # link to lilbee/
+    <site>/<backend>/lilbee-llama-server/index.html   # hrefs to <release>/<whl>
+    <site>/<backend>/index.html                       # link to lilbee-llama-server/
 
 Usage:
     python tools/build_pep503_indexes.py <artifacts-dir> <site-dir> \\
@@ -45,8 +40,13 @@ import re
 import sys
 from pathlib import Path
 
-ARTIFACT_DIR_RE = re.compile(r"^wheel-(?:default|extra)-(?P<rest>.+)-py\d+\.\d+$")
-WHEEL_FILENAME_RE = re.compile(r"^lilbee-(?P<version>[^-]+)-")
+# The per-backend index serves the engine wheel, lilbee-llama-server. Its
+# artifacts are wheel-multigpu-<os>-<backend> (no per-CPython axis: the binary
+# is Python-version-independent). The pure lilbee wheel is backend-agnostic and
+# ships only to PyPI, so it has no per-backend index.
+ARTIFACT_DIR_RE = re.compile(r"^wheel-multigpu-(?P<rest>.+)$")
+WHEEL_FILENAME_RE = re.compile(r"^lilbee_llama_server-(?P<version>[^-]+)-")
+_PROJECT = "lilbee-llama-server"
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
 # Backends whose wheels ship under the default filename (also on PyPI; renaming
@@ -71,7 +71,7 @@ def backend_from_artifact_dir(name: str) -> str | None:
 
 
 def version_from_wheel_filename(name: str) -> str | None:
-    """Extract the lilbee version from ``lilbee-<version>-<rest>.whl``."""
+    """Extract the version from ``lilbee_llama_server-<version>-<rest>.whl``."""
     m = WHEEL_FILENAME_RE.match(name)
     return m.group("version") if m else None
 
@@ -111,7 +111,7 @@ def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
         backend = backend_from_artifact_dir(child.name)
         if backend is None:
             continue
-        wheels = sorted(child.glob("lilbee-*.whl"))
+        wheels = sorted(child.glob("lilbee_llama_server-*.whl"))
         if not wheels:
             continue
         by_backend.setdefault(backend, []).extend(wheels)
@@ -129,7 +129,7 @@ def write_backend_indexes(
 ) -> None:
     """Write PEP 503 index pages under site/<backend>/, linking to release assets."""
     for backend, wheels in by_backend.items():
-        pkg_dir = site / backend / "lilbee"
+        pkg_dir = site / backend / _PROJECT
         pkg_dir.mkdir(parents=True, exist_ok=True)
 
         wheel_lines: list[str] = []
@@ -147,7 +147,8 @@ def write_backend_indexes(
         )
 
         (site / backend / "index.html").write_text(
-            '<!DOCTYPE html><html><body>\n<a href="lilbee/">lilbee</a><br>\n</body></html>\n'
+            f'<!DOCTYPE html><html><body>\n<a href="{_PROJECT}/">{_PROJECT}</a><br>\n'
+            "</body></html>\n"
         )
 
         print(f"backend={backend} wheels={len(wheels)}")
@@ -158,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "input", type=Path, help="Directory containing wheel-*-<backend>-py* artifact subdirs"
+        "input", type=Path, help="Directory containing wheel-multigpu-<os>-<backend> subdirs"
     )
     parser.add_argument(
         "site", type=Path, help="Output site root; backend subdirs are written under here"

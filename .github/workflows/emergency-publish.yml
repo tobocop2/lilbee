@@ -92,10 +92,19 @@ jobs:
     # See publish.yml: pypa/gh-action-pypi-publish is a Docker action and
     # misbehaves when called from a local composite action, so it runs here directly.
     steps:
-      - name: Download wheel artifacts from the release-candidate run
+      - name: Download the lilbee wheel from the release-candidate run
         uses: actions/download-artifact@v4
         with:
-          pattern: wheel-default-*
+          name: wheel-default
+          path: dist/
+          run-id: ${{ needs.guard.outputs.rc_run_id }}
+          github-token: ${{ github.token }}
+      # Default-backend engine wheels (vulkan linux/win, metal mac) so
+      # `pip install lilbee` resolves lilbee-llama-server from PyPI.
+      - name: Download the default engine wheels from the release-candidate run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-multigpu-*-@(vulkan|metal)
           path: dist/
           merge-multiple: true
           run-id: ${{ needs.guard.outputs.rc_run_id }}

@@ -1,32 +1,31 @@
 # Wheel build scripts
 
-Top-level scripts called by the `build-default-wheels.yml` / `build-extra-wheels.yml`
-reusable workflows (and `release.yml` for the executables). Each script runs
-locally (`bash tools/wheel-build/<script>.sh`) and in CI with the same
-behavior, so a developer can reproduce a CI build off-runner.
+Top-level scripts called by `build-multigpu.yml` (the engine wheel),
+`build-cuda-executables.yml`, and `release.yml` (the standalone executables).
+Each script runs locally (`bash tools/wheel-build/<script>.sh`) and in CI with
+the same behavior, so a developer can reproduce a CI build off-runner.
 
 ## What lives here
 
-- `cmake_args.sh` — emits the per-OS / per-backend `CMAKE_ARGS` string for an
-  llama-cpp-python source build. Single source of truth for compile flags.
+- `cmake_args.sh` — emits the per-OS / per-backend `CMAKE_ARGS` string (the
+  ggml compile flags). Single source of truth for compile flags.
 - `install_gpu_toolkit.sh` — installs the build-time GPU SDK on the runner
   (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; no-op on
   macOS where Metal ships with the OS).
-- `install_gpu_runtime.sh` — installs only the runtime loader needed to
-  `import llama_cpp` (Vulkan loader, CUDA driver shim). Used by the
-  verify-pypi job and self-check smoke.
-- `build_llama_cpp.sh` — runs `pip wheel llama-cpp-python==<version>` from
-  source with the right `CMAKE_ARGS` for the requested backend. Output goes
-  to `${LLAMA_BUILD_DIR}` (defaults to `/tmp/llama-build`).
-- `fetch_llama_cpp.sh` — alternative to `build_llama_cpp.sh`: downloads the
-  prebuilt wheel from abetlen's index for backends abetlen ships (cpu,
-  cu121–cu124, metal). Used to avoid rebuilding wheels that already exist.
+- `install_gpu_runtime.sh` — installs only the runtime loader needed by the GPU
+  backends (Vulkan loader, CUDA driver shim).
+- `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
+  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-llama-server` wheel
+  package's `bin/` for the requested backend.
+- `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
+  executable, bundling the engine wheel built above.
 
 ## Environment contract
 
 Scripts read these env vars:
 
-- `LLAMA_CPP_VERSION` — exact version, e.g. `0.3.19`.
+- `LLAMA_CPP_VERSION` — the llama.cpp source tag to build from (optional; the
+  build script has a default pin).
 - `BACKEND` — one of `cpu`, `vulkan`, `metal`, `cu121`, `cu122`, `cu123`,
   `cu124`, `rocm`, `sycl`.
 - `LLAMA_BUILD_DIR` — output directory for the built/fetched wheel.

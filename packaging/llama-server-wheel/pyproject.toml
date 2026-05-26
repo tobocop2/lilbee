@@ -1,6 +1,7 @@
-# Separate distribution: a per-platform wheel bundling the compiled llama.cpp
-# llama-server binary. Pulled by `lilbee[multi-gpu]`. CI sets the version to match
-# the llama-cpp-python pin and fills lilbee_llama_server/bin/ before building.
+# Separate distribution: a per-platform, self-contained wheel bundling the
+# compiled llama.cpp llama-server + its ggml/llama/mtmd libs. lilbee's core
+# dependency (the local engine). CI sets the version to match lilbee and fills
+# lilbee_llama_server/bin/ before building.
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -8,7 +9,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lilbee-llama-server"
 version = "0.0.0"
-description = "Bundled llama.cpp llama-server binary for lilbee[multi-gpu]"
+description = "Self-contained llama.cpp llama-server engine for lilbee"
 requires-python = ">=3.11"
 
 [tool.setuptools]
