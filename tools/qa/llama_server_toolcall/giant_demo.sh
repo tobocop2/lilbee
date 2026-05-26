@@ -11,7 +11,10 @@ set -euo pipefail
 
 FAMILY="$1"
 GGUF="$2"
-TEMPLATE="${3:-}"
+# Real HF model name to show in opencode (not our internal family tag). Falls
+# back to the family if unset so the script stays usable standalone.
+DISPLAY_NAME="${3:-$1}"
+TEMPLATE="${4:-}"
 
 LC=/tmp/llama-build/llama-cpp-python-0.3.23/vendor/llama.cpp
 LM=/root/lm
@@ -36,10 +39,10 @@ embedding_model = "$EMBED_REF"
 TOML
   "$LILBEE" model pull "$EMBED_REF"
   "$LILBEE" model pull "$TINY_CHAT"
-  # Index lilbee's own source. A curated subset keeps CPU embedding quick and the
-  # demo answers focused on the interesting machinery.
-  for d in providers/worker/response_parser providers/llama_cpp providers/families \
-           server/chat_completions_api retrieval; do
+  # Index lilbee's retrieval stack -- the code the demo questions are about
+  # (chunking, embedding, search, reranking, query expansion, concept graph).
+  # This is the stable value-prop code, not the in-flux model-families parser.
+  for d in retrieval data/ingest server/chat_completions_api; do
     [ -d "$LM/src/lilbee/$d" ] && "$LILBEE" add "$LM/src/lilbee/$d" || true
   done
   touch "$WS/.lilbee/.demo_indexed"
@@ -89,10 +92,11 @@ TMPL_ARG=""
 # Default to a single GPU; set MULTIGPU=1 for the giants that genuinely span both.
 GPU_ENV="CUDA_VISIBLE_DEVICES=0"
 [ "${MULTIGPU:-0}" = "1" ] && GPU_ENV=""
-# --alias makes /v1/models advertise the same id opencode is configured with, so
-# the picker shows one "lilbee" model, not a duplicate from auto-discovery.
+# --alias makes /v1/models advertise the real model name opencode is configured
+# with, so the picker shows e.g. "Qwen3-4B" under the lilbee provider, not a
+# duplicate from auto-discovery and not our internal family tag.
 tmux new-session -d -s giantsrv \
-  "$GPU_ENV LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$FAMILY' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
+  "$GPU_ENV LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$DISPLAY_NAME' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
 UP=0
 for _ in $(seq 1 120); do
   curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && { UP=1; break; }; sleep 3
@@ -108,13 +112,13 @@ mkdir -p "$WS/.config/opencode"
 cat > "$PROJ/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "lilbee/$FAMILY",
+  "model": "lilbee/$DISPLAY_NAME",
   "provider": {
     "lilbee": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "lilbee",
       "options": { "baseURL": "http://127.0.0.1:$LS_PORT/v1", "apiKey": "sk-noauth" },
-      "models": { "$FAMILY": { "name": "$FAMILY" } }
+      "models": { "$DISPLAY_NAME": { "name": "$DISPLAY_NAME" } }
     }
   },
   "mcp": {
@@ -124,7 +128,12 @@ cat > "$PROJ/opencode.json" <<JSON
       "enabled": true,
       "headers": { "Authorization": "Bearer $TOKEN" }
     }
+  },
+  "tools": {
+    "write": false, "edit": false, "patch": false, "bash": false,
+    "read": false, "glob": false, "grep": false, "list": false,
+    "webfetch": false, "todowrite": false, "todoread": false, "task": false
   }
 }
 JSON
-echo "READY: opencode cwd=$PROJ (empty, forces lilbee_search) ; provider=lilbee model=$FAMILY@:$LS_PORT ; mcp=lilbee@:8080"
+echo "READY: opencode cwd=$PROJ ; provider=lilbee model=$DISPLAY_NAME@:$LS_PORT ; mcp=lilbee@:8080 ; tools=lilbee_search-only"

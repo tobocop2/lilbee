@@ -23,6 +23,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 from models import ROSTER  # noqa: E402
 from probe import _borrow_template, _download  # noqa: E402
+from reel_config import PROMPTS, display_name  # noqa: E402
 
 DEMO_SH = str(HERE / "giant_demo.sh")
 TAPE_TMPL = HERE / "giant_demo.tape.tmpl"
@@ -31,17 +32,12 @@ SERVE_LOG = Path("/tmp/lilbee-serve.log")
 MANIFEST = OUT / "reel_manifest.txt"
 PROJ = "/root/demo-proj"
 
-PROMPT = (
-    "Add support for a new model family to lilbee whose tool calls look like "
-    "<tool_call name=search>{json args}</tool_call>. Implement the family profile and "
-    "the response-parser schema following the existing families, and wire it into the parser."
-)
-# Tool-call-passing models (FINDINGS). Cached giants + smalls (pulled). Smalls and
-# cached giants first; the big single-GPU pulls (gpt-oss, glm-air) last. qwen3-235b
-# was already recorded.
+# Reel order: small models first (fast prompt iteration), then large single-GPU,
+# then the multi-GPU giants. Each model's prompt + real display name live in
+# reel_config.py; the prompts are validated against the live transcript first.
 REEL = [
-    "qwen3", "llama3", "mistral-nemo", "gemma4", "qwen3-coder", "hermes",
-    "functionary", "minimax-m2", "glm-4.6", "gpt-oss", "glm-air",
+    "qwen3", "gemma4", "llama3", "mistral-nemo", "hermes", "functionary",
+    "qwen3-coder", "gpt-oss", "glm-air", "qwen3-235b", "minimax-m2", "glm-4.6",
 ]
 
 
@@ -101,20 +97,26 @@ def main() -> None:
             results[fam] = (fam, f"SKIP(download: {str(exc)[:40]})", "")
             continue
         template = _borrow_template(spec)
-        print(f"===== {fam}: setup =====", flush=True)
-        cmd = ["bash", DEMO_SH, fam, str(gguf)] + ([str(template)] if template else [])
+        disp = display_name(spec.gguf)
+        prompt = PROMPTS.get(fam)
+        if not prompt:
+            results[fam] = (fam, "NO_PROMPT", "")
+            continue
+        print(f"===== {fam} ({disp}): setup =====", flush=True)
+        cmd = ["bash", DEMO_SH, fam, str(gguf), disp] + ([str(template)] if template else [])
         # Only the 200GB giants span both GPUs; small models stay on one (see giant_demo.sh).
         env = {**os.environ, "MULTIGPU": "1"} if spec.multi_gpu_only else None
         if subprocess.run(cmd, env=env).returncode != 0:
             results[fam] = (fam, "SETUP_FAIL", "")
             _write_manifest(results)
             continue
-        stem = str(OUT / f"reel-{fam}")
-        tape = OUT / f"{fam}.tape"
+        # Output keyed by the real model name so the published files read clearly.
+        stem = str(OUT / f"opencode-{disp}")
+        tape = OUT / f"{disp}.tape"
         tape.write_text(
             TAPE_TMPL.read_text()
             .replace("__OUT__", stem)
-            .replace("__PROMPT__", PROMPT)
+            .replace("__PROMPT__", prompt)
             .replace("__GENSLEEP__", "90s")
         )
         before = _calltool_count()
