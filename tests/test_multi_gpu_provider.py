@@ -35,7 +35,6 @@ def _fake_fleet(clients: dict[WorkerRole, list[MagicMock]]) -> MagicMock:
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
     p = FleetProvider()
     p._fleet = _fake_fleet(clients)  # non-None: _server_clients won't try to build
-    p._local = MagicMock()
     return p
 
 
@@ -53,11 +52,12 @@ def test_chat_routes_to_least_busy_server() -> None:
     busy.chat.assert_not_called()
 
 
-def test_chat_falls_back_to_local_when_no_healthy_server() -> None:
-    p = _provider_with_clients({})  # no healthy chat server
-    p._local.chat.return_value = "from-local"
-    assert p.chat([{"role": "user", "content": "hi"}]) == "from-local"
-    p._local.chat.assert_called_once()
+def test_chat_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})  # no healthy chat server, no in-process fallback
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        p.chat([{"role": "user", "content": "hi"}])
 
 
 def test_chat_translates_options_before_routing_to_server() -> None:
@@ -85,10 +85,12 @@ def test_embed_routes_to_server_when_present() -> None:
     assert p.embed(["a"]) == [[0.1]]
 
 
-def test_embed_falls_back_to_local() -> None:
+def test_embed_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
     p = _provider_with_clients({})
-    p._local.embed.return_value = [[0.2]]
-    assert p.embed(["a"]) == [[0.2]]
+    with pytest.raises(ProviderError, match="No embed model server is running"):
+        p.embed(["a"])
 
 
 def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
@@ -103,7 +105,6 @@ def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "_build_fleet", _slow_build)
     p = FleetProvider()
-    p._local = MagicMock()
     barrier = threading.Barrier(8)
 
     def _hit() -> None:
@@ -126,10 +127,12 @@ def test_rerank_routes_to_fleet() -> None:
     client.rerank.assert_called_once_with("q", ["a", "b"])
 
 
-def test_rerank_falls_back_to_local_without_server() -> None:
+def test_rerank_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
     p = _provider_with_clients({})
-    p._local.rerank.return_value = [0.5]
-    assert p.rerank("q", ["a"]) == [0.5]
+    with pytest.raises(ProviderError, match="No rerank model server is running"):
+        p.rerank("q", ["a"])
 
 
 def test_vision_ocr_routes_to_fleet_for_configured_model(monkeypatch) -> None:
@@ -140,21 +143,23 @@ def test_vision_ocr_routes_to_fleet_for_configured_model(monkeypatch) -> None:
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
 
 
-def test_vision_ocr_falls_back_to_local_for_model_override(monkeypatch) -> None:
+def test_vision_ocr_model_override_raises(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     p = _provider_with_clients({WorkerRole.VISION: [_fake_client()]})
-    p._local.vision_ocr.return_value = "local-ocr"
-    # override != the server's configured vision model -> in-process
-    assert p.vision_ocr(b"png", "org/repo/other.gguf") == "local-ocr"
-    p._local.vision_ocr.assert_called_once()
+    # override != the server's configured vision model -> hard error (no fallback)
+    with pytest.raises(ProviderError, match="serves the configured vision model"):
+        p.vision_ocr(b"png", "org/repo/other.gguf")
 
 
-def test_chat_with_model_override_uses_local(monkeypatch) -> None:
+def test_chat_model_override_raises(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
     monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    p._local.chat.return_value = "local"
-    assert p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf") == "local"
-    p._local.chat.assert_called_once()
+    with pytest.raises(ProviderError, match="serves the configured chat model"):
+        p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf")
 
 
 def test_vision_call_returns_text() -> None:
@@ -285,58 +290,148 @@ def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
     assert prov_mod._cache_type_flag() == "q8_0"
 
 
-def test_chat_local_stream_path() -> None:
-    p = _provider_with_clients({})  # no chat server -> local
-    p._local.chat.return_value = iter(["a", "b"])
-    list(p.chat([{"role": "user", "content": "hi"}], stream=True))
-    assert p._local.chat.call_args.kwargs["stream"] is True
+def test_chat_streams_from_server() -> None:
+    client = _fake_client(0)
+    client.chat.return_value = iter(["a", "b"])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
+    assert client.chat.call_args.kwargs["stream"] is True
 
 
-def test_rerank_vision_pdf_models_delegate_to_local() -> None:
+def test_supports_rerank_always_true() -> None:
+    # llama-server reranks any cross-encoder GGUF via --pooling rank.
+    assert FleetProvider().supports_rerank() is True
+
+
+def test_list_chat_models_empty() -> None:
+    # The local engine has no frontier-provider catalog.
+    assert FleetProvider().list_chat_models("openai") == []
+
+
+def test_pull_model_not_supported() -> None:
+    with pytest.raises(NotImplementedError, match="cannot pull"):
+        FleetProvider().pull_model("org/repo/m.gguf")
+
+
+def test_list_models_reads_registry(monkeypatch) -> None:
+    services = MagicMock()
+    manifest_a, manifest_b = MagicMock(), MagicMock()
+    manifest_a.ref, manifest_b.ref = "z/repo/b.gguf", "a/repo/a.gguf"
+    services.registry.list_installed.return_value = [manifest_a, manifest_b]
+    monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+    assert FleetProvider().list_models() == ["a/repo/a.gguf", "z/repo/b.gguf"]
+
+
+def test_show_model_reads_gguf_headers(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/x.gguf")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "llama"}
+    )
+    assert FleetProvider().show_model("org/repo/x.gguf") == {"architecture": "llama"}
+
+
+def test_show_model_returns_none_when_unresolved(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    def _raise(_m: str) -> Path:
+        raise ProviderError("not installed")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _raise)
+    assert FleetProvider().show_model("org/repo/x.gguf") is None
+
+
+def test_get_capabilities_rerank_ref(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: True)
+    assert FleetProvider().get_capabilities("org/repo/rerank.gguf") == ["rerank"]
+
+
+def test_get_capabilities_vision_when_mmproj_present(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/v.gguf")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.find_mmproj_for_model", lambda _p: Path("/m/mmproj.gguf")
+    )
+    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion", "vision"]
+
+
+def test_get_capabilities_completion_only_without_mmproj(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/c.gguf")
+    )
+
+    def _no_mmproj(_p: Path) -> Path:
+        raise ProviderError("no mmproj")
+
+    monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_mmproj)
+    assert FleetProvider().get_capabilities("org/repo/c.gguf") == ["completion"]
+
+
+def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
+    from lilbee.runtime.progress import EventType
+    from lilbee.vision import PageText
+
+    client = _fake_client(0)
+    client.chat.side_effect = ["page one", "page two"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    monkeypatch.setattr(cfg, "vision_model", "")  # empty model arg -> configured
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+    )
+    events: list[tuple] = []
+    result = p.pdf_ocr(
+        Path("doc.pdf"),
+        backend="vision",  # type: ignore[arg-type]
+        on_progress=lambda etype, evt: events.append((etype, evt.page, evt.total_pages)),
+    )
+    assert result == [PageText(1, "page one"), PageText(2, "page two")]
+    assert events == [(EventType.EXTRACT, 1, 2), (EventType.EXTRACT, 2, 2)]
+
+
+def test_pdf_ocr_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
     p = _provider_with_clients({})
-    p.rerank("q", ["a"])
-    p._local.rerank.assert_called_once_with("q", ["a"])
-    p.supports_rerank()
-    p._local.supports_rerank.assert_called_once()
-    p.vision_ocr(b"png", "vmodel")
-    p._local.vision_ocr.assert_called_once()
-    p.list_models()
-    p._local.list_models.assert_called_once()
-    p.list_chat_models("openai")
-    p._local.list_chat_models.assert_called_once_with("openai")
-    p.pull_model("m")
-    p._local.pull_model.assert_called_once()
-    p.show_model("m")
-    p._local.show_model.assert_called_once_with("m")
-    p.get_capabilities("m")
-    p._local.get_capabilities.assert_called_once_with("m")
-    p.warm_up_pool()
-    p._local.warm_up_pool.assert_called_once()
+    with pytest.raises(ProviderError, match="No vision model server is running"):
+        p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
 
 
-def test_pdf_ocr_delegates_to_local() -> None:
-    p = _provider_with_clients({})
-    p.pdf_ocr(Path("/x.pdf"), backend="tesseract")  # type: ignore[arg-type]
-    p._local.pdf_ocr.assert_called_once()
-
-
-def test_shutdown_tears_down_fleet_and_local() -> None:
+def test_shutdown_tears_down_fleet() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     fleet = p._fleet
-    local = p._local
     p.shutdown()
     fleet.shutdown.assert_called_once()
-    local.shutdown.assert_called_once()
     assert p._fleet is None
 
 
-def test_invalidate_load_cache_respawns_fleet_and_drops_local_cache() -> None:
+def test_invalidate_load_cache_respawns_fleet() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     fleet = p._fleet
     p.invalidate_load_cache()
     fleet.shutdown.assert_called_once()
     assert p._fleet is None
-    p._local.invalidate_load_cache.assert_called_once()
+
+
+def test_warm_up_pool_builds_fleet_once(monkeypatch) -> None:
+    calls = {"n": 0}
+    fleet = _fake_fleet({})
+
+    def _fake_build() -> object:
+        calls["n"] += 1
+        return fleet
+
+    monkeypatch.setattr(prov_mod, "_build_fleet", _fake_build)
+    p = FleetProvider()
+    p.warm_up_pool()
+    p.warm_up_pool()  # idempotent: fleet already up
+    assert calls["n"] == 1
 
 
 def test_server_clients_builds_fleet_once(monkeypatch) -> None:
@@ -352,14 +447,6 @@ def test_server_clients_builds_fleet_once(monkeypatch) -> None:
     assert len(p._server_clients(WorkerRole.CHAT)) == 1
     p._server_clients(WorkerRole.EMBED)  # second call must not rebuild
     assert calls["n"] == 1
-
-
-def test_local_provider_is_lazy_and_cached(monkeypatch) -> None:
-    sentinel = MagicMock()
-    monkeypatch.setattr("lilbee.providers.llama_cpp.LlamaCppProvider", lambda: sentinel)
-    p = FleetProvider()
-    assert p._local_provider() is sentinel
-    assert p._local_provider() is sentinel  # cached
 
 
 def test_routing_provider_local_engine_is_fleet() -> None:

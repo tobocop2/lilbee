@@ -1,9 +1,11 @@
-"""FleetProvider: route chat/embed to the llama-server fleet, delegate the rest.
+"""FleetProvider: the local llama-server engine for every role.
 
-A local-inference sibling of ``LlamaCppProvider``. On first use it plans GPU
-placement, spawns the sidecar fleet, and routes chat/embed to the least-busy
-healthy server for that role; every other ``LLMProvider`` method (rerank, vision,
-PDF OCR, model management) delegates to an in-process ``LlamaCppProvider``.
+On first use it plans GPU placement and spawns one llama-server per configured
+role (chat/embed/rerank/vision), then routes each call to the least-busy healthy
+server for that role. A single machine is a fleet-of-one; there is no in-process
+fallback, so a missing or unhealthy server surfaces a user-facing
+``ProviderError``. Model management (list/show/capabilities) reads the registry
+and GGUF headers directly and needs no running server.
 """
 
 from __future__ import annotations
@@ -33,11 +35,9 @@ if TYPE_CHECKING:
     from lilbee.providers.base import (
         ChatMessage,
         ClosableIterator,
-        LLMProvider,
         OcrBackend,
         PageText,
     )
-    from lilbee.providers.llama_cpp import LlamaCppProvider
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server. The
 # in-process pool has no equivalent (one worker per role), so these are the only
@@ -56,6 +56,8 @@ _ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _DEFAULT_THREADS = 4
+# User-facing name for this engine in error messages.
+_PROVIDER_NAME = "llama-server"
 
 # Server roles -> (slots, model-ref accessor). chat/embed are always configured;
 # reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
@@ -146,29 +148,21 @@ def _vision_call(
         result = client.chat(messages, stream=False)
     if not isinstance(result, str):
         raise ProviderError(
-            f"Vision server returned {type(result).__name__}, expected text.", provider="multi-gpu"
+            f"Vision server returned {type(result).__name__}, expected text.",
+            provider=_PROVIDER_NAME,
         )
     return result
 
 
 class FleetProvider:
-    """Routes chat/embed to the managed fleet; delegates everything else local."""
+    """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
     def __init__(self) -> None:
         self._fleet: Fleet | None = None
-        self._local: LlamaCppProvider | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
         # first-requests must not each build a fleet (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
         self._lock = threading.RLock()
-
-    def _local_provider(self) -> LLMProvider:
-        with self._lock:
-            if self._local is None:
-                from lilbee.providers.llama_cpp import LlamaCppProvider
-
-                self._local = LlamaCppProvider()
-            return self._local
 
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         with self._lock:
@@ -176,13 +170,48 @@ class FleetProvider:
                 self._fleet = _build_fleet()
             return self._fleet.healthy_clients(role)
 
+    def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
+        """Healthy clients for *role*, or a user-facing error when none are up.
+
+        A configured role always gets a server; an empty result means the role
+        is unconfigured or its server failed to start. There is no in-process
+        fallback, so this is a hard error.
+        """
+        from lilbee.providers.base import ProviderError
+
+        clients = self._server_clients(role)
+        if not clients:
+            raise ProviderError(
+                f"No {role.value} model server is running. Make sure a {role.value} "
+                "model is installed and configured, then try again.",
+                provider=_PROVIDER_NAME,
+            )
+        return clients
+
     def _shutdown_fleet(self) -> None:
         with self._lock:
             if self._fleet is not None:
                 self._fleet.shutdown()
                 self._fleet = None
 
-    # --- routed to the fleet (fall back to in-process if the role has no server) ---
+    def _require_configured_model(self, model: str | None, configured: str, role: str) -> None:
+        """Reject a per-call model that differs from the server's configured one.
+
+        The fleet serves the configured model for each role; switching models is
+        a config change that respawns the server (via ``invalidate_load_cache``),
+        not a per-call override. An empty/None ``model`` means "use the configured
+        one" and is always accepted.
+        """
+        if model and model != configured:
+            from lilbee.providers.base import ProviderError
+
+            raise ProviderError(
+                f"This engine serves the configured {role} model ({configured}). "
+                f"To use {model!r}, set it as the {role} model and reload.",
+                provider=_PROVIDER_NAME,
+            )
+
+    # --- inference: routed to the managed fleet, no in-process fallback ---
 
     @overload
     def chat(
@@ -215,32 +244,20 @@ class FleetProvider:
         from lilbee.core.config import cfg
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
-        # The fleet's chat server serves cfg.chat_model; a different model override
-        # must load in-process, not be silently served by the wrong server.
-        if model is None or model == str(cfg.chat_model):
-            clients = self._server_clients(WorkerRole.CHAT)
-            if clients:
-                # Translate options exactly as the in-process path does (validate via
-                # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
-                # honors the same generation settings; a raw passthrough would drop
-                # num_predict and leak the load-only num_ctx.
-                server_options = chat_options_to_kwargs(options) or None
-                # generator satisfies ClosableIterator; client.chat isn't overloaded.
-                return _least_in_flight(clients).chat(  # type: ignore[return-value]
-                    messages, options=server_options, stream=stream
-                )
-        local = self._local_provider()
-        if stream:
-            return local.chat(messages, stream=True, options=options, model=model)
-        return local.chat(messages, stream=False, options=options, model=model)
+        self._require_configured_model(model, str(cfg.chat_model), "chat")
+        clients = self._require_clients(WorkerRole.CHAT)
+        # Translate options exactly as the in-process path did (validate via
+        # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
+        # honors the same generation settings; a raw passthrough would drop
+        # num_predict and leak the load-only num_ctx.
+        server_options = chat_options_to_kwargs(options) or None
+        # generator satisfies ClosableIterator; client.chat isn't overloaded.
+        return _least_in_flight(clients).chat(  # type: ignore[return-value]
+            messages, options=server_options, stream=stream
+        )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        clients = self._server_clients(WorkerRole.EMBED)
-        if clients:
-            return _least_in_flight(clients).embed(texts)
-        return self._local_provider().embed(texts)
-
-    # --- delegated to the in-process provider ---
+        return _least_in_flight(self._require_clients(WorkerRole.EMBED)).embed(texts)
 
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
@@ -248,14 +265,10 @@ class FleetProvider:
         from lilbee.core.config import cfg
         from lilbee.vision import OCR_PROMPT, build_vision_messages
 
-        # The vision server is built for cfg.vision_model with its mmproj; a
-        # different model override loads in-process.
-        if not model or model == str(cfg.vision_model):
-            clients = self._server_clients(WorkerRole.VISION)
-            if clients:
-                messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
-                return _vision_call(_least_in_flight(clients), messages, timeout)
-        return self._local_provider().vision_ocr(png_bytes, model, prompt, timeout=timeout)
+        self._require_configured_model(model, str(cfg.vision_model), "vision")
+        clients = self._require_clients(WorkerRole.VISION)
+        messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+        return _vision_call(_least_in_flight(clients), messages, timeout)
 
     def pdf_ocr(
         self,
@@ -267,51 +280,121 @@ class FleetProvider:
         quiet: bool = True,
         on_progress: Callable[..., None] | None = None,
     ) -> list[PageText]:
-        return self._local_provider().pdf_ocr(
-            path,
-            backend=backend,
-            model=model,
-            per_page_timeout_s=per_page_timeout_s,
-            quiet=quiet,
-            on_progress=on_progress,
+        """OCR each rasterized PDF page through the vision server.
+
+        ``backend`` is ``Literal["vision"]`` (tesseract is run inline by the
+        ingest caller, never here). ``per_page_timeout_s`` caps each page's
+        request; ``quiet`` is accepted for protocol parity (the server emits no
+        Rich progress to suppress). Pages are numbered 1-based to match
+        ``PageText`` / ``ExtractEvent`` everywhere else in lilbee.
+        """
+        from lilbee.core.config import cfg
+        from lilbee.runtime.progress import EventType, ExtractEvent
+        from lilbee.vision import (
+            OCR_PROMPT,
+            PageText,
+            build_vision_messages,
+            pdf_page_count,
+            rasterize_pdf,
         )
 
+        del quiet  # protocol parity; no server-side Rich progress to suppress.
+        self._require_configured_model(model, str(cfg.vision_model), "vision")
+        clients = self._require_clients(WorkerRole.VISION)
+        total = pdf_page_count(path)
+        pages: list[PageText] = []
+        for idx, png_bytes in rasterize_pdf(path):
+            messages = build_vision_messages(OCR_PROMPT, bytes(png_bytes))
+            text = _vision_call(_least_in_flight(clients), messages, per_page_timeout_s)
+            page_no = idx + 1
+            pages.append(PageText(page_no, text))
+            if on_progress is not None:
+                on_progress(
+                    EventType.EXTRACT,
+                    ExtractEvent(file=path.name, page=page_no, total_pages=total),
+                )
+        return pages
+
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        clients = self._server_clients(WorkerRole.RERANK)
-        if clients:
-            return _least_in_flight(clients).rerank(query, candidates)
-        return self._local_provider().rerank(query, candidates)
+        return _least_in_flight(self._require_clients(WorkerRole.RERANK)).rerank(query, candidates)
+
+    # --- model management: registry / GGUF reads, no running server needed ---
 
     def supports_rerank(self) -> bool:
-        return self._local_provider().supports_rerank()
+        """llama-server can always rerank a cross-encoder GGUF via ``--pooling rank``."""
+        return True
 
     def list_models(self) -> list[str]:
-        return self._local_provider().list_models()
+        """List installed models from the registry."""
+        from lilbee.app.services import get_services
+
+        registry = get_services().registry
+        return sorted(m.ref for m in registry.list_installed())
 
     def list_chat_models(self, provider: str) -> list[str]:
-        return self._local_provider().list_chat_models(provider)
+        """The local engine has no frontier-provider catalog; always ``[]``."""
+        del provider
+        return []
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
-        self._local_provider().pull_model(model, on_progress=on_progress)
+        """Not supported directly: ``lilbee.catalog`` handles GGUF downloads."""
+        del on_progress
+        raise NotImplementedError(
+            f"The local engine cannot pull model {model!r}. "
+            "Download GGUF files through the catalog or 'lilbee model pull'."
+        )
 
     def show_model(self, model: str) -> dict[str, Any] | None:
-        return self._local_provider().show_model(model)
+        """Return model metadata from GGUF headers, or ``None`` if unresolved."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        try:
+            path = resolve_model_path(model)
+        except ProviderError:
+            return None
+        return read_gguf_metadata(path)
 
     def get_capabilities(self, model: str) -> list[str]:
-        return self._local_provider().get_capabilities(model)
+        """Detect capabilities from the local GGUF files.
+
+        Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate);
+        other models report ``"completion"`` plus ``"vision"`` when an mmproj
+        sidecar is present.
+        """
+        from lilbee.catalog import is_rerank_ref
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        if model and is_rerank_ref(model):
+            return ["rerank"]
+        caps = ["completion"]
+        try:
+            path = resolve_model_path(model)
+        except ProviderError:
+            return caps
+        try:
+            find_mmproj_for_model(path)
+            caps.append("vision")
+        except ProviderError:
+            pass
+        return caps
 
     def warm_up_pool(self) -> None:
-        self._local_provider().warm_up_pool()
+        """Spawn the configured role servers eagerly (idempotent)."""
+        with self._lock:
+            if self._fleet is None:
+                self._fleet = _build_fleet()
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        # A model change must respawn the affected servers, so drop the fleet.
+        """A model or settings change respawns the affected servers: drop the fleet."""
+        del model_path  # the whole fleet respawns on next use; no per-model scope.
         self._shutdown_fleet()
-        self._local_provider().invalidate_load_cache(model_path)
 
     def shutdown(self) -> None:
         self._shutdown_fleet()
-        if self._local is not None:
-            self._local.shutdown()
 
 
 def _build_fleet() -> Fleet:
