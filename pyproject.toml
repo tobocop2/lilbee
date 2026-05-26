@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b483"
+version = "0.6.66b484"
 description = "A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources. Per-project libraries, semantic and hybrid search, vision OCR, auto-built wiki. CLI, TUI, MCP server, REST API, and Python library in one process; no model server, no database server."
 readme = "README.md"
 license = "Elastic-2.0"
@@ -33,7 +33,7 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.9.1",
+    "kreuzberg>=4.9.1,<5",
     "filelock",
     "tree-sitter-language-pack>=1.8.0,<2.0",
     "typer>=0.12",
