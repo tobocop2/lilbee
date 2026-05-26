@@ -125,6 +125,11 @@ def _borrow_template(spec: ModelSpec) -> Path | None:
             return None
         cfg = json.loads(Path(cfg_path).read_text())
         tmpl = cfg.get("chat_template")
+        # Command-R / Hermes ship a list of named templates; the tool-calling one
+        # is "tool_use". Pick it (fall back to "default") so --jinja sees the tools.
+        if isinstance(tmpl, list):
+            by_name = {d.get("name"): d.get("template") for d in tmpl if isinstance(d, dict)}
+            tmpl = by_name.get("tool_use") or by_name.get("default")
         if not isinstance(tmpl, str):
             return None
         out = RESULTS_DIR / f"{spec.family}.chat_template.jinja"
