@@ -176,3 +176,12 @@ def test_build_argv_omits_optional_flags_by_default() -> None:
     )
     for flag in ("--flash-attn", "--cache-type-k", "--cache-type-v", "--batch-size", "--threads"):
         assert flag not in argv
+
+
+def test_chat_server_spec_enables_jinja() -> None:
+    from lilbee.providers.multi_gpu.adapters import ROLE_SPECS
+    from lilbee.providers.roles import WorkerRole
+
+    # --jinja is what makes the chat server render the model template and parse
+    # native tool calls; tool-calling depends on it being present.
+    assert "--jinja" in ROLE_SPECS[WorkerRole.CHAT].extra_args

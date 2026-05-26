@@ -257,3 +257,132 @@ class TestParseSseDelta:
 
     def test_extracts_content(self) -> None:
         assert _parse_sse_delta('data: {"choices":[{"delta":{"content":"hi"}}]}') == "hi"
+
+
+def _tools() -> list[dict]:
+    return [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+
+
+def test_chat_tools_parses_native_tool_calls() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["tools"]  # tools are forwarded to the server
+        assert body["stream"] is False
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": '{"city":"SF"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    result = _client(handler).chat_tools([{"role": "user", "content": "weather?"}], tools=_tools())
+    assert result.content == ""
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "c1"
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].arguments == '{"city":"SF"}'
+
+
+def test_chat_tools_forwards_tool_choice() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+    _client(handler).chat_tools(
+        [{"role": "user", "content": "x"}], tools=_tools(), tool_choice="required"
+    )
+    assert seen["tool_choice"] == "required"
+
+
+def test_chat_tools_text_only_response_has_no_calls() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "just text"}}]})
+
+    result = _client(handler).chat_tools([{"role": "user", "content": "x"}], tools=_tools())
+    assert result.content == "just text"
+    assert result.tool_calls == []
+
+
+def test_chat_tools_recovers_bare_json_call() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"name":"get_weather","arguments":{"city":"SF"}}'}}
+                ]
+            },
+        )
+
+    result = _client(handler).chat_tools([{"role": "user", "content": "x"}], tools=_tools())
+    assert result.content == ""
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].arguments == '{"city": "SF"}'
+
+
+def test_parse_native_tool_calls_skips_malformed() -> None:
+    from lilbee.providers.multi_gpu.client import _parse_native_tool_calls
+
+    raw = [
+        "notadict",
+        {"function": "notamap"},
+        {"function": {"name": ""}},  # empty name -> skipped
+        {"function": {"name": "f", "arguments": {"a": 1}}},  # dict args -> json string
+        {"id": "x", "function": {"name": "g", "arguments": "{}"}},
+    ]
+    calls = _parse_native_tool_calls(raw)
+    assert [c.name for c in calls] == ["f", "g"]
+    assert calls[0].id == "call_3"  # synthetic id keeps the source index
+    assert calls[0].arguments == '{"a": 1}'
+    assert calls[1].id == "x"
+
+
+def test_parse_native_tool_calls_non_list_returns_empty() -> None:
+    from lilbee.providers.multi_gpu.client import _parse_native_tool_calls
+
+    assert _parse_native_tool_calls(None) == []
+    assert _parse_native_tool_calls("nope") == []
+
+
+def test_arguments_to_str_variants() -> None:
+    from lilbee.providers.multi_gpu.client import _arguments_to_str
+
+    assert _arguments_to_str('{"a":1}') == '{"a":1}'
+    assert _arguments_to_str(None) == "{}"
+    assert _arguments_to_str({"a": 1}) == '{"a": 1}'
+
+
+def test_recover_bare_json_list_of_calls() -> None:
+    from lilbee.providers.multi_gpu.client import _recover_bare_json_tool_calls
+
+    result = _recover_bare_json_tool_calls('[{"name":"a"},{"parameters":{"x":1},"name":"b"}]')
+    assert [c.name for c in result.tool_calls] == ["a", "b"]
+    assert result.tool_calls[0].arguments == "{}"  # no args/params -> empty object
+    assert result.tool_calls[1].arguments == '{"x": 1}'
+
+
+@pytest.mark.parametrize("content", ["hello world", '{"name": ', '{"foo": 1}', "   "])
+def test_recover_bare_json_leaves_non_calls_as_text(content: str) -> None:
+    from lilbee.providers.multi_gpu.client import _recover_bare_json_tool_calls
+
+    result = _recover_bare_json_tool_calls(content)
+    assert result.content == content
+    assert result.tool_calls == []

@@ -3180,3 +3180,30 @@ class TestSdkLLMProviderPdfOcr:
         provider = SdkLLMProvider(LitellmSdkBackend())
         with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
+
+
+class TestChatWithToolsRouting:
+    def test_base_default_raises(self) -> None:
+        from lilbee.providers.base import LLMProvider, ProviderError
+
+        class _Bare(LLMProvider): ...
+
+        with pytest.raises(ProviderError, match="does not support tool calling"):
+            _Bare().chat_with_tools([], tools=[])
+
+    def test_routing_dispatches_to_picked_backend(self, monkeypatch) -> None:
+        from lilbee.providers.base import ChatToolResult
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        backend = mock.MagicMock()
+        backend.chat_with_tools.return_value = ChatToolResult(content="", tool_calls=[])
+        rp = RoutingProvider()
+        monkeypatch.setattr(rp, "_pick_backend", lambda _ref: backend)
+        cfg.chat_model = "org/repo/model.gguf"
+        rp.chat_with_tools(
+            [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice="auto",
+        )
+        backend.chat_with_tools.assert_called_once()
+        assert backend.chat_with_tools.call_args.kwargs["tool_choice"] == "auto"

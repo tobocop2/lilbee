@@ -10,7 +10,7 @@ from typing import Any, Literal, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
+from lilbee.providers.base import ChatToolResult, ClosableIterator, LLMProvider, ProviderError
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import OcrBackend, WorkerRole
@@ -101,6 +101,22 @@ class RoutingProvider(LLMProvider):
         if stream:
             return backend.chat(messages, stream=True, options=options, model=model)
         return backend.chat(messages, stream=False, options=options, model=model)
+
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Dispatch a tool-enabled chat turn to the backend the ref routes to."""
+        ref = parse_model_ref(model or cfg.chat_model)
+        backend = self._pick_backend(ref)
+        return backend.chat_with_tools(
+            messages, tools=tools, tool_choice=tool_choice, options=options, model=model
+        )
 
     def vision_ocr(
         self,

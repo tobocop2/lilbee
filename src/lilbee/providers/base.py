@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, runtime_checkable
@@ -93,6 +94,33 @@ class ProviderError(Exception):
 ChatMessage = dict[str, str]
 
 
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool/function call the model requested.
+
+    ``arguments`` is the raw JSON-encoded argument object (OpenAI's shape), left
+    as a string so the caller decides how to parse and validate it. ``id`` is the
+    server-assigned call id, echoed back in the tool result message.
+    """
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatToolResult:
+    """A chat turn that may carry tool calls alongside (or instead of) text.
+
+    ``tool_calls`` is empty for an ordinary text answer; ``content`` is empty when
+    the model returned only tool calls. Both can be populated when a model emits
+    commentary plus a call.
+    """
+
+    content: str
+    tool_calls: list[ToolCall]
+
+
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""
 
@@ -130,6 +158,23 @@ class LLMProvider(Protocol):
     ) -> str | ClosableIterator[str]:
         """Chat completion. Returns str for non-stream, ClosableIterator[str] for stream."""
         ...
+
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Non-streaming chat that may return tool calls.
+
+        ``tools`` is the OpenAI function-tool list; ``tool_choice`` is ``"auto"``
+        / ``"none"`` / ``"required"`` or a specific ``{"type": "function", ...}``
+        selector. Backends without tool support raise :class:`ProviderError`.
+        """
+        raise ProviderError("This backend does not support tool calling.")
 
     def vision_ocr(
         self,

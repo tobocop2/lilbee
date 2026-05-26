@@ -822,3 +822,37 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     # Only EMBED requested -> chat is filtered out even though it is configured.
     _inputs, refs = prov_mod._server_model_inputs((WorkerRole.EMBED,))
     assert set(refs) == {WorkerRole.EMBED}
+
+
+class TestChatWithTools:
+    def test_routes_to_least_busy_chat_server(self) -> None:
+        from lilbee.providers.base import ChatToolResult, ToolCall
+
+        client = _fake_client(0)
+        client.chat_tools.return_value = ChatToolResult(
+            content="", tool_calls=[ToolCall("c1", "f", "{}")]
+        )
+        p = _provider_with_clients({WorkerRole.CHAT: [client]})
+        result = p.chat_with_tools(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice="auto",
+        )
+        assert result.tool_calls[0].name == "f"
+        client.chat_tools.assert_called_once()
+        assert client.chat_tools.call_args.kwargs["tool_choice"] == "auto"
+
+    def test_without_server_raises(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        p = _provider_with_clients({})
+        with pytest.raises(ProviderError, match="No chat model server is running"):
+            p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+
+    def test_model_override_raises(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        with pytest.raises(ProviderError, match="serves the configured chat model"):
+            p.chat_with_tools([], tools=[], model="org/repo/other.gguf")

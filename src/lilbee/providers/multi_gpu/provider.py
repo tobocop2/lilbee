@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from lilbee.providers.base import (
         ChatMessage,
+        ChatToolResult,
         ClosableIterator,
         OcrBackend,
         PageText,
@@ -258,6 +259,26 @@ class FleetProvider:
         # generator satisfies ClosableIterator; client.chat isn't overloaded.
         return _least_in_flight(clients).chat(  # type: ignore[return-value]
             messages, options=server_options, stream=stream
+        )
+
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Route a tool-enabled chat turn to the least-busy chat server."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.engine_params import chat_options_to_kwargs
+
+        self._require_configured_model(model, str(cfg.chat_model), "chat")
+        clients = self._require_clients(WorkerRole.CHAT)
+        server_options = chat_options_to_kwargs(options) or None
+        return _least_in_flight(clients).chat_tools(
+            messages, tools=tools, tool_choice=tool_choice, options=server_options
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:

@@ -35,7 +35,9 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     WorkerRole.CHAT: RoleServerSpec(
         role=WorkerRole.CHAT,
         endpoint_path="/v1/chat/completions",
-        extra_args=(),
+        # --jinja renders the model's own chat template and parses native
+        # tool-call syntax into structured message.tool_calls.
+        extra_args=("--jinja",),
         server_capable=True,
     ),
     WorkerRole.EMBED: RoleServerSpec(
