@@ -64,7 +64,7 @@ tmux kill-session -t giantsrv 2>/dev/null || true
 TMPL_ARG=""
 [ -n "$TEMPLATE" ] && TMPL_ARG="--chat-template-file $TEMPLATE"
 tmux new-session -d -s giantsrv \
-  "LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 8192 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
+  "LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
 for _ in $(seq 1 300); do
   curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && break; sleep 3
 done
@@ -75,6 +75,7 @@ mkdir -p "$WS/.config/opencode"
 cat > "$WS/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
+  "model": "giant/$FAMILY",
   "provider": {
     "giant": {
       "npm": "@ai-sdk/openai-compatible",
