@@ -251,7 +251,9 @@ def run_one(spec: ModelSpec, server_bin: str, port: int, keep: bool) -> ProbeRes
     print(f"[{spec.family}] launching llama-server (template={'yes' if template else 'embedded'})")
     t0 = time.time()
     proc = _launch(server_bin, gguf, template, port)
-    healthy = _wait_healthy(port, proc, timeout_s=420)
+    # Giants are ~140-200GB and load slowly across GPUs; give them room.
+    load_timeout = 1200 if spec.multi_gpu_only else 420
+    healthy = _wait_healthy(port, proc, timeout_s=load_timeout)
     load_s = time.time() - t0
     try:
         if not healthy:
@@ -324,7 +326,12 @@ def main() -> None:
     server_bin = _find_server_bin(args.server_bin)
     print(f"llama-server: {server_bin}")
     wanted = set(args.families.split(",")) if args.families else None
-    specs = [s for s in ROSTER if not s.multi_gpu_only and (wanted is None or s.family in wanted)]
+    # An explicit --families list runs exactly those (incl. multi-GPU giants); a
+    # bare run does the single-GPU roster only.
+    if wanted is not None:
+        specs = [s for s in ROSTER if s.family in wanted]
+    else:
+        specs = [s for s in ROSTER if not s.multi_gpu_only]
 
     results: list[ProbeResult] = []
     for spec in specs:
