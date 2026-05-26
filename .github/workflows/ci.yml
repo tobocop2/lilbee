@@ -193,6 +193,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pinned: releases/latest can ship partial asset sets (b9352 dropped
+          # the x64/windows builds). Bump to a tag carrying all three platforms.
+          LLAMA_CPP_TAG: b9351
         run: |
           set -euxo pipefail
           # Anchored to the suffix: ubuntu/macos ship .tar.gz, windows .zip, and
@@ -202,9 +205,9 @@ jobs:
             macOS)   pat="bin-macos-arm64.tar.gz$" ;;
             Windows) pat="bin-win-cpu-x64.zip$" ;;
           esac
-          url=$(gh api repos/ggml-org/llama.cpp/releases/latest \
+          url=$(gh api "repos/ggml-org/llama.cpp/releases/tags/${LLAMA_CPP_TAG}" \
             --jq ".assets[] | select(.name | test(\"${pat}\")) | .browser_download_url" | head -1)
-          [ -n "${url}" ] || { echo "no llama.cpp release asset matching ${pat}" >&2; exit 1; }
+          [ -n "${url}" ] || { echo "no llama.cpp ${LLAMA_CPP_TAG} asset matching ${pat}" >&2; exit 1; }
           mkdir -p "${HOME}/llama-engine"
           case "${url}" in
             *.zip)    curl -fsSL "${url}" -o engine.zip && unzip -q engine.zip -d "${HOME}/llama-engine" ;;
