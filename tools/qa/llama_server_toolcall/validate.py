@@ -47,13 +47,18 @@ def main() -> None:
         sys.exit("SETUP_FAIL")
     print(f"\n===== PROMPT ({disp}) =====\n{prompt}\n\n===== TRANSCRIPT =====", flush=True)
     # Force our model so opencode doesn't fall back to its built-in build agent.
-    r = subprocess.run(
-        ["opencode", "run", "-m", f"lilbee/{disp}", prompt],
-        cwd=PROJ,
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
+    # Retry on the racy "Model not found" discovery 404 (see giant_demo.sh warm-up).
+    for attempt in range(4):
+        r = subprocess.run(
+            ["opencode", "run", "-m", f"lilbee/{disp}", prompt],
+            cwd=PROJ,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if "Model not found" not in r.stderr:
+            break
+        print(f"[retry {attempt + 1}] Model not found; re-running...", flush=True)
     print(r.stdout)
     if r.stderr.strip():
         print("\n----- stderr (tail) -----\n" + r.stderr[-2000:])

@@ -148,14 +148,22 @@ rm -f "$HOME/.local/share/opencode/opencode.db" \
       "$HOME/.local/share/opencode/opencode.db-shm" 2>/dev/null || true
 export PATH="$HOME/.opencode/bin:$PATH"
 # Must run from $PROJ so opencode loads ./opencode.json (the lilbee provider).
-# Retry an actual `opencode run` ping until the model resolves -- discovery
-# against a freshly-launched server is racy and the first attempt often 404s.
+# opencode discovery probes the model, which 404s ("Model not found") until the
+# freshly-loaded model is warm enough to answer the probe quickly. A single
+# success isn't stable (the next call can still 404 mid-warmup), so ping until
+# THREE consecutive successes before handing off to the real run/record.
 cd "$PROJ"
-for _ in $(seq 1 12); do
+ok=0
+for _ in $(seq 1 40); do
   if opencode run -m "lilbee/$DISPLAY_NAME" "ok" >/dev/null 2>&1; then
-    echo "[giant] opencode resolved lilbee/$DISPLAY_NAME"; break
+    ok=$((ok + 1))
+    if [ "$ok" -ge 3 ]; then
+      echo "[giant] opencode resolves lilbee/$DISPLAY_NAME (stable)"; break
+    fi
+  else
+    ok=0
   fi
-  sleep 5
+  sleep 3
 done
 
 echo "READY: opencode cwd=$PROJ ; provider=lilbee model=$DISPLAY_NAME@:$LS_PORT ; mcp=lilbee@:8080 ; tools=lilbee_search-only"
