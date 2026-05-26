@@ -35,6 +35,10 @@ log = logging.getLogger(__name__)
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
 
+# Retired ``llm_provider`` strings that now mean "use the local llama-server
+# engine"; canonicalized to ``auto`` in the field validator.
+_RETIRED_LOCAL_PROVIDERS = frozenset({"llama-cpp", "multi-gpu"})
+
 
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
@@ -133,8 +137,8 @@ class Config(BaseSettings):
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
-    # Path to a llama-server binary for the multi-gpu fleet. Empty = use the
-    # lilbee[multi-gpu] wheel's bundled binary, else PATH.
+    # Path to a llama-server binary. Empty = use the bundled lilbee-llama-server
+    # wheel binary, else a llama-server on PATH.
     llama_server_path: str = ConfigField(default="", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
@@ -561,6 +565,20 @@ class Config(BaseSettings):
     def _empty_string_to_none(cls, v: Any) -> Any:
         if isinstance(v, str) and v.strip() == "":
             return None
+        return v
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _canonicalize_llm_provider(cls, v: Any) -> Any:
+        """Map the retired ``llama-cpp`` / ``multi-gpu`` values to ``auto``.
+
+        Both meant "use the local engine"; llama-server is now that engine for
+        every local ref, so persisted configs carrying the old strings load as
+        ``auto`` instead of failing the enum. Canonicalized once here at the
+        write boundary, never via a read-path fallback.
+        """
+        if isinstance(v, str) and v.strip().lower() in _RETIRED_LOCAL_PROVIDERS:
+            return LlmProvider.AUTO.value
         return v
 
     @field_validator("chat_mode", mode="before")

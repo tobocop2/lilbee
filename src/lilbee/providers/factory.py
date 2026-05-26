@@ -21,12 +21,6 @@ def create_provider(config: Config) -> LLMProvider:
 
             return RoutingProvider()
 
-        case LlmProvider.LLAMA_CPP:
-            # heavy: llama_cpp loads native Metal/CUDA dylibs at module top
-            from lilbee.providers.llama_cpp import LlamaCppProvider
-
-            return LlamaCppProvider()
-
         case LlmProvider.REMOTE:
             # THIS is the swap line: the single import that changes when
             # migrating to a different SDK. Replace LitellmSdkBackend here
@@ -46,11 +40,5 @@ def create_provider(config: Config) -> LLMProvider:
                 base_url=config.remote_base_url,
                 api_key=config.llm_api_key,
             )  # pragma: no cover
-
-        case LlmProvider.MULTI_GPU:
-            # heavy: provider composes llama_cpp + spawns llama-server sidecars
-            from lilbee.providers.multi_gpu.provider import FleetProvider
-
-            return FleetProvider()
 
     assert_never(config.llm_provider)  # pragma: no cover

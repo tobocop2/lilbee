@@ -11,13 +11,16 @@ class ChatMode(StrEnum):
 
 
 class LlmProvider(StrEnum):
-    """Inference backend that ``create_provider`` builds. Values match the
-    historical ``llm_provider`` strings so persisted config parses unchanged."""
+    """Inference backend that ``create_provider`` builds.
+
+    ``auto`` prefix-routes: native GGUF refs to the local llama-server engine,
+    remote-prefixed refs (``ollama/``, ``openai/``, ...) to the SDK backend.
+    ``remote`` forces the SDK backend. The retired ``llama-cpp`` and ``multi-gpu``
+    values canonicalize to ``auto`` at the config write boundary.
+    """
 
     AUTO = "auto"
-    LLAMA_CPP = "llama-cpp"
     REMOTE = "remote"
-    MULTI_GPU = "multi-gpu"
 
 
 class ClustererBackend(StrEnum):
