@@ -60,14 +60,16 @@ called `lilbee_search` and produced a correct, cited answer.
 | MiniMax-M2 | giant | 2 | 128K | PASS | full retrieval path + extension points |
 | GLM-4.6 | giant | 2 | 128K | PASS | query expansion + reranking + caching |
 | Qwen3-235B-A22B-Instruct-2507 | giant | 2 | 128K | PASS | end-to-end pipeline (used `lilbee_settings_get`) |
-| GLM-4.5-Air | large | 1 | 64K | PASS | query→ranked-results pipeline |
 | gpt-oss-120b | large | 1 | 64K | EXCLUDED | grounding-unreliable (bb-lks6) |
+| GLM-4.5-Air | large | 1 | 64K | EXCLUDED | grounding-unreliable (bb-lks6) |
 
-All 11 PASS models are in the demo reel (PR to gh-pages) with gif + mp4 + tape and the
-real model name shown in opencode. gpt-oss-120b is excluded: it calls `lilbee_search`
-but cannot ground its answer (hallucinates the embedding model/store, or falsely claims
-the code is absent) across four prompt variants while every other model is accurate on
-the identical index — a model limitation, not a lilbee/harness bug (bb-lks6).
+The 10 PASS models are in the demo reel (PR to gh-pages) with gif + mp4 + tape and the
+real model name shown in opencode. The two single-GPU **larges are excluded**: they call
+`lilbee_search` but ground unreliably — gpt-oss-120b hallucinates (claims the embedding
+model is GLM-4.6/the store is SQLite) or falsely claims the code is absent; GLM-4.5-Air
+is variance-prone (accurate in one validation, refusing/hedging on re-runs). Every other
+model — including the three multi-GPU giants — is accurate on the identical index, so this
+is a model-behavior limitation of these two larges, not a lilbee/harness bug (bb-lks6).
 
 Prompt-iteration lessons worth keeping: small models need one focused question (a broad
 multi-stage prompt makes them flail); the coder/giants over-search and overflow context,
