@@ -3,7 +3,9 @@
 
 Parses ``--port`` from argv, ignores every other llama-server flag, and serves
 the subset of the OpenAI surface the fleet calls: ``/health``,
-``/v1/chat/completions`` (streaming and not), and ``/v1/embeddings``.
+``/v1/chat/completions`` (streaming, plain, and tool-calling), and
+``/v1/embeddings`` (which also backs rank-pooling rerank). Vision OCR reuses the
+chat endpoint, so a multipart image request gets the same stub answer.
 """
 
 from __future__ import annotations
@@ -29,6 +31,30 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             if body.get("stream"):
                 self._send_sse(["stub", "-chat"])
+            elif body.get("tools"):
+                # --jinja-style structured tool call: echo the first tool's name.
+                tool_name = body["tools"][0]["function"]["name"]
+                self._send_json(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "id": "stub_call",
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_name,
+                                                "arguments": "{}",
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
             else:
                 self._send_json({"choices": [{"message": {"content": "stub-chat"}}]})
         elif self.path == "/v1/embeddings":

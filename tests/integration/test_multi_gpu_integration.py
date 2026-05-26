@@ -45,6 +45,9 @@ def test_fleet_serves_chat_and_embed_over_real_http(tmp_path: Path) -> None:
         assert chat.chat([{"role": "user", "content": "hi"}]) == "stub-chat"
         streamed = "".join(chat.chat([{"role": "user", "content": "hi"}], stream=True))
         assert streamed == "stub-chat"
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        tool_result = chat.chat_tools([{"role": "user", "content": "call it"}], tools=tools)
+        assert tool_result.tool_calls[0].name == "lookup"
         embeds = fleet.healthy_clients(WorkerRole.EMBED)[0].embed(["a", "b"])
         assert len(embeds) == 2
         assert embeds[0] == [0.5, 0.5]
@@ -79,7 +82,7 @@ def test_fleet_provider_routes_chat_to_a_real_server(
     monkeypatch.setattr(
         prov_mod,
         "_server_model_inputs",
-        lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
+        lambda *_roles: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
     )
     monkeypatch.setattr(
         prov_mod,
