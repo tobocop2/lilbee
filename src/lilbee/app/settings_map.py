@@ -792,8 +792,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.API_KEYS,
         choices=tuple(p.value for p in LlmProvider),
         help_text=(
-            "Inference provider: auto (default), llama-cpp (in-process), "
-            "multi-gpu (managed llama-server fleet), or remote (external OpenAI-compatible)"
+            "Inference provider: auto (default, runs models locally on llama-server) "
+            "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
     "remote_base_url": SettingDef(
@@ -806,7 +806,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="Path to a llama-server binary for multi-gpu (empty: bundled wheel or PATH)",
+        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

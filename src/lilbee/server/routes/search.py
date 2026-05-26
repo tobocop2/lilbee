@@ -22,10 +22,10 @@ from lilbee.server.models import (
 )
 
 # Process-wide lock that gates the two streaming chat endpoints to one
-# in-flight request at a time. The llama-cpp provider already serializes
-# concurrent chat() calls under a thread lock, so a second concurrent
-# stream blocks the client for many seconds with no feedback. Returning
-# 429 + Retry-After fast lets clients surface a real error and decide.
+# in-flight request at a time. Rather than let a second stream queue behind
+# the first with no feedback, returning 429 + Retry-After fast lets clients
+# surface a real error and decide. (The llama-server fleet can serve parallel
+# chat slots, so this single-stream cap could later be relaxed per server.)
 # The lock binds to the worker's running event loop on first acquire.
 _chat_inflight_lock = asyncio.Lock()
 
