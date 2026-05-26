@@ -13,6 +13,7 @@ Writes gifs/webms + reel_manifest.txt (model -> QA verdict + published URL) to
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,24 @@ def _calltool_count() -> int:
         return 0
 
 
+def _load_manifest() -> dict[str, tuple[str, str, str]]:
+    """Prior verdicts, so a resume run preserves already-recorded models."""
+    out: dict[str, tuple[str, str, str]] = {}
+    if MANIFEST.exists():
+        for line in MANIFEST.read_text().splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                out[parts[0]] = (parts[0], parts[1], parts[2])
+    return out
+
+
+def _write_manifest(results: dict[str, tuple[str, str, str]]) -> None:
+    """Write in canonical REEL order, keeping any extra families at the end."""
+    order = REEL + [f for f in results if f not in REEL]
+    rows = [results[f] for f in order if f in results]
+    MANIFEST.write_text("\n".join(f"{f}\t{q}\t{u}" for f, q, u in rows) + "\n")
+
+
 def _cleanup_repo(repo: str) -> None:
     try:
         from huggingface_hub import scan_cache_dir
@@ -65,24 +84,30 @@ def _cleanup_repo(repo: str) -> None:
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     specs = {s.family: s for s in ROSTER}
-    results: list[tuple[str, str, str]] = []
-    for fam in REEL:
+    # Optional resume subset: families on argv (else the full reel). Prior manifest
+    # verdicts are preserved so a resume doesn't clobber already-recorded models.
+    run = [f for a in sys.argv[1:] for f in a.replace(",", " ").split()] or REEL
+    results = _load_manifest()
+    for fam in run:
         spec = specs.get(fam)
         if spec is None:
-            results.append((fam, "NO_SPEC", ""))
+            results[fam] = (fam, "NO_SPEC", "")
             continue
         print(f"\n===== {fam}: download =====", flush=True)
         try:
             gguf = _download(spec)
         except Exception as exc:  # noqa: BLE001
             print(f"[{fam}] download failed: {exc}")
-            results.append((fam, f"SKIP(download: {str(exc)[:40]})", ""))
+            results[fam] = (fam, f"SKIP(download: {str(exc)[:40]})", "")
             continue
         template = _borrow_template(spec)
         print(f"===== {fam}: setup =====", flush=True)
         cmd = ["bash", DEMO_SH, fam, str(gguf)] + ([str(template)] if template else [])
-        if subprocess.run(cmd).returncode != 0:
-            results.append((fam, "SETUP_FAIL", ""))
+        # Only the 200GB giants span both GPUs; small models stay on one (see giant_demo.sh).
+        env = {**os.environ, "MULTIGPU": "1"} if spec.multi_gpu_only else None
+        if subprocess.run(cmd, env=env).returncode != 0:
+            results[fam] = (fam, "SETUP_FAIL", "")
+            _write_manifest(results)
             continue
         stem = str(OUT / f"reel-{fam}")
         tape = OUT / f"{fam}.tape"
@@ -100,13 +125,13 @@ def main() -> None:
         url = next(
             (ln.strip() for ln in (pub.stdout or "").splitlines() if "vhs.charm.sh" in ln), ""
         )
-        results.append((fam, qa, url))
-        MANIFEST.write_text("\n".join(f"{f}\t{q}\t{u}" for f, q, u in results) + "\n")
+        results[fam] = (fam, qa, url)
+        _write_manifest(results)
         print(f"[{fam}] -> {qa}  {url}", flush=True)
         if not spec.multi_gpu_only:  # keep cached giants for the heavy demo
             _cleanup_repo(spec.repo)
     print("\n===== REEL DONE =====")
-    for f, q, u in results:
+    for f, q, u in results.values():
         print(f"  {f}: {q}  {u}")
 
 

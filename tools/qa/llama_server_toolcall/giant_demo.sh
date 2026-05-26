@@ -83,13 +83,24 @@ echo "[giant] launching llama-server for $FAMILY"
 tmux kill-session -t giantsrv 2>/dev/null || true
 TMPL_ARG=""
 [ -n "$TEMPLATE" ] && TMPL_ARG="--chat-template-file $TEMPLATE"
+# Only the 200GB giants need both GPUs. Force-splitting a small model across both
+# (-ngl 999 with 2 visible devices) trips llama.cpp's scheduler assert
+# (GGML_SCHED_MAX_SPLIT_INPUTS) during the device-memory fit, e.g. gemma-4-E2B.
+# Default to a single GPU; set MULTIGPU=1 for the giants that genuinely span both.
+GPU_ENV="CUDA_VISIBLE_DEVICES=0"
+[ "${MULTIGPU:-0}" = "1" ] && GPU_ENV=""
 # --alias makes /v1/models advertise the same id opencode is configured with, so
 # the picker shows one "lilbee" model, not a duplicate from auto-discovery.
 tmux new-session -d -s giantsrv \
-  "LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$FAMILY' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
-for _ in $(seq 1 300); do
-  curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && break; sleep 3
+  "$GPU_ENV LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$FAMILY' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
+UP=0
+for _ in $(seq 1 120); do
+  curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && { UP=1; break; }; sleep 3
 done
+if [ "$UP" != "1" ]; then
+  echo "[giant] ERROR: $FAMILY llama-server did not come up (see /tmp/giant-srv.log)" >&2
+  exit 3
+fi
 echo "[giant] $FAMILY served on :$LS_PORT"
 
 # --- opencode.json: model from llama-server, lilbee_search from lilbee MCP ---
