@@ -66,7 +66,7 @@ def get_model_architecture() -> ModelArchInfo:
 def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read chat model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
         from lilbee.providers.llama_cpp.provider import resolve_model_path
 
         path = resolve_model_path(cfg.chat_model)
@@ -82,7 +82,7 @@ def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
 def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read embedding model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
         from lilbee.providers.llama_cpp.provider import resolve_model_path
 
         path = resolve_model_path(cfg.embedding_model)
@@ -106,7 +106,7 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
     if not cfg.vision_model:
         return info
     try:
-        from lilbee.providers.llama_cpp.gguf_meta import (
+        from lilbee.providers.gguf_meta import (
             find_mmproj_for_model,
             read_mmproj_projector_type,
         )

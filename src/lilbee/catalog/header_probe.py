@@ -10,7 +10,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 import httpx
-from gguf import GGUFReader, GGUFValueType
+from gguf import GGUFReader, GGUFValueType, ReaderField
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,29 @@ def _parse_arch(blob: bytes) -> str:
             tmp.unlink()
 
 
+def gguf_scalar_str(field: ReaderField | None) -> str | None:
+    """Render a scalar GGUF metadata field as a string, or ``None``.
+
+    Mirrors what ``Llama(vocab_only=True).metadata`` produced: STRING fields
+    decode their bytes; numeric scalars (UINT*/INT*/FLOAT*/BOOL) stringify
+    their single value. ARRAY fields and empty fields return ``None`` (callers
+    here only read scalars). This is the one place the gguf-py ReaderField shape
+    is decoded, so a gguf-py layout change breaks here, not at every call site.
+    """
+    if field is None or not field.types or not field.data:
+        return None
+    value_type = field.types[-1]
+    part = field.parts[field.data[0]]
+    if value_type == GGUFValueType.STRING:
+        return bytes(part).decode("utf-8", errors="replace")
+    if value_type == GGUFValueType.ARRAY:
+        return None
+    scalar = part.tolist() if hasattr(part, "tolist") else part
+    if isinstance(scalar, (list, tuple)):
+        scalar = scalar[0] if scalar else None
+    return None if scalar is None else str(scalar)
+
+
 def _read_architecture(path: Path) -> str:
     """Return general.architecture from the GGUF file at *path*, or empty string.
 
@@ -70,9 +93,4 @@ def _read_architecture(path: Path) -> str:
     when this returns, letting the caller delete the temp file on Windows.
     """
     reader = GGUFReader(str(path))
-    field = reader.fields.get(GGUF_ARCH_KEY)
-    if field is None or not field.data:
-        return ""
-    if not field.types or field.types[-1] != GGUFValueType.STRING:
-        return ""
-    return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+    return gguf_scalar_str(reader.fields.get(GGUF_ARCH_KEY)) or ""

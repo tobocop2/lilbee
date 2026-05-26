@@ -2302,7 +2302,7 @@ def test_status_read_chat_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "llama"},
         ),
     ):
@@ -2321,7 +2321,7 @@ def test_status_read_embed_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
         ),
     ):
@@ -2340,11 +2340,11 @@ def test_status_read_vision_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+            "lilbee.providers.gguf_meta.find_mmproj_for_model",
             return_value="/fake/mmproj",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_mmproj_projector_type",
+            "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
         ),
     ):

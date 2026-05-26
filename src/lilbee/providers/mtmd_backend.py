@@ -13,7 +13,7 @@ from gguf import GGUFReader
 from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.core.config import cfg
 from lilbee.providers.llama_cpp.abort_signal import abort_callback
-from lilbee.providers.llama_cpp.gguf_meta import (
+from lilbee.providers.gguf_meta import (
     find_mmproj_for_model,
     read_gguf_metadata,
     train_ctx_from_meta,

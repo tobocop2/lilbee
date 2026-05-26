@@ -79,7 +79,7 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
     from lilbee.providers.llama_cpp.provider import _EMBED_FALLBACK_CTX, _resolve_chat_ctx
 
     if role in _EMBED_ROLES:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         return train_ctx_from_meta(meta, fallback=_EMBED_FALLBACK_CTX, model_path=model_path)
     if role is WorkerRole.VISION:
@@ -361,7 +361,7 @@ def _server_model_inputs() -> tuple[list[ModelPlacementInput], dict[WorkerRole, 
 def _vision_mmproj(model_ref: str) -> Path | None:
     """Resolve a vision model's mmproj sidecar, or ``None`` if absent."""
     from lilbee.providers.base import ProviderError
-    from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
     try:
@@ -373,7 +373,7 @@ def _vision_mmproj(model_ref: str) -> Path | None:
 def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlacementInput:
     """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
     from lilbee.core.config import cfg
-    from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+    from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
     path = resolve_model_path(model_ref)
@@ -402,7 +402,7 @@ def _launch_for(
     by_index: dict[int, FleetDevice],
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+    from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.llama_cpp.provider import resolve_model_path
 
     slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]

@@ -1,27 +1,40 @@
-"""GGUF metadata helpers: header reads, mmproj sidecar lookup, projector type."""
+"""GGUF metadata helpers: header reads, mmproj sidecar lookup, projector type.
+
+Reads GGUF headers with the standalone ``gguf`` parser (no native binding), so
+metadata is available to any provider without loading a model into the engine.
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from gguf import GGUFReader, GGUFValueType
 
-from lilbee.catalog.header_probe import GGUF_ARCH_KEY
+from lilbee.catalog.header_probe import GGUF_ARCH_KEY, gguf_scalar_str
 from lilbee.providers.base import ProviderError
-from lilbee.providers.llama_cpp.abort_signal import abort_callback, clear_abort
-from lilbee.providers.llama_cpp.log_dispatch import (
-    import_llama_cpp,
-    install_llama_log_handler,
-    suppress_native_stderr,
-)
 
 log = logging.getLogger(__name__)
 
 _HF_BLOBS_DIR_NAME = "blobs"
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
+_DEFAULT_ARCH = "llama"
+_CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
+_FILE_TYPE_KEY = "general.file_type"
+_NAME_KEY = "general.name"
+
+# Arch-prefixed metadata key suffix -> the lilbee field name it maps to. The
+# prefix is the GGUF's general.architecture value (e.g. "qwen3.context_length").
+_ARCH_FIELD_SUFFIXES: dict[str, str] = {
+    "context_length": "context_length",
+    "embedding_length": "embedding_length",
+    "block_count": "block_count",
+    "attention.head_count_kv": "head_count_kv",
+    "attention.head_count": "head_count",
+    "attention.key_length": "key_length",
+    "attention.value_length": "value_length",
+}
 
 
 def train_ctx_from_meta(
@@ -64,58 +77,36 @@ def train_ctx_from_meta(
 
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
-    """Read metadata from a GGUF file's headers via llama-cpp-python.
+    """Read header metadata from a GGUF file with the ``gguf`` parser.
 
     Returns a dict with keys like ``architecture``, ``context_length``,
     ``embedding_length``, ``chat_template``, ``file_type``, plus the
     KV-cache-shape fields (``block_count``, ``head_count_kv``,
     ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
-    against host memory.
+    against host memory. ``None`` when the file carries none of them.
     """
-    Llama = import_llama_cpp().Llama  # noqa: N806
+    reader = GGUFReader(str(model_path))
+    fields = reader.fields
+    result: dict[str, str] = {}
 
-    # Fresh abort flag: a prior request_abort() must not latch and break
-    # this metadata read, which is on the path of every model swap.
-    clear_abort()
-    install_llama_log_handler()
-    kwargs: dict[str, Any] = {
-        "model_path": str(model_path),
-        "vocab_only": True,
-        "verbose": False,
-        "n_gpu_layers": 0,
-    }
-    kwargs.setdefault("abort_callback", abort_callback)
-    llm = suppress_native_stderr(Llama, **kwargs)
-    try:
-        raw = llm.metadata or {}
-        result: dict[str, str] = {}
-        if GGUF_ARCH_KEY in raw:
-            result["architecture"] = str(raw[GGUF_ARCH_KEY])
-        arch = raw.get(GGUF_ARCH_KEY, "llama")
-        ctx_key = f"{arch}.context_length"
-        if ctx_key in raw:
-            result["context_length"] = str(raw[ctx_key])
-        emb_key = f"{arch}.embedding_length"
-        if emb_key in raw:
-            result["embedding_length"] = str(raw[emb_key])
-        for arch_key, out_key in (
-            (f"{arch}.block_count", "block_count"),
-            (f"{arch}.attention.head_count_kv", "head_count_kv"),
-            (f"{arch}.attention.head_count", "head_count"),
-            (f"{arch}.attention.key_length", "key_length"),
-            (f"{arch}.attention.value_length", "value_length"),
-        ):
-            if arch_key in raw:
-                result[out_key] = str(raw[arch_key])
-        if "tokenizer.chat_template" in raw:
-            result["chat_template"] = str(raw["tokenizer.chat_template"])
-        if "general.file_type" in raw:
-            result["file_type"] = str(raw["general.file_type"])
-        if "general.name" in raw:
-            result["name"] = str(raw["general.name"])
-        return result or None
-    finally:
-        llm.close()
+    arch = gguf_scalar_str(fields.get(GGUF_ARCH_KEY))
+    if arch is not None:
+        result["architecture"] = arch
+    arch = arch or _DEFAULT_ARCH
+
+    for suffix, out_key in _ARCH_FIELD_SUFFIXES.items():
+        value = gguf_scalar_str(fields.get(f"{arch}.{suffix}"))
+        if value is not None:
+            result[out_key] = value
+    for raw_key, out_key in (
+        (_CHAT_TEMPLATE_KEY, "chat_template"),
+        (_FILE_TYPE_KEY, "file_type"),
+        (_NAME_KEY, "name"),
+    ):
+        value = gguf_scalar_str(fields.get(raw_key))
+        if value is not None:
+            result[out_key] = value
+    return result or None
 
 
 def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
@@ -160,7 +151,7 @@ def find_mmproj_for_model(model_path: Path) -> Path:
         f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
         f"Download the mmproj file to {model_path.parent} or re-download the vision "
         "model through the catalog to get both files.",
-        provider="llama-cpp",
+        provider="llama-server",
     )
 
 
@@ -172,6 +163,6 @@ def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     except Exception:
         log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
         return None
-    if field is None or field.types[-1] != GGUFValueType.STRING:
+    if field is None or not field.types or field.types[-1] != GGUFValueType.STRING:
         return None
     return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")

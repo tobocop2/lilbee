@@ -283,7 +283,7 @@ class TestLlamaCppProvider:
     def testread_gguf_metadata(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {
@@ -317,7 +317,7 @@ class TestLlamaCppProvider:
     def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {}
@@ -1777,7 +1777,7 @@ class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF file with clip.projector_type = "ldp"
         buf = bytearray()
@@ -1798,7 +1798,7 @@ class TestReadMmprojProjectorType:
         assert read_mmproj_projector_type(gguf_file) == "ldp"
 
     def test_exception_returns_none(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
@@ -1807,7 +1807,7 @@ class TestReadMmprojProjectorType:
         as an int or bool), the reader returns None instead of decoding bytes."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a GGUF where clip.projector_type is value_type=4 (uint32), not string.
         buf = bytearray()
@@ -1832,7 +1832,7 @@ class TestReadMmprojProjectorType:
         """
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         buf = bytearray()
         buf += b"GGUF"
@@ -3637,44 +3637,44 @@ class TestTrainCtxFromMeta:
         return Path("/tmp/test-model.gguf")
 
     def test_returns_metadata_value_when_positive(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "8192"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 8192
 
     def test_returns_fallback_when_meta_is_none(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         assert train_ctx_from_meta(None, fallback=2048, model_path=self._path()) == 2048
 
     def test_returns_fallback_when_context_length_missing(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         assert train_ctx_from_meta({}, fallback=4096, model_path=self._path()) == 4096
 
     def test_clamps_zero_to_fallback(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "0"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
 
     def test_clamps_negative_to_fallback(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "-1"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
 
     def test_clamps_unparseable_to_fallback(self, caplog) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "garbage"}
-        with caplog.at_level(logging.WARNING, logger="lilbee.providers.llama_cpp.gguf_meta"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.gguf_meta"):
             assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
         assert any("unparseable" in rec.message for rec in caplog.records)
 
     def test_each_loader_uses_its_own_fallback(self) -> None:
         """Embed / chat / vision picks reflect their respective task budgets."""
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         zero = {"context_length": "0"}
         path = self._path()
@@ -3686,7 +3686,7 @@ class TestTrainCtxFromMeta:
 class TestReadGgufMetadata:
     def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata returns parsed fields."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {
@@ -3713,7 +3713,7 @@ class TestReadGgufMetadata:
 
     def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata returns None when no fields found."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {}
@@ -3724,7 +3724,7 @@ class TestReadGgufMetadata:
 
     def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
         """read_gguf_metadata handles None metadata."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = None
@@ -3871,7 +3871,7 @@ class TestLoadLlama:
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:
         """find_mmproj_for_model uses catalog lookup first."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         with mock.patch(
             "lilbee.catalog.find_mmproj_file",
@@ -3883,7 +3883,7 @@ class TestFindMmprojForModel:
 
     def test_directory_fallback(self, tmp_path: Path) -> None:
         """find_mmproj_for_model falls back to directory scan."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -3901,7 +3901,7 @@ class TestFindMmprojForModel:
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -3920,7 +3920,7 @@ class TestFindMmprojForModel:
         snapshot symlink, not in blobs/. find_mmproj_for_model must walk up to the
         sibling snapshots/ tree when the model path lives under blobs/.
         """
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -3938,7 +3938,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_blob_without_snapshots_falls_through(self, tmp_path: Path) -> None:
         """blobs/ dir with no sibling snapshots/ tree returns None from the HF
         helper, allowing the flat-dir fallback to take over."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -3958,7 +3958,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
         """snapshots/ tree exists but no mmproj GGUF lives in any snapshot --
         the HF helper returns None and the flat-dir fallback takes over."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -3983,7 +3983,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type reads clip.projector_type from GGUF."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF with one KV pair: clip.projector_type = "ldp"
         f = tmp_path / "test.gguf"
@@ -4007,7 +4007,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type skips unrelated keys."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         f = tmp_path / "test.gguf"
         with open(f, "wb") as fp:

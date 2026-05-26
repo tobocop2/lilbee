@@ -185,7 +185,7 @@ def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
         "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: Path("/m/v.gguf")
     )
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+        "lilbee.providers.gguf_meta.find_mmproj_for_model",
         lambda _p: Path("/m/mmproj.gguf"),
     )
     assert prov_mod._vision_mmproj("ref") == Path("/m/mmproj.gguf")
@@ -201,7 +201,7 @@ def test_vision_mmproj_returns_none_when_absent(monkeypatch) -> None:
     def _raise(_p: Path) -> Path:
         raise ProviderError("no mmproj")
 
-    monkeypatch.setattr("lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model", _raise)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _raise)
     assert prov_mod._vision_mmproj("ref") is None
 
 
@@ -220,7 +220,7 @@ def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
 
 def test_role_ctx_embed_uses_model_training_context(monkeypatch) -> None:
     monkeypatch.setattr(
-        "lilbee.providers.llama_cpp.gguf_meta.train_ctx_from_meta",
+        "lilbee.providers.gguf_meta.train_ctx_from_meta",
         lambda _meta, *, fallback, model_path: 512,
     )
     assert prov_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 512
@@ -417,7 +417,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: model
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 16)
@@ -435,7 +435,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _r: model
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "8", "embedding_length": "16"},
         )
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 512)
@@ -452,7 +452,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
@@ -470,7 +470,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.llama_cpp.provider.resolve_model_path", lambda _ref: model
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "4", "embedding_length": "8"},
         )
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 16)
@@ -484,7 +484,7 @@ class TestBuildFleetWiring:
             lambda ref: Path("/models/chat.gguf"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -505,7 +505,7 @@ class TestBuildFleetWiring:
             lambda _r: Path("/models/m.gguf"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: ctx)
@@ -552,7 +552,7 @@ class TestBuildFleetWiring:
             lambda _r: Path("/models/m.gguf"),
         )
         monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {}
         )
         monkeypatch.setattr(prov_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(prov_mod, "_role_ctx", lambda _r, _p, _m: ctx)
