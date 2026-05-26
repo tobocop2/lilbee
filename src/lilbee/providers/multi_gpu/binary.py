@@ -11,9 +11,13 @@ from lilbee.providers.base import ProviderError
 
 _BINARY_NAME = "llama-server"
 _INSTALL_HINT = (
-    "Install with `pip install 'lilbee[multi-gpu]'`, or set LILBEE_LLAMA_SERVER_PATH "
+    "Reinstall lilbee to get the bundled engine, or set LILBEE_LLAMA_SERVER_PATH "
     "to a llama-server binary (a llama.cpp release download or `brew install llama.cpp`)."
 )
+# Library-name stems that mark a self-contained bundle: when the engine wheel
+# ships ggml/llama next to the binary (with a baked rpath), no external lib dir
+# is needed.
+_COLOCATED_LIB_STEMS = ("libllama", "libggml", "llama")
 
 
 def resolve_llama_server_binary() -> Path:
@@ -54,13 +58,14 @@ def _bundled_binary() -> Path | None:
 def llama_server_runtime_env() -> dict[str, str]:
     """Env additions so the *bundled* llama-server finds its shared backend libs.
 
-    The bundled binary is dynamically linked and ships without ggml/llama/mtmd;
-    those come from the version-matched ``llama-cpp-python`` lilbee already
-    bundles, so we append that package's ``lib`` dir to the platform's library
-    search path. Returns ``{}`` for a bring-your-own binary (it carries its own
-    libs) or when the lib dir can't be located.
+    A self-contained engine wheel ships ggml/llama next to the binary with a baked
+    rpath and needs nothing here. A bundle that ships only the binary borrows the
+    version-matched libs from the ``llama-cpp-python`` package by appending its
+    ``lib`` dir to the platform library search path. Returns ``{}`` for a
+    bring-your-own binary, a self-contained bundle, or when no borrow dir is found.
     """
-    if _bundled_binary() is None:
+    bundled = _bundled_binary()
+    if bundled is None or _has_colocated_libs(bundled):
         return {}
     lib_dir = _llama_cpp_lib_dir()
     if lib_dir is None:
@@ -69,6 +74,16 @@ def llama_server_runtime_env() -> dict[str, str]:
     existing = os.environ.get(var, "")
     value = f"{existing}{os.pathsep}{lib_dir}" if existing else str(lib_dir)
     return {var: value}
+
+
+def _has_colocated_libs(binary: Path) -> bool:
+    """True when shared backend libs sit next to *binary* (a self-contained bundle)."""
+    parent = binary.parent
+    return any(
+        child.name.startswith(_COLOCATED_LIB_STEMS) and child.suffix in (".so", ".dylib", ".dll")
+        for child in parent.glob("*")
+        if child.is_file()
+    )
 
 
 def _llama_cpp_lib_dir() -> Path | None:

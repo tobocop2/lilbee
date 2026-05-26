@@ -98,3 +98,27 @@ def test_lib_path_var_per_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     assert binary_mod._lib_path_var() == "PATH"
     monkeypatch.setattr(binary_mod.sys, "platform", "linux")
     assert binary_mod._lib_path_var() == "LD_LIBRARY_PATH"
+
+
+def test_runtime_env_empty_for_self_contained_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Libs sit next to the binary (rpath-baked) -> nothing to inject, no borrow.
+    (tmp_path / "libllama.dylib").write_bytes(b"")
+    monkeypatch.setattr(binary_mod, "_bundled_binary", lambda: tmp_path / "llama-server")
+
+    def _must_not_borrow() -> Path:
+        raise AssertionError("a self-contained bundle must not borrow llama-cpp-python libs")
+
+    monkeypatch.setattr(binary_mod, "_llama_cpp_lib_dir", _must_not_borrow)
+    assert llama_server_runtime_env() == {}
+
+
+def test_has_colocated_libs_detects_sibling_lib(tmp_path: Path) -> None:
+    (tmp_path / "libggml.so").write_bytes(b"")
+    assert binary_mod._has_colocated_libs(tmp_path / "llama-server") is True
+
+
+def test_has_colocated_libs_false_without_libs(tmp_path: Path) -> None:
+    (tmp_path / "readme.txt").write_bytes(b"")
+    assert binary_mod._has_colocated_libs(tmp_path / "llama-server") is False
