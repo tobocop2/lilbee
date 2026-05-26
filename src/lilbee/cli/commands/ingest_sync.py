@@ -73,7 +73,7 @@ _depth_option = typer.Option(
 _max_pages_option = typer.Option(
     None,
     "--max-pages",
-    help="Cap total pages for --crawl. Unset = no limit; positive int = hard cap.",
+    help="Cap pages for --crawl. Unset = protective default; 0 = unlimited; N = hard cap.",
 )
 _include_subdomains_option = typer.Option(
     False,
@@ -122,6 +122,7 @@ def _crawl_urls_blocking(
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
+        CrawlDoneEvent,
         CrawlPageEvent,
         EventType,
         ProgressEvent,
@@ -151,8 +152,11 @@ def _crawl_urls_blocking(
             if cancel_event.is_set():
                 break
             ptask = progress.add_task(f"Crawling {url}...", total=None)
+            crawled: dict[str, int] = {}
 
-            def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
+            def _make_callback(
+                _t: TaskID = ptask, _crawled: dict[str, int] = crawled
+            ) -> DetailedProgressCallback:
                 def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
                         if not isinstance(data, CrawlPageEvent):
@@ -162,6 +166,8 @@ def _crawl_urls_blocking(
                             _t,
                             description=f"Crawled {data.current}/{total_str}: {data.url}",
                         )
+                    elif event_type == EventType.CRAWL_DONE and isinstance(data, CrawlDoneEvent):
+                        _crawled["n"] = data.pages_crawled
 
                 return on_progress
 
@@ -176,6 +182,14 @@ def _crawl_urls_blocking(
             )
             all_paths.extend(paths)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
+            # No explicit cap given and the crawl filled the protective default:
+            # tell the user how to go unlimited without editing settings.
+            default_cap = cfg.crawl_max_pages or cfg.crawl_safety_max_pages
+            if crawl and max_pages is None and crawled.get("n", 0) >= default_cap:
+                err_console.print(
+                    f"Stopped at the default {default_cap}-page limit; "
+                    f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap)."
+                )
     return all_paths
 
 

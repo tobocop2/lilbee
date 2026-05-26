@@ -55,7 +55,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.store import scope_to_chunk_type
+from lilbee.data.store import ChunkType, scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
@@ -833,9 +833,7 @@ class ChatScreen(Screen[None]):
             )
             return
 
-        store = get_services().store
-        store.delete_by_source(name)
-        store.delete_source(name)
+        get_services().store.remove_documents([name])
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
         invalidate_document_cache()
@@ -1053,10 +1051,10 @@ class ChatScreen(Screen[None]):
         self.streaming = True
         self._stream_response(text, assistant_msg, self._current_chunk_type())
 
-    def _current_chunk_type(self) -> str | None:
+    def _current_chunk_type(self) -> ChunkType | None:
         """Translate the ScopeChip selection into a ``chunk_type`` arg.
 
-        Returns ``None`` for "both" (no filter) and the raw/wiki string
+        Returns ``None`` for "both" (no filter) and the raw/wiki ``ChunkType``
         otherwise. Defaults to ``None`` when the ScopeChip isn't mounted
         (e.g. test apps that compose the screen without it).
         """
@@ -1072,7 +1070,7 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _stream_response(
-        self, question: str, widget: AssistantMessage, chunk_type: str | None
+        self, question: str, widget: AssistantMessage, chunk_type: ChunkType | None
     ) -> None:
         """Stream LLM response in a background thread, coalescing UI updates."""
         response_parts: list[str] = []

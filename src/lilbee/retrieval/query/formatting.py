@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from lilbee.core.config import cfg
-from lilbee.data.store import CHUNK_TYPE_WIKI, CitationRecord, SearchChunk
+from lilbee.data.store import ChunkType, CitationRecord, SearchChunk
 
 CONTEXT_TEMPLATE = """Context:
 {context}
@@ -66,7 +66,7 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     For wiki chunks, shows the wiki page path followed by indented transitive citations.
     """
     source_display = display_source_path(result.source)
-    if result.chunk_type == CHUNK_TYPE_WIKI and citations:
+    if result.chunk_type is ChunkType.WIKI and citations:
         parts = [f"  → {source_display}"]
         for cit in citations:
             parts.append(_format_citation(cit))

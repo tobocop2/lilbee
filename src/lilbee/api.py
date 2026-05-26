@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING
 from lilbee.app.ingest import copy_files
 from lilbee.app.services import reset_services
 from lilbee.core.config import Config, cfg
-from lilbee.core.security import validate_path_within
 from lilbee.data.store import Store
 from lilbee.providers.factory import create_provider
 from lilbee.retrieval.concepts import ConceptGraph
@@ -171,16 +170,7 @@ class Lilbee:
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name."""
         with _swap_config(self._config):
-            self._store.delete_by_source(name)
-            self._store.delete_source(name)
-            try:
-                doc_path = validate_path_within(
-                    self._config.documents_dir / name, self._config.documents_dir
-                )
-            except ValueError:
-                return
-            if doc_path.exists():
-                doc_path.unlink()
+            self._store.remove_documents([name], delete_files=True)
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""

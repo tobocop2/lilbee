@@ -245,7 +245,7 @@ class TestPropertyAccessors:
 
 class TestRemovePathTraversal:
     def test_remove_path_traversal_skips(self, tmp_path):
-        """remove() with a traversal name catches ValueError and returns."""
+        """remove() with an unknown/traversal name is a no-op and deletes nothing."""
         from lilbee import Lilbee
 
         bee = Lilbee(tmp_path / "proj")
