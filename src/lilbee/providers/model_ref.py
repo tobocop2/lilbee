@@ -116,6 +116,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
             filtered["max_tokens"] = filtered.pop("num_predict")
         # num_ctx is a model-load param, not per-call
         filtered.pop("num_ctx", None)
-        # top_k not supported by most API providers
+        # top_k kept for local llama.cpp, stripped for API providers: litellm
+        # forwards it (into extra_body for OpenAI-compatible) without erroring,
+        # but hosted APIs ignore it, so dropping it keeps the wire request clean.
         filtered.pop("top_k", None)
     return filtered

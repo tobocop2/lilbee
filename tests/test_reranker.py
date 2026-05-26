@@ -166,6 +166,59 @@ class TestRerankerBlendPositions:
         assert reranked[0].chunk == "high rerank"
 
 
+class TestGoldenOrdering:
+    """Empirical gate: controlled scores -> asserted output order.
+
+    Higher rerank score sorts first; all-equal scores preserve input
+    order; both-scores-None falls back to the 0.5 fusion default.
+    """
+
+    def test_higher_rerank_score_sorts_first(self, reranker):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        results = [
+            _chunk("a.md", "least", relevance=0.5),
+            _chunk("b.md", "most", relevance=0.5),
+            _chunk("c.md", "middle", relevance=0.5),
+        ]
+        # Equal fusion isolates the reranker signal: 0.2 < 0.6 < 0.95.
+        with _patch_provider(lambda query, cands: [0.2, 0.95, 0.6]):
+            reranked = reranker.rerank("test", results)
+        assert [c.chunk for c in reranked] == ["most", "middle", "least"]
+
+    def test_all_equal_scores_preserve_input_order(self, reranker):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.expansion_skip_threshold = 0.6  # above chunk relevance: no BM25 pin
+        results = [_chunk(f"{i}.md", f"chunk {i}", relevance=0.5) for i in range(5)]
+        with _patch_provider(lambda query, cands: [0.5] * len(cands)):
+            reranked = reranker.rerank("test", results)
+        # Stable sort on equal blended scores keeps retrieval order intact.
+        assert [c.chunk for c in reranked] == [f"chunk {i}" for i in range(5)]
+
+    def test_both_scores_none_uses_fusion_default(self, reranker):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.expansion_skip_threshold = 0.6  # top relevance is None->0: no pin
+
+        def _bare(source: str, chunk: str) -> SearchChunk:
+            return SearchChunk(
+                source=source,
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk=chunk,
+                chunk_index=0,
+                vector=[0.1],
+            )
+
+        results = [_bare("a.md", "A"), _bare("b.md", "B")]
+        # relevance_score and distance both None -> fusion_score == 0.5
+        # (reranker.py:57). Reranker scores then decide order: B over A.
+        with _patch_provider(lambda query, cands: [0.1, 0.9]):
+            reranked = reranker.rerank("test", results)
+        assert [c.chunk for c in reranked] == ["B", "A"]
+
+
 class TestMixedPoolBias:
     """A mixed wiki+raw pool shouldn't drop one side entirely when the
     reranker returns ambiguous scores. Regression guard against a future

@@ -6,6 +6,10 @@ import threading
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+# Explicit "no page limit" for a crawl. Distinct from None, which means
+# "unspecified, use the protective default cfg.crawl_safety_max_pages".
+CRAWL_PAGES_UNLIMITED = 0
+
 
 @dataclass
 class CrawlResult:

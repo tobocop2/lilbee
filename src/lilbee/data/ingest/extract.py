@@ -22,7 +22,7 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.data.store import CHUNK_TYPE_RAW
+from lilbee.data.store import ChunkType
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -207,7 +207,7 @@ async def _chunk_and_embed_pages(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
-            chunk_type=CHUNK_TYPE_RAW,
+            chunk_type=ChunkType.RAW,
             page_start=page_num,
             page_end=page_num,
             line_start=0,
@@ -320,7 +320,7 @@ async def ingest_document(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
-            chunk_type=CHUNK_TYPE_RAW,
+            chunk_type=ChunkType.RAW,
             page_start=chunk.metadata.get("first_page") or 0,
             page_end=chunk.metadata.get("last_page") or 0,
             line_start=0,
@@ -357,7 +357,7 @@ async def ingest_markdown(
         ChunkRecord(
             source=source_name,
             content_type="text",
-            chunk_type=CHUNK_TYPE_RAW,
+            chunk_type=ChunkType.RAW,
             page_start=0,
             page_end=0,
             line_start=0,
