@@ -45,17 +45,22 @@ TOML
   touch "$WS/.lilbee/.demo_indexed"
 fi
 
-# AGENTS.md carries the grounding directive (like the godot demo), so the demo
-# prompt itself can be a natural dev task instead of "use lilbee_search".
-cat > "$WS/AGENTS.md" <<'AGENTS'
-# Working in the lilbee codebase
+# opencode runs in an EMPTY project dir so its file tools can't read the source
+# directly -- the lilbee source lives ONLY in lilbee's index, forcing lilbee_search
+# (the godot-demo dynamic). AGENTS.md carries the grounding directive so the prompt
+# stays a natural dev task.
+PROJ=/root/demo-proj
+mkdir -p "$PROJ"
+cat > "$PROJ/AGENTS.md" <<'AGENTS'
+# Working on the lilbee codebase
 
 lilbee is a local-first RAG engine with an OpenAI-compatible server and an
-opencode/MCP integration. Your training data does not include lilbee's internals.
+opencode/MCP integration. Your training data does not include lilbee's internals,
+and the lilbee source is NOT in this directory.
 
-- Use the `lilbee_search` tool to look up lilbee's modules, classes, and
-  conventions before writing or changing code. Query the class/function/concept.
-- Confirm APIs via lilbee_search rather than guessing; match the existing style.
+- The ONLY way to see lilbee's code is the `lilbee_search` tool. Use it to look up
+  lilbee's modules, classes, and conventions before writing code. Query the
+  class/function/concept; do not guess APIs.
 - Cite the files you rely on as `path:Lstart-Lend`.
 - No clarifying questions: make reasonable assumptions and implement.
 AGENTS
@@ -89,7 +94,7 @@ echo "[giant] $FAMILY served on :$LS_PORT"
 
 # --- opencode.json: model from llama-server, lilbee_search from lilbee MCP ---
 mkdir -p "$WS/.config/opencode"
-cat > "$WS/opencode.json" <<JSON
+cat > "$PROJ/opencode.json" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
   "model": "lilbee/$FAMILY",
@@ -111,4 +116,4 @@ cat > "$WS/opencode.json" <<JSON
   }
 }
 JSON
-echo "READY: opencode.json at $WS/opencode.json ; provider=lilbee model=$FAMILY@:$LS_PORT ; mcp=lilbee@:8080"
+echo "READY: opencode cwd=$PROJ (empty, forces lilbee_search) ; provider=lilbee model=$FAMILY@:$LS_PORT ; mcp=lilbee@:8080"
