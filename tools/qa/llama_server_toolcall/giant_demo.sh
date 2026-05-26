@@ -55,7 +55,7 @@ if ! curl -s "http://127.0.0.1:8080/api/health" >/dev/null 2>&1; then
     curl -s "http://127.0.0.1:8080/api/health" >/dev/null 2>&1 && break; sleep 2
   done
 fi
-TOKEN=$(python3 -c "import json;print(json.load(open('$WS/.lilbee/server.json'))['token'])")
+TOKEN=$(python3 -c "import json;print(json.load(open('$WS/.lilbee/data/server.json'))['token'])")
 echo "[prep] lilbee serve up; token read"
 
 # --- llama-server for the giant ---
