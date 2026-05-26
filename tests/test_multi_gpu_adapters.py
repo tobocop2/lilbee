@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 
 def test_every_worker_role_has_a_spec() -> None:

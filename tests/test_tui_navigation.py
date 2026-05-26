@@ -439,7 +439,7 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
     import threading
 
     from lilbee.app import services as services_mod
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
     from tests.conftest import make_mock_services
 
     captured: dict[str, object] = {}

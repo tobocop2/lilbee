@@ -15,7 +15,7 @@ from lilbee.providers.multi_gpu import provider as prov_mod
 from lilbee.providers.multi_gpu.devices import FleetDevice, visible_env
 from lilbee.providers.multi_gpu.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.multi_gpu.provider import FleetProvider, _least_in_flight
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
 

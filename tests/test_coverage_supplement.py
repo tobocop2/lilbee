@@ -735,7 +735,7 @@ class TestServicesPoolListener:
     """``Services.add_pool_listener`` forwards to the underlying WorkerPool."""
 
     def test_forwards_both_callbacks_to_pool(self) -> None:
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
         from tests.conftest import make_mock_services
 
         seen_spawning: list[WorkerRole] = []

@@ -17,7 +17,7 @@ from lilbee.providers.multi_gpu import provider as prov_mod
 from lilbee.providers.multi_gpu.devices import FleetDevice
 from lilbee.providers.multi_gpu.fleet import Fleet, InstanceLaunch
 from lilbee.providers.multi_gpu.placement import InstancePlan, ModelPlacementInput, Placement
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group lifecycle")
 

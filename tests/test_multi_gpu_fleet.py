@@ -18,7 +18,7 @@ from lilbee.providers.multi_gpu.fleet import (
     pick_free_port,
     reap_orphans,
 )
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 
 class FakeProc:

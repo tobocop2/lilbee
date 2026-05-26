@@ -11991,7 +11991,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     """
     from unittest.mock import patch
 
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
