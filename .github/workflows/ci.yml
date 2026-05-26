@@ -195,16 +195,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
+          # Anchored to the suffix: ubuntu/macos ship .tar.gz, windows .zip, and
+          # the bare -x64/-arm64 names must not match the vulkan/kleidiai variants.
           case "${{ runner.os }}" in
-            Linux)   pat="bin-ubuntu-x64" ;;
-            macOS)   pat="bin-macos-arm64" ;;
-            Windows) pat="bin-win-cpu-x64" ;;
+            Linux)   pat="bin-ubuntu-x64\\.tar\\.gz$" ;;
+            macOS)   pat="bin-macos-arm64\\.tar\\.gz$" ;;
+            Windows) pat="bin-win-cpu-x64\\.zip$" ;;
           esac
           url=$(gh api repos/ggml-org/llama.cpp/releases/latest \
             --jq ".assets[] | select(.name | test(\"${pat}\")) | .browser_download_url" | head -1)
           [ -n "${url}" ] || { echo "no llama.cpp release asset matching ${pat}" >&2; exit 1; }
-          curl -fsSL "${url}" -o llama-engine.zip
-          unzip -q llama-engine.zip -d "${HOME}/llama-engine"
+          mkdir -p "${HOME}/llama-engine"
+          case "${url}" in
+            *.zip)    curl -fsSL "${url}" -o engine.zip && unzip -q engine.zip -d "${HOME}/llama-engine" ;;
+            *.tar.gz) curl -fsSL "${url}" | tar -xz -C "${HOME}/llama-engine" ;;
+          esac
           bindir=$(dirname "$(find "${HOME}/llama-engine" \( -name llama-server -o -name llama-server.exe \) | head -1)")
           [ -n "${bindir}" ] || { echo "llama-server not found in the release zip" >&2; exit 1; }
           echo "${bindir}" >> "${GITHUB_PATH}"
