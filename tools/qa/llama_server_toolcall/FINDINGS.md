@@ -80,3 +80,22 @@ bundled llama.cpp, since its PEG parser and minja are newer/narrower than mainli
 
 Harness: `probe.py` + `models.py` in this directory. Per-model raw evidence (request,
 response, reasoning) is under `results/` (gitignored).
+
+## Giant tier (2x H200 SXM, multi-GPU, 2026-05-26)
+
+All three giants PASS native tool calls via `llama-server --jinja`, loaded across both
+H200s (layer-split, all layers on GPU, zero CPU fallback):
+
+| Family | Native verdict | Multi-GPU load |
+|--------|----------------|----------------|
+| minimax-m2 (~230B) | PASS | split across CUDA0/CUDA1 |
+| qwen3-235b (235B-A22B) | PASS | 95/95 layers; CUDA0 ~67GB + CUDA1 ~65GB |
+| glm-4.6 (357B, ~200GB) | PASS | 94/94 layers; CUDA0 ~98GB + CUDA1 ~100GB |
+
+GLM-4.6 is the definitive multi-GPU proof: at ~200GB it cannot fit on a single 141GB H200,
+so the successful all-layers-on-GPU load (~98GB + ~100GB) is itself proof the split works,
+and it still emits native `tool_calls`. The native-first runtime covers the entire giant
+tier with no lilbee parser involved (qwen format, glm46, and MiniMax's format all parse
+natively). Efficiency note: layer-split pipelines across GPUs for a single request (one GPU
+computes at a time); simultaneous-GPU saturation comes from concurrency (the fleet router),
+a separate test.
