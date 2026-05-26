@@ -44,24 +44,54 @@ mistral-nemo (bb-1cmj). The fleet must do capacity-based placement for the same 
 
 ## Results (reel run 2026-05-26, 2x H200)
 
-| Family | Tier | GPU | Tool-call QA | Notes |
-|--------|------|-----|--------------|-------|
-| qwen3 | small | 1 | PASS | |
-| llama3 | small | 1 | PASS | |
-| mistral-nemo | small | 1 | PASS | FAILed on the 2-GPU split path; single-GPU fixed it (bb-1cmj) |
-| gemma4 | small | 1 | PASS | crashed on the 2-GPU split path; single-GPU fixed it (bb-rpju) |
-| qwen3-coder | small | 1 | _pending_ | |
-| hermes | small | 1 | _pending_ | needs its real `tool_use` template (bartowski GGUF strips it) |
-| functionary | small | 1 | _pending_ | |
-| minimax-m2 | giant | 2 | _pending_ | |
-| glm-4.6 | giant | 2 | _pending_ | ~200GB across both H200s |
-| gpt-oss | large | 1 | _pending_ | Harmony format |
-| glm-air | large | 1 | _pending_ | |
+Each answer was read from the live `opencode run` transcript and the prompt iterated
+until the answer was accurate and grounded, *before* recording. Verdict = the model
+called `lilbee_search` and produced a correct, cited answer.
+
+| Model (real HF name) | Tier | GPU | ctx | Demo | Topic |
+|----------------------|------|-----|-----|------|-------|
+| Qwen3-4B | small | 1 | 32K | PASS | chunking (`data/chunk.py`) |
+| gemma-4-E2B-it | small | 1 | 32K | PASS | embedding (`retrieval/embedder.py`) |
+| Meta-Llama-3.1-8B-Instruct | small | 1 | 32K | PASS | search step |
+| Mistral-Nemo-Instruct-2407 | small | 1 | 32K | PASS | reranking (cross-encoder + BM25 pin) |
+| Hermes-3-Llama-3.1-8B | small | 1 | 32K | PASS | query expansion |
+| functionary-small-v3.2 | small | 1 | 32K | PASS | dedup (`prepare_results`/`diversify_sources`) |
+| Qwen3-Coder-30B-A3B-Instruct | mid | 1 | 32K | PASS | code vs prose chunking (tree-sitter) |
+| MiniMax-M2 | giant | 2 | 128K | PASS | full retrieval path + extension points |
+| GLM-4.6 | giant | 2 | 128K | PASS | query expansion + reranking + caching |
+| Qwen3-235B-A22B-Instruct-2507 | giant | 2 | 128K | PASS | end-to-end pipeline (used `lilbee_settings_get`) |
+| GLM-4.5-Air | large | 1 | 64K | PASS | query→ranked-results pipeline |
+| gpt-oss-120b | large | 1 | 64K | EXCLUDED | grounding-unreliable (bb-lks6) |
+
+All 11 PASS models are in the demo reel (PR to gh-pages) with gif + mp4 + tape and the
+real model name shown in opencode. gpt-oss-120b is excluded: it calls `lilbee_search`
+but cannot ground its answer (hallucinates the embedding model/store, or falsely claims
+the code is absent) across four prompt variants while every other model is accurate on
+the identical index — a model limitation, not a lilbee/harness bug (bb-lks6).
+
+Prompt-iteration lessons worth keeping: small models need one focused question (a broad
+multi-stage prompt makes them flail); the coder/giants over-search and overflow context,
+so giants get a large `-c` and prompts are scoped to "search then explain briefly"; a
+"concept graph" query surfaced parser chunks for GLM-4.5-Air, so its prompt was moved to
+the central retrieval pipeline.
 
 Native parser gaps (`granite`, `cohere`) and model-side declines (`phi4-mini`,
 `internlm2`, `glm-4-9b`, `smollm`, `lfm2`) are catalogued in
-[`FINDINGS.md`](FINDINGS.md); they are not in the demo reel because they either need
-lilbee's fallback parser or the model itself refuses to call tools.
+[`FINDINGS.md`](FINDINGS.md); they are not in the reel because they either need lilbee's
+fallback parser or the model itself refuses to call tools.
+
+## opencode integration gotchas (hard-won)
+
+- **opencode resolves its project from `$PWD`, not the process cwd.** `subprocess(cwd=…)`
+  leaves `$PWD` at the launcher's dir, so opencode loads the wrong project, never sees the
+  lilbee provider, and 404s `lilbee/<model>` ("Model not found"). Set `PWD` explicitly, or
+  launch via `cd <proj> && opencode`.
+- **Force the model with `-m lilbee/<name>`**, else `opencode run`/TUI falls back to its
+  built-in `build` agent + default model and reads files directly instead of using lilbee.
+- **Warm llama-server completions before opencode** — it answers `/health` before it can
+  serve completions; opencode's resolution probe 404s until then.
+- **Disable the crawl/wiki MCP tools** in the demo (`tools: {lilbee_crawl: false, …}`) or a
+  model wanders off to crawl GitHub instead of searching the index.
 
 ## Issues filed from this QA
 
@@ -71,6 +101,8 @@ lilbee's fallback parser or the model itself refuses to call tools.
   the same single-GPU fix.
 - **bb-v6pk** (open, blocks bb-n1bj) — the multi-GPU fleet must not blindly layer-split a
   model that fits on one GPU; this is the general, shipped-code version of bb-rpju.
+- **bb-lks6** (open) — gpt-oss-120b is grounding-unreliable in the agentic RAG demo
+  (calls `lilbee_search` but hallucinates or falsely refuses); excluded from the reel.
 
 ## Running it
 
