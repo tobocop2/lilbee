@@ -97,6 +97,8 @@ CTX=32768
 # then emits a "size limit exceeded / compacted" message that ruins the demo).
 # They have the VRAM, so give them a big context.
 [ "${MULTIGPU:-0}" = "1" ] && { GPU_ENV=""; CTX=131072; }
+# Per-model override (e.g. a giant that over-searches and compacts even at 128K).
+CTX="${CTX_OVERRIDE:-$CTX}"
 # --alias makes /v1/models advertise the real model name opencode is configured
 # with, so the picker shows e.g. "Qwen3-4B" under the lilbee provider, not a
 # duplicate from auto-discovery and not our internal family tag.
