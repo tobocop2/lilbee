@@ -31,7 +31,7 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container. lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
-> **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html).
+> **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
 > ## ⚠️ Beta software
 >
@@ -42,7 +42,7 @@ It's all one program: you never stand up a separate model server, a [vector data
 ---
 
 - [Quick start](#quick-start)
-- [Tutorial reel](https://lilbee.sh/tutorial.html) (long-form videos)
+- [Tutorial reel](https://lilbee.sh/tutorial) (long-form videos)
 - [Highlights](#highlights)
 - [Why lilbee](#why-lilbee)
 - [What you can do with it](#what-you-can-do-with-it)
@@ -166,7 +166,7 @@ Either way, your files and the index stay on your computer. Only what you ask an
 
 ![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
 
-Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial.html**](https://lilbee.sh/tutorial.html) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
+Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial) as an embedded video with long-form captions. Tape sources are in [`demos/`](demos). For commands and settings, see the [usage guide](docs/usage.md).
 
 ## Hardware requirements
 
