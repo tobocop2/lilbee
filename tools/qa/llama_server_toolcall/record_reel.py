@@ -116,7 +116,7 @@ def main() -> None:
         # The giants do several searches and generate slowly (~10-15 min); the mid
         # coder a bit; smalls are quick. The Hide window must cover generation (it's
         # hidden, so it only costs recording wall-clock, not gif length).
-        gensleep = "900s" if spec.multi_gpu_only else ("240s" if fam == "qwen3-coder" else "150s")
+        gensleep = "1200s" if spec.multi_gpu_only else ("240s" if fam == "qwen3-coder" else "150s")
         tape.write_text(
             TAPE_TMPL.read_text()
             .replace("__OUT__", stem)
