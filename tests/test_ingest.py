@@ -66,6 +66,8 @@ def mock_svc():
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: [0.1] * 768
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    # Real int so sync()'s truncated_total delta is 0, not a coerced MagicMock.
+    embedder.truncated_total = 0
     searcher = MagicMock()
     services = make_mock_services(store=store, embedder=embedder, searcher=searcher)
     svc_mod.set_services(services)

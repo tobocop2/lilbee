@@ -1,9 +1,9 @@
 # lilbee — Development Guide
 
 ## Project
-Local knowledge base. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+Local search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
-**Framing:** Lead with "knowledge base" — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
+**Framing:** Lead with "search engine" (a local search engine you can talk to) — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
 ## Task Tracking (beads)
 ```bash

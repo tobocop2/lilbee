@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee — run local AI models and search your files, code, and the web</title>
+<title>lilbee: run local AI models and search your files, code, and the web</title>
 <meta name="description" content="Run local AI models on your own hardware and search your files, code, and the web, with answers that cite the source. Local-first, one install: CLI, TUI, and an MCP server.">
 <link rel="canonical" href="https://lilbee.sh/">
 
 <!-- Open Graph: rich link previews for any client that reads the protocol. -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="lilbee">
-<meta property="og:title" content="lilbee — run local AI models and search your files, code, and the web">
+<meta property="og:title" content="lilbee: run local AI models and search your files, code, and the web">
 <meta property="og:description" content="Run local AI models on your own hardware and search your files, code, and the web. Cited answers, local-first, one install. A web crawler and an MCP server built in.">
 <meta property="og:url" content="https://lilbee.sh/">
 <meta property="og:image" content="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.png">
@@ -63,7 +63,7 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <h1 class="tagline">Run local AI models, search your own files and code, and crawl the web, <strong>all in one program</strong>.</h1>
+      <h1 class="tagline">Run and manage local AI models, and search everything you own with them, <strong>all in one program</strong>.</h1>
       <p class="sub">A batteries-included local search engine you can talk to: ask in plain English, and every answer cites the file and line. Runs on your machine, and any coding agent can drive it over MCP.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
@@ -80,6 +80,7 @@
       <div class="label">install</div>
 
       <div class="reel">
+        <div class="reel-watch"><a class="reel-cta" href="tutorial.html">▶&nbsp; watch the full tutorial reel</a></div>
         <div class="reeltabs" role="tablist" aria-label="Demo reel">
           <button type="button" class="reeltab" role="tab" id="reel-tab-setup"    aria-controls="reel-pane-setup"    aria-selected="true"  tabindex="0">first run</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-tour"     aria-controls="reel-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
@@ -180,7 +181,6 @@
           <p class="reel-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
         </div>
 
-        <p class="reel-more"><kbd>&larr;</kbd>/<kbd>&rarr;</kbd> scrub. Want the long-form walkthrough? <a href="tutorial.html">tutorial reel &rarr;</a> (video player, longer captions).</p>
       </div>
 
       <div class="installtabs" role="tablist" aria-label="Install methods">
@@ -366,7 +366,7 @@
 
     <section>
       <div class="label">one program</div>
-      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; nothing left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
+      <p class="lede">It's the model, the search through your files, and the chat, all in one program. Run it when you want, close it when you're done; by default nothing's left running in the background, no container to keep alive. Want something long-running? Use the command line and manage it yourself.</p>
       <div class="shape">
         <div class="shape-box many">
           <div class="shape-h">the usual local-AI setup</div>
@@ -399,15 +399,19 @@
       <div class="caps">
         <div class="cap">
           <h3>runs the models itself</h3>
-          <p>Browse Hugging Face, pull a model, assign it to a role. Runs in-process on Metal, Vulkan, or CUDA, no separate model server.</p>
+          <p>Browse Hugging Face, pull a model, assign it to a role. lilbee runs it on Metal, Vulkan, or CUDA; you never point it at a server you set up.</p>
         </div>
         <div class="cap">
           <h3>a real retrieval pipeline</h3>
-          <p>Not keyword search: hybrid keyword + vector, a concept graph, optional reranking, all from published research. 50+ settings to tune.</p>
+          <p>A real search engine, built on published research: it ranks results by how well they answer you, so the best passage comes back first. 50+ settings to tune.</p>
         </div>
         <div class="cap">
           <h3>feed it your files</h3>
           <p>Point it at a folder: your man pages, a pile of PDFs, your notes, a codebase. Then talk to them. Every answer tells you the file and line. Each project gets its own library, so nothing bleeds across.</p>
+        </div>
+        <div class="cap">
+          <h3>chunked so it makes sense</h3>
+          <p>Prose and code get chunked differently, so each piece keeps its meaning instead of getting cut mid-thought. A search engine is only as good as the chunks underneath it.</p>
         </div>
         <div class="cap">
           <h3>pair it with your agent</h3>

@@ -43,9 +43,11 @@ jobs:
           - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.12", target-arch: x86_64}
           - {os: macos-latest, backend: cpu, wheel-plat: macosx_11_0_x86_64, python-version: "3.13", target-arch: x86_64}
           # Linux CUDA via Jimver/cuda-toolkit (handles older CUDA not in ubuntu2404 apt).
-          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0"}
-          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.1.0"}
-          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.1.0"}
+          # cu121 pins llama-cpp-python to 0.3.20: CUDA 12.1's nvcc can't compile the
+          # newer llama.cpp CUDA kernels (half-conversion ambiguity in allreduce.cu).
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.1.0", llama-cpp-version: "0.3.20"}
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.1.0", llama-cpp-version: "0.3.20"}
+          - {os: ubuntu-22.04, backend: cu121, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.1.0", llama-cpp-version: "0.3.20"}
           - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.11", cuda: "12.4.0"}
           - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.12", cuda: "12.4.0"}
           - {os: ubuntu-22.04, backend: cu124, wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64, python-version: "3.13", cuda: "12.4.0"}
@@ -107,7 +109,8 @@ jobs:
       - name: Build llama-cpp-python from source
         shell: bash
         env:
-          LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}   # blank -> build_llama_cpp.sh reads uv.lock
+          # Per-cell pin (cu121) wins; else the dispatch input; else blank -> uv.lock.
+          LLAMA_CPP_VERSION: ${{ matrix.llama-cpp-version || inputs.llama_cpp_version }}
         run: bash tools/wheel-build/build_llama_cpp.sh
 
       - name: Vendor llama-cpp-python and retag wheel

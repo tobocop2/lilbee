@@ -1585,7 +1585,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.66b481"
+version = "0.6.66b484"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
@@ -1655,7 +1655,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
-    { name = "kreuzberg", specifier = ">=4.9.1" },
+    { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-llama-server", directory = "packaging/llama-server-wheel" },

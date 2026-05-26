@@ -28,7 +28,7 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
-from lilbee.crawler.models import CrawlResult
+from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CrawlResult
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
@@ -37,7 +37,15 @@ from lilbee.runtime.progress import (
     CrawlStartEvent,
     DetailedProgressCallback,
     EventType,
+    SetupDoneEvent,
+    SetupStartEvent,
 )
+
+# Component name for the browser-warmup setup phase (distinct from the
+# Chromium download, whose component is "chromium"). The crawl emits a
+# start/done bracket around opening the crawler so the Task Center shows a
+# "preparing crawler" stage instead of a silent stall on first use.
+_BROWSER_SETUP_COMPONENT = "browser"
 
 log = logging.getLogger(__name__)
 
@@ -62,12 +70,32 @@ def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
     return effective
 
 
+def _resolve_page_limit(max_pages: int | None) -> int | None:
+    """Resolve the page bound the fetcher consumes (None means unbounded).
+
+    ``CRAWL_PAGES_UNLIMITED`` (0) is an explicit "no limit" and returns None.
+    ``None`` is unspecified: it falls back to ``cfg.crawl_max_pages`` if set,
+    else the protective default ``cfg.crawl_safety_max_pages`` so a hostile site
+    can't exhaust the disk on a crawl nobody bounded. A positive int is honored
+    as-is, even above the default.
+    """
+    if max_pages == CRAWL_PAGES_UNLIMITED:
+        return None
+    if max_pages is not None:
+        return max_pages
+    if cfg.crawl_max_pages is not None:
+        return cfg.crawl_max_pages
+    return cfg.crawl_safety_max_pages
+
+
 def _looks_like_missing_chromium(exc: BaseException) -> bool:
     """Heuristic for the Playwright "Executable doesn't exist" launch failure."""
     return "Executable doesn't exist" in str(exc)
 
 
-async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
+async def crawl_single(
+    url: str, *, quiet: bool = False, on_progress: DetailedProgressCallback | None = None
+) -> CrawlResult:
     """Fetch a single URL.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
@@ -75,6 +103,10 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     bootstrap once and retries -- ``chromium_installed()`` can return True
     when the wrong revision lives in the cache root, in which case the
     launch fails the first attempt.
+
+    ``on_progress`` receives a setup_start/setup_done bracket around opening
+    the crawler so the first crawl's browser warmup is visible rather than a
+    silent stall.
     """
     validate_crawl_url(url)
     from lilbee.crawler import crawler_available
@@ -83,8 +115,15 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
         raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
+    if on_progress:
+        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+            if on_progress:
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
+                )
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
         return _fetched_to_result(page)
     except CrawlerBrowserError:
@@ -117,11 +156,13 @@ async def crawl_recursive(
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
 
-    None values for ``max_depth`` / ``max_pages`` mean unbounded (constrained
-    only by whatever ceiling the user has set in ``cfg.crawl_max_{depth,pages}``,
-    if any). Positive ints are explicit caps. ``CRAWL_PAGE`` events fire as
-    each page completes; total is ``CRAWL_TOTAL_UNKNOWN`` by default and
-    promoted to the sitemap count when available.
+    ``max_depth`` of None means unbounded depth. ``max_pages`` of
+    ``CRAWL_PAGES_UNLIMITED`` (0) means no page limit; a positive int is that
+    cap; None is unspecified and falls back to ``cfg.crawl_safety_max_pages`` so
+    a hostile site can't exhaust the disk on a crawl nobody bounded.
+    ``CRAWL_PAGE`` events fire as each page completes; total is
+    ``CRAWL_TOTAL_UNKNOWN`` by default and promoted to the sitemap count
+    when available.
 
     Pass ``include_subdomains=True`` to broaden scope from the exact host to the
     host plus any subdomains. If ``on_result`` is provided, it's called for each
@@ -130,7 +171,7 @@ async def crawl_recursive(
     """
     validate_crawl_url(url)
     depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
-    pages = _resolve_limit(max_pages, cfg.crawl_max_pages)
+    pages = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
     # callers see ``event: error`` instead of a silent zero-results run.
@@ -160,8 +201,19 @@ async def crawl_recursive(
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
+    # Opening the crawler launches the browser; on first use its one-time
+    # warmup can take many seconds with no other signal. Bracket it with
+    # setup events (no size estimate -> indeterminate) so the Task Center
+    # shows a "preparing crawler" stage instead of a silent stall.
+    if on_progress:
+        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
         async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+            if on_progress:
+                on_progress(
+                    EventType.SETUP_DONE,
+                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
+                )
             # Hold an explicit reference to the generator so we can aclose
             # it deterministically on break. Without this, the generator's
             # finally block (which also short-circuits the BFS strategy) only
@@ -290,7 +342,7 @@ async def _run_crawl(
 ) -> int:
     """Run the single-URL or recursive crawl. Returns ``pages_seen``."""
     if depth == 0:
-        result = await crawl_single(url, quiet=quiet)
+        result = await crawl_single(url, quiet=quiet, on_progress=on_progress)
         try:
             await flush_page(result)
         except OSError:
