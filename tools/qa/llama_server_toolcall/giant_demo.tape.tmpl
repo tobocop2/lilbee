@@ -1,0 +1,46 @@
+# VHS tape template for a giant-tier opencode demo (full TUI).
+# Substituted per giant: __OUT__ (output stem), __PROMPT__, __GENSLEEP__ (the
+# measured giant generation time, so Hide/Show skips the dead air cleanly).
+# Rose-pine + dimensions mirror the existing lilbee demo reel (_shared.tape).
+
+Set Shell "bash"
+Set Width 1600
+Set Height 1000
+Set FontSize 18
+Set Padding 30
+Set TypingSpeed 30ms
+Set Framerate 60
+Set PlaybackSpeed 1.5
+Set Theme "rose-pine-moon"
+Set WindowBar Colorful
+
+Output __OUT__.gif
+Output __OUT__.webm
+
+# opencode reads ./opencode.json (model -> the giant on llama-server, MCP -> lilbee)
+Type "cd /root/demo-ws && opencode"
+Sleep 500ms
+Enter
+Sleep 12s
+
+# The agentic RAG turn: the giant searches lilbee's own source and answers with citations.
+Type "__PROMPT__"
+Sleep 800ms
+Enter
+Sleep 6s
+# Skip the giant's (slow) generation; resume once the answer has rendered.
+Hide
+Sleep __GENSLEEP__
+Show
+Sleep 4s
+PageUp
+Sleep 2500ms
+PageUp
+Sleep 2500ms
+PageDown
+Sleep 1800ms
+PageDown
+Sleep 1800ms
+
+Screenshot __OUT__.png
+Ctrl+C
