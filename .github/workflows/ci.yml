@@ -187,21 +187,30 @@ jobs:
 
       # Integration tests run real local inference, which now means a real
       # llama-server. The lilbee-llama-server wheel ships empty bin/ in this lane
-      # (CI fills it only in the release wheel build), so install an engine
-      # binary; resolve_llama_server_binary() finds it on PATH.
-      - name: Install llama-server (engine, Linux/macOS)
-        if: runner.os != 'Windows'
-        run: brew install llama.cpp
-
-      - name: Install llama-server (engine, Windows)
-        if: runner.os == 'Windows'
+      # (CI fills it only in the release wheel build), so download a prebuilt
+      # llama.cpp release binary; resolve_llama_server_binary() finds it on PATH.
+      - name: Install llama-server (engine)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag="b6800"
-          url="https://github.com/ggml-org/llama.cpp/releases/download/${tag}/llama-${tag}-bin-win-cpu-x64.zip"
-          curl -fsSL "$url" -o llama.zip
-          unzip -q llama.zip -d "$HOME/llama-cpp"
-          echo "$HOME/llama-cpp" >> "$GITHUB_PATH"
+          set -euxo pipefail
+          case "${{ runner.os }}" in
+            Linux)   pat="bin-ubuntu-x64" ;;
+            macOS)   pat="bin-macos-arm64" ;;
+            Windows) pat="bin-win-cpu-x64" ;;
+          esac
+          url=$(gh api repos/ggml-org/llama.cpp/releases/latest \
+            --jq ".assets[] | select(.name | test(\"${pat}\")) | .browser_download_url" | head -1)
+          [ -n "${url}" ] || { echo "no llama.cpp release asset matching ${pat}" >&2; exit 1; }
+          curl -fsSL "${url}" -o llama-engine.zip
+          unzip -q llama-engine.zip -d "${HOME}/llama-engine"
+          bindir=$(dirname "$(find "${HOME}/llama-engine" \( -name llama-server -o -name llama-server.exe \) | head -1)")
+          [ -n "${bindir}" ] || { echo "llama-server not found in the release zip" >&2; exit 1; }
+          echo "${bindir}" >> "${GITHUB_PATH}"
+          # Co-located libs: add the bin dir to the platform library path too.
+          echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+          echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
 
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
