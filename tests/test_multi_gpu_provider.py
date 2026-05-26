@@ -98,7 +98,7 @@ def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
     client = _fake_client()
     client.chat.return_value = "ok"
 
-    def _slow_build() -> object:
+    def _slow_build(*_listeners) -> object:
         calls["n"] += 1
         time.sleep(0.05)  # widen the race window between concurrent first calls
         return _fake_fleet({WorkerRole.CHAT: [client]})
@@ -423,7 +423,7 @@ def test_warm_up_pool_builds_fleet_once(monkeypatch) -> None:
     calls = {"n": 0}
     fleet = _fake_fleet({})
 
-    def _fake_build() -> object:
+    def _fake_build(*_listeners) -> object:
         calls["n"] += 1
         return fleet
 
@@ -438,7 +438,7 @@ def test_server_clients_builds_fleet_once(monkeypatch) -> None:
     calls = {"n": 0}
     fleet = _fake_fleet({WorkerRole.CHAT: [_fake_client()]})
 
-    def _fake_build() -> object:
+    def _fake_build(*_listeners) -> object:
         calls["n"] += 1
         return fleet
 
@@ -687,7 +687,10 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             prov_mod,
             "_server_model_inputs",
-            lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
+            lambda *_roles: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "ref"},
+            ),
         )
         monkeypatch.setattr(
             prov_mod,
@@ -718,7 +721,10 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             prov_mod,
             "_server_model_inputs",
-            lambda: ([ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)], {WorkerRole.CHAT: "ref"}),
+            lambda *_roles: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "ref"},
+            ),
         )
 
         def _capture(inputs, devices):

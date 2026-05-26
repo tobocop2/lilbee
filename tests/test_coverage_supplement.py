@@ -732,51 +732,32 @@ class TestSettingsPopulatePaneBodyMissing:
 
 
 class TestServicesPoolListener:
-    """``Services.add_pool_listener`` forwards to the underlying WorkerPool."""
+    """``Services.add_pool_listener`` forwards to ``provider.add_spawn_listener``."""
 
-    def test_forwards_both_callbacks_to_pool(self) -> None:
-        from lilbee.providers.roles import WorkerRole
+    def test_forwards_both_callbacks_to_provider(self) -> None:
+        from unittest import mock
+
         from tests.conftest import make_mock_services
 
-        seen_spawning: list[WorkerRole] = []
-        seen_spawned: list[WorkerRole] = []
-
-        class _RecordingPool:
-            registered_roles: tuple[WorkerRole, ...] = ()
-
-            def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-                # Re-fire with a synthetic role to verify both callbacks routed.
-                if on_spawning is not None:
-                    on_spawning(WorkerRole.EMBED)
-                    seen_spawning.append(WorkerRole.EMBED)
-                if on_spawned is not None:
-                    on_spawned(WorkerRole.EMBED)
-                    seen_spawned.append(WorkerRole.EMBED)
-
-        services = make_mock_services(worker_pool=_RecordingPool())
-        services.add_pool_listener(
-            on_spawning=lambda _r: None,
-            on_spawned=lambda _r: None,
+        on_spawning = mock.MagicMock()
+        on_spawned = mock.MagicMock()
+        services = make_mock_services()
+        services.add_pool_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        services.provider.add_spawn_listener.assert_called_once_with(
+            on_spawning=on_spawning, on_spawned=on_spawned
         )
-        assert seen_spawning == [WorkerRole.EMBED]
-        assert seen_spawned == [WorkerRole.EMBED]
 
     def test_either_callback_is_optional(self) -> None:
+        from unittest import mock
+
         from tests.conftest import make_mock_services
 
-        captured: dict[str, object] = {}
-
-        class _CapturingPool:
-            registered_roles: tuple[str, ...] = ()
-
-            def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-                captured["on_spawning"] = on_spawning
-                captured["on_spawned"] = on_spawned
-
-        services = make_mock_services(worker_pool=_CapturingPool())
-        services.add_pool_listener(on_spawning=lambda _r: None)
-        assert captured["on_spawning"] is not None
-        assert captured["on_spawned"] is None
+        on_spawning = mock.MagicMock()
+        services = make_mock_services()
+        services.add_pool_listener(on_spawning=on_spawning)
+        services.provider.add_spawn_listener.assert_called_once_with(
+            on_spawning=on_spawning, on_spawned=None
+        )
 
 
 class TestModelInfoModal:
@@ -1713,71 +1694,6 @@ class TestScopeChipPillNoChipReturns:
             await pilot.pause()
             pill = pilot.app.query_one("#scope-pill-both", ScopePill)
             pill.action_select()
-
-
-class TestProviderProtocolBranches:
-    """Each persistent-pool wrapper raises ProviderError when the worker returns the wrong type."""
-
-    def _provider(self) -> Any:
-        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
-
-        return LlamaCppProvider()
-
-    def test_embed_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.embed(["text"])
-
-    def test_rerank_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.rerank("q", ["a", "b"])
-
-    def test_vision_ocr_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value=42)
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.vision_ocr(b"png", "ref")
-
-    def test_chat_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value=42)
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.chat(messages=[{"role": "user", "content": "hi"}])
 
 
 class TestCatalogPriorScrollAndPrefetchEdges:
