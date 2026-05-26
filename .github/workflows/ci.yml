@@ -185,6 +185,24 @@ jobs:
           choco install tesseract -y
           echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # Integration tests run real local inference, which now means a real
+      # llama-server. The lilbee-llama-server wheel ships empty bin/ in this lane
+      # (CI fills it only in the release wheel build), so install an engine
+      # binary; resolve_llama_server_binary() finds it on PATH.
+      - name: Install llama-server (engine, Linux/macOS)
+        if: runner.os != 'Windows'
+        run: brew install llama.cpp
+
+      - name: Install llama-server (engine, Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          tag="b6800"
+          url="https://github.com/ggml-org/llama.cpp/releases/download/${tag}/llama-${tag}-bin-win-cpu-x64.zip"
+          curl -fsSL "$url" -o llama.zip
+          unzip -q llama.zip -d "$HOME/llama-cpp"
+          echo "$HOME/llama-cpp" >> "$GITHUB_PATH"
+
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
@@ -345,6 +363,6 @@ jobs:
         run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_LLM_PROVIDER: llama-cpp
+          LILBEE_LLM_PROVIDER: auto
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
