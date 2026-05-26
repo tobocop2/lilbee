@@ -103,6 +103,10 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
         (docs_dir / name).write_text(content)
 
     cfg.llm_provider = "auto"  # local GGUF refs route to the llama-server fleet
+    # Lazy server spawn: get_services() must not block tests that don't infer
+    # (e.g. the status screen) on the fleet warm-up; inference tests spawn on
+    # first call.
+    cfg.worker_pool_eager_start = False
     cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
@@ -163,6 +167,10 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
         (docs_dir / name).write_text(content)
 
     cfg.llm_provider = "auto"  # local GGUF refs route to the llama-server fleet
+    # Lazy server spawn: get_services() must not block tests that don't infer
+    # (e.g. the status screen) on the fleet warm-up; inference tests spawn on
+    # first call.
+    cfg.worker_pool_eager_start = False
     cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
