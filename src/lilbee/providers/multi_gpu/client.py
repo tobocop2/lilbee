@@ -11,11 +11,10 @@ import httpx
 
 from lilbee.providers.base import ProviderError
 
-# Single source of truth for the reranker pair format: the fleet must join
-# query/candidate exactly as the in-process reranker does, or scores drift.
-from lilbee.providers.llama_cpp.batching import _RERANK_PAIR_SEPARATOR
-
-_PROVIDER_NAME = "multi-gpu"
+_PROVIDER_NAME = "llama-server"
+# Reranker pair format: query and candidate are joined with this separator into
+# one document so a cross-encoder GGUF scores the pair as a single sequence.
+_RERANK_PAIR_SEPARATOR = "</s></s>"
 # Match the in-process embedder: llama-cpp-python's create_embedding does not
 # normalize (normalize=False), but llama-server normalizes pooled embeddings with
 # embd_normalize=2 (L2) by default. We send -1 (no normalization) per request so
