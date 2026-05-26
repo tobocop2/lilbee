@@ -68,10 +68,10 @@ PROMPTS: dict[str, str] = {
     ),
     # --- giants: open-ended, impressive practical tasks ---
     "qwen3-235b": (
-        "I'm evaluating lilbee as the retrieval layer for an internal dev "
-        "assistant. Give me an end-to-end walkthrough of its retrieval pipeline "
-        "-- chunking, embedding, vector search, reranking, and query expansion -- "
-        "with file citations."
+        "Use lilbee_search to study lilbee's retrieval code, then walk me through "
+        "its pipeline end to end -- chunking, embedding, vector search, reranking, "
+        "and query expansion -- citing the files you find. Synthesize from the "
+        "search results; the implementation is there."
     ),
     "minimax-m2": (
         "Give me a technical overview of how lilbee turns a question into a "
