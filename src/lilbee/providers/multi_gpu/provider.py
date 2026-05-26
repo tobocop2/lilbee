@@ -76,16 +76,18 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
     ``cfg.num_ctx`` then falls back to the dynamic chat-ctx picker. Never hardcoded.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.engine_params import EMBED_FALLBACK_CTX, resolve_chat_ctx
+    from lilbee.providers.engine_params import (
+        EMBED_FALLBACK_CTX,
+        resolve_chat_ctx,
+        resolve_vision_ctx,
+    )
 
     if role in _EMBED_ROLES:
         from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         return train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
     if role is WorkerRole.VISION:
-        from lilbee.providers.mtmd_backend import _resolve_vision_n_ctx
-
-        return _resolve_vision_n_ctx(model_path)
+        return resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
     return resolve_chat_ctx(model_path, meta)

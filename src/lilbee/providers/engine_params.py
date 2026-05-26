@@ -16,7 +16,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
 from lilbee.providers.base import ProviderError, filter_options
-from lilbee.providers.gguf_meta import train_ctx_from_meta
+from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 from lilbee.providers.model_cache import (
     compute_dynamic_ctx,
     get_available_memory,
@@ -27,6 +27,9 @@ log = logging.getLogger(__name__)
 
 EMBED_FALLBACK_CTX = 2048
 """Context used for embed/rerank when a GGUF reports junk (e.g. context_length=0)."""
+
+_VISION_FALLBACK_N_CTX = 4096
+"""Context for a vision load when the GGUF reports no usable context_length."""
 
 _N_GPU_LAYERS_AUTO = -1
 """llama.cpp's "offload every layer" sentinel for n_gpu_layers."""
@@ -113,3 +116,20 @@ def resolve_n_gpu_layers(*, embedding: bool) -> int:
     if embedding or cfg.n_gpu_layers is None:
         return _N_GPU_LAYERS_AUTO
     return cfg.n_gpu_layers
+
+
+def resolve_vision_ctx(model_path: Path) -> int:
+    """Pick n_ctx for a vision load from the model's training context.
+
+    Reads ``<arch>.context_length`` and uses it directly. The chat-tuned
+    ``cfg.num_ctx`` is not propagated: a vision pass packs image-token
+    embeddings plus the prompt (often hundreds to a few thousand tokens per
+    page), and clamping to a small chat ctx truncates OCR output. An explicit
+    value keeps the OOM-retry path working (it cannot bisect from 0).
+    """
+    try:
+        meta = read_gguf_metadata(model_path)
+    except Exception:  # noqa: BLE001 - any GGUF read failure falls back to the constant
+        log.debug("read_gguf_metadata failed for vision %s", model_path, exc_info=True)
+        meta = None
+    return train_ctx_from_meta(meta, fallback=_VISION_FALLBACK_N_CTX, model_path=model_path)
