@@ -91,12 +91,17 @@ TMPL_ARG=""
 # (GGML_SCHED_MAX_SPLIT_INPUTS) during the device-memory fit, e.g. gemma-4-E2B.
 # Default to a single GPU; set MULTIGPU=1 for the giants that genuinely span both.
 GPU_ENV="CUDA_VISIBLE_DEVICES=0"
-[ "${MULTIGPU:-0}" = "1" ] && GPU_ENV=""
+CTX=32768
+# The giants span both GPUs and get asked open-ended questions that drive several
+# lilbee_search calls; large code-chunk results overflow a 32K window (opencode
+# then emits a "size limit exceeded / compacted" message that ruins the demo).
+# They have the VRAM, so give them a big context.
+[ "${MULTIGPU:-0}" = "1" ] && { GPU_ENV=""; CTX=131072; }
 # --alias makes /v1/models advertise the real model name opencode is configured
 # with, so the picker shows e.g. "Qwen3-4B" under the lilbee provider, not a
 # duplicate from auto-discovery and not our internal family tag.
 tmux new-session -d -s giantsrv \
-  "$GPU_ENV LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$DISPLAY_NAME' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c 32768 --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
+  "$GPU_ENV LD_LIBRARY_PATH=$LC/build/bin:$LC/build/src $LC/build/bin/llama-server --jinja -m '$GGUF' --alias '$DISPLAY_NAME' -ngl 999 --host 127.0.0.1 --port $LS_PORT -c $CTX --no-webui $TMPL_ARG > /tmp/giant-srv.log 2>&1"
 UP=0
 for _ in $(seq 1 120); do
   curl -s "http://127.0.0.1:$LS_PORT/health" >/dev/null 2>&1 && { UP=1; break; }; sleep 3
