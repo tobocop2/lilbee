@@ -147,19 +147,25 @@ rm -f "$HOME/.local/share/opencode/opencode.db" \
       "$HOME/.local/share/opencode/opencode.db-wal" \
       "$HOME/.local/share/opencode/opencode.db-shm" 2>/dev/null || true
 export PATH="$HOME/.opencode/bin:$PATH"
-# Must run from $PROJ so opencode loads ./opencode.json (the lilbee provider).
-# opencode discovery probes the model, which 404s ("Model not found") until the
-# freshly-loaded model is warm enough to answer the probe quickly. A single
-# success isn't stable (the next call can still 404 mid-warmup), so ping until
-# THREE consecutive successes before handing off to the real run/record.
+# llama-server answers /health OK before it can actually serve completions (CUDA
+# graph capture / KV warmup take longer). opencode probes a completion during
+# model resolution, so until the completion endpoint really works opencode 404s
+# with "Model not found" -- and warming via `opencode run` is chicken-and-egg.
+# Warm the completion endpoint DIRECTLY with curl until it returns choices.
+for _ in $(seq 1 60); do
+  resp=$(curl -s -m 60 "http://127.0.0.1:$LS_PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$DISPLAY_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" 2>/dev/null)
+  echo "$resp" | grep -q '"choices"' && { echo "[giant] $DISPLAY_NAME completions warm"; break; }
+  sleep 3
+done
+# Now confirm opencode resolves it (3 consecutive) from $PROJ before handing off.
 cd "$PROJ"
 ok=0
 for _ in $(seq 1 40); do
   if opencode run -m "lilbee/$DISPLAY_NAME" "ok" >/dev/null 2>&1; then
     ok=$((ok + 1))
-    if [ "$ok" -ge 3 ]; then
-      echo "[giant] opencode resolves lilbee/$DISPLAY_NAME (stable)"; break
-    fi
+    [ "$ok" -ge 3 ] && { echo "[giant] opencode resolves lilbee/$DISPLAY_NAME (stable)"; break; }
   else
     ok=0
   fi
