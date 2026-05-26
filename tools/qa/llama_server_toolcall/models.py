@@ -108,7 +108,7 @@ ROSTER: tuple[ModelSpec, ...] = (
     ),
     _q4(
         "legraphista/glm-4-9b-chat-GGUF",
-        "glm-4-9b-chat.Q4_K_M.gguf",
+        "glm-4-9b-chat.Q4_K.gguf",  # this repo names it .Q4_K (no _M)
         family="glm-4-9b",
         inprocess="upstream SIGABRT in llama-cpp-python",
     ),
