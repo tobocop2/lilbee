@@ -431,27 +431,28 @@ async def test_switching_guard_blocks_concurrent_switch():
 
 
 async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
-    """``on_mount`` calls ``Services.add_pool_listener`` so spawn lifecycle
-    surfaces as Textual notifications. Verified by replacing the Services
-    singleton with a recording pool, then firing the captured callbacks
-    from a worker thread (call_from_thread requires a different thread)
-    so their notify() bodies execute against the live app."""
+    """``on_mount`` calls ``Services.add_pool_listener`` so server spawn
+    lifecycle surfaces as Textual notifications. Verified by replacing the
+    Services singleton with a provider whose ``add_spawn_listener`` records the
+    callbacks, then firing them from a worker thread (call_from_thread requires a
+    different thread) so their notify() bodies execute against the live app."""
     import threading
+    from unittest.mock import MagicMock
 
     from lilbee.app import services as services_mod
+    from lilbee.providers.base import LLMProvider
     from lilbee.providers.roles import WorkerRole
     from tests.conftest import make_mock_services
 
     captured: dict[str, object] = {}
 
-    class _RecordingPool:
-        registered_roles: tuple[str, ...] = ()
+    def _record(*, on_spawning=None, on_spawned=None) -> None:
+        captured["on_spawning"] = on_spawning
+        captured["on_spawned"] = on_spawned
 
-        def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-            captured["on_spawning"] = on_spawning
-            captured["on_spawned"] = on_spawned
-
-    services_mod.set_services(make_mock_services(worker_pool=_RecordingPool()))
+    provider = MagicMock(spec=LLMProvider)
+    provider.add_spawn_listener.side_effect = _record
+    services_mod.set_services(make_mock_services(provider=provider))
     try:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:

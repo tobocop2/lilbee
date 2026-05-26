@@ -2154,6 +2154,10 @@ class TestClassifyInstalledModels:
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[blank, good],
             ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
+            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_installed_models()
@@ -2191,6 +2195,10 @@ class TestClassifyInstalledModels:
             mock.patch(
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]
