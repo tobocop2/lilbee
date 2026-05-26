@@ -46,8 +46,13 @@ def main() -> None:
     if subprocess.run(cmd, env=env).returncode != 0:
         sys.exit("SETUP_FAIL")
     print(f"\n===== PROMPT ({disp}) =====\n{prompt}\n\n===== TRANSCRIPT =====", flush=True)
+    # Force our model so opencode doesn't fall back to its built-in build agent.
     r = subprocess.run(
-        ["opencode", "run", prompt], cwd=PROJ, capture_output=True, text=True, timeout=900
+        ["opencode", "run", "-m", f"lilbee/{disp}", prompt],
+        cwd=PROJ,
+        capture_output=True,
+        text=True,
+        timeout=900,
     )
     print(r.stdout)
     if r.stderr.strip():

@@ -116,6 +116,7 @@ def main() -> None:
         tape.write_text(
             TAPE_TMPL.read_text()
             .replace("__OUT__", stem)
+            .replace("__MODEL__", disp)
             .replace("__PROMPT__", prompt)
             .replace("__GENSLEEP__", "90s")
         )
