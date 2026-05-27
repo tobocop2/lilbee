@@ -76,3 +76,38 @@ def test_shell_completion_skips_splash(monkeypatch: pytest.MonkeyPatch) -> None:
 
     start_spy.assert_not_called()
     fake_app.assert_called_once()
+
+
+def test_app_import_failure_stops_splash(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    """If the heavy ``lilbee.cli`` import fails, the splash must be stopped
+    before the exception propagates so the terminal isn't left mid-animation."""
+    _, start_spy, stop_spy = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    class _Boom:
+        def __getattr__(self, name: str) -> object:
+            raise RuntimeError("heavy import failed")
+
+    monkeypatch.setitem(sys.modules, "lilbee.cli", _Boom())
+
+    with pytest.raises(RuntimeError, match="heavy import failed"):
+        launcher.main()
+
+    start_spy.assert_called_once()
+    stop_spy.assert_called_once()
+
+
+def test_keyboard_interrupt_restores_cursor_and_exits_130(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    """Ctrl-C out of the TUI must re-show the cursor and exit with code 130."""
+    fake_app, _, _ = _patch_app_and_splash(monkeypatch)
+    fake_app.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+
+    assert exc.value.code == 130

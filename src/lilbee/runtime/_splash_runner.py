@@ -155,7 +155,7 @@ def _pipe_closed_posix(pipe_fd: int) -> bool:  # pragma: no cover  POSIX-only
 def pipe_closed(pipe_fd: int) -> bool:
     """Check if the pipe has been closed (EOF) without blocking."""
     if sys.platform == "win32":
-        return _pipe_closed_win32(pipe_fd)
+        return _pipe_closed_win32(pipe_fd)  # pragma: no cover  Windows-only
     return _pipe_closed_posix(pipe_fd)  # pragma: no cover  POSIX-only
 
 

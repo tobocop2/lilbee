@@ -131,4 +131,4 @@ def _field_type(field_name: str) -> type:
     for f in fields(ModelDefaults):
         if f.name == field_name:
             return int if "int" in str(f.type) else float
-    return float  # pragma: no cover
+    return float  # pragma: no cover - every _GGUF_KEY_MAP value is a real field; guards map typos

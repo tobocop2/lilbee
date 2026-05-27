@@ -2305,6 +2305,26 @@ class TestSlashSuggester:
         s = SlashSuggester(use_cache=False)
         assert await s.get_suggestion("/zzzz") is None
 
+    async def test_delete_suggests_document_filenames(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``/delete`` completes against indexed source filenames."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.widgets import suggester as suggester_mod
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        fake = SimpleNamespace(
+            store=SimpleNamespace(
+                get_sources=lambda: [{"filename": "notes.md"}, {"source": "todo.txt"}]
+            )
+        )
+        monkeypatch.setattr(suggester_mod, "get_services", lambda: fake)
+
+        s = SlashSuggester(use_cache=False)
+        assert s._get_document_names() == ["notes.md", "todo.txt"]
+        assert await s.get_suggestion("/delete no") == "/delete notes.md"
+
     @mock.patch("lilbee.cli.tui.widgets.suggester.SlashSuggester._get_model_names")
     async def test_suggest_model_arg(self, mock_names: mock.MagicMock) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
