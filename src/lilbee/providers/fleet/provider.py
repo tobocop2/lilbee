@@ -14,6 +14,7 @@ import functools
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -89,6 +90,20 @@ def _vision_call(
             provider=_PROVIDER_NAME,
         )
     return result
+
+
+def _pdf_drain_budget(total_pages: int, per_page_timeout_s: float | None) -> float | None:
+    """Total OCR wall-clock budget = pages*per_page + load grace, or None for no cap.
+
+    Mirrors the in-process drain budget: one document-wide deadline rather than a
+    per-page cap, so a slow page borrows from fast ones and the vision model's cold
+    first-inference is absorbed by the grace instead of tripping a fixed page limit.
+    """
+    from lilbee.core.config import cfg
+
+    if not per_page_timeout_s or per_page_timeout_s <= 0:
+        return None
+    return total_pages * per_page_timeout_s + cfg.vision_load_budget_s
 
 
 class FleetProvider:
@@ -295,10 +310,16 @@ class FleetProvider:
         self._require_configured_model(model, str(cfg.vision_model), "vision")
         clients = self._require_clients(WorkerRole.VISION)
         total = pdf_page_count(path)
+        # One document-wide deadline (pages*per_page + load grace), not a per-page
+        # cap: each page gets whatever budget remains, so a slow page borrows from
+        # fast ones and the cold first-inference is covered, matching in-process OCR.
+        budget = _pdf_drain_budget(total, per_page_timeout_s)
+        deadline = (time.monotonic() + budget) if budget is not None else None
         pages: list[PageText] = []
         for idx, png_bytes in rasterize_pdf(path):
             messages = build_vision_messages(OCR_PROMPT, bytes(png_bytes))
-            text = _vision_call(_least_in_flight(clients), messages, per_page_timeout_s)
+            remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
+            text = _vision_call(_least_in_flight(clients), messages, remaining)
             page_no = idx + 1
             pages.append(PageText(page_no, text))
             if on_progress is not None:

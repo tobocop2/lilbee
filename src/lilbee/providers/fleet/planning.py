@@ -80,7 +80,7 @@ def _role_gpu_layers(role: WorkerRole) -> int:
 
 
 def _flash_attn_flag() -> str:
-    """``--flash-attn`` value for chat; on unless ``cfg.flash_attention`` is ``False``."""
+    """``--flash-attn`` for chat and vision: on unless ``cfg.flash_attention`` is ``False``."""
     from lilbee.core.config import cfg
 
     return _FLASH_OFF if cfg.flash_attention is False else _FLASH_ON
@@ -185,7 +185,7 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=_flash_attn_flag() if is_chat else None,
+        flash_attn=_flash_attn_flag() if (is_chat or is_vision) else None,
         cache_type=_cache_type_flag() if is_chat else None,
         batch_size=ctx if plan.role in _EMBED_ROLES else None,
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,

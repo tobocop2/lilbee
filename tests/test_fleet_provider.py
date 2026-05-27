@@ -371,6 +371,53 @@ def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
     assert events == [(EventType.EXTRACT, 1, 2), (EventType.EXTRACT, 2, 2)]
 
 
+def test_pdf_drain_budget_totals_pages_plus_load_grace(monkeypatch) -> None:
+    """Budget is one document-wide pool: pages*per_page + load grace, else uncapped."""
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 300.0)
+    assert prov_mod._pdf_drain_budget(2, 120.0) == 540.0
+    assert prov_mod._pdf_drain_budget(5, None) is None
+    assert prov_mod._pdf_drain_budget(5, 0.0) is None
+
+
+def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
+    """Each page gets the remaining doc budget, not a fixed per-page cap."""
+    from lilbee.vision import PageText
+
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 300.0)
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+    )
+    seen: list[float | None] = []
+
+    def _capture(_client, _messages, timeout):
+        seen.append(timeout)
+        return "ocr"
+
+    monkeypatch.setattr(prov_mod, "_vision_call", _capture)
+    result = p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=120.0)  # type: ignore[arg-type]
+    assert result == [PageText(1, "ocr"), PageText(2, "ocr")]
+    # Budget is 2*120 + 300 = 540; both pages draw from it (far above any 120 cap),
+    # and the second page sees no more than the first since time only moves forward.
+    assert seen[0] == pytest.approx(540.0, abs=1.0)
+    assert seen[1] is not None and seen[0] is not None and seen[1] <= seen[0]
+    assert all(t is not None and t > 120.0 for t in seen)
+
+
+def test_pdf_ocr_without_per_page_timeout_runs_uncapped(monkeypatch) -> None:
+    """No per-page cap means an uncapped (None) budget on every page."""
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 1)
+    monkeypatch.setattr("lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0")]))
+    seen: list[float | None] = []
+    monkeypatch.setattr(prov_mod, "_vision_call", lambda *a: seen.append(a[2]) or "ocr")
+    p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=None)  # type: ignore[arg-type]
+    assert seen == [None]
+
+
 def test_pdf_ocr_without_server_raises() -> None:
     from lilbee.providers.base import ProviderError
 

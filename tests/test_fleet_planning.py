@@ -319,8 +319,18 @@ class TestBuildFleetWiring:
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--threads") + 1] == "12"
         assert argv[argv.index("--threads-batch") + 1] == "12"
-        assert "--flash-attn" not in argv  # vision loader applies no flash attn
         assert "--batch-size" not in argv
+
+    def test_launch_for_vision_enables_flash_attn(self, tmp_path, monkeypatch) -> None:
+        # Vision OCR pages are slow without flash attention; the in-process path
+        # enables it for vision, so the fleet must too (no KV quant either side).
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
+        assert argv[argv.index("--flash-attn") + 1] == "on"
+        assert "--cache-type-k" not in argv  # vision applies no KV quant, like the oracle
+        monkeypatch.setattr(cfg, "flash_attention", False)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
+        assert argv[argv.index("--flash-attn") + 1] == "off"
 
     def test_launch_for_vision_threads_floor_when_cpu_count_unknown(
         self, tmp_path, monkeypatch
