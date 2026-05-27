@@ -330,6 +330,8 @@ class FleetProvider:
         Rich progress to suppress). Pages are numbered 1-based to match
         ``PageText`` / ``ExtractEvent`` everywhere else in lilbee.
         """
+        from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+
         from lilbee.core.config import cfg
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import (
@@ -349,19 +351,45 @@ class FleetProvider:
         # fast ones and the cold first-inference is covered, matching in-process OCR.
         budget = _pdf_drain_budget(total, per_page_timeout_s)
         deadline = (time.monotonic() + budget) if budget is not None else None
-        pages: list[PageText] = []
-        for idx, png_bytes in rasterize_pdf(path):
-            messages = build_vision_messages(OCR_PROMPT, bytes(png_bytes))
+
+        def _ocr(idx: int, png: bytes) -> tuple[int, str]:
+            messages = build_vision_messages(OCR_PROMPT, png)
             remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
-            text = _vision_call(_least_in_flight(clients), messages, remaining)
-            page_no = idx + 1
-            pages.append(PageText(page_no, text))
-            if on_progress is not None:
-                on_progress(
-                    EventType.EXTRACT,
-                    ExtractEvent(file=path.name, page=page_no, total_pages=total),
-                )
-        return pages
+            return idx, _vision_call(_least_in_flight(clients), messages, remaining)
+
+        # OCR pages concurrently (a single-page decode underuses the GPU; the vision
+        # server runs cfg.vision_ocr_concurrency batching slots). A bounded sliding
+        # window keeps that many pages in flight without rasterizing the whole PDF
+        # into memory; results are reassembled in page order.
+        concurrency = max(1, cfg.vision_ocr_concurrency)
+        raster = rasterize_pdf(path)
+        results: dict[int, str] = {}
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            pending: set[Future[tuple[int, str]]] = set()
+
+            def _submit_next() -> bool:
+                page = next(raster, None)
+                if page is None:
+                    return False
+                idx, png_bytes = page
+                pending.add(pool.submit(_ocr, idx, bytes(png_bytes)))
+                return True
+
+            for _ in range(concurrency):
+                if not _submit_next():
+                    break
+            while pending:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for done in completed:
+                    page_idx, text = done.result()
+                    results[page_idx] = text
+                    if on_progress is not None:
+                        on_progress(
+                            EventType.EXTRACT,
+                            ExtractEvent(file=path.name, page=page_idx + 1, total_pages=total),
+                        )
+                    _submit_next()
+        return [PageText(idx + 1, results[idx]) for idx in sorted(results)]
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         return _least_in_flight(self._require_clients(WorkerRole.RERANK)).rerank(query, candidates)

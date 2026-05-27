@@ -112,6 +112,10 @@ class Config(BaseSettings):
     # the cap bounds the occasional runaway repetition loop (a page that loops to
     # tens of thousands of chars) which otherwise dominates a scan's OCR time.
     vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
+    # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
+    # A single-page decode underutilizes a modern GPU (~half SM); batching several
+    # pages raises throughput. Each slot adds KV cache, so lower it on small GPUs.
+    vision_ocr_concurrency: int = ConfigField(default=4, ge=1, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)

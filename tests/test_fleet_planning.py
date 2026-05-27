@@ -109,6 +109,15 @@ def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
     assert planning_mod._flash_attn_flag() == "off"
 
 
+def test_role_slots_vision_tracks_ocr_concurrency(monkeypatch) -> None:
+    # Vision batches concurrent OCR pages; its --parallel slots follow the config.
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 6)
+    assert planning_mod._role_slots(WorkerRole.VISION) == 6
+    assert planning_mod._role_slots(WorkerRole.CHAT) == 4
+    assert planning_mod._role_slots(WorkerRole.EMBED) == 1
+    assert planning_mod._role_slots(WorkerRole.RERANK) == 1
+
+
 def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 

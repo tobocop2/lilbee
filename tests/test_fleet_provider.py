@@ -392,6 +392,7 @@ def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
     client.chat.side_effect = ["page one", "page two"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     monkeypatch.setattr(cfg, "vision_model", "")  # empty model arg -> configured
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)  # sequential: side_effect by call order
     monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
     monkeypatch.setattr(
         "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
@@ -404,6 +405,38 @@ def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
     )
     assert result == [PageText(1, "page one"), PageText(2, "page two")]
     assert events == [(EventType.EXTRACT, 1, 2), (EventType.EXTRACT, 2, 2)]
+
+
+def test_pdf_ocr_runs_pages_concurrently_and_preserves_order(monkeypatch) -> None:
+    # OCR fans pages across the vision server's batching slots; results must still
+    # come back in page order, and more than one page must be in flight at once.
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    n = 8
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: n)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(i, f"png{i}".encode()) for i in range(n)])
+    )
+    lock = threading.Lock()
+    inflight = {"now": 0, "max": 0}
+
+    def _vision(_client, _messages, _timeout):
+        with lock:
+            inflight["now"] += 1
+            inflight["max"] = max(inflight["max"], inflight["now"])
+        _time.sleep(0.02)
+        with lock:
+            inflight["now"] -= 1
+        return "ocr"
+
+    monkeypatch.setattr(prov_mod, "_vision_call", _vision)
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    result = p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
+    assert [pt.page for pt in result] == list(range(1, n + 1))  # reassembled in order
+    assert inflight["max"] >= 2  # pages ran concurrently, not one at a time
 
 
 def test_pdf_drain_budget_totals_pages_plus_load_grace(monkeypatch) -> None:

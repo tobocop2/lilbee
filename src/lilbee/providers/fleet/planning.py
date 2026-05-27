@@ -36,15 +36,31 @@ _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _DEFAULT_THREADS = 4
 
-# Server roles -> (slots, model-ref accessor). chat/embed are always configured;
+# Server roles -> model-ref accessor. chat/embed are always configured;
 # reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
 # has no server. Vision additionally needs an mmproj projector.
-_SERVER_ROLE_PARAMS: dict[WorkerRole, tuple[int, Callable[[Any], str]]] = {
-    WorkerRole.CHAT: (_CHAT_SLOTS, lambda c: str(c.chat_model)),
-    WorkerRole.EMBED: (_AUX_SLOTS, lambda c: str(c.embedding_model)),
-    WorkerRole.RERANK: (_AUX_SLOTS, lambda c: str(c.reranker_model)),
-    WorkerRole.VISION: (_AUX_SLOTS, lambda c: str(c.vision_model)),
+_SERVER_ROLE_PARAMS: dict[WorkerRole, Callable[[Any], str]] = {
+    WorkerRole.CHAT: lambda c: str(c.chat_model),
+    WorkerRole.EMBED: lambda c: str(c.embedding_model),
+    WorkerRole.RERANK: lambda c: str(c.reranker_model),
+    WorkerRole.VISION: lambda c: str(c.vision_model),
 }
+
+
+def _role_slots(role: WorkerRole) -> int:
+    """Continuous-batching slots (--parallel) for a role's server.
+
+    Chat batches concurrent turns; vision batches concurrent OCR pages
+    (``cfg.vision_ocr_concurrency``) since one-page decode underutilizes the GPU;
+    embed/rerank run single-slot (their batching is request-side).
+    """
+    from lilbee.core.config import cfg
+
+    if role is WorkerRole.CHAT:
+        return _CHAT_SLOTS
+    if role is WorkerRole.VISION:
+        return max(1, cfg.vision_ocr_concurrency)
+    return _AUX_SLOTS
 
 
 def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
@@ -143,7 +159,7 @@ def _server_model_inputs(
 
     inputs: list[ModelPlacementInput] = []
     model_refs: dict[WorkerRole, str] = {}
-    for role, (slots, accessor) in _SERVER_ROLE_PARAMS.items():
+    for role, accessor in _SERVER_ROLE_PARAMS.items():
         if roles is not None and role not in roles:
             continue
         ref = accessor(cfg)
@@ -151,7 +167,7 @@ def _server_model_inputs(
             continue  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
-        inputs.append(_estimate_role(role, ref, slots=slots))
+        inputs.append(_estimate_role(role, ref, slots=_role_slots(role)))
         model_refs[role] = ref
     return inputs, model_refs
 
@@ -167,7 +183,7 @@ def _launch_for(
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]
+    slots = _role_slots(plan.role)
     model_path = resolve_model_path(model_ref)
     weights_bytes = model_path.stat().st_size
     ctx = _role_ctx(plan.role, model_path, read_gguf_metadata(model_path))
