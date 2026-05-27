@@ -74,16 +74,25 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
 def _vision_call(
     client: LlamaServerClient, messages: Sequence[Mapping[str, Any]], timeout: float | None
 ) -> str:
-    """Run a vision chat on *client*, enforcing *timeout* like the in-process OCR."""
+    """Run a vision chat on *client*, enforcing *timeout* like the in-process OCR.
+
+    Caps generation at ``cfg.vision_ocr_max_tokens`` so a runaway repetition loop
+    on one page (seen looping to tens of thousands of chars) can't dominate a
+    scan's OCR time; a real page stays well under the cap.
+    """
+    from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError
 
+    options = {"max_tokens": cfg.vision_ocr_max_tokens}
     if timeout and timeout > 0:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=1) as pool:
-            result = pool.submit(client.chat, messages, stream=False).result(timeout=timeout)
+            result = pool.submit(client.chat, messages, options=options, stream=False).result(
+                timeout=timeout
+            )
     else:
-        result = client.chat(messages, stream=False)
+        result = client.chat(messages, options=options, stream=False)
     if not isinstance(result, str):
         raise ProviderError(
             f"Vision server returned {type(result).__name__}, expected text.",

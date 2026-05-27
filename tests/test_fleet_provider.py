@@ -207,6 +207,16 @@ def test_vision_call_enforces_timeout() -> None:
     client.chat.assert_called_once()
 
 
+def test_vision_call_caps_output_tokens(monkeypatch) -> None:
+    # A runaway OCR page can loop to tens of thousands of chars and dominate a
+    # scan's time; the call must cap generation at cfg.vision_ocr_max_tokens.
+    monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 4096)
+    client = _fake_client()
+    client.chat.return_value = "OCR text"
+    prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
+    assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
+
+
 def test_vision_call_rejects_non_text() -> None:
     from lilbee.providers.base import ProviderError
 

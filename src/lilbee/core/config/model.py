@@ -108,6 +108,10 @@ class Config(BaseSettings):
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
     # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
+    # Hard cap on tokens generated per OCR page. A real page is well under this;
+    # the cap bounds the occasional runaway repetition loop (a page that loops to
+    # tens of thousands of chars) which otherwise dominates a scan's OCR time.
+    vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
