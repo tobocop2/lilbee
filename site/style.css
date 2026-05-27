@@ -782,6 +782,23 @@ footer .meta { text-align: right; font-size: 12px; }
   object-fit: contain;
   z-index: 1;
 }
+/* Video clip (crisp, full-resolution mp4) — same box as .tutorial-frame but
+   without the loading overlay, so the video isn't hidden behind it. */
+.tutorial-clip {
+  background: #000;
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 22px 60px -26px rgba(0, 0, 0, 0.78);
+  aspect-ratio: 1400 / 900;
+}
+.tutorial-clip video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
 
 .tutorial-caption {
   margin-top: 0.8rem;
