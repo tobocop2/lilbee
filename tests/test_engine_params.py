@@ -51,8 +51,31 @@ class TestResolveModelPath:
         registry.resolve.side_effect = KeyError("not in registry")
         set_services(make_mock_services(registry=registry))
         try:
-            with pytest.raises(ProviderError, match="Model file not found"):
+            with pytest.raises(ProviderError, match="Model file not found") as exc_info:
                 ep.resolve_model_path(str(missing))
+            from lilbee.providers.base import ProviderErrorKind
+
+            assert exc_info.value.kind is ProviderErrorKind.NOT_FOUND
+        finally:
+            set_services(None)
+
+    def test_registry_miss_raises_not_found_naming_model(self) -> None:
+        """A registry miss for a relative ref is a NOT_FOUND ProviderError whose
+        message names the model and the pull command (F3 root cause)."""
+        from lilbee.app.services import set_services
+        from lilbee.providers.base import ProviderErrorKind
+        from tests.conftest import make_mock_services
+
+        registry = MagicMock()
+        registry.resolve.side_effect = KeyError("not in registry")
+        set_services(make_mock_services(registry=registry))
+        try:
+            with pytest.raises(ProviderError) as exc_info:
+                ep.resolve_model_path("nomic-ai/embed/embed.gguf")
+            assert exc_info.value.kind is ProviderErrorKind.NOT_FOUND
+            message = str(exc_info.value)
+            assert "nomic-ai/embed/embed.gguf" in message
+            assert "lilbee model pull nomic-ai/embed/embed.gguf" in message
         finally:
             set_services(None)
 

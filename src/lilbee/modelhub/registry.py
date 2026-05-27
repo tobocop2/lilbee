@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.refs import format_native_gguf_ref
+from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES, format_native_gguf_ref
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -31,7 +31,10 @@ log = logging.getLogger(__name__)
 
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
 _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
-_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.gguf$")
+# A GGUF filename, optionally under repo subdirectories (unsloth stores quants
+# in e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``). Path separators are allowed;
+# ``..`` and absolute paths are rejected in the validator to stay inside the repo.
+_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+\.gguf$")
 
 REPO_DIR_SEPARATOR = "--"
 
@@ -44,8 +47,13 @@ def _validate_hf_repo(hf_repo: str) -> str:
 
 
 def _validate_gguf_filename(filename: str) -> str:
-    """Validate that a filename is a safe ``.gguf`` basename (no path separators)."""
-    if not filename or not _FILENAME_RE.match(filename) or ".." in filename:
+    """Validate a ``.gguf`` filename, allowing repo subdirectories but no traversal."""
+    if (
+        not filename
+        or not _FILENAME_RE.match(filename)
+        or ".." in filename
+        or filename.startswith("/")
+    ):
         raise ValueError(f"Invalid gguf_filename: {filename!r}")
     return filename
 
@@ -54,10 +62,17 @@ _REF_SHAPE_HINT = "Use '<org>/<repo>/<filename>.gguf'."
 
 
 def parse_hf_ref(ref: str) -> tuple[str, str]:
-    """Split ``<org>/<repo>/<file>.gguf`` into ``(hf_repo, gguf_filename)``."""
-    if not ref.endswith(".gguf") or "/" not in ref:
+    """Split ``<org>/<repo>/<file>.gguf`` into ``(hf_repo, gguf_filename)``.
+
+    The repo is always the first two segments (``<org>/<repo>``); everything
+    after is the filename, which may include repo subdirectories (unsloth stores
+    quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
+    """
+    if not ref.endswith(".gguf") or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
-    hf_repo, gguf_filename = ref.rsplit("/", 1)
+    parts = ref.split("/")
+    hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
+    gguf_filename = "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:])
     return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
 
 
@@ -499,6 +514,26 @@ class ModelRegistry:
             return None
 
 
+_HF_SNAPSHOTS_DIR = "snapshots"
+
+
+def _repo_relative_gguf_name(file_path: Path) -> str:
+    """Recover the repo-relative GGUF filename, keeping any subdir prefix.
+
+    HF caches a file at ``models--<repo>/snapshots/<rev>/[<subdir>/]<name>``. A
+    subdir-quant giant (unsloth stores quants under e.g. ``Q4_K_M/``) must
+    register under that subdir-relative name so its manifest key round-trips with
+    the ref; ``file_path.name`` alone would drop the subdir. Falls back to the
+    basename when the path is not under a snapshot revision dir.
+    """
+    parts = file_path.parts
+    if _HF_SNAPSHOTS_DIR not in parts:
+        return file_path.name
+    rev_index = parts.index(_HF_SNAPSHOTS_DIR) + 1
+    relative_parts = parts[rev_index + 1 :]
+    return "/".join(relative_parts) if relative_parts else file_path.name
+
+
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
@@ -509,18 +544,19 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     from datetime import UTC, datetime
 
     registry = ModelRegistry(cfg.models_dir)
+    gguf_filename = _repo_relative_gguf_name(file_path)
     manifest = ModelManifest(
         hf_repo=entry.hf_repo,
-        gguf_filename=file_path.name,
+        gguf_filename=gguf_filename,
         size_bytes=file_path.stat().st_size,
         task=entry.task,
         downloaded_at=datetime.now(UTC).isoformat(),
     )
     try:
-        registry.install(entry.hf_repo, file_path.name, file_path, manifest)
-        log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
+        registry.install(entry.hf_repo, gguf_filename, file_path, manifest)
+        log.info("Registered %s/%s in manifest", entry.hf_repo, gguf_filename)
     except Exception:
-        ref = format_native_gguf_ref(entry.hf_repo, file_path.name)
+        ref = format_native_gguf_ref(entry.hf_repo, gguf_filename)
         if not registry.is_installed(ref):
             raise
         log.warning(

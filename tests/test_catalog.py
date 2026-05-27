@@ -765,6 +765,29 @@ class TestFindCatalogEntry:
         assert find_catalog_entry("Qwen3 8B") is None
 
 
+class TestHfRepoFromRef:
+    def test_flat_ref_yields_repo(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf") == "Qwen/Qwen3-8B-GGUF"
+
+    def test_subdir_ref_yields_first_two_segments(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert hf_repo_from_ref(ref) == "unsloth/MiniMax-M2-GGUF"
+
+    def test_bare_repo_returned_unchanged(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("Qwen/Qwen3-8B-GGUF") == "Qwen/Qwen3-8B-GGUF"
+
+    def test_provider_prefixed_ref_returned_unchanged(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("ollama/llama3:8b") == "ollama/llama3:8b"
+
+
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
@@ -783,6 +806,14 @@ class TestBuildAdhocEntry:
         entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
         assert entry.task == ModelTask.RERANK
         assert entry.gguf_filename == "*.gguf"
+
+    def test_explicit_gguf_filename_is_pinned(self) -> None:
+        """A concrete filename (incl. a subdir) overrides the default glob."""
+        entry = build_adhoc_entry(
+            "unsloth/MiniMax-M2-GGUF",
+            gguf_filename="Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf",
+        )
+        assert entry.gguf_filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
 
 
 class TestIsHfRepoId:
@@ -840,6 +871,40 @@ class TestResolvePullTarget:
     )
     def test_malformed_hf_inputs_return_none(self, value: str) -> None:
         assert catalog.resolve_pull_target(value) is None
+
+    def test_subdir_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
+        """A full subdir ref (F2) resolves to an ad-hoc entry pinning that file."""
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        entry = catalog.resolve_pull_target(ref)
+        assert entry is not None
+        assert entry.featured is False
+        assert entry.hf_repo == "unsloth/MiniMax-M2-GGUF"
+        assert entry.gguf_filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+
+    def test_flat_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
+        ref = "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q5_K_M.gguf"
+        entry = catalog.resolve_pull_target(ref)
+        assert entry is not None
+        assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
+        assert entry.gguf_filename == "gemma-2-2b-it-Q5_K_M.gguf"
+
+    def test_traversal_gguf_ref_returns_none(self) -> None:
+        """A ``.gguf`` ref whose subdir path tries to escape the repo is rejected."""
+        assert catalog.resolve_pull_target("owner/repo/../escape/m.gguf") is None
+
+    def test_explicit_quant_overrides_featured_default(self) -> None:
+        """F5: naming a specific .gguf on a featured repo pins that exact quant.
+
+        The featured entry for the repo pins a default quant; an explicit
+        filename must win (HF-first) instead of being overridden.
+        """
+        featured = catalog.resolve_pull_target("Qwen/Qwen3-8B-GGUF")
+        assert featured is not None
+        explicit_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        entry = catalog.resolve_pull_target(explicit_ref)
+        assert entry is not None
+        assert entry.gguf_filename == "Qwen3-8B-Q4_K_M.gguf"
+        assert entry.gguf_filename != featured.gguf_filename
 
 
 class TestSplitShardFilenames:
@@ -1944,6 +2009,13 @@ class TestDownloadTaskName:
 
         assert download_task_name("foo/file.gguf") == ""
 
+    def test_subdir_quant_ref_uses_repo_not_subdir(self) -> None:
+        """A subdir-quant giant ref labels by its repo, not ``repo/Q4_K_M``. (F2)"""
+        from lilbee.catalog import download_task_name
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert download_task_name(ref) == "MiniMax M2"
+
 
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
@@ -1951,6 +2023,13 @@ class TestDisplayLabelForRef:
 
         ref = "Qwen/Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
         assert display_label_for_ref(ref) == "Qwen2.5 7B"
+
+    def test_subdir_quant_ref_uses_repo_not_subdir(self) -> None:
+        """A subdir-quant giant ref labels by its repo, matching download_task_name. (F2)"""
+        from lilbee.catalog import display_label_for_ref
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert display_label_for_ref(ref) == "MiniMax M2"
 
     def test_ollama_prefix_drops_only_the_prefix(self) -> None:
         from lilbee.catalog import display_label_for_ref

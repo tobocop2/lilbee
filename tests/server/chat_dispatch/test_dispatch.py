@@ -11,6 +11,7 @@ from lilbee.app.services import set_services
 from lilbee.providers.base import (
     ChatResult,
     FinishReason,
+    TokenUsage,
     ToolCall,
     ToolCallDelta,
 )
@@ -19,6 +20,7 @@ from lilbee.server.chat_dispatch.canonical import (
     CanonicalMessage,
     CanonicalTool,
     CanonicalToolChoice,
+    CanonicalUsage,
     ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
@@ -105,6 +107,17 @@ class TestDispatchChat:
         )
         resp = dispatch_chat(_req())
         assert resp.content == []
+
+    def test_usage_threaded_from_result(self, services_with_model) -> None:
+        """ChatResult.usage flows into the canonical response usage. (F4)"""
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=11, completion_tokens=4),
+        )
+        resp = dispatch_chat(_req())
+        assert resp.usage == CanonicalUsage(input_tokens=11, output_tokens=4)
 
     def test_max_tokens_finish_reason_maps_to_max_tokens(self, services_with_model) -> None:
         services_with_model.provider.chat.return_value = ChatResult(
@@ -403,6 +416,21 @@ class TestDispatchChatStream:
         assert events[5].stop_reason == StopReason.END_TURN
         assert isinstance(events[-1], MessageStop)
         assert stream.closed is True
+
+    async def test_stream_usage_frame_attaches_to_message_delta(self, services_with_model) -> None:
+        """A trailing TokenUsage frame becomes the closing MessageDelta usage. (F4)"""
+        stream = _FakeStream(["hi", TokenUsage(prompt_tokens=8, completion_tokens=2)])
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.usage == CanonicalUsage(input_tokens=8, output_tokens=2)
+
+    async def test_stream_without_usage_frame_has_no_usage(self, services_with_model) -> None:
+        stream = _FakeStream(["hi"])
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.usage is None
 
     async def test_empty_stream_yields_message_envelope_only(self, services_with_model) -> None:
         stream = _FakeStream([])

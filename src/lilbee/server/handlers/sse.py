@@ -51,7 +51,7 @@ def sse_error(
 
 
 _OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
-_NOT_INSTALLED_MARKERS = ("not found in registry", "is not available", "pull it first")
+_NOT_INSTALLED_MARKERS = ("is not installed", "is not available", "pull it first")
 
 
 def classify_load_error(message: str) -> tuple[SseErrorCode | None, str]:

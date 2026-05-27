@@ -14,6 +14,7 @@ from lilbee.providers.base import (
     ChatToolResult,
     FinishReason,
     ProviderError,
+    TokenUsage,
     ToolCall,
     ToolCallDelta,
 )
@@ -170,21 +171,29 @@ class LlamaServerClient:
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
             resp.raise_for_status()
-            choice = resp.json()["choices"][0]
+            body = resp.json()
+        choice = body["choices"][0]
+        usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
         content = message.get("content") or ""
         finish_reason = _coerce_finish_reason(choice.get("finish_reason"))
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
-            return ChatResult(text=content, tool_calls=tuple(native), finish_reason=finish_reason)
+            return ChatResult(
+                text=content,
+                tool_calls=tuple(native),
+                finish_reason=finish_reason,
+                usage=usage,
+            )
         recovered = _recover_bare_json_tool_calls(content)
         if recovered.tool_calls:
             return ChatResult(
                 text=recovered.content,
                 tool_calls=tuple(recovered.tool_calls),
                 finish_reason=FinishReason.TOOL_CALLS,
+                usage=usage,
             )
-        return ChatResult(text=content, tool_calls=(), finish_reason=finish_reason)
+        return ChatResult(text=content, tool_calls=(), finish_reason=finish_reason, usage=usage)
 
     def chat_stream_items(
         self,
@@ -193,7 +202,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
-    ) -> Iterator[str | ToolCallDelta]:
+    ) -> Iterator[str | ToolCallDelta | TokenUsage]:
         """Stream text tokens and tool-call deltas from the server's OpenAI SSE.
 
         Each SSE chunk's ``choices[0].delta`` carries a ``content`` token and/or
@@ -204,6 +213,9 @@ class LlamaServerClient:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
+            # include_usage makes llama-server emit a final SSE chunk carrying the
+            # token usage (with an empty choices list) just before [DONE].
+            "stream_options": {"include_usage": True},
             **(options or {}),
         }
         if tools is not None:
@@ -358,6 +370,24 @@ def _parse_sse_delta(line: str) -> str:
     return str(choices[0].get("delta", {}).get("content") or "")
 
 
+def _usage_from_body(body: Mapping[str, Any]) -> TokenUsage | None:
+    """Read the ``usage`` block of an OpenAI response, or ``None`` if absent.
+
+    llama-server reports ``prompt_tokens`` / ``completion_tokens``; a missing or
+    malformed block yields ``None`` so callers can decide between a zero default
+    (non-streaming) and skipping the frame (streaming terminator).
+    """
+    usage = body.get("usage")
+    if not isinstance(usage, Mapping):
+        return None
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    return TokenUsage(
+        prompt_tokens=prompt if isinstance(prompt, int) else 0,
+        completion_tokens=completion if isinstance(completion, int) else 0,
+    )
+
+
 _FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
 
 
@@ -389,7 +419,7 @@ def _tool_call_delta_from_chunk(call: Mapping[str, Any], *, fallback_index: int)
     )
 
 
-def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta]:
+def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUsage]:
     """Yield text tokens and tool-call deltas from one OpenAI SSE line.
 
     A chunk can carry a ``content`` token, a ``tool_calls`` delta array, or
@@ -406,6 +436,12 @@ def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta]:
         return
     choices = obj.get("choices") or []
     if not choices:
+        # The include_usage terminator chunk has an empty choices list and the
+        # token totals on a top-level ``usage`` block; surface it as the final
+        # frame so the dispatch can attach real counts to the stream.
+        usage = _usage_from_body(obj)
+        if usage is not None:
+            yield usage
         return
     delta = choices[0].get("delta") or {}
     content = delta.get("content")

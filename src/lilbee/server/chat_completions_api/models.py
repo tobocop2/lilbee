@@ -167,13 +167,18 @@ class CompletionsStreamChoice(BaseModel):
 
 
 class CompletionsStreamChunk(BaseModel):
-    """Single SSE frame from streaming ``/v1/chat/completions``."""
+    """Single SSE frame from streaming ``/v1/chat/completions``.
+
+    The final frame (when usage is known) carries an empty ``choices`` list and a
+    populated ``usage`` block, matching OpenAI's ``stream_options.include_usage``.
+    """
 
     id: str
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
     created: int
     model: str
     choices: list[CompletionsStreamChoice]
+    usage: CompletionsUsage | None = None
 
 
 class ModelEntry(BaseModel):

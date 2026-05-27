@@ -2376,10 +2376,10 @@ class TestClassifyLoadError:
         assert code is None
         assert user_message == "Internal error"
 
-    def test_not_in_registry_is_classified_as_model_not_installed(self):
+    def test_not_installed_is_classified_as_model_not_installed(self):
         msg = (
-            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
-            "Install it via the catalog or 'lilbee model pull'."
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' is not installed. "
+            "Run 'lilbee model pull Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' to download it."
         )
         code, user_message = handlers.classify_load_error(msg)
         assert code == SseErrorCode.MODEL_NOT_INSTALLED
@@ -2426,6 +2426,20 @@ class TestClassifyStreamError:
         code, msg = _classify_stream_error(ModelNotFoundError("vendor/missing.gguf"))
         assert code == "model_not_found"
         assert "vendor/missing.gguf" in msg
+
+    def test_not_found_provider_error_routes_to_model_not_found(self):
+        """A NOT_FOUND ProviderError (a missing role model) maps to model_not_found. (F3)"""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError(
+            "Model 'nomic-ai/embed/embed.gguf' is not installed. "
+            "Run 'lilbee model pull nomic-ai/embed/embed.gguf' to download it.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        code, msg = _classify_stream_error(exc)
+        assert code == "model_not_found"
+        assert "nomic-ai/embed/embed.gguf" in msg
 
     def test_model_does_not_support_tools_routes_to_typed_code(self):
         """``ModelDoesNotSupportToolsError`` from the dispatch surfaces as a typed code."""

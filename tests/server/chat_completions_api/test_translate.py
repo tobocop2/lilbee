@@ -715,6 +715,48 @@ class TestCanonicalStreamToCompletionsChunks:
         assert chunks[-1].choices[0].delta.content is None
         assert chunks[-1].choices[0].delta.tool_calls is None
 
+    async def test_message_delta_usage_emits_final_usage_chunk(self) -> None:
+        """A MessageDelta carrying usage produces a trailing usage chunk with an
+        empty choices list and populated totals (include_usage shape). (F4)"""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
+            ContentBlockStop(index=0),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=6, output_tokens=2),
+            ),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        usage_chunk = chunks[-1]
+        assert usage_chunk.choices == []
+        assert usage_chunk.usage is not None
+        assert usage_chunk.usage.prompt_tokens == 6
+        assert usage_chunk.usage.completion_tokens == 2
+        assert usage_chunk.usage.total_tokens == 8
+
+    async def test_message_delta_without_usage_emits_no_usage_chunk(self) -> None:
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert all(c.usage is None for c in chunks)
+
     async def test_message_start_alone_emits_nothing(self) -> None:
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),

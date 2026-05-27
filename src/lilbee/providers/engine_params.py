@@ -15,7 +15,7 @@ from typing import Any
 from lilbee.app.services import get_services
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
-from lilbee.providers.base import ProviderError, filter_options
+from lilbee.providers.base import ProviderError, ProviderErrorKind, filter_options
 from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 from lilbee.providers.model_cache import (
     compute_dynamic_ctx,
@@ -69,12 +69,16 @@ def resolve_model_path(model: str) -> Path:
     if candidate.is_absolute():
         if candidate.exists():
             return candidate
-        raise ProviderError(f"Model file not found: {model}", provider="llama-server")
+        raise ProviderError(
+            f"Model file not found: {model}",
+            provider="llama-server",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
 
     raise ProviderError(
-        f"Model {model!r} not found in registry. "
-        f"Install it via the catalog or 'lilbee model pull'.",
+        f"Model {model!r} is not installed. Run 'lilbee model pull {model}' to download it.",
         provider="llama-server",
+        kind=ProviderErrorKind.NOT_FOUND,
     )
 
 

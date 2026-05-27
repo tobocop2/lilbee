@@ -116,6 +116,66 @@ def test_chat_stream_yields_deltas() -> None:
     assert chunks == ["He", "llo"]
 
 
+def test_chat_result_reads_usage_from_response() -> None:
+    """chat_result threads llama-server's usage block into ChatResult. (F4)"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+                },
+            )
+        return httpx.Response(404)
+
+    result = _client(handler).chat_result([{"role": "user", "content": "hi"}])
+    assert result.text == "Hi"
+    assert result.usage.prompt_tokens == 7
+    assert result.usage.completion_tokens == 3
+
+
+def test_chat_result_usage_defaults_to_zero_when_absent() -> None:
+    result = _client().chat_result([{"role": "user", "content": "hi"}])
+    assert result.usage.prompt_tokens == 0
+    assert result.usage.completion_tokens == 0
+
+
+def test_chat_stream_items_yields_usage_terminator_frame() -> None:
+    """The include_usage terminator chunk surfaces as a final TokenUsage frame. (F4)"""
+    from lilbee.providers.base import TokenUsage
+
+    body = (
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=body)
+        return httpx.Response(404)
+
+    frames = list(_client(handler).chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert frames[0] == "Hi"
+    assert frames[-1] == TokenUsage(prompt_tokens=4, completion_tokens=1)
+
+
+def test_chat_stream_items_requests_include_usage() -> None:
+    """The stream request opts into include_usage so the server emits usage."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, text="data: [DONE]\n\n")
+        return httpx.Response(404)
+
+    list(_client(handler).chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert seen["stream_options"] == {"include_usage": True}
+
+
 def test_embed_returns_vectors() -> None:
     assert _client().embed(["a", "b"]) == [[0.1, 0.2], [0.3]]
 

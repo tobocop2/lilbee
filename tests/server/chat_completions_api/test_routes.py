@@ -177,6 +177,36 @@ class TestListModelsEndpoint:
         expected = int(datetime.fromisoformat("2026-05-15T00:00:00+00:00").timestamp())
         assert resp.json()["data"][0]["created"] == expected
 
+    async def test_subdir_native_model_listed_and_servable(self, _auth_token):
+        """F6: a registered subdir-filename giant is advertised by /v1/models and
+        resolves for a completion (its abs-path inconsistency was a symptom of it
+        not being registerable; once F2 registers it, the surface is consistent).
+        """
+        subdir_ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        provider = MagicMock()
+        provider.chat.return_value = ChatResult(
+            text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        provider.supports_tools.return_value = False
+        services = _services_with(provider, [_installed_chat_model(subdir_ref)])
+        set_services(services)
+        try:
+            async with AsyncTestClient(_build_app()) as client:
+                listed = await client.get("/v1/models", headers=_h())
+                assert subdir_ref in [m["id"] for m in listed.json()["data"]]
+                completion = await client.post(
+                    "/v1/chat/completions",
+                    headers=_h(),
+                    json={
+                        "model": subdir_ref,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+            assert completion.status_code == 200
+            assert completion.json()["choices"][0]["message"]["content"] == "ok"
+        finally:
+            set_services(None)
+
     async def test_created_is_zero_when_downloaded_at_unparseable(
         self, services_with_chat_model, _auth_token
     ):
@@ -487,6 +517,62 @@ class TestNonStreamingCompletion:
         assert "161000" in body["error"]["message"]
         assert not chat_lock().locked()
 
+    async def test_missing_role_model_returns_404_not_500(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A NOT_FOUND ProviderError (e.g. the embed role model isn't installed)
+        surfaces as a clear 404 naming the model, not a generic 500. (F3)
+        """
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "Model 'nomic-ai/embed/embed.gguf' is not installed. "
+            "Run 'lilbee model pull nomic-ai/embed/embed.gguf' to download it.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["error"]["code"] == "model_not_found"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "nomic-ai/embed/embed.gguf" in body["error"]["message"]
+        assert "lilbee model pull" in body["error"]["message"]
+        assert not chat_lock().locked()
+
+    async def test_usage_tokens_populated_from_provider_result(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Usage counts come from the provider's ChatResult, not hardcoded 0. (F4)"""
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=12, completion_tokens=5),
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        usage = resp.json()["usage"]
+        assert usage["prompt_tokens"] == 12
+        assert usage["completion_tokens"] == 5
+        assert usage["total_tokens"] == 17
+
     async def test_non_overflow_provider_error_returns_500_envelope(
         self, services_with_chat_model, _auth_token
     ):
@@ -689,6 +775,64 @@ class TestStreamingCompletion:
         chunks = _sse_to_chunks(resp.content)
         assert chunks[0]["error"]["code"] == "internal_error"
         assert chunks[0]["error"]["type"] == "api_error"
+        assert chunks[-1] == "[DONE]"
+        assert not chat_lock().locked()
+
+    async def test_stream_emits_usage_chunk_from_final_usage_frame(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A trailing TokenUsage frame from the provider becomes a final usage
+        chunk (empty choices, populated totals) before [DONE]. (F4 streaming)
+        """
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["he", "llo", TokenUsage(prompt_tokens=9, completion_tokens=2)]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[-1] == "[DONE]"
+        usage_chunk = chunks[-2]
+        assert usage_chunk["choices"] == []
+        assert usage_chunk["usage"]["prompt_tokens"] == 9
+        assert usage_chunk["usage"]["completion_tokens"] == 2
+        assert usage_chunk["usage"]["total_tokens"] == 11
+
+    async def test_stream_missing_role_model_emits_model_not_found_frame(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A NOT_FOUND ProviderError mid-stream emits a model_not_found error
+        frame rather than a generic internal_error. (F3 streaming)
+        """
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "Model 'nomic-ai/embed/embed.gguf' is not installed. "
+            "Run 'lilbee model pull nomic-ai/embed/embed.gguf' to download it.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": True,
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[0]["error"]["code"] == "model_not_found"
+        assert "nomic-ai/embed/embed.gguf" in chunks[0]["error"]["message"]
         assert chunks[-1] == "[DONE]"
         assert not chat_lock().locked()
 

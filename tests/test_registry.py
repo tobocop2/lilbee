@@ -110,6 +110,19 @@ class TestParseHfRef:
         with pytest.raises(ValueError):
             parse_hf_ref("../etc/passwd.gguf")
 
+    def test_subdir_quant_ref(self) -> None:
+        # unsloth giant: repo is the first two segments, the rest (incl. the
+        # ``Q4_K_M/`` subdir) is the filename.
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        repo, filename = parse_hf_ref(ref)
+        assert repo == "unsloth/MiniMax-M2-GGUF"
+        assert filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+
+    def test_subdir_ref_round_trips(self) -> None:
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        repo, filename = parse_hf_ref(ref)
+        assert format_native_gguf_ref(repo, filename) == ref
+
 
 class TestValidators:
     def test_valid_repo(self) -> None:
@@ -134,13 +147,23 @@ class TestValidators:
         with pytest.raises(ValueError):
             _validate_gguf_filename("model.bin")
 
-    def test_filename_no_path(self) -> None:
-        with pytest.raises(ValueError):
-            _validate_gguf_filename("dir/file.gguf")
+    def test_filename_subdir_accepted(self) -> None:
+        # unsloth giants store each quant under a subdir (e.g. ``Q4_K_M/``); the
+        # validator keeps the subdir so the manifest key round-trips with the ref.
+        subdir = "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert _validate_gguf_filename(subdir) == subdir
 
     def test_filename_path_traversal(self) -> None:
         with pytest.raises(ValueError):
             _validate_gguf_filename("..gguf")
+
+    def test_filename_parent_traversal_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _validate_gguf_filename("../Q4_K_M/m.gguf")
+
+    def test_filename_leading_slash_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _validate_gguf_filename("/abs/path/m.gguf")
 
 
 class TestRepoToDir:
@@ -492,6 +515,45 @@ class TestModelRegistryResolve:
         (cache / "refs" / "main").write_text(_FAKE_REV)
         with pytest.raises(KeyError, match="not installed"):
             registry.resolve(_REF)
+
+
+class TestRegisterDownloadedModel:
+    def test_subdir_filename_round_trips(self, tmp_path: Path) -> None:
+        """A subdir-quant giant registers under its subdir-relative name.
+
+        The snapshot path is ``.../snapshots/<rev>/Q4_K_M/<file>.gguf``; the
+        manifest must key on ``Q4_K_M/<file>.gguf`` so the canonical ref
+        resolves back to the same blob (F2: subdir giants are first-class).
+        """
+        from lilbee.catalog.models import CatalogModel
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.registry import register_downloaded_model
+
+        repo = "unsloth/MiniMax-M2-GGUF"
+        subdir_name = "Q4_K_M/MiniMax-M2-Q4_K_M.gguf"
+        blob = _seed_hf_cache(tmp_path, repo=repo, filename=subdir_name, content=b"giant")
+        snapshot_path = (
+            tmp_path / f"models--{repo_to_dir(repo)}" / "snapshots" / _FAKE_REV / subdir_name
+        )
+        entry = CatalogModel(
+            hf_repo=repo,
+            gguf_filename=subdir_name,
+            size_gb=0.0,
+            min_ram_gb=2.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=ModelTask.CHAT,
+        )
+        with mock.patch("lilbee.modelhub.registry.cfg") as cfg_mock:
+            cfg_mock.models_dir = tmp_path
+            register_downloaded_model(entry, snapshot_path)
+            registry = ModelRegistry(tmp_path)
+            ref = format_native_gguf_ref(repo, subdir_name)
+            manifest = registry.get_manifest(ref)
+            assert manifest is not None
+            assert manifest.gguf_filename == subdir_name
+            assert registry.resolve(ref) == blob
 
 
 class TestModelRegistryIsInstalled:

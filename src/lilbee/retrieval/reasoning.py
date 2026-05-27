@@ -227,10 +227,9 @@ def stream_chat_with_cap(
 def _text_only(stream: Iterator[Any]) -> Iterator[str]:
     """Filter a chat stream down to its text deltas.
 
-    Tool-call deltas can flow on the same iterator when ``tools`` is
-    passed; the RAG / reasoning paths never request tools, so any non-str
-    frame here is an upstream contract violation worth swallowing rather
-    than crashing the user's chat.
+    Tool-call deltas (when ``tools`` is passed) and the trailing token-usage
+    frame both ride the same iterator; the RAG / reasoning paths only consume
+    text, so any non-str frame is dropped here rather than crashing the chat.
     """
     for item in stream:
         if isinstance(item, str):

@@ -131,17 +131,31 @@ class FinishReason(StrEnum):
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """Prompt / completion token counts for one chat call.
+
+    Defaults to zero so a backend that reports no usage block still yields a
+    well-formed result; the fleet populates these from llama-server's ``usage``.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+@dataclass(frozen=True)
 class ChatResult:
     """Structured result from a non-streaming chat call.
 
     ``tool_calls`` is empty for an ordinary text answer; ``text`` is empty when
-    the model returned only tool calls. The canonical chat dispatch reads all
-    three fields to build its OpenAI/Anthropic-shaped response.
+    the model returned only tool calls. ``usage`` carries the backend's token
+    counts (zero when unreported). The canonical chat dispatch reads these to
+    build its OpenAI/Anthropic-shaped response.
     """
 
     text: str
     tool_calls: tuple[ToolCall, ...]
     finish_reason: FinishReason
+    usage: TokenUsage = TokenUsage()
 
 
 @dataclass(frozen=True)
@@ -158,8 +172,9 @@ class ToolCallDelta:
     arguments_delta: str | None
 
 
-ChatStreamItem = str | ToolCallDelta
-"""One frame yielded by a streaming chat call: text token or tool-call delta."""
+ChatStreamItem = str | ToolCallDelta | TokenUsage
+"""One frame yielded by a streaming chat call: text token, tool-call delta, or a
+final token-usage summary (emitted once, last, when the backend reports usage)."""
 
 
 class LLMProvider(Protocol):

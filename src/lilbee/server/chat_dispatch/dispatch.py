@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.app.services import get_services
-from lilbee.providers.base import FinishReason, ToolCallDelta
+from lilbee.providers.base import FinishReason, TokenUsage, ToolCallDelta
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -115,7 +115,10 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
         model=canonical_model,
         content=content,
         stop_reason=_FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN),
-        usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+        usage=CanonicalUsage(
+            input_tokens=result.usage.prompt_tokens,
+            output_tokens=result.usage.completion_tokens,
+        ),
     )
 
 
@@ -149,8 +152,9 @@ async def dispatch_chat_stream(
 
 
 async def _async_iter_provider_stream(
-    stream: Iterator[str | ToolCallDelta] | AsyncIterator[str | ToolCallDelta],
-) -> AsyncIterator[str | ToolCallDelta]:
+    stream: Iterator[str | ToolCallDelta | TokenUsage]
+    | AsyncIterator[str | ToolCallDelta | TokenUsage],
+) -> AsyncIterator[str | ToolCallDelta | TokenUsage]:
     """Iterate a provider chat stream without blocking the event loop.
 
     The llama-cpp pool wrapper implements both Iterator and AsyncIterator so
@@ -175,7 +179,9 @@ _STREAM_DONE: Any = object()
 """Sentinel returned by :func:`_next_or_done` to mean ``StopIteration``."""
 
 
-def _next_or_done(stream: Iterator[str | ToolCallDelta]) -> str | ToolCallDelta | Any:
+def _next_or_done(
+    stream: Iterator[str | ToolCallDelta | TokenUsage],
+) -> str | ToolCallDelta | TokenUsage | Any:
     """Pull the next frame from *stream*; return ``_STREAM_DONE`` at exhaustion.
 
     Raising ``StopIteration`` inside a coroutine becomes ``RuntimeError`` per
@@ -196,10 +202,15 @@ class _StreamState:
         self._index: int = -1
         self._tool_index: int | None = None
         self._stop_reason: StopReason = StopReason.END_TURN
+        self._usage: TokenUsage | None = None
 
-    def feed(self, frame: str | ToolCallDelta) -> Iterator[CanonicalStreamEvent]:
+    def feed(self, frame: str | ToolCallDelta | TokenUsage) -> Iterator[CanonicalStreamEvent]:
         if isinstance(frame, str):
             yield from self._feed_text(frame)
+        elif isinstance(frame, TokenUsage):
+            # Terminator-only frame: carries token totals, no content. Stash it
+            # so finish() can attach the counts to the closing MessageDelta.
+            self._usage = frame
         else:
             yield from self._feed_tool(frame)
 
@@ -207,7 +218,15 @@ class _StreamState:
         if self._open != _OpenBlockKind.NONE:
             yield ContentBlockStop(index=self._index)
             self._open = _OpenBlockKind.NONE
-        yield MessageDelta(stop_reason=self._stop_reason)
+        usage = (
+            CanonicalUsage(
+                input_tokens=self._usage.prompt_tokens,
+                output_tokens=self._usage.completion_tokens,
+            )
+            if self._usage is not None
+            else None
+        )
+        yield MessageDelta(stop_reason=self._stop_reason, usage=usage)
 
     def _feed_text(self, text: str) -> Iterator[CanonicalStreamEvent]:
         if self._open != _OpenBlockKind.TEXT:

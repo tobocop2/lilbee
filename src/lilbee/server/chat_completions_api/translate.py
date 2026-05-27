@@ -35,6 +35,7 @@ from lilbee.server.chat_dispatch.canonical import (
     CanonicalStreamEvent,
     CanonicalTool,
     CanonicalToolChoice,
+    CanonicalUsage,
     ContentBlock,
     ContentBlockDelta,
     ContentBlockStart,
@@ -205,6 +206,8 @@ async def canonical_stream_to_completions_chunks(
                 CompletionsStreamDelta(),
                 finish_reason=_finish_reason_for(event),
             )
+            if event.usage is not None:
+                yield _usage_chunk(model, response_id, event.usage)
         elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
             # OpenAI's wire format has no equivalent for these canonical events:
             # MessageStart carries metadata we already encoded in the chunk header,
@@ -226,6 +229,22 @@ def _chunk(
         created=int(time.time()),
         model=model,
         choices=[CompletionsStreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
+    )
+
+
+def _usage_chunk(model: str, response_id: str, usage: CanonicalUsage) -> CompletionsStreamChunk:
+    """Final include_usage chunk: empty choices, populated usage totals."""
+    total = usage.input_tokens + usage.output_tokens
+    return CompletionsStreamChunk(
+        id=response_id,
+        created=int(time.time()),
+        model=model,
+        choices=[],
+        usage=CompletionsUsage(
+            prompt_tokens=usage.input_tokens,
+            completion_tokens=usage.output_tokens,
+            total_tokens=total,
+        ),
     )
 
 

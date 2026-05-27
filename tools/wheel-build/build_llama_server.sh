@@ -51,6 +51,20 @@ fi
 # link deps. BUILD_SHARED_LIBS=ON keeps ggml/llama/mtmd as separate libs we ship
 # next to the binary, so a CUDA fatbin isn't statically duplicated per server.
 eval "$(BACKEND="${backend}" TARGET_ARCH="${target_arch}" "${script_dir}/cmake_args.sh")"
+
+# CMAKE_CUDA_ARCHITECTURES=all-major is a CMake 3.23+ keyword. On older cmake it
+# expands to an empty arch and nvcc fails ("Unsupported gpu architecture
+# compute_"). Substitute an explicit arch list so older boxes still build.
+_CUDA_ARCH_FALLBACK="70;75;80;86;89;90"
+if [[ "${CMAKE_ARGS}" == *"all-major"* ]]; then
+  cmake_version="$(cmake --version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  cmake_major="${cmake_version%%.*}"
+  cmake_minor="$(printf '%s' "${cmake_version}" | cut -d. -f2)"
+  if (( cmake_major < 3 || (cmake_major == 3 && cmake_minor < 23) )); then
+    echo "cmake ${cmake_version} < 3.23: substituting CUDA arch list ${_CUDA_ARCH_FALLBACK} for all-major" >&2
+    CMAKE_ARGS="${CMAKE_ARGS/all-major/${_CUDA_ARCH_FALLBACK}}"
+  fi
+fi
 # shellcheck disable=SC2086
 cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \

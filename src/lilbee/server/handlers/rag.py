@@ -69,6 +69,8 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
     if isinstance(exc, ProviderError):
         if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
             return CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc)
+        if exc.kind is ProviderErrorKind.NOT_FOUND:
+            return CompletionsErrorCode.MODEL_NOT_FOUND, str(exc)
         # A ProviderError already carries a user-facing message (rate limit,
         # auth, bad model). Surface it verbatim; the kind becomes a
         # machine-readable code unless the backend couldn't classify it.

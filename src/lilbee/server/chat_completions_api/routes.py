@@ -128,6 +128,27 @@ def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
     return None
 
 
+_INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
+
+# A ProviderError whose kind maps to a typed client error; anything else (auth,
+# rate-limit at this surface, unknown) is an internal_error 500. NOT_FOUND covers
+# a fleet role model (chat or, e.g., the default embed model) that isn't installed.
+_PROVIDER_ERROR_CLIENT_CODES: dict[ProviderErrorKind, tuple[int, CompletionsErrorCode]] = {
+    ProviderErrorKind.CONTEXT_OVERFLOW: (400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED),
+    ProviderErrorKind.NOT_FOUND: (404, CompletionsErrorCode.MODEL_NOT_FOUND),
+}
+
+
+def _provider_error_response(exc: ProviderError) -> Response:
+    """Map a ProviderError to a typed 4xx, or an internal_error 500 envelope."""
+    mapped = _PROVIDER_ERROR_CLIENT_CODES.get(exc.kind)
+    if mapped is not None:
+        status, code = mapped
+        return _error_response(status, code, str(exc))
+    log.exception("chat_completions_endpoint failed")
+    return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
+
+
 async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
@@ -137,21 +158,10 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
     except ModelDoesNotSupportToolsError as exc:
         return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
     except ProviderError as exc:
-        if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
-            return _error_response(400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
-        log.exception("chat_completions_endpoint failed")
-        return _error_response(
-            500,
-            CompletionsErrorCode.INTERNAL_ERROR,
-            "Internal server error. Check the server logs for details.",
-        )
+        return _provider_error_response(exc)
     except Exception:
         log.exception("chat_completions_endpoint failed")
-        return _error_response(
-            500,
-            CompletionsErrorCode.INTERNAL_ERROR,
-            "Internal server error. Check the server logs for details.",
-        )
+        return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
     finally:
         lock.release()
     body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
@@ -182,20 +192,16 @@ async def _gated_completions_stream(
         except ModelDoesNotSupportToolsError as exc:
             yield _sse_error_frame(CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
         except ProviderError as exc:
-            if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
-                yield _sse_error_frame(CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc))
+            mapped = _PROVIDER_ERROR_CLIENT_CODES.get(exc.kind)
+            if mapped is not None:
+                _status, code = mapped
+                yield _sse_error_frame(code, str(exc))
             else:
                 log.exception("chat_completions stream failed")
-                yield _sse_error_frame(
-                    CompletionsErrorCode.INTERNAL_ERROR,
-                    "Internal server error. Check the server logs for details.",
-                )
+                yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
         except Exception:
             log.exception("chat_completions stream failed")
-            yield _sse_error_frame(
-                CompletionsErrorCode.INTERNAL_ERROR,
-                "Internal server error. Check the server logs for details.",
-            )
+            yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
     finally:
         lock.release()
 
