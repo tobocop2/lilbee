@@ -169,7 +169,7 @@ def animation_loop(pipe_fd: int) -> None:
 
     got_signal = False
 
-    if sys.platform != "win32":
+    if sys.platform != "win32":  # pragma: no cover - POSIX-only SIGTERM handler
 
         def handle_term(signum: int, frame: object) -> None:
             nonlocal got_signal
