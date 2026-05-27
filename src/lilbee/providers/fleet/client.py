@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
@@ -23,6 +24,33 @@ _PROVIDER_NAME = "llama-server"
 # Reranker pair format: query and candidate are joined with this separator into
 # one document so a cross-encoder GGUF scores the pair as a single sequence.
 _RERANK_PAIR_SEPARATOR = "</s></s>"
+# Max sequences per /v1/embeddings request. Like the in-process backstop, a
+# batch is bounded by BOTH the token budget (the server's n_batch, == token_cap)
+# and this sequence count: a corpus of many tiny chunks would otherwise pack one
+# request past the server's batch/sequence limit and trip a 500.
+_EMBED_N_SEQ_MAX = 64
+
+log = logging.getLogger(__name__)
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise including the server's error body, which ``raise_for_status`` drops.
+
+    A llama-server failure otherwise surfaces as a bare "Internal Server Error"
+    with no cause; the response body carries the actual reason (oversize prompt,
+    decode failure, ...), which both diagnosis and the user-facing error need.
+    """
+    if resp.is_success:
+        return
+    resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
+    body = resp.text.strip()
+    detail = f": {body[:600]}" if body else ""
+    raise ProviderError(
+        f"llama-server returned HTTP {resp.status_code}{detail}",
+        provider=_PROVIDER_NAME,
+    )
+
+
 # Match the in-process embedder: llama-cpp-python's create_embedding does not
 # normalize (normalize=False), but llama-server normalizes pooled embeddings with
 # embd_normalize=2 (L2) by default. We send -1 (no normalization) per request so
@@ -96,7 +124,7 @@ class LlamaServerClient:
             return self._chat_stream(payload)
         with self._track():
             resp = self._http.post(_CHAT_PATH, json={**payload, "stream": False})
-            resp.raise_for_status()
+            _raise_for_status(resp)
             return str(resp.json()["choices"][0]["message"]["content"])
 
     def _chat_stream(self, payload: dict[str, Any]) -> Iterator[str]:
@@ -104,7 +132,7 @@ class LlamaServerClient:
             self._track(),
             self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
         ):
-            resp.raise_for_status()
+            _raise_for_status(resp)
             for line in resp.iter_lines():
                 delta = _parse_sse_delta(line)
                 if delta:
@@ -135,7 +163,7 @@ class LlamaServerClient:
             payload["tool_choice"] = tool_choice
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            resp.raise_for_status()
+            _raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
         content = message.get("content") or ""
         native = _parse_native_tool_calls(message.get("tool_calls"))
@@ -170,7 +198,7 @@ class LlamaServerClient:
             payload["tool_choice"] = tool_choice
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            resp.raise_for_status()
+            _raise_for_status(resp)
             body = resp.json()
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
@@ -226,7 +254,7 @@ class LlamaServerClient:
             self._track(),
             self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
         ):
-            resp.raise_for_status()
+            _raise_for_status(resp)
             for line in resp.iter_lines():
                 yield from _parse_sse_stream_items(line)
 
@@ -235,18 +263,11 @@ class LlamaServerClient:
         if not texts:
             # Match the in-process embedder; the server rejects an empty input.
             return []
-        texts = self._truncate_to_cap(texts)
-        with self._track():
-            resp = self._http.post(
-                _EMBED_PATH,
-                json={
-                    "model": self._model,
-                    "input": texts,
-                    "embd_normalize": _EMBD_NORMALIZE_NONE,
-                },
-            )
-            resp.raise_for_status()
-            return [list(item["embedding"]) for item in resp.json()["data"]]
+        vectors: list[list[float]] = []
+        for sub_batch in self._truncate_and_subbatch(texts):
+            data = self._embeddings_call(sub_batch)
+            vectors.extend(list(item["embedding"]) for item in data)
+        return vectors
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Relevance scores via rank-pooling embeddings (mirrors the in-process path).
@@ -258,45 +279,69 @@ class LlamaServerClient:
         """
         if not candidates:
             return []
-        pairs = self._truncate_to_cap(
-            [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
-        )
+        pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
+        scores: list[float] = []
+        for sub_batch in self._truncate_and_subbatch(pairs):
+            data = self._embeddings_call(sub_batch)
+            scores.extend(_rerank_score(item) for item in data)
+        return scores
+
+    def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
+        """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
         with self._track():
             resp = self._http.post(
                 _EMBED_PATH,
                 json={
                     "model": self._model,
-                    "input": pairs,
+                    "input": inputs,
                     "embd_normalize": _EMBD_NORMALIZE_NONE,
                 },
             )
-            resp.raise_for_status()
+            _raise_for_status(resp)
             data = resp.json()["data"]
-        if len(data) != len(pairs):
+        if len(data) != len(inputs):
             raise ProviderError(
-                f"Reranker returned {len(data)} entries for {len(pairs)} pairs",
+                f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
                 provider=_PROVIDER_NAME,
             )
-        return [_rerank_score(item) for item in data]
+        return list(data)
 
-    def _truncate_to_cap(self, texts: list[str]) -> list[str]:
-        """Token-truncate any input longer than the cap, via the server's tokenizer.
+    def _truncate_and_subbatch(self, texts: list[str]) -> list[list[str]]:
+        """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
 
-        Mirrors the in-process backstop: the server cannot split a pooled
-        embedding sequence, so an input longer than the context errors instead of
-        truncating. We tokenize, keep the first ``token_cap`` tokens, and
-        detokenize. No cap (chat/vision) leaves inputs untouched.
+        Mirrors the in-process ``batching._split_into_sub_batches``: an input
+        longer than ``token_cap`` (the server's per-slot context / n_batch) is
+        truncated to it via the server's tokenizer, since the server cannot split
+        a pooled embedding sequence. Inputs are then grouped so each request stays
+        within both the token budget and ``_EMBED_N_SEQ_MAX`` sequences -- without
+        this, a corpus of many small chunks packs one request past the server's
+        batch limit and the server returns a 500. No cap (chat/vision) sends a
+        single batch untouched.
         """
         if self._token_cap is None:
-            return texts
-        out: list[str] = []
+            return [texts]
+        cap = self._token_cap
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_tokens = 0
         for text in texts:
             tokens = self._tokenize(text)
-            if len(tokens) > self._token_cap:
-                out.append(self._detokenize(tokens[: self._token_cap]))
+            if len(tokens) > cap:
+                log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
+                item = self._detokenize(tokens[:cap])
+                item_tokens = cap
             else:
-                out.append(text)
-        return out
+                item = text
+                item_tokens = max(1, len(tokens))
+            if current and (current_tokens + item_tokens > cap or len(current) >= _EMBED_N_SEQ_MAX):
+                batches.append(current)
+                current = []
+                current_tokens = 0
+            current.append(item)
+            current_tokens += item_tokens
+        if current:
+            batches.append(current)
+        return batches
 
     def _tokenize(self, text: str) -> list[int]:
         resp = self._http.post(
@@ -307,12 +352,12 @@ class LlamaServerClient:
                 "parse_special": _TOKENIZE_PARSE_SPECIAL,
             },
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return list(resp.json()["tokens"])
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(_DETOKENIZE_PATH, json={"tokens": tokens})
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return str(resp.json()["content"])
 
     def close(self) -> None:

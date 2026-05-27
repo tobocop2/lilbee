@@ -60,7 +60,7 @@ def test_rerank_raises_on_count_mismatch() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})  # 1 for 2 pairs
 
-    with pytest.raises(ProviderError, match="entries for"):
+    with pytest.raises(ProviderError, match="vectors for"):
         _client(handler).rerank("q", ["a", "b"])
 
 
@@ -255,6 +255,65 @@ def test_rerank_truncates_oversize_pairs() -> None:
         return httpx.Response(200, json={"data": [{"embedding": [0.9]} for _ in body["input"]]})
 
     assert _capped_client(handler, cap=4).rerank("q", ["cand"]) == [0.9]
+
+
+def test_embed_surfaces_server_error_body() -> None:
+    # raise_for_status drops the body, so a 500 used to surface as a bare
+    # "Internal Server Error" with no cause. We must include the server's message.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="input is too large to process. increase the n_batch")
+
+    with pytest.raises(ProviderError, match="too large to process"):
+        _client(handler).embed(["a"])
+
+
+def test_chat_stream_surfaces_server_error_body() -> None:
+    # On a streaming request the response body isn't read yet, so the error path
+    # must read it before extracting the message (the ResponseNotRead branch).
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="model is still loading")
+
+    with pytest.raises(ProviderError, match="model is still loading"):
+        list(_client(handler).chat([{"role": "user", "content": "hi"}], stream=True))
+
+
+def test_embed_subbatches_when_token_budget_exceeded() -> None:
+    # The dropped in-process batching module split inputs to fit the server's
+    # n_batch; without it a token-dense corpus packs one request past the budget
+    # and the server 500s. Each input here is 3 tokens, cap is 4, so every input
+    # must land in its own request, and vectors come back in input order.
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})  # 3 tokens, <= cap 4
+        sent.append(list(body["input"]))
+        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]})
+
+    out = _capped_client(handler, cap=4).embed(["a", "b", "c"])
+    assert sent == [["a"], ["b"], ["c"]]  # 3+3 > 4, so never two per request
+    assert len(out) == 3  # one vector per input, order preserved
+
+
+def test_embed_subbatches_when_sequence_count_exceeded() -> None:
+    # Many tiny chunks (1 token each) stay under the token budget but must still
+    # split at _EMBED_N_SEQ_MAX sequences per request.
+    from lilbee.providers.fleet.client import _EMBED_N_SEQ_MAX
+
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json={"tokens": [1]})  # 1 token each
+        sizes.append(len(body["input"]))
+        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]})
+
+    n = _EMBED_N_SEQ_MAX + 5
+    out = _capped_client(handler, cap=100_000).embed([f"t{i}" for i in range(n)])
+    assert sizes == [_EMBED_N_SEQ_MAX, 5]  # capped at the sequence limit per request
+    assert len(out) == n
 
 
 def test_embed_requests_no_normalization() -> None:
