@@ -126,6 +126,31 @@ def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
     assert calls["n"] == 1  # single-flight: 8 concurrent first-requests build one fleet
 
 
+def test_warm_up_and_on_demand_build_fleet_once(monkeypatch) -> None:
+    # Regression: the off-thread warm-up built off-lock while an on-demand call
+    # built under the routing lock, so two build_fleet ran at once -- double GPU
+    # alloc plus two threads parsing the same GGUF metadata, which hung. Both
+    # paths must now serialize through _build_fleet_once.
+    calls = {"n": 0}
+    client = _fake_client()
+    client.chat.return_value = "ok"
+    in_build = threading.Event()
+
+    def _slow_build(*_listeners) -> object:
+        calls["n"] += 1
+        in_build.set()  # signal the warm-up build is in flight
+        time.sleep(0.1)
+        return _fake_fleet({WorkerRole.CHAT: [client]})
+
+    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    p = FleetProvider()
+    p.warm_up_pool()  # dispatches the warm-up build thread
+    assert in_build.wait(2.0)  # wait until the warm-up build is mid-flight
+    p.chat([{"role": "user", "content": "hi"}])  # on-demand call races the warm-up
+    time.sleep(0.2)  # let the warm-up thread finish
+    assert calls["n"] == 1  # one build, not a concurrent second
+
+
 def test_rerank_routes_to_fleet() -> None:
     client = _fake_client()
     client.rerank.return_value = [0.9, 0.1]
@@ -523,17 +548,23 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert "warm-up failed" in caplog.text.lower()
 
 
-def test_warm_up_blocking_discards_duplicate_when_fleet_raced(monkeypatch) -> None:
-    # A concurrent _server_clients built a fleet while warm-up was loading; the
-    # warm-up's duplicate must be shut down, not stranded (each holds GPU memory).
+def test_warm_up_skips_build_when_fleet_already_exists(monkeypatch) -> None:
+    # If an on-demand call already built the fleet, the warm-up must not build a
+    # second one. The old design built a duplicate off-lock and shut it down;
+    # _build_fleet_once now serializes so no duplicate is ever created.
     winner = _fake_fleet({})
-    duplicate = _fake_fleet({})
-    monkeypatch.setattr(planning_mod, "build_fleet", lambda *_a: duplicate)
+    built = {"n": 0}
+
+    def _build(*_a) -> object:
+        built["n"] += 1
+        return _fake_fleet({})
+
+    monkeypatch.setattr(planning_mod, "build_fleet", _build)
     p = FleetProvider()
     p._fleet = winner
     p._warm_up_blocking()
     assert p._fleet is winner
-    duplicate.shutdown.assert_called_once()
+    assert built["n"] == 0  # no second build, nothing to discard
 
 
 def test_role_ready_false_without_fleet() -> None:

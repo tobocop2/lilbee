@@ -115,6 +115,12 @@ class FleetProvider:
         # first-requests must not each build a fleet (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
         self._lock = threading.RLock()
+        # Serializes the slow fleet build (GPU probe + GGUF metadata + spawn) across
+        # concurrent callers -- the off-thread warm-up and an on-demand build must
+        # not run build_fleet at once (double GPU alloc + concurrent GGUF parsing
+        # thrash). Held only during the build, NOT while routing, so role_ready and
+        # existing-fleet routing stay responsive during a cold start.
+        self._build_lock = threading.Lock()
         # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
         # so they survive a fleet rebuild and attach to every fleet we construct.
         self._on_spawning: Callable[[WorkerRole], None] | None = None
@@ -127,9 +133,28 @@ class FleetProvider:
 
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         with self._lock:
-            if self._fleet is None:
-                self._fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
-            return self._fleet.healthy_clients(role)
+            fleet = self._fleet
+        if fleet is None:
+            fleet = self._build_fleet_once()
+        return fleet.healthy_clients(role)
+
+    def _build_fleet_once(self) -> Fleet:
+        """Build the fleet exactly once across concurrent callers; return it.
+
+        The build runs under ``_build_lock`` (not the routing lock), so the
+        off-thread warm-up and an on-demand call can't run ``build_fleet``
+        concurrently -- which would double-allocate GPU and make two threads
+        parse the same GGUF metadata at once. A second caller blocks on the
+        build lock and reuses the fleet the first one built.
+        """
+        with self._build_lock:
+            with self._lock:
+                if self._fleet is not None:
+                    return self._fleet
+            fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
+            with self._lock:
+                self._fleet = fleet
+            return fleet
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """Healthy clients for *role*, or a user-facing error when none are up.
@@ -446,20 +471,12 @@ class FleetProvider:
         user-facing ProviderError on the next call, not a thread traceback.
         """
         try:
-            fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
+            self._build_fleet_once()
         except Exception:
             log.warning("Fleet warm-up failed; roles will spawn on first use.", exc_info=True)
+        finally:
             with self._lock:
                 self._warming = False
-            return
-        with self._lock:
-            self._warming = False
-            if self._fleet is None:
-                self._fleet = fleet
-                return
-        # A concurrent _server_clients already built one; don't strand the
-        # duplicate's servers (each holds GPU memory).
-        fleet.shutdown()
 
     def cancel_inference(self) -> None:
         """No-op: a llama-server stops generating when its client disconnects.

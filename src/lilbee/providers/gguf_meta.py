@@ -7,6 +7,7 @@ metadata is available to any provider without loading a model into the engine.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from gguf import GGUFReader, GGUFValueType
@@ -76,15 +77,38 @@ def train_ctx_from_meta(
     return value
 
 
+_METADATA_CACHE: dict[tuple[str, int, int], dict[str, str] | None] = {}
+_METADATA_CACHE_LOCK = threading.Lock()
+
+
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read header metadata from a GGUF file with the ``gguf`` parser.
 
-    Returns a dict with keys like ``architecture``, ``context_length``,
-    ``embedding_length``, ``chat_template``, ``file_type``, plus the
-    KV-cache-shape fields (``block_count``, ``head_count_kv``,
-    ``head_count``, ``key_length``, ``value_length``) used to size n_ctx
-    against host memory. ``None`` when the file carries none of them.
+    Cached by ``(path, mtime, size)``: planning reads the same model's metadata
+    several times per fleet build (VRAM estimate, ctx sizing, launch), and
+    ``GGUFReader`` parses the whole header -- including large tokenizer arrays --
+    each time. The cache turns those repeats into one parse and survives across
+    builds; an immutable model file never re-reads. Returns a copy so callers
+    can't mutate the shared entry.
     """
+    try:
+        stat = model_path.stat()
+        key: tuple[str, int, int] | None = (str(model_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = None
+    if key is not None:
+        with _METADATA_CACHE_LOCK:
+            if key in _METADATA_CACHE:
+                cached = _METADATA_CACHE[key]
+                return dict(cached) if cached is not None else None
+    result = _read_gguf_metadata_uncached(model_path)
+    if key is not None:
+        with _METADATA_CACHE_LOCK:
+            _METADATA_CACHE[key] = result
+    return dict(result) if result is not None else None
+
+
+def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
     reader = GGUFReader(str(model_path))
     fields = reader.fields
     result: dict[str, str] = {}

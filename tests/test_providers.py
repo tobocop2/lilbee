@@ -2417,6 +2417,25 @@ class TestReadGgufMetadata:
         with mock.patch("lilbee.providers.gguf_meta.GGUFReader", return_value=reader):
             assert read_gguf_metadata(tmp_path / "model.gguf") is None
 
+    def test_caches_by_path_and_mtime(self, tmp_path: Path) -> None:
+        """A second read of the same file reuses the cache and never re-parses.
+
+        Planning reads each model's metadata several times per build; the cache
+        turns those repeats (each a full GGUFReader parse) into one.
+        """
+        from lilbee.providers import gguf_meta
+
+        path = write_test_gguf(
+            tmp_path / "model.gguf", arch="llama", fields={"llama.context_length": 4096}
+        )
+        gguf_meta._METADATA_CACHE.clear()
+        with mock.patch.object(gguf_meta, "GGUFReader", wraps=gguf_meta.GGUFReader) as spy:
+            first = gguf_meta.read_gguf_metadata(path)
+            second = gguf_meta.read_gguf_metadata(path)
+        assert first == second == {"architecture": "llama", "context_length": "4096"}
+        assert spy.call_count == 1  # parsed once; second call served from cache
+        assert second is not first  # returns a copy so callers can't mutate the entry
+
 
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:
