@@ -1,9 +1,9 @@
-"""End-to-end multi-gpu tests: a real llama-server stub subprocess + real httpx.
+"""End-to-end fleet tests: a real llama-server stub subprocess + real httpx.
 
 These spawn a real stub server in its own process, drive the actual Fleet, client,
 and FleetProvider against it over real sockets, and tear it down. POSIX-only: the
 fleet's process-group teardown is a Unix mechanism (the Windows branch is covered
-by the unit tests in test_multi_gpu_fleet.py).
+by the unit tests in test_fleet_supervisor.py).
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.multi_gpu import provider as prov_mod
-from lilbee.providers.multi_gpu.devices import FleetDevice
-from lilbee.providers.multi_gpu.fleet import Fleet, InstanceLaunch
-from lilbee.providers.multi_gpu.placement import InstancePlan, ModelPlacementInput, Placement
+from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.fleet import Fleet, InstanceLaunch
+from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.roles import WorkerRole
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group lifecycle")

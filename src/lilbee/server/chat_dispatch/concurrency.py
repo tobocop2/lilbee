@@ -25,15 +25,9 @@ def chat_lock() -> asyncio.Lock:
 async def acquire_chat_lock_or_busy(timeout: float | None = None) -> None:
     """Acquire the chat lock, waiting up to *timeout* seconds.
 
-    Raises :class:`ChatBusyError` only when the wait times out (the previous
-    request is still streaming after *timeout*). Returns with the lock held;
-    callers must ``chat_lock().release()`` in a ``finally``.
-
-    Holding the request server-side avoids the 429 storm pattern: opencode's
-    stream-timeout retries enqueue on the lock instead of bouncing back
-    immediately, and a genuinely-stuck request still surfaces a real 429
-    once *timeout* elapses. *timeout* defaults to :data:`DEFAULT_BUSY_WAIT_S`
-    at call time so tests can monkeypatch the module constant.
+    Raises :class:`ChatBusyError` only when the wait times out. Returns with the
+    lock held; callers must ``chat_lock().release()`` in a ``finally``. *timeout*
+    defaults to :data:`DEFAULT_BUSY_WAIT_S` resolved at call time.
     """
     effective_timeout = DEFAULT_BUSY_WAIT_S if timeout is None else timeout
     try:

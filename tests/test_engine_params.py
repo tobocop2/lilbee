@@ -153,12 +153,12 @@ class TestResolveVisionCtx:
 
 
 def test_apply_vulkan_loader_safety_disables_layers_and_icds(monkeypatch) -> None:
-    from lilbee.providers.multi_gpu import gpu_env
-    from lilbee.providers.multi_gpu.gpu_select import VulkanIcdEnvVar
+    from lilbee.providers.fleet import gpu_env
+    from lilbee.providers.fleet.gpu_select import VulkanIcdEnvVar
 
     monkeypatch.setattr(gpu_env.sys, "platform", "linux")
     monkeypatch.setattr(
-        "lilbee.providers.multi_gpu.gpu_select.disable_conflicting_vulkan_icds",
+        "lilbee.providers.fleet.gpu_select.disable_conflicting_vulkan_icds",
         lambda: "/etc/vulkan/icd.d/other.json",
     )
     monkeypatch.delenv(gpu_env._VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)

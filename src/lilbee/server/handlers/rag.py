@@ -28,7 +28,7 @@ from lilbee.retrieval.reasoning import (
     strip_reasoning,
 )
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
+from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -37,8 +37,6 @@ from lilbee.server.chat_dispatch.canonical import (
     TextDelta,
 )
 from lilbee.server.chat_dispatch.dispatch import (
-    ModelDoesNotSupportToolsError,
-    ModelNotFoundError,
     dispatch_chat,
     dispatch_chat_stream,
 )
@@ -62,17 +60,12 @@ log = logging.getLogger(__name__)
 
 def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None, str]:
     """Return ``(code, user_message)`` for an SSE error event, typed-exception aware."""
-    if isinstance(exc, ModelNotFoundError):
-        return CompletionsErrorCode.MODEL_NOT_FOUND, str(exc)
-    if isinstance(exc, ModelDoesNotSupportToolsError):
-        return CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc)
+    classified = classify_provider_error(exc)
+    if classified is not None:
+        return classified.code, classified.message
     if isinstance(exc, ProviderError):
-        if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW:
-            return CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED, str(exc)
-        if exc.kind is ProviderErrorKind.NOT_FOUND:
-            return CompletionsErrorCode.MODEL_NOT_FOUND, str(exc)
-        # A ProviderError already carries a user-facing message (rate limit,
-        # auth, bad model). Surface it verbatim; the kind becomes a
+        # An unmapped ProviderError already carries a user-facing message (rate
+        # limit, auth, bad request). Surface it verbatim; the kind becomes a
         # machine-readable code unless the backend couldn't classify it.
         code = None if exc.kind is ProviderErrorKind.UNKNOWN else exc.kind
         return code, str(exc)

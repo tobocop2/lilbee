@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from lilbee.providers.base import ProviderError
-from lilbee.providers.multi_gpu.client import LlamaServerClient, _parse_sse_delta
+from lilbee.providers.fleet.client import LlamaServerClient, _parse_sse_delta
 
 _STREAM_BODY = (
     'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
@@ -399,7 +399,7 @@ def test_chat_tools_recovers_bare_json_call() -> None:
 
 
 def test_parse_native_tool_calls_skips_malformed() -> None:
-    from lilbee.providers.multi_gpu.client import _parse_native_tool_calls
+    from lilbee.providers.fleet.client import _parse_native_tool_calls
 
     raw = [
         "notadict",
@@ -416,14 +416,14 @@ def test_parse_native_tool_calls_skips_malformed() -> None:
 
 
 def test_parse_native_tool_calls_non_list_returns_empty() -> None:
-    from lilbee.providers.multi_gpu.client import _parse_native_tool_calls
+    from lilbee.providers.fleet.client import _parse_native_tool_calls
 
     assert _parse_native_tool_calls(None) == []
     assert _parse_native_tool_calls("nope") == []
 
 
 def test_arguments_to_str_variants() -> None:
-    from lilbee.providers.multi_gpu.client import _arguments_to_str
+    from lilbee.providers.fleet.client import _arguments_to_str
 
     assert _arguments_to_str('{"a":1}') == '{"a":1}'
     assert _arguments_to_str(None) == "{}"
@@ -431,7 +431,7 @@ def test_arguments_to_str_variants() -> None:
 
 
 def test_recover_bare_json_list_of_calls() -> None:
-    from lilbee.providers.multi_gpu.client import _recover_bare_json_tool_calls
+    from lilbee.providers.fleet.client import _recover_bare_json_tool_calls
 
     result = _recover_bare_json_tool_calls('[{"name":"a"},{"parameters":{"x":1},"name":"b"}]')
     assert [c.name for c in result.tool_calls] == ["a", "b"]
@@ -441,7 +441,7 @@ def test_recover_bare_json_list_of_calls() -> None:
 
 @pytest.mark.parametrize("content", ["hello world", '{"name": ', '{"foo": 1}', "   "])
 def test_recover_bare_json_leaves_non_calls_as_text(content: str) -> None:
-    from lilbee.providers.multi_gpu.client import _recover_bare_json_tool_calls
+    from lilbee.providers.fleet.client import _recover_bare_json_tool_calls
 
     result = _recover_bare_json_tool_calls(content)
     assert result.content == content
@@ -607,7 +607,7 @@ def test_chat_stream_items_forwards_tool_choice() -> None:
 
 def test_coerce_finish_reason_non_string_is_stop() -> None:
     from lilbee.providers.base import FinishReason
-    from lilbee.providers.multi_gpu.client import _coerce_finish_reason
+    from lilbee.providers.fleet.client import _coerce_finish_reason
 
     # A missing finish_reason (None) or any non-string falls back to STOP.
     assert _coerce_finish_reason(None) is FinishReason.STOP
@@ -615,12 +615,12 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
 
 
 def test_parse_sse_stream_items_skips_malformed_json() -> None:
-    from lilbee.providers.multi_gpu.client import _parse_sse_stream_items
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     assert list(_parse_sse_stream_items("data: {not json")) == []
 
 
 def test_parse_sse_stream_items_skips_empty_choices() -> None:
-    from lilbee.providers.multi_gpu.client import _parse_sse_stream_items
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     assert list(_parse_sse_stream_items('data: {"choices": []}')) == []

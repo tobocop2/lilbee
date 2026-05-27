@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.multi_gpu import devices as dev_mod
-from lilbee.providers.multi_gpu.devices import (
+from lilbee.providers.fleet import devices as dev_mod
+from lilbee.providers.fleet.devices import (
     FleetDevice,
     probe_devices,
     visible_env,

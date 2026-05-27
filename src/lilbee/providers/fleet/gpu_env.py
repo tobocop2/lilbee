@@ -51,14 +51,12 @@ _VK_LOADER_LAYERS_DISABLE_VALUE = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS)
 def _apply_vulkan_loader_safety() -> None:
     """Disable known-crashing overlay layers and conflicting dual-vendor ICDs.
 
-    Must precede every ``vkCreateInstance`` (the llama-server subprocess
-    inherits this process's environment). The loader loads every registered ICD
-    and implicit layer at instance creation, before ``GGML_VK_VISIBLE_DEVICES``
-    is consulted, so device pinning alone cannot prevent a buggy second-vendor
-    ICD or overlay layer from corrupting the heap. ``setdefault`` preserves any
-    user-set value; the loader composes our globs with the user's own tokens.
+    Must precede every ``vkCreateInstance``: the loader loads every ICD and layer
+    at instance creation, before ``GGML_VK_VISIBLE_DEVICES`` is consulted, so
+    device pinning alone cannot stop a buggy second-vendor ICD from corrupting the
+    heap. ``setdefault`` preserves any user-set value.
     """
-    from lilbee.providers.multi_gpu.gpu_select import (
+    from lilbee.providers.fleet.gpu_select import (
         VulkanIcdEnvVar,
         disable_conflicting_vulkan_icds,
     )
@@ -91,13 +89,10 @@ def _apply_gpu_devices_pin() -> bool:
 def apply_fleet_gpu_env() -> None:
     """Fleet engine bootstrap: loader safety plus the ``cfg.gpu_devices`` pin only.
 
-    The single-device Vulkan autodetect is intentionally skipped here. The fleet
-    selects devices through its own placement (``probe_devices`` reads the
-    binary's native index space, then ``plan_placement`` bin-packs roles across
-    them). Running the in-process autodetect would pin ``GGML_VK_VISIBLE_DEVICES``
-    to one adapter before that probe runs and hide every other GPU from
-    placement. A ``cfg.gpu_devices`` pin is still honored: ``probe_devices``
-    inherits this environment, so the binary enumerates only the pinned devices.
+    The single-device Vulkan autodetect is skipped: the fleet selects devices via
+    its own placement, and autodetect would pin ``GGML_VK_VISIBLE_DEVICES`` to one
+    adapter before ``probe_devices`` runs and hide every other GPU. A
+    ``cfg.gpu_devices`` pin is still honored (the probe inherits this environment).
     """
     _apply_vulkan_loader_safety()
     _apply_gpu_devices_pin()

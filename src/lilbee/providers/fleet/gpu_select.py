@@ -1,28 +1,10 @@
 """Best-GPU autodetection for the Vulkan backend.
 
-On a host with multiple GPUs (typical dual-GPU laptop: discrete NVIDIA
-plus integrated AMD/Intel), Vulkan device ordering is driver- and
-OS-dependent. llama.cpp's Vulkan backend enumerates all discrete AND
-integrated adapters in the order Vulkan's ICD loader returns them
-(see ``ggml-vulkan.cpp::ggml_vk_instance_init``: both
-``eDiscreteGpu`` and ``eIntegratedGpu`` are added without sorting),
-so a model can land on the integrated GPU and stall against shared
-system memory.
-
-This module probes the Vulkan loader directly via ``ctypes`` to
-enumerate adapters, ranks them by ``VkPhysicalDeviceType`` (discrete
-> integrated > virtual > CPU), and returns the index that should be
-pinned via ``GGML_VK_VISIBLE_DEVICES``. Going through ``ctypes``
-instead of a subprocess avoids any dependency on the Vulkan SDK
-(``vulkaninfo`` isn't installed on stock Windows or macOS), so the
-autodetect works on every machine that already has a Vulkan driver.
-
-CUDA and ROCm enumeration are deliberately out of scope: CUDA only
-sees NVIDIA devices and HIP/ROCm only sees AMD devices, so neither
-backend exhibits the dual-GPU mis-pick problem. The Vulkan probe
-result is applied to ``GGML_VK_VISIBLE_DEVICES`` alone; applying it
-to ``CUDA_VISIBLE_DEVICES`` would risk hiding the only CUDA device
-on a CUDA wheel + dual-GPU host.
+Vulkan enumerates discrete and integrated adapters without sorting, so a model
+can land on the integrated GPU. This module probes the loader via ``ctypes``,
+ranks adapters by type (discrete > integrated > virtual > CPU), and returns the
+index to pin via ``GGML_VK_VISIBLE_DEVICES``. CUDA/ROCm are out of scope: each
+sees only its vendor's devices, so neither hits the dual-GPU mis-pick.
 """
 
 from __future__ import annotations
@@ -38,7 +20,7 @@ from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
-from lilbee.providers.multi_gpu.vulkan_icd_discovery import (
+from lilbee.providers.fleet.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
 )
 
@@ -483,7 +465,7 @@ def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
 _MIN_VENDORS_FOR_CONFLICT = 2
 
 # Pin priority on dual-vendor hosts. NVIDIA wins because the documented
-# crash signature is AMDVLK alongside NVIDIA (b473 QA, Khronos forum,
+# crash signature is AMDVLK alongside NVIDIA (Khronos forum,
 # SHARK-Studio#1636) and NVIDIA is the more common dGPU on those boxes.
 # AMD-then-Intel covers AMD-discrete + Intel-iGPU laptops.
 _PREFERRED_VENDOR_ORDER: tuple[PCIVendorID, ...] = (
@@ -563,16 +545,11 @@ def _platform_supports_icd_pin() -> bool:
 def disable_conflicting_vulkan_icds() -> str | None:
     """Manifest-filename glob list of non-preferred ICDs to disable, or ``None``.
 
-    Preferred-vendor order is NVIDIA > AMD > Intel. Returns ``None`` (defer
-    to the loader's default) when the platform has no documented dual-vendor
-    crash class, when the user has already chosen a GPU via any Vulkan ICD
-    env var or ``cfg.gpu_devices``, or when discovery finds at most one
-    known vendor.
-
-    Discovery reads installed manifests from the registry (Windows) or the
-    XDG hierarchy (Linux). Calling ``vkCreateInstance`` to enumerate would
-    pre-load every vendor's ICD before the disable arrives -- on the b473
-    QA box, AMDVLK self-pinned its DLL and the disable landed too late.
+    Preferred-vendor order is NVIDIA > AMD > Intel. Returns ``None`` when the
+    user has pinned a GPU, when fewer than two vendors are present, or when the
+    platform has no documented dual-vendor crash class. Discovery reads manifests
+    from disk (registry on Windows, XDG on Linux); enumerating via
+    ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
     from lilbee.core.config import cfg
 

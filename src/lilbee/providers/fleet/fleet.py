@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.providers.multi_gpu.client import LlamaServerClient
+from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)

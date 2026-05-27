@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
+from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.roles import WorkerRole
 
 
@@ -179,7 +179,7 @@ def test_build_argv_omits_optional_flags_by_default() -> None:
 
 
 def test_chat_server_spec_enables_jinja() -> None:
-    from lilbee.providers.multi_gpu.adapters import ROLE_SPECS
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
     from lilbee.providers.roles import WorkerRole
 
     # --jinja is what makes the chat server render the model template and parse

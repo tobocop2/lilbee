@@ -123,7 +123,7 @@ flowchart TD
 ## Local inference engine
 
 The local engine is a managed `llama-server` fleet (`FleetProvider`,
-`src/lilbee/providers/multi_gpu/`): lilbee starts one `llama-server` per
+`src/lilbee/providers/fleet/`): lilbee starts one `llama-server` per
 configured role, routes each call to the least-busy healthy server for that role,
 and tears them down on exit. A single machine is a fleet-of-one; the same code
 scales to N GPUs by bin-packing models across them. There is no separate engine to

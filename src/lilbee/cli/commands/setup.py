@@ -26,7 +26,7 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
-    from lilbee.providers.multi_gpu.fleet import FleetServer
+    from lilbee.providers.fleet.fleet import FleetServer
 
 _SELF_CHECK_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _SELF_CHECK_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -118,13 +118,13 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
         resolve_chat_ctx,
         resolve_n_gpu_layers,
     )
-    from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
-    from lilbee.providers.multi_gpu.adapters import ROLE_SPECS, build_server_argv
-    from lilbee.providers.multi_gpu.binary import (
+    from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+    from lilbee.providers.fleet.binary import (
         llama_server_runtime_env,
         resolve_llama_server_binary,
     )
-    from lilbee.providers.multi_gpu.fleet import FleetServer, InstanceLaunch
+    from lilbee.providers.fleet.fleet import FleetServer, InstanceLaunch
+    from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 
     meta = read_gguf_metadata(model_path)
     is_embed = role is WorkerRole.EMBED

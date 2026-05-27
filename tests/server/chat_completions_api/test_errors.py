@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.server.chat_completions_api.errors import (
     COMPLETIONS_ERROR_TYPES,
     CompletionsErrorCode,
+    classify_provider_error,
     completions_error_body,
+)
+from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
 )
 
 
@@ -57,3 +63,43 @@ class TestInvalidCodeRejected:
     def test_bare_string_not_in_enum_raises_key_error(self) -> None:
         with pytest.raises(KeyError):
             completions_error_body("zzz_unknown", "wat")  # type: ignore[arg-type]
+
+
+class TestClassifyProviderError:
+    def test_model_not_found_error_maps_to_404(self) -> None:
+        result = classify_provider_error(ModelNotFoundError("foo"))
+        assert result is not None
+        assert result.http_status == 404
+        assert result.code == CompletionsErrorCode.MODEL_NOT_FOUND
+        assert "foo" in result.message
+
+    def test_no_tool_support_error_maps_to_400(self) -> None:
+        result = classify_provider_error(ModelDoesNotSupportToolsError("foo"))
+        assert result is not None
+        assert result.http_status == 400
+        assert result.code == CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS
+
+    def test_context_overflow_maps_to_400(self) -> None:
+        result = classify_provider_error(
+            ProviderError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+        )
+        assert result is not None
+        assert result.http_status == 400
+        assert result.code == CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED
+        assert result.message == "too long"
+
+    def test_provider_not_found_maps_to_404(self) -> None:
+        result = classify_provider_error(ProviderError("missing", kind=ProviderErrorKind.NOT_FOUND))
+        assert result is not None
+        assert result.http_status == 404
+        assert result.code == CompletionsErrorCode.MODEL_NOT_FOUND
+
+    @pytest.mark.parametrize(
+        "kind",
+        [ProviderErrorKind.AUTH, ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.UNKNOWN],
+    )
+    def test_unmapped_provider_kinds_return_none(self, kind) -> None:
+        assert classify_provider_error(ProviderError("x", kind=kind)) is None
+
+    def test_unrelated_exception_returns_none(self) -> None:
+        assert classify_provider_error(ValueError("nope")) is None

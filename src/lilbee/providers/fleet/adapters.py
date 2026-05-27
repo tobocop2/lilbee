@@ -79,18 +79,8 @@ def build_server_argv(
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
-    The port is claimed and appended at spawn time (avoiding a batch-allocation
-    race). Single-device instances are pinned via the visible-device env in the
-    child (so no split flag); multi-device instances split across the placement's
-    GPUs by ``tensor_split`` (per-device proportion), so unequal cards split by
-    capacity rather than evenly. ``--ctx-size`` is the per-slot context times the
-    slot count, since llama-server divides total context across parallel slots.
-
-    The optional flags mirror the in-process loader for the same role+config:
-    ``flash_attn`` (``on``/``off``) and ``cache_type`` apply to chat;
-    ``batch_size`` sets ``--batch-size``/``--ubatch-size`` for embed/rerank (the
-    server caps embeddings at ``n_ubatch``, default 512, so a full-context embed
-    needs both raised); ``threads`` matches the vision loader's full-core setting.
+    ``--ctx-size`` is the per-slot context times the slot count, since
+    llama-server divides total context across parallel slots.
     """
     argv = [
         str(binary),

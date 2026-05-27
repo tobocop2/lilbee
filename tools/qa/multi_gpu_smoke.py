@@ -54,8 +54,8 @@ def nvidia_smi_free_mib() -> dict[int, int]:
 
 
 def _check_enumeration() -> None:
-    from lilbee.providers.multi_gpu.binary import resolve_llama_server_binary
-    from lilbee.providers.multi_gpu.devices import probe_devices
+    from lilbee.providers.fleet.binary import resolve_llama_server_binary
+    from lilbee.providers.fleet.devices import probe_devices
 
     binary = resolve_llama_server_binary()
     print(f"[1] binary: {binary}")
@@ -77,7 +77,7 @@ def _build_provider() -> object:
     from lilbee.app.services import get_services, reset_services
     from lilbee.core.config import cfg
     from lilbee.core.config.enums import LlmProvider
-    from lilbee.providers.multi_gpu.provider import FleetProvider
+    from lilbee.providers.fleet.provider import FleetProvider
 
     cfg.llm_provider = LlmProvider.MULTI_GPU
     reset_services()

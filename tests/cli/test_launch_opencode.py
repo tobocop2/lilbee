@@ -246,7 +246,9 @@ def test_launch_opencode_picker_state_dedupes_prior_lilbee_entries(tmp_path):
     assert state["recent"][1] == {"providerID": "anthropic", "modelID": "claude-3-5-sonnet"}
 
 
-def test_launch_opencode_skips_picker_state_on_windows(tmp_path):
+def test_launch_opencode_updates_picker_state_on_windows(tmp_path):
+    # opencode uses the same XDG-style state path on every platform, so the
+    # picker state is written on Windows too (no platform skip).
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
@@ -258,7 +260,9 @@ def test_launch_opencode_skips_picker_state_on_windows(tmp_path):
         runner.invoke(app, ["launch", "opencode"])
 
     state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    assert not state_path.exists()
+    assert state_path.exists()
+    state = json.loads(state_path.read_text())
+    assert state["recent"][0] == {"providerID": "lilbee", "modelID": _CHAT_REF}
 
 
 def test_launch_opencode_picker_state_recovers_from_corrupt_file(tmp_path):
@@ -564,6 +568,86 @@ def test_stop_spawned_server_noop_when_process_already_exited():
     fake_proc.poll.return_value = 0
     launch_mod.stop_spawned_server(fake_proc)
     fake_proc.terminate.assert_not_called()
+
+
+def _setup_marker(tmp_path: Path) -> Path:
+    return tmp_path / "data" / "launchers" / "opencode-setup.json"
+
+
+def test_launch_opencode_first_run_records_setup_marker(tmp_path):
+    # Non-TTY (CliRunner): invoking launch is consent; the marker is recorded.
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 0
+    assert _setup_marker(tmp_path).exists()
+    assert "First-time opencode setup will write" in result.stdout
+
+
+def test_launch_opencode_skips_prompt_when_marker_present(tmp_path):
+    # A recorded marker means later launches do not re-print the setup plan.
+    _write_server_session()
+    marker = _setup_marker(tmp_path)
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"accepted": True}))
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 0
+    assert "First-time opencode setup will write" not in result.stdout
+
+
+def test_launch_opencode_interactive_accept_runs_setup(tmp_path):
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.opencode.typer.confirm", return_value=True),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed) as run,
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 0
+    run.assert_called_once()
+    assert _setup_marker(tmp_path).exists()
+
+
+def test_launch_opencode_interactive_decline_skips_setup_and_launch(tmp_path):
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.opencode.typer.confirm", return_value=False),
+        patch("lilbee.cli.launchers.launcher.subprocess.run") as run,
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 0
+    run.assert_not_called()  # declined: opencode is not launched
+    assert not config_path.exists()  # no config written
+    assert not _setup_marker(tmp_path).exists()  # decline is not remembered
+
+
+def test_launch_opencode_yes_flag_skips_prompt_when_interactive(tmp_path):
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.opencode._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.opencode.typer.confirm") as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "opencode", "--yes"])
+    assert result.exit_code == 0
+    confirm.assert_not_called()  # --yes bypasses the prompt
+    assert _setup_marker(tmp_path).exists()
 
 
 def test_launch_opencode_propagates_opencode_exit_code():

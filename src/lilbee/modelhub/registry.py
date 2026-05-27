@@ -261,16 +261,8 @@ class ModelRegistry:
     def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
         """Return the snapshot *symlink* path for a cached GGUF, or None.
 
-        HF caches a file at ``snapshots/<rev>/[<subdir>/]<name>`` as a symlink to
-        a content-hashed blob. ``try_to_load_from_cache`` needs the exact
-        repo-relative name, but lilbee keys models by basename, so an unsloth-style
-        quant in a ``Q4_K_M/`` subdir misses the exact lookup; fall back to finding
-        the basename anywhere in the repo's snapshot tree.
-
-        Unlike :meth:`_find_cached_gguf` this returns the *symlink*, not its blob:
-        a split GGUF must load from the snapshot path so llama.cpp finds its
-        sibling shards (``-0000k-of-0000N``) co-located under their real names,
-        which only the snapshot dir provides (blobs are named by hash).
+        Returns the symlink, not the blob, so a split GGUF loads from a dir where
+        its sibling shards are co-located under their real names.
         """
         from huggingface_hub import try_to_load_from_cache
 

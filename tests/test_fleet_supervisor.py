@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.multi_gpu import fleet as fleet_mod
-from lilbee.providers.multi_gpu.fleet import (
+from lilbee.providers.fleet import fleet as fleet_mod
+from lilbee.providers.fleet.fleet import (
     Fleet,
     FleetServer,
     InstanceLaunch,

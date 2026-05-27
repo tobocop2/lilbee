@@ -48,7 +48,7 @@ class RoutingProvider(LLMProvider):
         if self._local is None:
             # heavy: FleetProvider composes the llama-server stack and spawns
             # the role servers on first use.
-            from lilbee.providers.multi_gpu.provider import FleetProvider
+            from lilbee.providers.fleet.provider import FleetProvider
 
             self._local = FleetProvider()
         return self._local

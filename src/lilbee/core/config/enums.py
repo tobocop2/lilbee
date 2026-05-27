@@ -15,8 +15,7 @@ class LlmProvider(StrEnum):
 
     ``auto`` prefix-routes: native GGUF refs to the local llama-server engine,
     remote-prefixed refs (``ollama/``, ``openai/``, ...) to the SDK backend.
-    ``remote`` forces the SDK backend. The retired ``llama-cpp`` and ``multi-gpu``
-    values canonicalize to ``auto`` at the config write boundary.
+    ``remote`` forces the SDK backend.
     """
 
     AUTO = "auto"

@@ -1074,3 +1074,22 @@ class TestRouteDispatchErrorBranches:
         frames = [frame async for frame in _gated_completions_stream(req, lock)]
         joined = b"".join(frames).decode()
         assert "model_does_not_support_tools" in joined
+
+    def test_preflush_reraises_unclassified_preflight_error(self, monkeypatch) -> None:
+        # Preflight only raises classifiable typed errors today; if it ever
+        # raised something else, the route re-raises rather than masking it.
+        from lilbee.server.chat_completions_api.routes import _preflush_or_none
+        from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
+
+        def _raise(req: object) -> str:
+            raise RuntimeError("unexpected preflight failure")
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.preflight_chat_request", _raise
+        )
+        req = CanonicalChatRequest(
+            model="vendor/m",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+        )
+        with pytest.raises(RuntimeError, match="unexpected preflight failure"):
+            _preflush_or_none(req)

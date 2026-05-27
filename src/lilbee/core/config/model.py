@@ -35,10 +35,6 @@ log = logging.getLogger(__name__)
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
 
-# Retired ``llm_provider`` strings that now mean "use the local llama-server
-# engine"; canonicalized to ``auto`` in the field validator.
-_RETIRED_LOCAL_PROVIDERS = frozenset({"llama-cpp", "multi-gpu"})
-
 
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
@@ -324,7 +320,7 @@ class Config(BaseSettings):
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
     # only take effect after a restart). ``None`` (default) hands off
-    # to the autodetect in ``providers/multi_gpu/gpu_select.py``,
+    # to the autodetect in ``providers/fleet/gpu_select.py``,
     # which parses ``vulkaninfo --summary`` and pins the discrete
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
@@ -559,20 +555,6 @@ class Config(BaseSettings):
     def _empty_string_to_none(cls, v: Any) -> Any:
         if isinstance(v, str) and v.strip() == "":
             return None
-        return v
-
-    @field_validator("llm_provider", mode="before")
-    @classmethod
-    def _canonicalize_llm_provider(cls, v: Any) -> Any:
-        """Map the retired ``llama-cpp`` / ``multi-gpu`` values to ``auto``.
-
-        Both meant "use the local engine"; llama-server is now that engine for
-        every local ref, so persisted configs carrying the old strings load as
-        ``auto`` instead of failing the enum. Canonicalized once here at the
-        write boundary, never via a read-path fallback.
-        """
-        if isinstance(v, str) and v.strip().lower() in _RETIRED_LOCAL_PROVIDERS:
-            return LlmProvider.AUTO.value
         return v
 
     @field_validator("chat_mode", mode="before")

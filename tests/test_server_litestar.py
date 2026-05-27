@@ -205,6 +205,18 @@ class TestAskRoute:
         assert resp.status_code == 400
         assert "9000" in resp.text
 
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_not_found_provider_error_returns_404(self, mock_ask, client):
+        # A NOT_FOUND ProviderError (e.g. a role model isn't installed) maps to
+        # 404, matching the typed ModelNotFoundError path through one classifier.
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_ask.side_effect = ProviderError(
+            "embed model missing", kind=ProviderErrorKind.NOT_FOUND
+        )
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 404
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")

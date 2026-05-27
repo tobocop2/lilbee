@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal stand-in for llama-server, used by the multi-gpu integration tests.
+"""Minimal stand-in for llama-server, used by the fleet integration tests.
 
 Parses ``--port`` from argv, ignores every other llama-server flag, and serves
 the subset of the OpenAI surface the fleet calls: ``/health``,

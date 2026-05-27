@@ -16,10 +16,10 @@ from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
-from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
+    classify_provider_error,
     completions_error_body,
 )
 from lilbee.server.chat_completions_api.models import (
@@ -41,8 +41,6 @@ from lilbee.server.chat_dispatch.concurrency import (
     chat_lock,
 )
 from lilbee.server.chat_dispatch.dispatch import (
-    ModelDoesNotSupportToolsError,
-    ModelNotFoundError,
     dispatch_chat,
     dispatch_chat_stream,
     preflight_chat_request,
@@ -121,30 +119,19 @@ def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
     """
     try:
         preflight_chat_request(req)
-    except ModelNotFoundError as exc:
-        return _error_response(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
-    except ModelDoesNotSupportToolsError as exc:
-        return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
+    except Exception as exc:  # typed dispatch errors only; classify or re-raise
+        classified = classify_provider_error(exc)
+        if classified is None:
+            raise
+        return _error_response(classified.http_status, classified.code, classified.message)
     return None
 
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
 
-# A ProviderError whose kind maps to a typed client error; anything else (auth,
-# rate-limit at this surface, unknown) is an internal_error 500. NOT_FOUND covers
-# a fleet role model (chat or, e.g., the default embed model) that isn't installed.
-_PROVIDER_ERROR_CLIENT_CODES: dict[ProviderErrorKind, tuple[int, CompletionsErrorCode]] = {
-    ProviderErrorKind.CONTEXT_OVERFLOW: (400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED),
-    ProviderErrorKind.NOT_FOUND: (404, CompletionsErrorCode.MODEL_NOT_FOUND),
-}
 
-
-def _provider_error_response(exc: ProviderError) -> Response:
-    """Map a ProviderError to a typed 4xx, or an internal_error 500 envelope."""
-    mapped = _PROVIDER_ERROR_CLIENT_CODES.get(exc.kind)
-    if mapped is not None:
-        status, code = mapped
-        return _error_response(status, code, str(exc))
+def _internal_error_response() -> Response:
+    """Log and return the generic internal_error 500 envelope."""
     log.exception("chat_completions_endpoint failed")
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
@@ -153,15 +140,11 @@ async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Resp
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
         resp = dispatch_chat(req)
-    except ModelNotFoundError as exc:
-        return _error_response(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
-    except ModelDoesNotSupportToolsError as exc:
-        return _error_response(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-    except ProviderError as exc:
-        return _provider_error_response(exc)
-    except Exception:
-        log.exception("chat_completions_endpoint failed")
-        return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        if classified is None:
+            return _internal_error_response()
+        return _error_response(classified.http_status, classified.code, classified.message)
     finally:
         lock.release()
     body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
@@ -187,21 +170,13 @@ async def _gated_completions_stream(
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame
-        except ModelNotFoundError as exc:
-            yield _sse_error_frame(CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
-        except ModelDoesNotSupportToolsError as exc:
-            yield _sse_error_frame(CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
-        except ProviderError as exc:
-            mapped = _PROVIDER_ERROR_CLIENT_CODES.get(exc.kind)
-            if mapped is not None:
-                _status, code = mapped
-                yield _sse_error_frame(code, str(exc))
-            else:
+        except Exception as exc:
+            classified = classify_provider_error(exc)
+            if classified is None:
                 log.exception("chat_completions stream failed")
                 yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
-        except Exception:
-            log.exception("chat_completions stream failed")
-            yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
+            else:
+                yield _sse_error_frame(classified.code, classified.message)
     finally:
         lock.release()
 
@@ -209,14 +184,9 @@ async def _gated_completions_stream(
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
     """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
 
-    Clients that follow OpenAI's streaming SDK (opencode, aider, the ai-sdk
-    family) only parse frames that match the chat.completion.chunk schema;
-    a bare ``{"error": ...}`` frame either crashes the parser or is silently
-    discarded, producing a reconnect/retry storm. Emit a real chunk with an
-    empty delta, ``finish_reason="length"`` (the only termination reason
-    every client maps to a visible "the model stopped" UX), and an inline
-    ``error`` field for clients that look at it. ``[DONE]`` follows, which
-    is what every OAI-compatible SDK expects to see at stream end.
+    OpenAI-SDK clients only parse ``chat.completion.chunk``-shaped frames, so the
+    error rides a real chunk (empty delta, ``finish_reason="length"``, inline
+    ``error`` field) followed by ``[DONE]`` rather than a bare error frame.
     """
     body = completions_error_body(code, message)
     chunk: dict[str, object] = {

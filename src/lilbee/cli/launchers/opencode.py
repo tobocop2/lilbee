@@ -10,15 +10,19 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, TypedDict
 
+import typer
+
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import run_launcher
 from lilbee.cli.launchers.server import LOOPBACK
+from lilbee.core.config import cfg
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
 _SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
 _OPENCODE_PROVIDER_ID = "lilbee"
 _OPENCODE_CONFIG_ENV_VAR = "OPENCODE_CONFIG_CONTENT"
 _PICKER_STATE_RECENT_CAP = 10
+_SETUP_MARKER_NAME = "opencode-setup.json"
 
 
 def _opencode_config_path() -> Path:
@@ -45,6 +49,59 @@ def _opencode_state_file() -> Path:
     return Path.home() / ".local" / "state" / "opencode" / "model.json"
 
 
+def _setup_marker_path() -> Path:
+    """lilbee's record that opencode setup already ran (so launch doesn't re-prompt)."""
+    return cfg.data_dir / "launchers" / _SETUP_MARKER_NAME
+
+
+def _setup_recorded() -> bool:
+    return _setup_marker_path().exists()
+
+
+def _record_setup() -> None:
+    """Persist that the user accepted opencode setup; idempotent."""
+    path = _setup_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"accepted": True}), encoding="utf-8")
+
+
+def _print_setup_plan() -> None:
+    """Tell the user exactly which files the first-run setup writes."""
+    typer.secho("First-time opencode setup will write:", fg=typer.colors.CYAN)
+    typer.echo(f"  - lilbee MCP skill -> {_opencode_skill_dest()}")
+    typer.echo(f"  - provider + MCP config -> {_opencode_config_path()}")
+    typer.echo(f"  - model picker state -> {_opencode_state_file()}")
+    typer.echo(
+        "Each write is skipped if already present. To undo, delete the skill dir "
+        "and the `lilbee` keys in opencode.json."
+    )
+
+
+def _is_interactive() -> bool:
+    """True when stdin is a TTY, so a confirmation prompt can be answered."""
+    return sys.stdin.isatty()
+
+
+def _confirm_setup(assume_yes: bool) -> bool:
+    """Prompt before the first opencode setup; True means proceed.
+
+    Skipped when already recorded, when *assume_yes* is set, or when stdin is
+    not a TTY (scripts/CI: invoking ``launch opencode`` is the consent there).
+    The choice is remembered so later launches don't re-prompt.
+    """
+    if _setup_recorded():
+        return True
+    _print_setup_plan()
+    if assume_yes or not _is_interactive():
+        _record_setup()
+        return True
+    if not typer.confirm("Proceed with opencode setup?", default=True):
+        typer.secho("Skipped opencode setup.", fg=typer.colors.YELLOW)
+        return False
+    _record_setup()
+    return True
+
+
 def _install_lilbee_skill() -> Path | None:
     """Copy the bundled lilbee MCP skill into opencode's global skills dir.
 
@@ -65,9 +122,10 @@ def _install_lilbee_skill() -> Path | None:
 def _update_opencode_picker_state(model_refs: list[str]) -> Path | None:
     """Make lilbee models appear in opencode's model picker on first run.
 
-    Skipped on Windows where opencode stores state at a different path.
+    opencode uses the same XDG-style state path on every platform, so this runs
+    everywhere; a no-op when there are no installed models.
     """
-    if sys.platform.startswith("win") or not model_refs:
+    if not model_refs:
         return None
     path = _opencode_state_file()
     state = _read_opencode_state(path)
@@ -160,12 +218,17 @@ class OpencodeLauncher:
     name = "opencode"
     install_hint = _OPENCODE_INSTALL_HINT
 
+    def __init__(self, *, assume_yes: bool = False) -> None:
+        self._assume_yes = assume_yes
+
     def find_binary(self) -> str | None:
         return shutil.which("opencode")
 
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
     ) -> tuple[list[str], dict[str, str]]:
+        if not _confirm_setup(self._assume_yes):
+            raise typer.Exit(0)
         _install_lilbee_skill()
         _update_opencode_picker_state(model_refs)
         block = opencode_config(
@@ -182,6 +245,10 @@ class OpencodeLauncher:
         return ([], env)
 
 
-def opencode_cmd() -> None:
+def opencode_cmd(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the first-run setup prompt (for scripts)."
+    ),
+) -> None:
     """Launch opencode with lilbee as its model provider."""
-    run_launcher(OpencodeLauncher())
+    run_launcher(OpencodeLauncher(assume_yes=yes))

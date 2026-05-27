@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
+)
 
 
 class CompletionsErrorCode(StrEnum):
@@ -38,3 +45,37 @@ def completions_error_body(code: CompletionsErrorCode, message: str) -> dict[str
             "code": str(code),
         }
     }
+
+
+@dataclass(frozen=True)
+class ClassifiedError:
+    """A typed provider/dispatch failure mapped to its client-facing shape."""
+
+    http_status: int
+    code: CompletionsErrorCode
+    message: str
+
+
+_PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsErrorCode]] = {
+    ProviderErrorKind.CONTEXT_OVERFLOW: (400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED),
+    ProviderErrorKind.NOT_FOUND: (404, CompletionsErrorCode.MODEL_NOT_FOUND),
+}
+
+
+def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
+    """Map a typed dispatch/provider failure to ``(status, code, message)``, or None.
+
+    Returns None for any exception that isn't a recognized typed dispatch error
+    or a ProviderError with a client-mappable kind; callers apply their own
+    generic fallback (internal_error 500 / service-unavailable 503).
+    """
+    if isinstance(exc, ModelNotFoundError):
+        return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
+    if isinstance(exc, ModelDoesNotSupportToolsError):
+        return ClassifiedError(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
+    if isinstance(exc, ProviderError):
+        mapped = _PROVIDER_KIND_CLASSIFICATIONS.get(exc.kind)
+        if mapped is not None:
+            status, code = mapped
+            return ClassifiedError(status, code, str(exc))
+    return None

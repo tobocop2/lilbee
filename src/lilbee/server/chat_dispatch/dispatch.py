@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.app.services import get_services
-from lilbee.providers.base import FinishReason, TokenUsage, ToolCallDelta
+from lilbee.providers.base import ChatResult, FinishReason, TokenUsage, ToolCallDelta
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -85,19 +85,19 @@ class _OpenBlockKind(StrEnum):
     TOOL = "tool"
 
 
-def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
-    """Run a non-streaming chat request through the provider and return canonical output."""
-    canonical_model = _resolve_canonical_model(req.model)
-    _ensure_tool_capability(req, canonical_model)
+def _provider_chat_kwargs(req: CanonicalChatRequest, canonical_model: str) -> dict[str, Any]:
+    """Shared provider.chat keyword arguments for both stream and non-stream paths."""
+    return {
+        "messages": _provider_messages(req),
+        "options": _provider_options(req),
+        "model": canonical_model,
+        "tools": _provider_tools(req.tools),
+        "tool_choice": _provider_tool_choice(req.tool_choice),
+    }
 
-    provider = get_services().provider
-    result = provider.chat(
-        messages=_provider_messages(req),
-        options=_provider_options(req),
-        model=canonical_model,
-        tools=_provider_tools(req.tools),
-        tool_choice=_provider_tool_choice(req.tool_choice),
-    )
+
+def _content_blocks_from_result(result: ChatResult) -> list[ContentBlock]:
+    """Build canonical content blocks from a non-streaming provider result."""
     content: list[ContentBlock] = []
     if result.text:
         content.append(TextBlock(text=result.text))
@@ -109,11 +109,17 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
                 input=parse_tool_arguments(call.arguments),
             )
         )
+    return content
 
+
+def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
+    """Run a non-streaming chat request through the provider and return canonical output."""
+    canonical_model = preflight_chat_request(req)
+    result = get_services().provider.chat(**_provider_chat_kwargs(req, canonical_model))
     return CanonicalResponse(
         id=_new_message_id(),
         model=canonical_model,
-        content=content,
+        content=_content_blocks_from_result(result),
         stop_reason=_FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN),
         usage=CanonicalUsage(
             input_tokens=result.usage.prompt_tokens,
@@ -126,17 +132,9 @@ async def dispatch_chat_stream(
     req: CanonicalChatRequest,
 ) -> AsyncIterator[CanonicalStreamEvent]:
     """Stream a canonical event sequence by translating provider frames on the fly."""
-    canonical_model = _resolve_canonical_model(req.model)
-    _ensure_tool_capability(req, canonical_model)
-
-    provider = get_services().provider
-    stream = provider.chat(
-        messages=_provider_messages(req),
-        stream=True,
-        options=_provider_options(req),
-        model=canonical_model,
-        tools=_provider_tools(req.tools),
-        tool_choice=_provider_tool_choice(req.tool_choice),
+    canonical_model = preflight_chat_request(req)
+    stream = get_services().provider.chat(
+        stream=True, **_provider_chat_kwargs(req, canonical_model)
     )
     try:
         yield MessageStart(id=_new_message_id(), model=canonical_model)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import NoReturn
 
 from litestar import get, post
 from litestar.exceptions import HTTPException, ValidationException
@@ -11,24 +12,35 @@ from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import scope_to_chunk_type
-from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
+from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     acquire_chat_lock_or_busy,
     chat_lock,
-)
-from lilbee.server.chat_dispatch.dispatch import (
-    ModelDoesNotSupportToolsError,
-    ModelNotFoundError,
 )
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
 )
+
+_SERVICE_UNAVAILABLE_STATUS = 503
+
+
+def _raise_chat_http_error(exc: Exception) -> NoReturn:
+    """Translate a chat/RAG failure into the Litestar HTTP envelope.
+
+    ValueError is a 422 validation error; a recognized typed dispatch/provider
+    failure carries its own status; anything else is a 503.
+    """
+    if isinstance(exc, ValueError):
+        raise ValidationException(str(exc)) from exc
+    classified = classify_provider_error(exc)
+    status = classified.http_status if classified is not None else _SERVICE_UNAVAILABLE_STATUS
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 async def _acquire_chat_lock_or_raise() -> None:
@@ -86,17 +98,8 @@ async def ask_route(data: AskRequest) -> AskResponse:
             options=data.options,
             chunk_type=data.chunk_type,
         )
-    except ValueError as exc:
-        raise ValidationException(str(exc)) from exc
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ModelDoesNotSupportToolsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ProviderError as exc:
-        status = 400 if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW else 503
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        _raise_chat_http_error(exc)
     finally:
         chat_lock().release()
 
@@ -133,17 +136,8 @@ async def chat_route(data: ChatRequest) -> AskResponse:
             options=data.options,
             chunk_type=data.chunk_type,
         )
-    except ValueError as exc:
-        raise ValidationException(str(exc)) from exc
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ModelDoesNotSupportToolsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ProviderError as exc:
-        status = 400 if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW else 503
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        _raise_chat_http_error(exc)
     finally:
         chat_lock().release()
 

@@ -3737,21 +3737,19 @@ class TestSelfCheckHelpers:
         from pathlib import Path
 
         monkeypatch.setattr(
-            "lilbee.providers.multi_gpu.binary.resolve_llama_server_binary",
+            "lilbee.providers.fleet.binary.resolve_llama_server_binary",
             lambda: Path("/bin/llama-server"),
         )
-        monkeypatch.setattr(
-            "lilbee.providers.multi_gpu.binary.llama_server_runtime_env", lambda: {}
-        )
+        monkeypatch.setattr("lilbee.providers.fleet.binary.llama_server_runtime_env", lambda: {})
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
         monkeypatch.setattr(
-            "lilbee.providers.multi_gpu.adapters.build_server_argv",
+            "lilbee.providers.fleet.adapters.build_server_argv",
             lambda **_k: ["/bin/llama-server"],
         )
-        monkeypatch.setattr("lilbee.providers.multi_gpu.fleet.FleetServer", lambda _launch: server)
+        monkeypatch.setattr("lilbee.providers.fleet.fleet.FleetServer", lambda _launch: server)
 
     def test_self_check_chat_runs_completion(self, monkeypatch, tmp_path: Path) -> None:
         from unittest import mock

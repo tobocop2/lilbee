@@ -8,16 +8,16 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.multi_gpu import binary as binary_mod
-from lilbee.providers.multi_gpu.binary import llama_server_runtime_env, resolve_llama_server_binary
+from lilbee.providers.fleet import binary as binary_mod
+from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server_binary
 
-_WHICH = "lilbee.providers.multi_gpu.binary.shutil.which"
+_WHICH = "lilbee.providers.fleet.binary.shutil.which"
 
 
 def test_uses_bundled_binary_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     binpath = tmp_path / "llama-server"
     binpath.write_text("#!/bin/sh\n")
-    monkeypatch.setattr("lilbee.providers.multi_gpu.binary._bundled_binary", lambda: binpath)
+    monkeypatch.setattr("lilbee.providers.fleet.binary._bundled_binary", lambda: binpath)
     assert resolve_llama_server_binary() == binpath
 
 
