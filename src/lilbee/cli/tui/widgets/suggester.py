@@ -70,7 +70,7 @@ class SlashSuggester(Suggester):
     def _get_document_names(self) -> list[str]:
         try:
             sources = get_services().store.get_sources()
-            return [s.get("filename", s.get("source", "")) for s in sources]  # pragma: no cover
+            return [s.get("filename", s.get("source", "")) for s in sources]
         except Exception:
             return []
 

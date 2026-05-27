@@ -670,6 +670,18 @@ class TestSemanticChunkingConfig:
         assert parse([1]) is True
         assert parse([]) is False
 
+
+class TestResolveDefaultsValidator:
+    def test_non_dict_input_passes_through(self) -> None:
+        """The before-validator hands non-dict input straight back; pydantic
+        then rejects it as not a valid model."""
+        from pydantic import ValidationError
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(ValidationError, match="valid dict"):
+            Config.model_validate(["not", "a", "dict"])
+
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("semantic_chunking = false\n")

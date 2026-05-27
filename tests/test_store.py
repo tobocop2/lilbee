@@ -74,6 +74,18 @@ class TestEnsureFtsIndex:
             store.ensure_fts_index()
             assert not store._fts_ready
 
+    def test_bm25_probe_returns_empty_when_index_unavailable(self, store):
+        """A populated table whose FTS index won't build yields no probe hits."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(
+            type(table),
+            "create_fts_index",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert store.bm25_probe("anything") == []
+
     def test_second_call_optimizes_instead_of_rebuilding(self, store):
         """Incremental path: once the FTS index exists, ensure_fts_index
         calls table.optimize() rather than rebuilding from scratch. Prevents

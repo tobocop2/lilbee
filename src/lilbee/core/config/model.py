@@ -774,7 +774,7 @@ class Config(BaseSettings):
     def _resolve_defaults(cls, data: Any) -> Any:
         from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
 
-        if not isinstance(data, dict):  # pragma: no cover
+        if not isinstance(data, dict):
             return data
 
         if data.get("data_root") in (None, _UNSET_PATH):
