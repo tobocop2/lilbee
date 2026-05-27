@@ -15,13 +15,26 @@ from lilbee.providers.base import LLMProvider
 
 
 class _RecordingProvider:
-    """Stand-in provider that records invalidate_load_cache invocations."""
+    """Stand-in provider recording the lifecycle calls the boundary makes.
+
+    ``calls`` keeps the legacy invalidate_load_cache trail; ``reloaded_roles``
+    and ``dropped`` capture the new off-thread per-role reload and whole-fleet
+    drop that a load-affecting change now routes to.
+    """
 
     def __init__(self) -> None:
         self.calls: list[Path | None] = []
+        self.reloaded_roles: list[object] = []
+        self.dropped = 0
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         self.calls.append(model_path)
+
+    def reload_role(self, role: object) -> None:
+        self.reloaded_roles.append(role)
+
+    def drop_loaded_models_async(self) -> None:
+        self.dropped += 1
 
 
 @pytest.fixture(autouse=True)
@@ -45,12 +58,15 @@ def _isolated_cfg(tmp_path):
 
 
 def _install_recording_provider() -> _RecordingProvider:
-    """Replace the services container with one whose provider records eviction calls."""
+    """Replace the services container with one whose provider records lifecycle calls."""
     from lilbee.app.services import set_services
 
     provider = _RecordingProvider()
     services = mock.MagicMock()
     services.provider = provider
+    # Mirror the real Services.reload_role pass-through so the boundary's
+    # per-role reload reaches the recording provider.
+    services.reload_role = provider.reload_role
     set_services(services)
     return provider
 
@@ -61,71 +77,76 @@ def _restore_services() -> None:
     set_services(None)
 
 
-def test_load_affecting_key_evicts_cache():
-    """num_ctx change triggers invalidate_load_cache on the active provider."""
+def test_role_agnostic_load_key_drops_fleet_off_thread():
+    """num_ctx has no single owning role, so it drops the whole fleet off-thread."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"num_ctx": 4096})
-        assert provider.calls == [None]
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_num_ctx_max_change_evicts_cache():
-    """num_ctx_max participates in the dynamic context picker, so a change
-    must drop the loaded model so the next call resizes against the new cap.
-    """
+def test_num_ctx_max_change_drops_fleet():
+    """num_ctx_max feeds the chat ctx picker but is role-agnostic at this layer,
+    so it routes to the off-thread whole-fleet drop, not a per-role reload."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"num_ctx_max": 131072})
-        assert provider.calls == [None]
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_kv_cache_type_change_evicts_cache():
-    """kv_cache_type is a load-time Llama() kwarg; a TUI change has no effect
-    until the worker reloads, so it must invalidate the cache."""
+def test_kv_cache_type_change_drops_fleet():
+    """kv_cache_type is a load-time launch flag; a change drops the fleet so the
+    next call respawns under the new value."""
     from lilbee.core.config.enums import KvCacheType
 
     provider = _install_recording_provider()
     try:
         apply_settings_update({"kv_cache_type": KvCacheType.Q8_0})
-        assert provider.calls == [None]
+        assert provider.dropped == 1
+        assert provider.reloaded_roles == []
     finally:
         _restore_services()
 
 
-def test_non_reloadable_model_change_evicts_cache():
-    """Switching embedding_model or reranker_model evicts the cache so the
-    next call respawns under the new cfg. These workers do not honor a
-    per-call ``request.model`` override."""
+def test_embed_and_rerank_model_change_reloads_only_those_roles():
+    """Switching embedding_model / reranker_model reloads just that role's server
+    off-thread; the whole fleet is never dropped (other roles keep serving)."""
+    from lilbee.providers.roles import WorkerRole
+
     provider = _install_recording_provider()
     try:
         apply_settings_update({"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF"})
         apply_settings_update({"reranker_model": "ggml-org/bge-reranker-v2-m3-Q8_0-GGUF"})
-        assert len(provider.calls) == 2
-        assert all(c is None for c in provider.calls)
+        assert provider.reloaded_roles == [WorkerRole.EMBED, WorkerRole.RERANK]
+        assert provider.dropped == 0
     finally:
         _restore_services()
 
 
-def test_per_call_reloadable_model_swap_skips_provider_eviction():
-    """Swapping chat_model or vision_model to a different ref does NOT touch
-    the provider load cache: the chat / vision workers reload in place via
-    ``_ensure_loaded`` on the next request, saving the 1-3 s spawn cost.
-    Both calls exercise a real ref-to-ref swap, not the disable path."""
+def test_chat_and_vision_model_change_reloads_those_roles():
+    """A chat_model / vision_model swap reloads that role's server so the next
+    request uses the new model. The fleet serves the configured model per role
+    and rejects per-call overrides, so the reload is required (not optional)."""
+    from lilbee.providers.roles import WorkerRole
+
     provider = _install_recording_provider()
     try:
         apply_settings_update({"chat_model": "Qwen/Qwen3-0.6B-GGUF"})
         apply_settings_update({"vision_model": "lightonai/LightOnOCR-2.1B-GGUF"})
-        assert provider.calls == []
+        assert provider.reloaded_roles == [WorkerRole.CHAT, WorkerRole.VISION]
+        assert provider.dropped == 0
     finally:
         _restore_services()
 
 
-def test_sampling_param_change_does_not_evict():
-    """Temperature, top_p, etc. are read per-call; eviction would be wasted work."""
+def test_sampling_param_change_does_not_touch_fleet():
+    """Temperature, top_p, etc. are read per-call; no reload or drop is needed."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"temperature": 0.7})
@@ -135,18 +156,20 @@ def test_sampling_param_change_does_not_evict():
         apply_settings_update({"seed": 42})
         apply_settings_update({"max_tokens": 1024})
         apply_settings_update({"rag_system_prompt": "You are helpful"})
-        assert provider.calls == []
+        assert provider.reloaded_roles == []
+        assert provider.dropped == 0
     finally:
         _restore_services()
 
 
-def test_unknown_key_does_not_evict():
-    """An unrelated setting change is a no-op for the provider cache."""
+def test_unknown_key_does_not_touch_fleet():
+    """An unrelated setting change is a no-op for the fleet."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"theme": "dracula"})
         apply_settings_update({"wiki": True})
-        assert provider.calls == []
+        assert provider.reloaded_roles == []
+        assert provider.dropped == 0
     finally:
         _restore_services()
 
@@ -161,6 +184,21 @@ def test_protocol_default_is_safe_for_litellm_provider():
     backend = _BackendWithNoOverride()
     assert backend.invalidate_load_cache() is None
     assert backend.invalidate_load_cache(Path("/tmp/whatever.gguf")) is None
+
+
+def test_protocol_defaults_for_drop_and_role_ready():
+    """A backend without managed servers gets the Protocol's safe defaults:
+    drop_loaded_models_async delegates to the no-op invalidate, and every role
+    reports ready (the SDK side is always reachable)."""
+    from lilbee.providers.roles import WorkerRole
+
+    class _BackendWithNoOverride(LLMProvider):  # type: ignore[misc]
+        """Concrete subclass relying entirely on Protocol defaults."""
+
+    backend = _BackendWithNoOverride()
+    assert backend.drop_loaded_models_async() is None
+    assert backend.role_ready(WorkerRole.CHAT) is True
+    assert backend.role_ready(WorkerRole.EMBED) is True
 
 
 @pytest.fixture()
@@ -189,12 +227,12 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
 
             app.set_setting("num_ctx", 16384)
             await pilot.pause()
-            assert provider.calls == [None]
+            assert provider.dropped == 1
 
-            # Sampling param does not touch the provider.
+            # Sampling param does not touch the fleet.
             app.set_setting("temperature", 0.5)
             await pilot.pause()
-            assert provider.calls == [None]
+            assert provider.dropped == 1
     finally:
         _restore_services()
 

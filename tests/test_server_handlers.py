@@ -247,6 +247,24 @@ class TestAskStream:
         assert "sources" in event_types
         assert "done" in event_types
 
+    async def test_emits_warming_event_when_chat_cold(self, mock_svc):
+        # A cold chat server yields an early "warming" event so the client shows
+        # a starting state instead of an apparently-dead stream.
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("question")]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert event_types[0] == "warming"
+
+    async def test_no_warming_event_when_chat_ready(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("question")]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert "warming" not in event_types
+
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = None
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
@@ -521,6 +539,16 @@ class TestChatStream:
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_emits_warming_event_when_chat_cold(self, mock_svc, monkeypatch):
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["reply"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert event_types[0] == "warming"
 
     async def test_unknown_error_yields_internal_error(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()

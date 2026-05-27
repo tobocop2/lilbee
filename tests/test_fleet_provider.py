@@ -395,19 +395,122 @@ def test_invalidate_load_cache_respawns_fleet() -> None:
     assert p._fleet is None
 
 
-def test_warm_up_pool_builds_fleet_once(monkeypatch) -> None:
-    calls = {"n": 0}
+def _wait_until(predicate, timeout: float = 5.0) -> bool:
+    """Poll *predicate* until true or *timeout*; generous so xdist load can't flake it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_warm_up_pool_builds_fleet_off_thread(monkeypatch) -> None:
+    # The eager warm-up at TUI mount must not block the caller; it dispatches a
+    # background build thread and returns immediately. The fleet appears once the
+    # thread finishes.
+    started = threading.Event()
+    release = threading.Event()
     fleet = _fake_fleet({})
+
+    def _slow_build(*_listeners) -> object:
+        started.set()
+        release.wait(timeout=5.0)  # hold the build so the call clearly returns first
+        return fleet
+
+    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    p = FleetProvider()
+    p.warm_up_pool()
+    assert started.wait(timeout=5.0)  # build runs on a background thread
+    assert p._fleet is None  # warm_up_pool returned before the build completed
+    release.set()
+    assert _wait_until(lambda: p._fleet is fleet)
+
+
+def test_warm_up_pool_single_flight_does_not_double_build(monkeypatch) -> None:
+    calls = {"n": 0}
+    in_build = threading.Event()
+    release = threading.Event()
+    fleet = _fake_fleet({})
+
+    def _slow_build(*_listeners) -> object:
+        calls["n"] += 1
+        in_build.set()
+        release.wait(timeout=5.0)
+        return fleet
+
+    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    p = FleetProvider()
+    p.warm_up_pool()
+    assert in_build.wait(timeout=5.0)  # first build is genuinely in flight
+    p.warm_up_pool()  # second call while warming: must not start a second build
+    release.set()
+    assert _wait_until(lambda: p._fleet is fleet)
+    assert calls["n"] == 1
+
+
+def test_warm_up_pool_noop_when_fleet_already_up(monkeypatch) -> None:
+    calls = {"n": 0}
 
     def _fake_build(*_listeners) -> object:
         calls["n"] += 1
-        return fleet
+        return _fake_fleet({})
 
     monkeypatch.setattr(planning_mod, "build_fleet", _fake_build)
     p = FleetProvider()
+    p._fleet = _fake_fleet({})  # already built
     p.warm_up_pool()
-    p.warm_up_pool()  # idempotent: fleet already up
-    assert calls["n"] == 1
+    assert calls["n"] == 0  # no build dispatched
+
+
+def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:
+    def _boom(*_listeners) -> object:
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(planning_mod, "build_fleet", _boom)
+    p = FleetProvider()
+    with caplog.at_level("WARNING", logger="lilbee.providers.fleet.provider"):
+        p._warm_up_blocking()  # runs the body synchronously for the assertion
+    assert p._fleet is None
+    assert p._warming is False  # guard cleared so a later warm-up can retry
+    assert "warm-up failed" in caplog.text.lower()
+
+
+def test_warm_up_blocking_discards_duplicate_when_fleet_raced(monkeypatch) -> None:
+    # A concurrent _server_clients built a fleet while warm-up was loading; the
+    # warm-up's duplicate must be shut down, not stranded (each holds GPU memory).
+    winner = _fake_fleet({})
+    duplicate = _fake_fleet({})
+    monkeypatch.setattr(planning_mod, "build_fleet", lambda *_a: duplicate)
+    p = FleetProvider()
+    p._fleet = winner
+    p._warm_up_blocking()
+    assert p._fleet is winner
+    duplicate.shutdown.assert_called_once()
+
+
+def test_role_ready_false_without_fleet() -> None:
+    assert FleetProvider().role_ready(WorkerRole.CHAT) is False
+
+
+def test_role_ready_reflects_healthy_clients() -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    assert p.role_ready(WorkerRole.CHAT) is True
+    assert p.role_ready(WorkerRole.EMBED) is False
+
+
+def test_drop_loaded_models_async_tears_down_off_thread(monkeypatch) -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    fleet = p._fleet
+    p.drop_loaded_models_async()
+    assert _wait_until(lambda: p._fleet is None)
+    fleet.shutdown.assert_called_once()
+
+
+def test_drop_loaded_models_async_noop_without_fleet() -> None:
+    p = FleetProvider()  # _fleet is None
+    p.drop_loaded_models_async()  # must not raise or spawn a thread
+    assert p._fleet is None
 
 
 def test_server_clients_builds_fleet_once(monkeypatch) -> None:

@@ -26,12 +26,15 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
+    announce_cold_start,
+    announce_ready,
     auto_sync,
     json_output,
 )
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
+from lilbee.providers.roles import WorkerRole
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
 _TOPIC_PREVIEW_LIMIT = 5
@@ -62,12 +65,14 @@ def search(
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] query must not be empty")
         raise SystemExit(1)
 
+    err = announce_cold_start(WorkerRole.EMBED, str(cfg.embedding_model))
     try:
         results = get_services().searcher.search(
             query,
             top_k=top_k or cfg.top_k,
             chunk_type=scope_to_chunk_type(scope),
         )
+        announce_ready(err, WorkerRole.EMBED)
     except Exception as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -156,7 +161,13 @@ def ask(
             )
             return
 
-        for token in get_services().searcher.ask_stream(question, chunk_type=chunk_type):
+        err = announce_cold_start(WorkerRole.CHAT, str(cfg.chat_model))
+        stream = get_services().searcher.ask_stream(question, chunk_type=chunk_type)
+        first = True
+        for token in stream:
+            if first:
+                announce_ready(err, WorkerRole.CHAT)
+                first = False
             console.print(token.content, end="")
         console.print()
     except (RuntimeError, ProviderError) as exc:

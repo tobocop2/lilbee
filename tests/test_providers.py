@@ -3346,6 +3346,39 @@ class TestRoutingLifecycleForwarding:
         rp.cancel_inference()  # must not raise
         rp.reload_role(WorkerRole.CHAT)  # must not raise
 
+    def test_drop_loaded_models_async_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        rp._local = local
+        rp.drop_loaded_models_async()
+        local.drop_loaded_models_async.assert_called_once_with()
+
+    def test_drop_loaded_models_async_noop_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
+
+    def test_role_ready_forwards_to_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        local.role_ready.return_value = False
+        rp._local = local
+        assert rp.role_ready(WorkerRole.CHAT) is False
+        local.role_ready.assert_called_once_with(WorkerRole.CHAT)
+
+    def test_role_ready_true_without_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        # No local engine yet: treat as reachable so callers don't show a stuck
+        # warming state before the fleet is ever constructed.
+        assert RoutingProvider().role_ready(WorkerRole.CHAT) is True
+
 
 def test_gguf_scalar_str_array_field_returns_none() -> None:
     from types import SimpleNamespace

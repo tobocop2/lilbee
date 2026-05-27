@@ -347,6 +347,16 @@ class LLMProvider(Protocol):
         """Drop loaded-model state; ``None`` evicts all, else only that path. No-op default."""
         return
 
+    def drop_loaded_models_async(self) -> None:
+        """Drop all loaded-model state off the caller's thread. No-op default.
+
+        Like :meth:`invalidate_load_cache` with no path, but the teardown (which
+        stops every server and waits on each process) runs on a background thread
+        so a settings change that touches a role-agnostic load key never blocks
+        the UI / request thread. The next call rebuilds with current cfg.
+        """
+        self.invalidate_load_cache()
+
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.
 
@@ -374,6 +384,16 @@ class LLMProvider(Protocol):
         are left untouched.
         """
         return
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        """Whether *role* has a healthy server now, without starting one.
+
+        Default ``True``: providers without managed servers (SDK / routing
+        wrappers) are always reachable. The fleet returns ``False`` while a role
+        is still cold-starting so surfaces can show a warming state.
+        """
+        del role
+        return True
 
     def add_spawn_listener(
         self,

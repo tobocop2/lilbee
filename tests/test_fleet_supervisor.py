@@ -12,9 +12,13 @@ import pytest
 
 from lilbee.providers.fleet import fleet as fleet_mod
 from lilbee.providers.fleet.fleet import (
+    _GIB,
+    _READY_TIMEOUT_PER_GIB_S,
+    _READY_TIMEOUT_S,
     Fleet,
     FleetServer,
     InstanceLaunch,
+    _ready_timeout_for,
     pick_free_port,
     reap_orphans,
 )
@@ -550,3 +554,75 @@ def test_restart_role_stops_fresh_servers_if_shutdown_races(
     monkeypatch.setattr(fleet, "_bring_up", _bring_up_then_signal)
     fleet.restart_role(WorkerRole.CHAT, [_launch(tmp_path, WorkerRole.CHAT)])
     assert fleet._servers == []  # the freshly spawned server was stopped, not retained
+
+
+class TestReadyTimeoutScaling:
+    def test_zero_weights_uses_base(self) -> None:
+        assert _ready_timeout_for(300.0, 0) == 300.0
+
+    def test_negative_weights_uses_base(self) -> None:
+        assert _ready_timeout_for(300.0, -1) == 300.0
+
+    def test_scales_with_model_size(self) -> None:
+        # An 8B Q4 model (~5 GiB) gets the base plus a per-GiB term, comfortably
+        # above a slow Mac cold load so wait_ready does not fire prematurely.
+        weights = 5 * _GIB
+        expected = 300.0 + _READY_TIMEOUT_PER_GIB_S * 5
+        assert _ready_timeout_for(300.0, weights) == expected
+
+    def test_base_is_generous_for_cold_loads(self) -> None:
+        # Regression guard: 180s fired prematurely on a Mac 8B cold load; the
+        # floor must stay well above that even for a small (0-weight) model.
+        assert _READY_TIMEOUT_S >= 300.0
+
+    def test_server_ready_timeout_scales_with_launch_weights(self, tmp_path: Path) -> None:
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server", "--model", "m.gguf"],
+            env_overrides={},
+            model="m.gguf",
+            port_file=tmp_path / "p.port",
+            weights_bytes=4 * _GIB,
+        )
+        server = FleetServer(launch)
+        assert server.weights_bytes == 4 * _GIB
+        assert server.ready_timeout == _READY_TIMEOUT_S + _READY_TIMEOUT_PER_GIB_S * 4
+
+    def test_bring_up_passes_scaled_timeout(
+        self, tmp_path: Path, patched: dict, monkeypatch
+    ) -> None:
+        # _bring_up must scale the fleet's configured base by the model size, so a
+        # large model is not declared dead while still loading.
+        seen: list[float] = []
+        monkeypatch.setattr(
+            fleet_mod.FleetServer,
+            "wait_ready",
+            lambda self, timeout=None: seen.append(timeout) or True,
+        )
+        launch = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server", "--model", "m.gguf"],
+            env_overrides={},
+            model="m.gguf",
+            port_file=tmp_path / "p.port",
+            weights_bytes=2 * _GIB,
+        )
+        fleet = Fleet(ready_timeout=100.0, data_dir=tmp_path)
+        fleet._bring_up(FleetServer(launch))
+        assert seen == [100.0 + _READY_TIMEOUT_PER_GIB_S * 2]
+
+
+def test_bring_up_logs_starting_and_ready(tmp_path: Path, patched: dict, caplog) -> None:
+    fleet = Fleet(ready_timeout=1.0, data_dir=tmp_path)
+    server = FleetServer(_launch(tmp_path))
+    with caplog.at_level("INFO", logger="lilbee.providers.fleet.fleet"):
+        fleet._bring_up(server)
+    assert server.ready is True
+    text = caplog.text.lower()
+    assert "starting chat engine" in text
+    assert "loading m.gguf" in text
+    assert "chat engine ready" in text
+
+
+def test_fleet_server_exposes_model(tmp_path: Path) -> None:
+    assert FleetServer(_launch(tmp_path)).model == "m.gguf"

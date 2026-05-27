@@ -200,10 +200,12 @@ class TestBuildFleetWiring:
         expected_kv = 2 * 8 * 16 * 512 * 1 * f16
         assert inp.est_vram_bytes == 1000 + expected_kv + 1024**3  # weights + f16 KV + overhead
 
-    def test_launch_for_vision_passes_mmproj(self, monkeypatch) -> None:
+    def test_launch_for_vision_passes_mmproj(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "v.gguf"
+        model.write_bytes(b"x" * 1000)
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path",
-            lambda _r: Path("/m/v.gguf"),
+            lambda _r: model,
         )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
@@ -229,10 +231,12 @@ class TestBuildFleetWiring:
         assert inp.role == WorkerRole.CHAT
         assert inp.est_vram_bytes > 1000  # weights + kv + overhead
 
-    def test_launch_for_builds_instance_with_pinning(self, monkeypatch) -> None:
+    def test_launch_for_builds_instance_with_pinning(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path",
-            lambda ref: Path("/models/chat.gguf"),
+            lambda ref: model,
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 4096)
@@ -247,56 +251,47 @@ class TestBuildFleetWiring:
         assert launch.port_file == Path(f"/data/llama-server-chat-{os.getpid()}.port")
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
+        assert launch.weights_bytes == 2048  # model file size scales the ready timeout
 
-    def _launch_role(self, monkeypatch, role: WorkerRole, ctx: int = 4096) -> list[str]:
-        monkeypatch.setattr(
-            "lilbee.providers.engine_params.resolve_model_path",
-            lambda _r: Path("/models/m.gguf"),
-        )
-        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: ctx)
-        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        plan = InstancePlan(role=role, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
-        )
-        return launch.argv
+    def _launch_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096) -> list[str]:
+        return self._launch_for_role(tmp_path, monkeypatch, role, ctx).argv
 
-    def test_launch_for_chat_sets_flash_and_cache_type(self, monkeypatch) -> None:
+    def test_launch_for_chat_sets_flash_and_cache_type(self, tmp_path, monkeypatch) -> None:
         from lilbee.core.config.enums import KvCacheType
 
         monkeypatch.setattr(cfg, "flash_attention", None)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-        argv = self._launch_role(monkeypatch, WorkerRole.CHAT)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.CHAT)
         assert argv[argv.index("--flash-attn") + 1] == "on"
         assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
         assert argv[argv.index("--cache-type-v") + 1] == "q8_0"
         assert "--batch-size" not in argv  # chat is not an embedding role
         assert "--threads" not in argv
 
-    def test_launch_for_chat_f16_omits_cache_type(self, monkeypatch) -> None:
+    def test_launch_for_chat_f16_omits_cache_type(self, tmp_path, monkeypatch) -> None:
         from lilbee.core.config.enums import KvCacheType
 
         monkeypatch.setattr(cfg, "flash_attention", False)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
-        argv = self._launch_role(monkeypatch, WorkerRole.CHAT)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.CHAT)
         assert argv[argv.index("--flash-attn") + 1] == "off"
         assert "--cache-type-k" not in argv
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
-    def test_launch_for_embed_roles_raise_batch_to_ctx(self, monkeypatch, role) -> None:
-        argv = self._launch_role(monkeypatch, role, ctx=8192)
+    def test_launch_for_embed_roles_raise_batch_to_ctx(self, tmp_path, monkeypatch, role) -> None:
+        argv = self._launch_role(tmp_path, monkeypatch, role, ctx=8192)
         # full-context embeddings: both batch and ubatch raised (server caps at ubatch)
         assert argv[argv.index("--batch-size") + 1] == "8192"
         assert argv[argv.index("--ubatch-size") + 1] == "8192"
         assert "--flash-attn" not in argv  # embedding path applies no flash attn
         assert "--cache-type-k" not in argv
 
-    def _launch_for_role(self, monkeypatch, role: WorkerRole, ctx: int = 4096):
+    def _launch_for_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096):
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 1000)
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path",
-            lambda _r: Path("/models/m.gguf"),
+            lambda _r: model,
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
@@ -308,26 +303,30 @@ class TestBuildFleetWiring:
         )
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
-    def test_launch_for_embed_roles_set_token_cap(self, monkeypatch, role) -> None:
-        launch = self._launch_for_role(monkeypatch, role, ctx=8192)
+    def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
+        launch = self._launch_for_role(tmp_path, monkeypatch, role, ctx=8192)
         assert launch.token_cap == 8192  # embed/rerank truncate to per-slot ctx
 
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
-    def test_launch_for_non_embed_roles_have_no_token_cap(self, monkeypatch, role) -> None:
-        launch = self._launch_for_role(monkeypatch, role)
+    def test_launch_for_non_embed_roles_have_no_token_cap(
+        self, tmp_path, monkeypatch, role
+    ) -> None:
+        launch = self._launch_for_role(tmp_path, monkeypatch, role)
         assert launch.token_cap is None
 
-    def test_launch_for_vision_sets_full_core_threads(self, monkeypatch) -> None:
+    def test_launch_for_vision_sets_full_core_threads(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: 12)
-        argv = self._launch_role(monkeypatch, WorkerRole.VISION)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--threads") + 1] == "12"
         assert argv[argv.index("--threads-batch") + 1] == "12"
         assert "--flash-attn" not in argv  # vision loader applies no flash attn
         assert "--batch-size" not in argv
 
-    def test_launch_for_vision_threads_floor_when_cpu_count_unknown(self, monkeypatch) -> None:
+    def test_launch_for_vision_threads_floor_when_cpu_count_unknown(
+        self, tmp_path, monkeypatch
+    ) -> None:
         monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: None)
-        argv = self._launch_role(monkeypatch, WorkerRole.VISION)
+        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--threads") + 1] == str(planning_mod._DEFAULT_THREADS)
 
     def test_build_fleet_resolves_devices_plans_and_starts(self, monkeypatch) -> None:

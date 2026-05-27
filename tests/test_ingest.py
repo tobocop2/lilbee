@@ -1304,6 +1304,25 @@ class TestVisionFallback:
         for call in mock_chunk.call_args_list:
             assert call.kwargs.get("use_semantic") is False
 
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_vision_cancel_propagates_not_swallowed(self, mock_kf, isolated_env, mock_svc):
+        """A user cancel raised through the per-page on_progress (TaskCancelledError)
+        must abort the file, not be logged as an OCR failure and swallowed as []."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        mock_kf.return_value = _make_empty_result()
+        mock_svc.provider.pdf_ocr.side_effect = TaskCancelledError
+
+        f = isolated_env / "cancel.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.data.ingest import ingest_document
+
+        with pytest.raises(TaskCancelledError):
+            await ingest_document(f, "cancel.pdf", "pdf", quiet=True)
+
 
 class TestShouldRunOcrAutoDetect:
     def test_auto_detect_vision_model_set(self, isolated_env):
@@ -1490,65 +1509,58 @@ class TestOcrFallbackBackendDispatch:
         assert "OCR via tesseract backend failed" in caplog.text
 
 
-class TestSharedProgress:
-    @mock.patch(
-        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
-    )
-    async def test_contextvar_set_during_progress(self, mock_extract_file, isolated_env):
-        """shared_progress contextvar is set inside _collect_results_with_progress."""
-        from lilbee.runtime.progress import shared_progress
+class TestPhaseProgressCallback:
+    """The non-quiet Rich bar advances once per file, so a single multi-page file
+    would freeze at "0/1" through its whole OCR + embed phase. The phase-progress
+    wrapper drives the bar's description off EXTRACT (OCR page) and EMBED (chunk)
+    events so the row visibly moves while one file is being worked."""
 
-        (isolated_env / "a.txt").write_text("Content for shared progress test.")
+    def test_extract_event_updates_bar_description(self):
+        from lilbee.data.ingest.pipeline import _phase_progress_callback
+        from lilbee.runtime.progress import EventType, ExtractEvent
 
-        captured: list[tuple] = []
+        progress = MagicMock()
+        cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
+        cb(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=3, total_pages=12))
+        desc = progress.update.call_args.kwargs["description"]
+        assert "scan.pdf" in desc
+        assert "3/12" in desc
 
-        # Use on_progress callback to capture the contextvar value during ingestion
-        def capture_progress(event_type, data):
-            val = shared_progress.get(None)
-            if val is not None and val not in captured:
-                captured.append(val)
+    def test_embed_event_updates_bar_description(self):
+        from lilbee.data.ingest.pipeline import _phase_progress_callback
+        from lilbee.runtime.progress import EmbedEvent, EventType
 
-        from lilbee.data.ingest import sync
+        progress = MagicMock()
+        cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
+        cb(EventType.EMBED, EmbedEvent(file="scan.pdf", chunk=8, total_chunks=40))
+        desc = progress.update.call_args.kwargs["description"]
+        assert "Embedding" in desc
+        assert "scan.pdf" in desc
+        assert "8/40" in desc
 
-        await sync(quiet=False, on_progress=capture_progress)
-        assert len(captured) > 0, "shared_progress was never set during progress bar"
-        progress_obj, task_id = captured[0]
-        assert progress_obj is not None
-        assert task_id is not None
+    def test_events_forward_to_chained_callback(self):
+        from lilbee.data.ingest.pipeline import _phase_progress_callback
+        from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
 
-    @mock.patch(
-        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
-    )
-    async def test_contextvar_not_set_in_quiet_mode(self, mock_extract_file, isolated_env):
-        """shared_progress contextvar is NOT set in quiet mode (no progress bar)."""
-        from lilbee.runtime.progress import shared_progress
+        seen: list[object] = []
+        cb = _phase_progress_callback(MagicMock(), "t", lambda et, d: seen.append((et, d)))
+        extract = ExtractEvent(file="x", page=1, total_pages=2)
+        embed = EmbedEvent(file="x", chunk=1, total_chunks=2)
+        cb(EventType.EXTRACT, extract)
+        cb(EventType.EMBED, embed)
+        assert seen == [(EventType.EXTRACT, extract), (EventType.EMBED, embed)]
 
-        (isolated_env / "b.txt").write_text("Content for quiet mode test.")
+    def test_unrelated_event_does_not_touch_bar(self):
+        from lilbee.data.ingest.pipeline import _phase_progress_callback
+        from lilbee.runtime.progress import EventType, FileStartEvent
 
-        captured: list[object] = []
-
-        def capture_progress(event_type, data):
-            val = shared_progress.get(None)
-            if val is not None:
-                captured.append(val)
-
-        from lilbee.data.ingest import sync
-
-        await sync(quiet=True, on_progress=capture_progress)
-        assert len(captured) == 0, "shared_progress should not be set in quiet mode"
-
-    @mock.patch(
-        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
-    )
-    async def test_contextvar_reset_after_progress(self, mock_extract_file, isolated_env):
-        """shared_progress is reset to None after _collect_results_with_progress completes."""
-        from lilbee.runtime.progress import shared_progress
-
-        (isolated_env / "c.txt").write_text("Content for reset test.")
-        from lilbee.data.ingest import sync
-
-        await sync(quiet=False)
-        assert shared_progress.get(None) is None
+        progress = MagicMock()
+        seen: list[object] = []
+        cb = _phase_progress_callback(progress, "t", lambda et, d: seen.append(et))
+        start = FileStartEvent(file="x", total_files=1, current_file=1)
+        cb(EventType.FILE_START, start)
+        progress.update.assert_not_called()  # description only changes for EXTRACT/EMBED
+        assert seen == [EventType.FILE_START]  # still forwarded to the chain
 
 
 class TestIngestMarkdownEdgeCases:

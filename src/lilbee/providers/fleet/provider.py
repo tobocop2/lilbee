@@ -104,6 +104,11 @@ class FleetProvider:
         # so they survive a fleet rebuild and attach to every fleet we construct.
         self._on_spawning: Callable[[WorkerRole], None] | None = None
         self._on_spawned: Callable[[WorkerRole], None] | None = None
+        # Single-flight guard for the off-thread warm-up: True from the moment a
+        # build thread is dispatched until it finishes, so a second warm_up_pool
+        # (re-entry, or a call landing during the spawn) never starts a second
+        # build and double-allocates GPU memory.
+        self._warming = False
 
     def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         with self._lock:
@@ -128,6 +133,18 @@ class FleetProvider:
                 provider=_PROVIDER_NAME,
             )
         return clients
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        """Whether *role* has a healthy server right now, without building the fleet.
+
+        A read-only probe for surfaces (HTTP status, SSE warming event) that want
+        to report cold-start state without triggering a spawn. False while the
+        fleet is still warming up or the role's server is mid-(re)start.
+        """
+        with self._lock:
+            if self._fleet is None:
+                return False
+            return bool(self._fleet.healthy_clients(role))
 
     def _shutdown_fleet(self) -> None:
         with self._lock:
@@ -382,10 +399,46 @@ class FleetProvider:
         return _supports_tools_cached(str(path), mtime_ns)
 
     def warm_up_pool(self) -> None:
-        """Spawn the configured role servers eagerly (idempotent)."""
+        """Spawn the configured role servers off the caller's thread (idempotent).
+
+        Building the fleet loads every role's model (seconds on a cold large
+        model), so it runs on a background thread and this returns at once: the
+        eager-start at TUI mount must not freeze the UI. The spawn listeners
+        still fire during the build, so the UI shows per-role progress. A second
+        call while a build is in flight (or once the fleet is up) is a no-op.
+        """
         with self._lock:
+            if self._fleet is not None or self._warming:
+                return
+            self._warming = True
+        threading.Thread(
+            target=self._warm_up_blocking,
+            name="fleet-warm-up",
+            daemon=True,
+        ).start()
+
+    def _warm_up_blocking(self) -> None:
+        """Build the fleet on a background thread; clears the warming guard when done.
+
+        Runs on a daemon thread with no caller to catch failures, so a build
+        error is logged and swallowed: a role that can't spawn surfaces a
+        user-facing ProviderError on the next call, not a thread traceback.
+        """
+        try:
+            fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
+        except Exception:
+            log.warning("Fleet warm-up failed; roles will spawn on first use.", exc_info=True)
+            with self._lock:
+                self._warming = False
+            return
+        with self._lock:
+            self._warming = False
             if self._fleet is None:
-                self._fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
+                self._fleet = fleet
+                return
+        # A concurrent _server_clients already built one; don't strand the
+        # duplicate's servers (each holds GPU memory).
+        fleet.shutdown()
 
     def cancel_inference(self) -> None:
         """No-op: a llama-server stops generating when its client disconnects.
@@ -440,6 +493,22 @@ class FleetProvider:
         """A model or settings change respawns the affected servers: drop the fleet."""
         del model_path  # the whole fleet respawns on next use; no per-model scope.
         self._shutdown_fleet()
+
+    def drop_loaded_models_async(self) -> None:
+        """Drop the whole fleet off the caller's thread; next use rebuilds with current cfg.
+
+        ``_shutdown_fleet`` stops every server and waits on each process group,
+        so a role-agnostic load-key change (num_ctx, kv_cache_type) routes here
+        rather than blocking the settings callback. A no-op when no fleet is up.
+        """
+        with self._lock:
+            if self._fleet is None:
+                return
+        threading.Thread(
+            target=self._shutdown_fleet,
+            name="fleet-drop",
+            daemon=True,
+        ).start()
 
     def shutdown(self) -> None:
         self._shutdown_fleet()

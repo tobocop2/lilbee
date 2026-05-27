@@ -30,8 +30,5 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Subset of LOAD_AFFECTING_KEYS the worker can swap in place on the next call.
-PER_CALL_RELOADABLE_KEYS: frozenset[str] = frozenset({"chat_model", "vision_model"})
-
 # Writes here require reconstructing the services singleton.
 PROVIDER_SWITCHING_KEYS: frozenset[str] = frozenset({"llm_provider"})

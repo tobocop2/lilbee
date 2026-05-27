@@ -36,12 +36,14 @@ from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
     DetailedProgressCallback,
+    EmbedEvent,
     EventType,
+    ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    ProgressEvent,
     SyncDoneEvent,
     noop_callback,
-    shared_progress,
 )
 
 log = logging.getLogger(__name__)
@@ -308,6 +310,31 @@ async def sync(
     return result
 
 
+def _phase_progress_callback(
+    progress: Progress, ptask: Any, chain: DetailedProgressCallback
+) -> DetailedProgressCallback:
+    """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
+
+    EXTRACT (vision OCR page i/N) and EMBED (chunk i/N) events would otherwise
+    leave the bar frozen between file completions; surfacing them on the spinner
+    description keeps a single large file's row visibly moving. All events still
+    forward to *chain* so the caller's own callback (TUI / JSON) is unaffected.
+    """
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        if event_type is EventType.EXTRACT and isinstance(data, ExtractEvent):
+            progress.update(
+                ptask, description=f"OCR {data.file} (page {data.page}/{data.total_pages})"
+            )
+        elif event_type is EventType.EMBED and isinstance(data, EmbedEvent):
+            progress.update(
+                ptask, description=f"Embedding {data.file} ({data.chunk}/{data.total_chunks})"
+            )
+        chain(event_type, data)
+
+    return _callback
+
+
 async def ingest_batch(
     files_to_process: list[FileToProcess],
     added: list[str],
@@ -404,24 +431,26 @@ async def ingest_batch(
             transient=True,
         ) as progress:
             ptask = progress.add_task("Ingesting documents...", total=total_files)
-            token = shared_progress.set((progress, ptask))
-            try:
-                tasks = [
-                    asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
-                    for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
-                ]
-                await _collect_results(
-                    tasks,
-                    added,
-                    updated,
-                    failed,
-                    skipped,
-                    on_progress=on_progress,
-                    progress=progress,
-                    ptask=ptask,
-                )
-            finally:
-                shared_progress.reset(token)
+            # The bar advances once per file (in _collect_results), so a single
+            # multi-page scanned PDF would freeze at "0/1" through its whole
+            # OCR + embed phase. Drive the spinner's description off the same
+            # EXTRACT (OCR page i/N) and EMBED (chunk i/N) events the TUI uses
+            # so the row visibly moves while one file is being worked.
+            phase_progress = _phase_progress_callback(progress, ptask, on_progress)
+            tasks = [
+                asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+                for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
+            ]
+            await _collect_results(
+                tasks,
+                added,
+                updated,
+                failed,
+                skipped,
+                on_progress=phase_progress,
+                progress=progress,
+                ptask=ptask,
+            )
 
 
 async def _collect_results(

@@ -280,6 +280,11 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.invalidate_load_cache(model_path)
 
+    def drop_loaded_models_async(self) -> None:
+        """Forward the off-thread fleet drop to the native side; SDK has no cache."""
+        if self._local is not None:
+            self._local.drop_loaded_models_async()
+
     def warm_up_pool(self) -> None:
         """Forward to the native side; the SDK side has no servers to warm.
 
@@ -298,6 +303,12 @@ class RoutingProvider(LLMProvider):
         """Forward to the native engine; the SDK side has no per-role servers."""
         if self._local is not None:
             self._local.reload_role(role)
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        """Native readiness without building; True when no local engine exists yet."""
+        if self._local is None:
+            return True
+        return self._local.role_ready(role)
 
     def add_spawn_listener(
         self,

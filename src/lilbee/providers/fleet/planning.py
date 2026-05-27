@@ -169,6 +169,7 @@ def _launch_for(
 
     slots, _accessor = _SERVER_ROLE_PARAMS[plan.role]
     model_path = resolve_model_path(model_ref)
+    weights_bytes = model_path.stat().st_size
     ctx = _role_ctx(plan.role, model_path, read_gguf_metadata(model_path))
     chosen = tuple(by_index[i] for i in plan.devices)
     is_chat = plan.role is WorkerRole.CHAT
@@ -199,6 +200,8 @@ def _launch_for(
         port_file=data_dir / f"llama-server-{plan.role.value}-{os.getpid()}.port",
         # Embed/rerank truncate oversize inputs to the per-slot context.
         token_cap=ctx if plan.role in _EMBED_ROLES else None,
+        # Weights size scales the cold-load ready timeout (larger model = longer).
+        weights_bytes=weights_bytes,
     )
 
 

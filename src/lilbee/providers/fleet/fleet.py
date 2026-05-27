@@ -30,7 +30,16 @@ from lilbee.providers.roles import WorkerRole
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
-_READY_TIMEOUT_S = 180.0
+# Floor on the cold-load budget for any server. A large chat model on a Mac
+# (Metal mmap + warm-up) can take minutes to report ready; this base covers a
+# small model, and ``_ready_timeout_for`` adds a size-scaled term on top so a
+# legitimately-still-loading server is never declared dead while it loads.
+_READY_TIMEOUT_S = 300.0
+# Extra seconds of cold-load budget per GiB of model weights on disk. Tuned so
+# an 8B Q4 (~5 GiB) gets ~300s base + ~300s = ~10 min, comfortably above a slow
+# Mac cold load, while a truly dead server still gives up via the crash-loop cap.
+_READY_TIMEOUT_PER_GIB_S = 60.0
+_GIB = 1024**3
 _READY_POLL_S = 0.5
 _STOP_TIMEOUT_S = 10.0
 _MONITOR_POLL_S = 2.0
@@ -51,6 +60,18 @@ _CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP",
 _SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
+def _ready_timeout_for(base: float, weights_bytes: int) -> float:
+    """Cold-load budget: the *base* timeout plus a per-GiB term for the weights.
+
+    Scaling with model size keeps a small embed model on a tight budget while a
+    multi-GB chat model gets minutes, so ``wait_ready`` doesn't declare a server
+    dead while it is legitimately still loading.
+    """
+    if weights_bytes <= 0:
+        return base
+    return base + _READY_TIMEOUT_PER_GIB_S * (weights_bytes / _GIB)
+
+
 def pick_free_port() -> int:
     """Bind an ephemeral localhost port and return it (closed before reuse)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -68,6 +89,7 @@ class InstanceLaunch:
     model: str
     port_file: Path
     token_cap: int | None = None  # per-slot ctx for embed/rerank input truncation
+    weights_bytes: int = 0  # model file size on disk; scales the cold-load timeout
 
 
 class FleetServer:
@@ -96,8 +118,22 @@ class FleetServer:
         return self.consecutive_failures >= _MAX_RESTART_ATTEMPTS
 
     @property
+    def weights_bytes(self) -> int:
+        """Model file size on disk; scales the cold-load ready timeout."""
+        return self._launch.weights_bytes
+
+    @property
+    def ready_timeout(self) -> float:
+        """Cold-load budget for this server, scaled by its model weights size."""
+        return _ready_timeout_for(_READY_TIMEOUT_S, self._launch.weights_bytes)
+
+    @property
     def role(self) -> WorkerRole:
         return self._launch.role
+
+    @property
+    def model(self) -> str:
+        return self._launch.model
 
     def spawn(self) -> LlamaServerClient:
         """Claim a port, launch the process group, record pids/port, return client."""
@@ -135,12 +171,16 @@ class FleetServer:
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def wait_ready(self, timeout: float = _READY_TIMEOUT_S) -> bool:
+    def wait_ready(self, timeout: float | None = None) -> bool:
         """Poll ``/health`` until ready (200 == model loaded), death, or timeout.
 
-        A few bind retries cover the rare case where the claimed port was taken
-        between selection and the child binding it (the process dies at once).
+        ``timeout`` defaults to the size-scaled cold-load budget for this
+        server's model. A few bind retries cover the rare case where the claimed
+        port was taken between selection and the child binding it (the process
+        dies at once).
         """
+        if timeout is None:
+            timeout = self.ready_timeout
         for _ in range(_PORT_BIND_RETRIES):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -306,10 +346,13 @@ class Fleet:
         A server that never becomes ready is left not-ready (routing skips it) and
         its failure counter is bumped; the monitor keeps retrying it up to the cap.
         """
+        log.info("Starting %s engine (loading %s)...", server.role.value, server.model)
         self._notify(self._on_spawning, server.role)
         server.spawn()
-        server.ready = server.wait_ready(timeout=self.ready_timeout)
+        timeout = _ready_timeout_for(self.ready_timeout, server.weights_bytes)
+        server.ready = server.wait_ready(timeout=timeout)
         if server.ready:
+            log.info("%s engine ready (%s).", server.role.value, server.model)
             self._notify(self._on_spawned, server.role)
         else:
             server.consecutive_failures += 1

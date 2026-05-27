@@ -17,6 +17,7 @@ from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -102,6 +103,18 @@ async def ask(
     )
 
 
+def _chat_warming_events() -> list[str]:
+    """One ``warming`` SSE event when the chat server is cold, else nothing.
+
+    A cold chat server blocks the first token while it loads; the early event
+    lets the client show a warming state instead of an apparently-dead stream.
+    """
+    if get_services().provider.role_ready(WorkerRole.CHAT):
+        return []
+    log.info("Chat engine cold; streaming a warming notice before the first token.")
+    return [sse_event(SseEvent.WARMING, {"role": WorkerRole.CHAT.value})]
+
+
 def _run_llm_stream(
     messages: list[ChatMessage],
     opts: dict[str, Any] | None,
@@ -148,6 +161,9 @@ async def _stream_rag_response(
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
+
+    for warming in _chat_warming_events():
+        yield warming
 
     rag = get_services().searcher.build_rag_context(
         question, top_k=top_k, history=history, chunk_type=chunk_type
@@ -235,6 +251,9 @@ async def _stream_chat_response(
     chunk_type: ChunkType | None,
 ) -> AsyncGenerator[str, None]:
     """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
+    for warming in _chat_warming_events():
+        yield warming
+
     rag = get_services().searcher.build_rag_context(
         question, top_k=top_k, history=history, chunk_type=chunk_type
     )

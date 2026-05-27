@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,36 @@ if TYPE_CHECKING:
 def json_output(data: dict) -> None:
     """Print a JSON object to stdout."""
     print(json.dumps(data))
+
+
+def announce_cold_start(role: object, model: str) -> Console | None:
+    """Print a "Starting <role> engine (loading <model>)..." stderr line if cold.
+
+    Returns a stderr console to print the matching "ready" line through when the
+    blocking call returns, or ``None`` when the role's server is already warm (no
+    status needed) or output is JSON (machine-readable, no chatter). The role
+    parameter is a ``WorkerRole``; typed as ``object`` to keep this CLI helper
+    free of a provider-layer import at module top.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.providers.roles import WorkerRole
+
+    if cfg.json_mode or not isinstance(role, WorkerRole):
+        return None
+    if get_services().provider.role_ready(role):
+        return None
+    err = Console(stderr=True)
+    err.print(f"[{theme.MUTED}]Starting {role.value} engine (loading {model})...[/{theme.MUTED}]")
+    return err
+
+
+def announce_ready(err: Console | None, role: object) -> None:
+    """Print the matching "<role> engine ready." stderr line, if cold-start announced."""
+    from lilbee.providers.roles import WorkerRole
+
+    if err is None or not isinstance(role, WorkerRole):
+        return
+    err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
 
 
 def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:
@@ -85,13 +115,14 @@ def add_paths(
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
+    run_sync: Callable[[], object] | None = None,
 ) -> None:
     """Copy *paths* into the knowledge base and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
-    and this function returns immediately after copying files.
+    and this function returns immediately after copying files. *run_sync*
+    overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
+    runner); it defaults to a plain ``asyncio.run(sync())``.
     """
-    from lilbee.data.ingest import sync
-
     copied = copy_paths(paths, con, force=force)
     if chat_mode:
         print(f"Copied {len(copied)} path(s) to {cfg.documents_dir}")
@@ -106,8 +137,15 @@ def add_paths(
         run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = asyncio.run(sync())
+    result = run_sync() if run_sync is not None else _run_foreground_sync()
     con.print(result)
+
+
+def _run_foreground_sync() -> object:
+    """Run a blocking sync with no cancellation hook (default for non-CLI callers)."""
+    from lilbee.data.ingest import sync
+
+    return asyncio.run(sync())
 
 
 def sync_result_to_json(result: object) -> dict:

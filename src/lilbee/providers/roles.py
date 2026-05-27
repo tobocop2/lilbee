@@ -21,5 +21,18 @@ class WorkerRole(StrEnum):
     VISION = "vision"
 
 
+MODEL_FIELD_TO_ROLE: dict[str, WorkerRole] = {
+    "chat_model": WorkerRole.CHAT,
+    "embedding_model": WorkerRole.EMBED,
+    "reranker_model": WorkerRole.RERANK,
+    "vision_model": WorkerRole.VISION,
+}
+"""Config model-role field name -> the worker whose server serves it.
+
+A model-role setting change reloads just that role's server (off-thread) rather
+than dropping the whole fleet, so unrelated roles keep serving uninterrupted.
+"""
+
+
 OcrBackend = Literal["vision"]
 """PDF-OCR backends routed to the engine. Tesseract runs inline, not on a server."""

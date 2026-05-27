@@ -23,6 +23,7 @@ from lilbee.data.ingest.types import (
     ExtractMode,
 )
 from lilbee.data.store import ChunkType
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -119,6 +120,11 @@ async def _vision_ocr_fallback(
             quiet=quiet,
             on_progress=on_progress,
         )
+    except (asyncio.CancelledError, TaskCancelledError):
+        # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
+        # per-page on_progress callback must abort the file, not be logged as an
+        # OCR failure and swallowed.
+        raise
     except Exception:
         log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
         return []
