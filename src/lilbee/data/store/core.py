@@ -370,7 +370,7 @@ class Store:
         if not self._fts_ready:
             self.ensure_fts_index()
         if not self._fts_ready:
-            return []  # pragma: no cover
+            return []
         try:
             rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
             return [SearchChunk(**r) for r in rows]

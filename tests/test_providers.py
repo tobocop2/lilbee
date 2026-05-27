@@ -2351,6 +2351,22 @@ class TestVulkanGpuSelect:
         assert gpu_select._load_vulkan_loader() == "loaded"
         assert "libvulkan.so.1" in attempts
 
+    def test_loader_probes_dll_on_win32(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Windows the probe tries ``vulkan-1.dll`` before giving up."""
+        from lilbee.providers.llama_cpp import gpu_select
+
+        monkeypatch.setattr(gpu_select.sys, "platform", "win32")
+        attempts: list[str] = []
+
+        def _cdll(name: str) -> object:
+            attempts.append(name)
+            raise OSError("not loadable")
+
+        monkeypatch.setattr(gpu_select.ctypes, "CDLL", _cdll)
+        monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _name: None)
+        assert gpu_select._load_vulkan_loader() is None
+        assert "vulkan-1.dll" in attempts
+
     def test_enumerate_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

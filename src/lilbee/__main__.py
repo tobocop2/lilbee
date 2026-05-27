@@ -71,7 +71,7 @@ def _dispatch_module_invocation() -> bool:
     return True
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - process entry glue; logic is unit-tested above
     # Make the frozen exe a valid subprocess target for multiprocessing's
     # sys.executable reinvocations, BEFORE any import that could pull typer.
     if _dispatch_module_invocation():

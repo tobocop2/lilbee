@@ -107,7 +107,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py", "src/lilbee/runtime/launcher.py"]
 concurrency = ["thread"]
 
 [tool.coverage.report]
@@ -116,13 +115,7 @@ fail_under = 100
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
-    "if sys.platform",
     "class.*Protocol",
-]
-omit = [
-    "src/lilbee/__main__.py",
-    "src/lilbee/runtime/launcher.py",
-    "src/lilbee/core/system.py",
 ]
 
 [tool.ruff]

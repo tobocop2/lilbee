@@ -68,7 +68,7 @@ class SessionManager:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}))
         if sys.platform != "win32":
-            path.chmod(0o600)
+            path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
         return self.token
 
     @staticmethod
