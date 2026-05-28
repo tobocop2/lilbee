@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -22,15 +22,18 @@ from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model, apply_setting
+from lilbee.cli.tui.app import apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
-from lilbee.providers.worker.transport import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.model_picker import PickerScope
 
 log = logging.getLogger(__name__)
 
@@ -235,21 +238,38 @@ _CHAT_MODE_DISABLED_CLASS = "-disabled"
 _CHAT_MODE_ACTIVE_CLASS = "-active"
 
 
+_SCOPE_TO_TOOLTIP: dict[str, str] = {
+    "chat": msg.MODEL_PICKER_CHAT_TOOLTIP,
+    "embed": msg.MODEL_PICKER_EMBED_TOOLTIP,
+    "vision": msg.MODEL_PICKER_VISION_TOOLTIP,
+    "rerank": msg.MODEL_PICKER_RERANK_TOOLTIP,
+}
+
+
+def _config_key_for_scope(scope: PickerScope) -> str:
+    """Inverse of ``model_field_to_picker_scope``: scope -> config attribute name."""
+    from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
+
+    for key, sc in model_field_to_picker_scope().items():
+        if sc == scope:
+            return key
+    raise KeyError(scope)
+
+
 class ModelPickerButton(Static, can_focus=True):
-    """Pill button that opens a ModelPickerModal scoped to chat or embed."""
+    """Pill button that opens a ModelPickerModal scoped to one of the four roles."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "open_picker", "Pick model", show=False),
         Binding("space", "open_picker", "Pick model", show=False),
     ]
 
-    def __init__(self, *, scope: Literal["chat", "embed"], button_id: str) -> None:
+    def __init__(self, *, scope: PickerScope, button_id: str) -> None:
         super().__init__(id=button_id)
-        self._scope: Literal["chat", "embed"] = scope
+        self._scope: PickerScope = scope
+        self._key: str = _config_key_for_scope(scope)
         self._options: list[ModelOption] = []
-        self.tooltip = (
-            msg.MODEL_PICKER_CHAT_TOOLTIP if scope == "chat" else msg.MODEL_PICKER_EMBED_TOOLTIP
-        )
+        self.tooltip = _SCOPE_TO_TOOLTIP[scope]
 
     def on_mount(self) -> None:
         self._refresh()
@@ -261,7 +281,7 @@ class ModelPickerButton(Static, can_focus=True):
             self._refresh()
 
     def _refresh(self) -> None:
-        ref = cfg.chat_model if self._scope == "chat" else cfg.embedding_model
+        ref = getattr(cfg, self._key)
         label = display_label_for_ref(ref) or ref or msg.MODEL_VALUE_NONE
         self.update(label)
 
@@ -280,42 +300,9 @@ class ModelPickerButton(Static, can_focus=True):
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
-        if not ref:
+        if ref is not None and ref == getattr(cfg, self._key):
             return
-        if self._scope == "chat":
-            if ref == cfg.chat_model:
-                return
-            apply_active_model(self.app, "chat_model", ref)
-            self._commit_after_change()
-            return
-        if ref == cfg.embedding_model:
-            return
-        # Embed-model swap invalidates a populated vector store. Confirm first.
-        store = get_services().store
-        if store.has_chunks():
-            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-
-            self.app.push_screen(
-                ConfirmDialog(
-                    msg.EMBED_SWAP_CONFIRM_TITLE,
-                    msg.EMBED_SWAP_CONFIRM_MESSAGE,
-                ),
-                lambda confirmed: self._on_embed_swap_confirmed(ref, confirmed),
-            )
-            return
-        self._apply_embed_change(ref)
-
-    def _on_embed_swap_confirmed(self, ref: str, confirmed: bool | None) -> None:
-        """Apply the embed swap or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
-        if not confirmed:
-            self.app.notify(msg.EMBED_SWAP_CANCELLED)
-            return
-        self._apply_embed_change(ref)
-
-    def _apply_embed_change(self, ref: str) -> None:
-        """Persist the new embed ref, refresh the bar, and respawn the embed worker."""
-        apply_active_model(self.app, "embedding_model", ref)
-        self._commit_after_change()
+        apply_model_pick(self, key=self._key, ref=ref, on_done=self._commit_after_change)
 
     def _commit_after_change(self) -> None:
         """Repaint this button and fan ``_after_model_change`` for the scope."""
@@ -528,21 +515,15 @@ class ModelBar(Widget, can_focus=False):
         with contextlib.suppress(Exception):
             self.query_one(ChatModeToggle).refresh_state()
 
-    def _after_model_change(self, scope: Literal["chat", "embed"]) -> None:
-        """Apply the side-effect of the role's model swap.
+    def _after_model_change(self, scope: PickerScope) -> None:
+        """Apply the chat-screen-only side effect (stream cancel / service reset).
 
-        Chat-scope swaps route through :meth:`ChatScreen.apply_model_change`
-        so the in-flight stream cancels under the same UX that ``/model``
-        provides. Embed-scope swaps respawn only the embed worker via
-        :meth:`Services.reload_role`; the chat worker and any active
-        stream are untouched. Off-chat-screen chat swaps fall through to
-        a full ``reset_services`` because the chat-cancel path needs the
-        ChatScreen state machine.
+        ``apply_model_pick`` has already persisted the ref and reloaded the
+        worker for every scope. The only remaining side effect is the
+        chat-scope stream cancellation, which is chat-screen-specific.
         """
-        if scope == "embed":
-            get_services().reload_role(WorkerRole.EMBED)
+        if scope != "chat":
             return
-
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen

@@ -12081,7 +12081,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
@@ -12109,36 +12109,14 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model"),
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
         services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
-
-
-async def test_settings_embed_swap_confirm_cancel_leaves_cfg_untouched():
-    """Cancelling the embed-swap confirm modal does NOT call apply_active_model or reload_role."""
-    from unittest.mock import patch
-
-    services_mock = MagicMock()
-    services_mock.store.has_chunks.return_value = True
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
-            patch(
-                "lilbee.cli.tui.screens.settings.get_services",
-                return_value=services_mock,
-            ),
-        ):
-            # Direct path: caller invokes _apply_picker_choice with confirmed=False.
-            screen._apply_picker_choice("embedding_model", "fake/new.gguf", False)
-        mock_apply.assert_not_called()
-        services_mock.reload_role.assert_not_called()
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
@@ -12153,9 +12131,9 @@ async def test_settings_embed_picker_against_populated_store_pushes_confirm():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
@@ -12176,33 +12154,18 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
             screen._on_model_picker_dismissed("embedding_model", "fake/new-embed.gguf")
-            await screen.workers.wait_for_complete()
             await pilot.pause()
             mock_apply.assert_called_once()
             args = mock_apply.call_args.args
             assert args[1] == "embedding_model"
             assert args[2] == "fake/new-embed.gguf"
-
-
-def test_settings_push_embed_swap_confirm_no_op_when_unmounted():
-    """``_push_embed_swap_confirm`` short-circuits if the screen unmounted."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    # No ``app`` attribute and no DOM means push_screen would crash; the
-    # ``is_mounted`` guard returns before reaching it.
-    SettingsScreen.is_mounted = property(lambda self: False)
-    try:
-        screen._push_embed_swap_confirm("embedding_model", "fake/new.gguf")
-    finally:
-        del SettingsScreen.is_mounted
 
 
 def test_settings_model_picker_dismissed_no_op_on_blank_ref():
@@ -12212,7 +12175,7 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     screen = SettingsScreen.__new__(SettingsScreen)
-    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("chat_model", None)
         screen._on_model_picker_dismissed("chat_model", "")
         mock_apply.assert_not_called()
@@ -12231,7 +12194,7 @@ def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monk
 
     screen.query_one = _raise
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
-    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("vision_model", None)
         mock_apply.assert_not_called()
         screen._on_model_picker_dismissed("vision_model", "")
@@ -12346,7 +12309,7 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
     screen.query_one = _raise
     fake_app = type("FakeApp", (), {})()
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
-    with patch("lilbee.cli.tui.app.apply_active_model"):
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")
 
 

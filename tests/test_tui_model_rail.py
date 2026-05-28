@@ -1,0 +1,112 @@
+"""Tests for the left model rail and the shared apply_model_pick helper."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from lilbee.cli.tui.widgets.model_pick import (
+    _MODEL_KEY_TO_WORKER_ROLE,
+    apply_model_pick,
+)
+from lilbee.providers.worker.transport import WorkerRole
+from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("chat_model", WorkerRole.CHAT),
+        ("embedding_model", WorkerRole.EMBED),
+        ("vision_model", WorkerRole.VISION),
+        ("reranker_model", WorkerRole.RERANK),
+    ],
+)
+def test_model_key_to_worker_role_covers_all_four(key: str, expected: WorkerRole) -> None:
+    assert _MODEL_KEY_TO_WORKER_ROLE[key] is expected
+
+
+async def test_apply_model_pick_persists_and_reloads_vision() -> None:
+    """A vision pick writes the new ref and respawns the vision worker."""
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.widgets.model_pick.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            apply_model_pick(
+                app.screen, key="vision_model", ref="hf:org/vlm-q4", on_done=lambda: None
+            )
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.args[1:] == ("vision_model", "hf:org/vlm-q4")
+        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+
+
+async def test_apply_model_pick_none_is_cancel() -> None:
+    """``ref is None`` is the Esc/cancel path: nothing persists, on_done never runs."""
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as _pilot:
+        done = MagicMock()
+        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+            apply_model_pick(app.screen, key="vision_model", ref=None, on_done=done)
+        mock_apply.assert_not_called()
+        done.assert_not_called()
+
+
+async def test_apply_model_pick_empty_clears_nullable_field() -> None:
+    """``ref=""`` for a nullable field (vision/rerank) writes the empty string."""
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.widgets.model_pick.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            apply_model_pick(app.screen, key="reranker_model", ref="", on_done=lambda: None)
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.args[1:] == ("reranker_model", "")
+
+
+async def test_apply_model_pick_empty_ignored_for_non_nullable() -> None:
+    """``ref=""`` for a non-nullable field (chat) is treated as an invalid no-op."""
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as _pilot:
+        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+            apply_model_pick(app.screen, key="chat_model", ref="", on_done=lambda: None)
+        mock_apply.assert_not_called()
+
+
+async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
+    """Embed swap against a populated store pushes ConfirmDialog before writing."""
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = True
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        with (
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch(
+                "lilbee.cli.tui.widgets.model_pick.get_services",
+                return_value=services_mock,
+            ),
+        ):
+            apply_model_pick(
+                app.screen,
+                key="embedding_model",
+                ref="hf:org/new-embed",
+                on_done=lambda: None,
+            )
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmDialog)
+            mock_apply.assert_not_called()

@@ -393,5 +393,11 @@ MODEL_PICKER_CHAT_TOOLTIP = "Model used to answer your questions. Click to pick 
 MODEL_PICKER_EMBED_TOOLTIP = (
     "Model used to vectorize search queries (Search mode). Click to pick a different one."
 )
+MODEL_PICKER_VISION_TOOLTIP = (
+    "Optional. Model used to read scanned PDFs and images. Click to pick one or browse the catalog."
+)
+MODEL_PICKER_RERANK_TOOLTIP = (
+    "Optional. Model used to sharpen search results. Click to pick one or browse the catalog."
+)
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
