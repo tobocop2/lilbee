@@ -124,23 +124,47 @@ async def test_concurrency(base, headers, model, agents, rounds) -> bool:
     return fail == 0 and ok > 0
 
 
+# A real dev conversation grows fast because every lilbee_search feeds a big retrieved
+# block back in. We simulate that: each turn appends the model's reply AND a
+# retrieved-context block (~4K tokens), so the window fills like a real multi-tool
+# coding session -- not the ~120-token small talk a naive test uses. ~10 turns
+# overflows a 40K model; raise --turns for larger windows.
+_RETRIEVED_BLOCK = "Retrieved Godot 4 reference:\n" + (
+    "AStarGrid2D.get_id_path(from_id: Vector2i, to_id: Vector2i, allow_partial_path: bool "
+    "= false) -> Array[Vector2i]. diagonal_mode: DIAGONAL_MODE_NEVER/ALWAYS/AT_LEAST_ONE_"
+    "WALKABLE/ONLY_IF_NO_OBSTACLES. region: Rect2i. cell_size. set_point_solid(id, solid). "
+    "TileMapLayer.set_cell(coords: Vector2i, source_id: int, atlas_coords: Vector2i). "
+) * 60
+
+
 async def test_long_conversation(base, headers, model, turns) -> bool:
+    """Grow a realistic multi-tool dev conversation until the window fills, then assert
+    the overflow resolves GRACEFULLY (clean context_length_exceeded, server still
+    serving) instead of crashing or a generic 500. Finishing every turn without
+    overflowing is also a pass -- the window simply was not reached (raise --turns)."""
     msgs: list[dict] = []
     async with httpx.AsyncClient() as client:
         for t in range(turns):
-            msgs.append({"role": "user",
-                         "content": f"Turn {t}: name one more Godot 4 class useful for 2D games and why (2 sentences)."})
+            msgs.append({"role": "user", "content":
+                         f"Turn {t}: I'm building a 2D Godot game; suggest the next class to use and a short snippet."})
             code, dt, r = await _chat(client, base, headers, model, msgs, max_tokens=120)
             if code != 200:
-                body = r.text[:200] if isinstance(r, httpx.Response) else repr(r)
-                print(f"[long-conv] stopped at turn {t} (status {code}): {body}")
-                alive = await _search(client, base, headers, "Node")
-                print(f"[long-conv] serve responsive after: {alive == 200}")
-                return alive == 200  # surviving an overflow late in a long convo is acceptable
+                body = r.text[:300] if isinstance(r, httpx.Response) else repr(r)
+                graceful = code == 400 and "context" in body.lower()
+                alive = (await _search(client, base, headers, "Node")) == 200
+                tok = sum(len(m["content"]) for m in msgs) // 4
+                print(f"[long-conv] window filled at turn {t} (~{tok} tokens), status {code}: "
+                      f"graceful={graceful} server-alive={alive}")
+                print(f"[long-conv] body: {body}")
+                return graceful and alive  # production bar: clean resolution + no crash
             content = r.json()["choices"][0]["message"].get("content", "") if isinstance(r, httpx.Response) else ""
             msgs.append({"role": "assistant", "content": content})
-    chars = sum(len(m["content"]) for m in msgs)
-    print(f"[long-conv] completed {turns} turns cleanly; conversation grew to ~{chars} chars")
+            # feed retrieved context back (as opencode does after a tool call) so the
+            # conversation grows toward the window like a real dev session.
+            msgs.append({"role": "user", "content": _RETRIEVED_BLOCK})
+    tok = sum(len(m["content"]) for m in msgs) // 4
+    print(f"[long-conv] {turns} turns, no overflow; conversation ~{tok} tokens "
+          f"(raise --turns to push past this model's window)")
     return True
 
 
