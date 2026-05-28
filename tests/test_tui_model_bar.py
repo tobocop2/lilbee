@@ -241,6 +241,36 @@ async def test_bar_vision_picker_has_no_disable_row(monkeypatch) -> None:
         assert msg.MODEL_VALUE_NONE not in labels
 
 
+async def test_bar_active_optional_picker_offers_turn_off(monkeypatch) -> None:
+    """An active optional role's picker includes a 'Turn off' action that disables it."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "vision_model", "hf:org/vlm-q4")
+    app = _BarTestApp()
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        vision_btn = app.screen.query_one("#model-pick-vision", ModelPickerButton)
+        vision_btn.open_picker()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, ModelPickerModal)
+        turn_off = [o for o in modal._options.options if o.label == msg.MODEL_PICKER_TURN_OFF]
+        assert len(turn_off) == 1 and turn_off[0].ref == ""
+
+        services_mock = MagicMock()
+        with (
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
+            patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock),
+        ):
+            vision_btn._on_picker_dismissed("")
+            await pilot.pause()
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.args[1:] == ("vision_model", "")
+
+
 async def test_bar_disabled_optional_shows_disabled_label(monkeypatch) -> None:
     """An off optional role's button reads 'disabled', not '(none)'."""
     from lilbee.cli.tui import messages as msg

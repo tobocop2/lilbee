@@ -285,11 +285,22 @@ class ModelPickerButton(Static, can_focus=True):
     def action_open_picker(self) -> None:
         self.open_picker()
 
+    def _is_nullable(self) -> bool:
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP.get(self._key)
+        return defn is not None and defn.nullable
+
     def open_picker(self) -> None:
         # Lazy import: model_picker imports ModelOption from this module.
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        modal = ModelPickerModal(scope=self._scope, options=list(self._options))
+        options = list(self._options)
+        # Optional role that's on: offer an explicit "turn off" action in the
+        # modal (ref "" disables it) so disabling isn't only a pill click.
+        if self._is_nullable() and getattr(cfg, self._key):
+            options.append(ModelOption(label=msg.MODEL_PICKER_TURN_OFF, ref=""))
+        modal = ModelPickerModal(scope=self._scope, options=options)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
