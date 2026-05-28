@@ -98,7 +98,10 @@ _RAW_MARKER_FORBIDDEN = (
     '{"name":"lilbee_',
 )
 _SUSPENDED_SUFFIX = ".qa-suspended"
-_CHAT_CTX_TARGET = 32768  # opencode's default system prompt is ~14K tokens, plus tools schema ~10K
+_CHAT_CTX_TARGET = 131072  # ~24K goes to opencode's system + tools schema; the
+# AGENTS.md plan/search/verify workflow needs the rest. resolve_chat_ctx clamps this
+# to min(model trained ctx, host VRAM), so small-context models are unaffected and
+# giants (qwen3-coder 256K, etc.) get the window the multi-search codegen turn needs.
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 _EMBED_PULL_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 
