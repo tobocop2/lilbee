@@ -41,8 +41,11 @@ log = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "lilbee",
-    instructions="Local search engine over your files, code, and crawled pages. "
-    "Search indexed documents for answers with file and line citations.",
+    instructions="Local search engine over the user's files, code, and crawled pages. "
+    "For any question about the user's own documents or codebase -- a lookup, a "
+    "find-in-docs, 'where is X', 'how does Y work here' -- call lilbee_search first "
+    "and answer from its cited chunks. Prefer it over web-fetch or file-read tools: "
+    "those cannot see the indexed corpus.",
 )
 
 _F = TypeVar("_F", bound=Callable[..., Any])
@@ -107,10 +110,15 @@ def _error(msg: str) -> dict[str, Any]:
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Search the knowledge base for relevant document chunks.
+    """Search the user's indexed documents, code, and crawled pages.
 
-    ``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"raw"``, ``"wiki"``,
-    or ``"both"``. Returns chunks sorted by relevance.
+    Use this for any lookup about the user's own files or code, and prefer it
+    over web-fetch or file-read tools, which cannot see the index. Returns
+    chunks ranked by relevance with source and line citations.
+
+    ``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"both"`` (default) or
+    ``"raw"`` for ingested docs and code; use ``"wiki"`` only when ``status``
+    shows a built wiki, else it just falls back to the full pool.
     """
     if not query or not query.strip():
         return _error("query must not be empty")
@@ -835,7 +843,28 @@ def _strip_schema_noise() -> None:
             info.description = textwrap.dedent(info.description).strip()
 
 
+_NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
+
+
+def _tune_search_scope_for_corpus() -> None:
+    """Tell ``search`` which scopes this corpus actually has.
+
+    When wiki generation is off (``cfg.wiki`` is False), a model that guesses
+    ``scope="wiki"`` only gets a silent fallback to the full pool, so advertise
+    raw/both only. Idempotent and reversible so a config reload re-tunes it.
+    """
+    info = mcp._tool_manager._tools.get("search")
+    if info is None or not isinstance(info.description, str):
+        return
+    has_hint = _NO_WIKI_SCOPE_HINT in info.description
+    if cfg.wiki and has_hint:
+        info.description = info.description.replace(_NO_WIKI_SCOPE_HINT, "")
+    elif not cfg.wiki and not has_hint:
+        info.description += _NO_WIKI_SCOPE_HINT
+
+
 _strip_schema_noise()
+_tune_search_scope_for_corpus()
 
 
 def main() -> None:
