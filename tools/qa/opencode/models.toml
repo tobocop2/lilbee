@@ -9,6 +9,12 @@
 #   small -> Tier 1 explicit single-fact lookup (forces a grounded lilbee_search)
 
 [[model]]
+family = "minimax-m2"
+ref = "ggml-org/MiniMax-M2-GGUF/MiniMax-M2-mxfp4-00001-of-00005.gguf"
+size_gb = 230.0
+tier = "giant"
+
+[[model]]
 family = "gpt-oss"
 ref = "ggml-org/gpt-oss-120b-GGUF/gpt-oss-120b-mxfp4-00001-of-00003.gguf"
 size_gb = 63.0
