@@ -232,8 +232,9 @@ class CatalogScreen(Screen[None]):
 
     _search_input = getters.query_one("#catalog-search", Input)
 
-    def __init__(self) -> None:
+    def __init__(self, *, focus_task: str | None = None) -> None:
         super().__init__()
+        self._focus_task: str | None = focus_task
         self._families: list[ModelFamily] = get_families()
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
@@ -409,8 +410,10 @@ class CatalogScreen(Screen[None]):
         except Exception:
             self._activation_settled = True
             return
-        if self._active_tab_id_cache == TAB_CHAT and tabs.active != TAB_CHAT:
-            tabs.active = TAB_CHAT
+        target = self._focus_task or TAB_CHAT
+        self._active_tab_id_cache = target
+        if tabs.active != target:
+            tabs.active = target
         if not self._activation_settled:
             self._activation_settled = True
         self.call_after_refresh(self._refresh_grid)

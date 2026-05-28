@@ -86,6 +86,22 @@ async def test_apply_model_pick_empty_ignored_for_non_nullable() -> None:
         mock_apply.assert_not_called()
 
 
+async def test_catalog_opens_focused_on_vision_tab() -> None:
+    """CatalogScreen(focus_task=TAB_VISION) lands on the Vision tab, not Chat."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import TAB_VISION
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(CatalogScreen(focus_task=TAB_VISION))
+        await pilot.pause()
+        # call_after_refresh schedules the activation; let one more frame settle.
+        await pilot.pause()
+        assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_VISION
+
+
 async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
     """Embed swap against a populated store pushes ConfirmDialog before writing."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
