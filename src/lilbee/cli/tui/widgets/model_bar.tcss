@@ -1,94 +1,51 @@
 ModelBar {
     height: auto;
-    padding: 0;
-    margin: 1 0 0 0;
-    background: transparent;
+    width: 100%;
 }
 
-ModelBar Horizontal {
+.model-bar-roles {
     height: 1;
     width: 100%;
 }
 
-ModelBar .model-bar-pill {
+RoleRow {
+    layout: horizontal;
+    height: 1;
     width: auto;
-    padding: 0 1 0 0;
+    margin: 0 2 0 0;
 }
 
-ModelBar Select {
+RoleRow .model-bar-pill {
     width: auto;
-    min-width: 8;
     height: 1;
-    max-height: 1;
     margin: 0 1 0 0;
-    border: none;
-    padding: 0;
 }
 
-ModelBar Select:focus {
-    border: none;
-}
-
-ModelBar Select > SelectCurrent {
+RoleRow ModelPickerButton {
+    width: auto;
+    max-width: 18;
     height: 1;
-    padding: 0 1;
-    border: none;
-}
-
-ModelBar Select:focus > SelectCurrent {
-    border: none;
-    background: $primary 30%;
     color: $text;
-    text-style: bold;
-}
-
-ModelBar Select > SelectOverlay {
-    max-height: 12;
-    constrain: inflect inflect;
-}
-
-ModelBar ModelPickerButton {
-    width: 1fr;
-    height: 1;
-    margin: 0 1 0 0;
-    padding: 0 1;
     background: transparent;
+    padding: 0;
     text-overflow: ellipsis;
 }
 
-ModelBar ModelPickerButton:focus {
-    background: $primary 30%;
-    color: $text;
+RoleRow.-off ModelPickerButton {
+    color: $text-muted;
+}
+
+RoleRow ModelPickerButton:focus {
+    background: $boost;
     text-style: bold;
-}
-
-ModelBar ModelPickerButton:hover {
-    background: $surface;
-}
-
-ModelBar .cloud-warning {
-    display: none;
-    color: $warning;
-    text-style: bold;
-    padding: 0 1;
-}
-
-ModelBar .cloud-warning.-visible {
-    display: block;
 }
 
 ModelBar #chat-mode-toggle {
     width: auto;
     height: 1;
-    margin: 0 1 0 0;
+    margin: 0 0 0 1;
     padding: 0;
     background: transparent;
-}
-
-ModelBar .chat-mode-pill:focus {
-    text-style: bold;
-    background: $accent;
-    color: $text;
 }
 
 ModelBar #chat-mode-toggle Horizontal {
@@ -113,4 +70,20 @@ ModelBar .chat-mode-pill.-active {
 ModelBar .chat-mode-pill.-disabled {
     color: $text 40%;
     text-style: dim;
+}
+
+ModelBar .chat-mode-pill:focus {
+    text-style: bold;
+    background: $accent;
+    color: $text;
+}
+
+ModelBar .cloud-warning {
+    display: none;
+    height: auto;
+    color: $warning;
+}
+
+ModelBar .cloud-warning.-visible {
+    display: block;
 }
