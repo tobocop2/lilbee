@@ -239,11 +239,6 @@ def _isolate_cfg(tmp_path, request):
 
     for field in API_KEY_FIELDS:
         setattr(cfg, field, "")
-    # Point remote-model discovery at a dead local port so tests never race a
-    # real Ollama running on the dev machine's default localhost:11434. The
-    # probe fails fast (connection refused) and returns no models, matching CI.
-    # Tests that exercise remote discovery set their own URL or mock the call.
-    cfg.remote_base_url = "http://localhost:1"
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
     yield
