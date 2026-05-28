@@ -228,9 +228,8 @@ _TIER_PROMPTS: dict[str, str] = {
     # obscure class detail the model cannot fabricate, forcing a real lilbee_search.
     "small": (
         "Search the indexed Godot 4 class reference for the AStarGrid2D class. "
-        "Using only what the search returns (not prior knowledge), list the exact "
-        "values its diagonal_mode property can take and state what its get_id_path "
-        "method returns. Quote the names exactly as written."
+        "Then, using only what the search returns, tell me what its get_id_path "
+        "method returns."
     ),
     # Mid models discover the tool on their own: natural phrasing, anchored to exact
     # signatures and flag values they would have to verify against the reference.
