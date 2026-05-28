@@ -101,12 +101,14 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 
 @pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
-    """Prevent ModelBar._scan_models from doing real work in tests.
+    """Prevent the model bar / rail _scan_models from doing real work in tests.
 
-    ModelBar.on_mount calls _scan_models which is @work(thread=True).
-    The real function does registry scans, HTTP calls, and litellm imports.
-    Mocking it to return empty results makes the worker thread complete
-    instantly, avoiding both thread accumulation and per-test join overhead.
+    Both ModelBar and ModelRail call a classify function from on_mount via
+    @work(thread=True). The real functions do registry scans, HTTP calls, and
+    litellm imports. Mocking them to return empty results makes the worker
+    thread complete instantly, avoiding both thread accumulation and per-test
+    join overhead. ModelRail imports classify_installed_models_full into its
+    own namespace, so it must be patched there, not only at the source module.
 
     Tests that need real classification use @pytest.mark.real_model_classify.
     """
@@ -114,6 +116,10 @@ def _suppress_model_scan(request, monkeypatch):
         monkeypatch.setattr(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
             lambda: ([], []),
+        )
+        monkeypatch.setattr(
+            "lilbee.cli.tui.widgets.model_rail.classify_installed_models_full",
+            lambda: {},
         )
 
 

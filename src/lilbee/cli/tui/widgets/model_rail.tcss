@@ -12,11 +12,6 @@ ModelRail .rail-heading {
     padding: 0 1;
 }
 
-ModelRail .rail-divider {
-    color: $panel-darken-2;
-    padding: 0 1;
-}
-
 RoleRow {
     layout: horizontal;
     height: 1;
@@ -70,6 +65,44 @@ RoleRow ModelPickerButton:focus {
 ModelRail ChatModeToggle {
     padding: 1 1 0 1;
     height: auto;
+}
+
+ModelRail #chat-mode-toggle {
+    width: auto;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0;
+    background: transparent;
+}
+
+ModelRail #chat-mode-toggle Horizontal {
+    height: 1;
+    width: auto;
+}
+
+ModelRail .chat-mode-pill {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    margin: 0 1 0 0;
+    background: $boost;
+    color: $text-muted;
+}
+
+ModelRail .chat-mode-pill.-active {
+    background: $success;
+    color: $text;
+}
+
+ModelRail .chat-mode-pill.-disabled {
+    color: $text 40%;
+    text-style: dim;
+}
+
+ModelRail .chat-mode-pill:focus {
+    text-style: bold;
+    background: $accent;
+    color: $text;
 }
 
 ModelRail .cloud-warning {

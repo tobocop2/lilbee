@@ -301,7 +301,7 @@ class ModelPickerButton(Static, can_focus=True):
     def _on_picker_dismissed(self, ref: str | None) -> None:
         if ref is not None and ref == getattr(cfg, self._key):
             return
-        # Chat swaps reset services via _after_model_change -> apply_model_change,
+        # Chat swaps reset services in _commit_after_change -> apply_model_change,
         # so the helper must not also reload the chat worker (double teardown).
         apply_model_pick(
             self,
