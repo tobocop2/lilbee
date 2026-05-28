@@ -59,6 +59,15 @@ def mock_svc():
         }
 
     store.upsert_source.side_effect = _upsert
+
+    def _write_batch(items):
+        # Mirror the real write: each batched doc upserts a source record so
+        # multi-sync tests see it via get_sources().
+        for it in items:
+            _upsert(it.source, it.file_hash, len(it.records))
+        return sum(len(it.records) for it in items)
+
+    store.write_chunks_batch.side_effect = _write_batch
     store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
     store.delete_by_source.return_value = None
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -253,6 +262,21 @@ class TestSync:
         result = await sync(force_rebuild=True)
         assert "keep.txt" in result.added
 
+    async def test_many_small_files_batch_into_one_write(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        # Bulk ingest must amortize the LanceDB write: many small files below the
+        # flush threshold land in a single write_chunks_batch, not one per file.
+        for i in range(5):
+            (isolated_env / f"f{i}.txt").write_text(f"content {i}")
+        from lilbee.data.ingest import sync
+
+        result = await sync(quiet=True)
+        assert len(result.added) == 5
+        mock_svc.store.write_chunks_batch.assert_called_once()
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        assert sorted(it.source for it in items) == [f"f{i}.txt" for i in range(5)]
+
     async def test_ingest_pdf(self, mock_extract_file, isolated_env):
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -289,14 +313,14 @@ class TestSync:
         (isolated_env / "bad.txt").write_text("This will fail.")
 
         from lilbee.data.ingest import sync
-        from lilbee.data.ingest.pipeline import _ingest_file as orig_ingest
+        from lilbee.data.ingest.pipeline import _produce_records as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "bad" in name:
                 raise RuntimeError("simulated failure")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=_failing_ingest):
+        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_failing_ingest):
             result = await sync()
         # good.txt was added, bad.txt failed
         assert "good.txt" in result.added
@@ -316,14 +340,14 @@ class TestSync:
 
         f.write_text("Version 2, will fail")
 
-        from lilbee.data.ingest.pipeline import _ingest_file as orig_ingest
+        from lilbee.data.ingest.pipeline import _produce_records as orig_ingest
 
         async def _failing_ingest(path, name, content_type, **kwargs):
             if "flaky" in name:
                 raise RuntimeError("simulated failure on update")
             return await orig_ingest(path, name, content_type, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=_failing_ingest):
+        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_failing_ingest):
             result = await sync()
         assert "flaky.txt" not in result.updated
         assert "flaky.txt" in result.failed
@@ -338,7 +362,7 @@ class TestSync:
         async def _fail(*args):
             raise RuntimeError("boom")
 
-        with patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=_fail):
+        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_fail):
             result = await sync(quiet=True)
         assert "bad.txt" in result.failed
         assert "bad.txt" not in result.added
@@ -354,14 +378,14 @@ class TestSync:
         await sync()  # First ingest succeeds
         f.write_text("Version 2, fail quietly")
 
-        from lilbee.data.ingest.pipeline import _ingest_file as orig
+        from lilbee.data.ingest.pipeline import _produce_records as orig
 
         async def _fail(path, name, ct, **kwargs):
             if "qflaky" in name:
                 raise RuntimeError("quiet fail")
             return await orig(path, name, ct, **kwargs)
 
-        with patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=_fail):
+        with patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_fail):
             result = await sync(quiet=True)
         assert "qflaky.txt" in result.failed
         assert "qflaky.txt" not in result.updated
@@ -408,26 +432,29 @@ class TestSyncCancellation:
             await ingest_batch(files, added, [], [], [], quiet=True, cancel=cancel)
 
     async def test_atomic_delete_for_modified_file(self, mock_extract_file, isolated_env, mock_svc):
-        """Modified file: old chunks deleted in _process_one, not in sync() loop."""
+        """Modified file: its old chunks are cleaned up in the same batched write."""
         from lilbee.data.ingest import sync
 
         f = isolated_env / "doc.txt"
         f.write_text("Version 1")
         await sync(quiet=True)
 
-        # Reset call tracking
-        mock_svc.store.delete_by_source.reset_mock()
+        mock_svc.store.write_chunks_batch.reset_mock()
 
         f.write_text("Version 2, modified content")
         await sync(quiet=True)
 
-        # delete_by_source should be called (from _process_one), not from the sync loop
-        mock_svc.store.delete_by_source.assert_called_with("doc.txt")
+        # The batched write carries a cleanup item for the modified source, so the
+        # delete and the new chunks land in one transaction.
+        mock_svc.store.write_chunks_batch.assert_called_once()
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        doc_item = next(it for it in items if it.source == "doc.txt")
+        assert doc_item.needs_cleanup is True
 
     async def test_cancel_preserves_old_chunks_for_modified_file(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        """If cancel is set before a modified file is processed, old chunks remain."""
+        """If cancel is set before a modified file is processed, no write happens."""
         import threading
 
         from lilbee.data.ingest import sync
@@ -436,15 +463,16 @@ class TestSyncCancellation:
         f.write_text("Version 1")
         await sync(quiet=True)
 
-        mock_svc.store.delete_by_source.reset_mock()
+        mock_svc.store.write_chunks_batch.reset_mock()
 
         f.write_text("Version 2, modified content")
         cancel = threading.Event()
         cancel.set()
         await sync(quiet=True, cancel=cancel)
 
-        # Old chunks should NOT have been deleted since cancel was set before processing
-        mock_svc.store.delete_by_source.assert_not_called()
+        # Cancel fired before the file was processed, so nothing was written and
+        # the old chunks were never deleted.
+        mock_svc.store.write_chunks_batch.assert_not_called()
 
 
 class TestIngestHelpers:
@@ -501,7 +529,7 @@ class TestCancellation:
         async def _cancel(*args, **kwargs):
             raise asyncio.CancelledError()
 
-        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=_cancel):
+        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=_cancel):
             from lilbee.data.ingest import ingest_batch
 
             added = ["cancel.txt"]
@@ -570,16 +598,17 @@ class TestSkipMarkerLifecycle:
     until the file changes or retry_skipped / force_rebuild clears the marker."""
 
     @staticmethod
-    def _zero_chunks(*_args, **_kwargs) -> int:
-        # Simulate "OCR found no usable text": the file is recorded as skipped.
-        return 0
+    def _zero_chunks(*_args, **_kwargs) -> list:
+        # Simulate "OCR found no usable text": no records produced, so the file
+        # is recorded as skipped.
+        return []
 
     async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.skip_marker import load_skip_markers
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
             first = await sync(quiet=True)
             assert "scanned.pdf" in first.skipped
             assert "scanned.pdf" in load_skip_markers(cfg.data_root)
@@ -592,7 +621,7 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
             await sync(quiet=True)
             # retry_skipped drops the marker so the file is attempted again.
             retried = await sync(quiet=True, retry_skipped=True)
@@ -602,7 +631,7 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=self._zero_chunks):
+        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
@@ -729,47 +758,50 @@ class TestFileHash:
         assert file_hash(f1) != file_hash(f2)
 
 
-class TestApplyResultZeroChunks:
+class TestClassifyResult:
     def test_zero_chunks_not_recorded_as_added(self):
-        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
 
         added = ["scanned.pdf"]
         updated: list[str] = []
         failed: list[str] = []
         skipped: list[str] = []
         result = _IngestResult("scanned.pdf", Path("scanned.pdf"), chunk_count=0, error=None)
-        _apply_result(result, added, updated, failed, skipped)
+        assert _classify_result(result, added, updated, failed, skipped) is BatchStatus.SKIPPED
         assert "scanned.pdf" not in added
         assert "scanned.pdf" not in failed
         assert "scanned.pdf" in skipped
 
     def test_zero_chunks_not_recorded_as_updated(self):
-        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
 
         added: list[str] = []
         updated = ["scanned.pdf"]
         failed: list[str] = []
         skipped: list[str] = []
         result = _IngestResult("scanned.pdf", Path("scanned.pdf"), chunk_count=0, error=None)
-        _apply_result(result, added, updated, failed, skipped)
+        assert _classify_result(result, added, updated, failed, skipped) is BatchStatus.SKIPPED
         assert "scanned.pdf" not in updated
         assert "scanned.pdf" not in failed
         assert "scanned.pdf" in skipped
 
-    def test_nonzero_chunks_recorded(self, mock_svc):
-        from lilbee.data.ingest.pipeline import _apply_result
+    def test_nonzero_chunks_stay_for_flush(self):
+        # A successful file is reported INGESTED and left in added; persistence
+        # (the source upsert) is the batched flush's job, not classification's.
+        from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
 
         added = ["doc.pdf"]
         updated: list[str] = []
         failed: list[str] = []
         skipped: list[str] = []
         result = _IngestResult("doc.pdf", Path("doc.pdf"), chunk_count=5, error=None)
-        with mock.patch("lilbee.data.ingest.pipeline.file_hash", return_value="abc123"):
-            _apply_result(result, added, updated, failed, skipped)
-        mock_svc.store.upsert_source.assert_called_once()
+        assert _classify_result(result, added, updated, failed, skipped) is BatchStatus.INGESTED
         assert "doc.pdf" in added
         assert "doc.pdf" not in skipped
 
@@ -784,7 +816,7 @@ class TestApplyResultZeroChunks:
         """
         import logging
 
-        from lilbee.data.ingest.pipeline import _apply_result
+        from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
 
         added: list[str] = []
@@ -794,7 +826,7 @@ class TestApplyResultZeroChunks:
         err = RuntimeError("embedder bogus:bogus not installed")
         result = _IngestResult("qa-fail.md", Path("qa-fail.md"), chunk_count=0, error=err)
         with caplog.at_level(logging.DEBUG, logger="lilbee.data.ingest.pipeline"):
-            _apply_result(result, added, updated, failed, skipped)
+            _classify_result(result, added, updated, failed, skipped)
         levels = [r.levelno for r in caplog.records if r.name == "lilbee.data.ingest.pipeline"]
         assert logging.WARNING in levels
         # Exception-level records carry exc_info; warning call should not.

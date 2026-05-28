@@ -152,6 +152,68 @@ class TestFtsIndexStaleFlag:
         assert not store._fts_ready
 
 
+def _records_for(source, n=2, dim=None):
+    if dim is None:
+        dim = cfg.embedding_dim
+    return [
+        {
+            "source": source,
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": f"{source} chunk {i}",
+            "chunk_index": i,
+            "vector": [float(i)] * dim,
+        }
+        for i in range(n)
+    ]
+
+
+class TestWriteChunksBatch:
+    def test_writes_many_docs_and_upserts_sources_in_one_pass(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        items = [
+            ChunkWrite("a.md", "hash_a", _records_for("a.md", 2), needs_cleanup=False),
+            ChunkWrite("b.md", "hash_b", _records_for("b.md", 3), needs_cleanup=False),
+        ]
+        added = store.write_chunks_batch(items)
+        assert added == 5
+        assert len(store.get_chunks_by_source("a.md")) == 2
+        assert len(store.get_chunks_by_source("b.md")) == 3
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["a.md"]["chunk_count"] == 2
+        assert sources["b.md"]["file_hash"] == "hash_b"
+
+    def test_cleanup_replaces_a_source_without_duplicating(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 4))
+        # Re-ingest a.md with fewer chunks; needs_cleanup must drop the old ones.
+        store.write_chunks_batch(
+            [ChunkWrite("a.md", "h2", _records_for("a.md", 2), needs_cleanup=True)]
+        )
+        assert len(store.get_chunks_by_source("a.md")) == 2
+
+    def test_empty_batch_and_empty_records_are_noops(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        assert store.write_chunks_batch([]) == 0
+        assert store.write_chunks_batch([ChunkWrite("x.md", "h", [], needs_cleanup=False)]) == 0
+        assert store.get_sources() == []
+
+    def test_dimension_mismatch_rejects_whole_batch(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        bad = _records_for("a.md", 1, dim=cfg.embedding_dim + 1)
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            store.write_chunks_batch([ChunkWrite("a.md", "h", bad, needs_cleanup=False)])
+        assert store.get_sources() == []
+
+
 class TestHybridSearch:
     def test_hybrid_search_with_fts_index(self, store, test_config):
         records = _make_records()

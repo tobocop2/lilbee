@@ -38,6 +38,7 @@ from .types import (
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
     ChunkType,
+    ChunkWrite,
     CitationRecord,
     EmbeddingModelMismatchError,
     RemoveResult,
@@ -552,6 +553,29 @@ class Store:
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 
+    def _upsert_source_unlocked(
+        self,
+        filename: str,
+        file_hash: str,
+        chunk_count: int,
+        source_type: str = "document",
+    ) -> None:
+        """Add or update one source tracking record. Caller must hold ``write_lock()``."""
+        db = self.get_db()
+        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+        table.add(
+            [
+                {
+                    "filename": filename,
+                    "file_hash": file_hash,
+                    "ingested_at": datetime.now(UTC).isoformat(),
+                    "chunk_count": chunk_count,
+                    "source_type": source_type,
+                }
+            ]
+        )
+
     def upsert_source(
         self,
         filename: str,
@@ -561,21 +585,54 @@ class Store:
     ) -> None:
         """Add or update a source file tracking record."""
         with write_lock():
-            db = self.get_db()
-            table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-            _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
-            table.add(
-                [
-                    {
-                        "filename": filename,
-                        "file_hash": file_hash,
-                        "ingested_at": datetime.now(UTC).isoformat(),
-                        "chunk_count": chunk_count,
-                        "source_type": source_type,
-                    }
-                ]
-            )
+            self._upsert_source_unlocked(filename, file_hash, chunk_count, source_type)
         self._invalidate_source_cache()
+
+    def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
+        """Write several documents' chunks in one locked transaction. Returns chunks added.
+
+        Bulk ingest otherwise pays one write-lock acquisition and one LanceDB
+        transaction per document. This folds many documents into a single
+        ``table.add`` plus one source-table update pass, so the lock is taken once
+        per batch and held only for the write -- never across extract or embed,
+        which run before this is called. Each document's cleanup delete and source
+        upsert run inside the same lock, so a reader never observes a half-applied
+        batch (stronger than the per-file path's separate lock per delete/add/upsert).
+
+        The embedding-identity gate and per-vector dimension check mirror
+        ``add_chunks``; a dimension mismatch raises and the whole batch is rejected,
+        which the caller treats as a per-batch failure.
+        """
+        items = [it for it in items if it.records]
+        if not items:
+            return 0
+        with write_lock():
+            embedding_model = self._config.embedding_model
+            embedding_dim = self._config.embedding_dim
+            self._ensure_embedding_compat()
+            self._fts_ready = False
+            all_records = [rec for it in items for rec in it.records]
+            for rec in all_records:
+                vec = rec.get("vector", [])
+                if len(vec) != embedding_dim:
+                    raise ValueError(
+                        f"Vector dimension mismatch: expected {embedding_dim}, "
+                        f"got {len(vec)} (source={rec.get('source', '?')})"
+                    )
+            db = self.get_db()
+            for it in items:
+                if it.needs_cleanup:
+                    self._delete_by_source_unlocked(it.source)
+            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+            table.add(all_records)
+            if self.get_meta() is None:
+                self._write_meta_unlocked(
+                    embedding_model=embedding_model, embedding_dim=embedding_dim
+                )
+            for it in items:
+                self._upsert_source_unlocked(it.source, it.file_hash, len(it.records))
+        self._invalidate_source_cache()
+        return len(all_records)
 
     def _delete_source_unlocked(self, filename: str) -> None:
         """Remove the *filename* source record. Caller must hold ``write_lock()``."""

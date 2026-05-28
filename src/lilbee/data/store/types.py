@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -13,6 +13,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
 # on slow media (HDD) at the cost of serving slightly stale data.
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
+
+
+class ChunkWrite(NamedTuple):
+    """One document's chunks plus its source-table update, for a batched write.
+
+    ``Store.write_chunks_batch`` folds many of these into a single locked
+    transaction so bulk ingest doesn't pay a write-lock acquisition per document.
+    """
+
+    source: str
+    file_hash: str
+    records: list[dict]
+    needs_cleanup: bool
 
 
 class ChunkType(StrEnum):
