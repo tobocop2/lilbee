@@ -1001,7 +1001,7 @@ class TestModelPickerButton:
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
                 mock.patch(
@@ -1051,7 +1051,7 @@ class TestModelPickerButton:
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1080,7 +1080,7 @@ class TestModelPickerButton:
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1109,7 +1109,7 @@ class TestModelPickerButton:
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1139,7 +1139,7 @@ class TestModelPickerButton:
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1172,7 +1172,7 @@ class TestModelPickerButton:
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1201,7 +1201,7 @@ class TestModelPickerButton:
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1595,7 +1595,8 @@ class TestModelPickerModal:
             inp.value = "qw"
             await pilot.pause(0.15)
             ml = modal.query_one("#picker-list", ModelList)
-            assert ml.option_count == 1
+            # "qw" matches one model; the always-present "Browse catalog" row brings it to 2.
+            assert ml.option_count == 2
 
     async def test_modal_filters_options_by_search(self) -> None:
         from textual.widgets import Button, Input
@@ -1623,7 +1624,8 @@ class TestModelPickerModal:
             inp.value = "llama"
             await pilot.pause(0.15)  # let the debounce timer fire
             ml = modal.query_one("#picker-list", ModelList)
-            assert ml.option_count == 1
+            # "llama" matches one model; the always-present "Browse catalog" row brings it to 2.
+            assert ml.option_count == 2
 
     async def test_modal_escape_dismisses_with_none(self) -> None:
         from textual.widgets import Button
@@ -2154,6 +2156,10 @@ class TestClassifyInstalledModels:
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[blank, good],
             ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
+            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_installed_models()
@@ -2191,6 +2197,10 @@ class TestClassifyInstalledModels:
             mock.patch(
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]

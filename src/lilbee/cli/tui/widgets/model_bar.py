@@ -275,6 +275,10 @@ class ModelPickerButton(Static, can_focus=True):
         label = display_label_for_ref(ref) or ref or msg.MODEL_VALUE_NONE
         self.update(label)
 
+    def repaint(self) -> None:
+        """Public entry for a parent container to repaint the label from cfg."""
+        self._refresh()
+
     def on_click(self, event: events.Click) -> None:
         event.stop()
         self.open_picker()
@@ -297,14 +301,34 @@ class ModelPickerButton(Static, can_focus=True):
     def _on_picker_dismissed(self, ref: str | None) -> None:
         if ref is not None and ref == getattr(cfg, self._key):
             return
-        apply_model_pick(self, key=self._key, ref=ref, on_done=self._commit_after_change)
+        # Chat swaps reset services via _after_model_change -> apply_model_change,
+        # so the helper must not also reload the chat worker (double teardown).
+        apply_model_pick(
+            self,
+            key=self._key,
+            ref=ref,
+            on_done=self._commit_after_change,
+            reload_worker=self._scope != "chat",
+        )
 
     def _commit_after_change(self) -> None:
-        """Repaint this button and fan ``_after_model_change`` for the scope."""
+        """Repaint the label, then run the chat-screen side effect for chat swaps.
+
+        ``apply_model_pick`` already persisted the ref and (for non-chat
+        scopes) reloaded the worker. Chat swaps cancel the in-flight stream
+        and reset services here so the new chat model takes over cleanly. Works
+        whether this button lives in a ModelBar or the chat-screen ModelRail.
+        """
         self._refresh()
-        bar = self.screen.query(ModelBar)
-        for b in bar:
-            b._after_model_change(self._scope)
+        if self._scope != "chat":
+            return
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = self.app.screen
+        if isinstance(screen, ChatScreen):
+            screen.apply_model_change()
+        else:
+            reset_services()
 
 
 class ChatModePill(Static, can_focus=True):
@@ -509,23 +533,6 @@ class ModelBar(Widget, can_focus=False):
     def _refresh_chat_mode_toggle(self) -> None:
         with contextlib.suppress(Exception):
             self.query_one(ChatModeToggle).refresh_state()
-
-    def _after_model_change(self, scope: PickerScope) -> None:
-        """Apply the chat-screen-only side effect (stream cancel / service reset).
-
-        ``apply_model_pick`` has already persisted the ref and reloaded the
-        worker for every scope. The only remaining side effect is the
-        chat-scope stream cancellation, which is chat-screen-specific.
-        """
-        if scope != "chat":
-            return
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = self.app.screen
-        if isinstance(screen, ChatScreen):
-            screen.apply_model_change()
-        else:
-            reset_services()
 
     def refresh_models(self) -> None:
         """Re-scan models (called after downloads complete)."""

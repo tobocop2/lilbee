@@ -155,9 +155,8 @@ class _RailTestApp(LilbeeAppHost):
 
 async def test_rail_renders_four_roles_with_optional_off_by_default(monkeypatch) -> None:
     """A fresh rail has Chat/Embed active and Vision/Rerank in the off state."""
-    from lilbee.core.config import cfg
-
     from lilbee.cli.tui.widgets.model_rail import ModelRail, RoleRow
+    from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
     monkeypatch.setattr(cfg, "embedding_model", "fake/embed-model")
@@ -181,9 +180,8 @@ async def test_rail_renders_four_roles_with_optional_off_by_default(monkeypatch)
 
 async def test_rail_optional_row_lights_up_when_config_changes(monkeypatch) -> None:
     """Assigning a vision_model via the settings signal flips the row to active."""
-    from lilbee.core.config import cfg
-
     from lilbee.cli.tui.widgets.model_rail import ModelRail, RoleRow
+    from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "vision_model", "")
     app = _RailTestApp()
@@ -198,6 +196,102 @@ async def test_rail_optional_row_lights_up_when_config_changes(monkeypatch) -> N
         await pilot.pause()
         assert vision.is_active
         assert vision.has_class("-active")
+
+
+class _ChatTestApp(LilbeeAppHost):
+    """Test fixture that pushes the chat screen so the rail mounts in context."""
+
+    CSS = ""
+
+    def on_mount(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        self.push_screen(ChatScreen())
+
+
+@pytest.fixture
+def _seeded_models(monkeypatch):
+    """Pre-populate chat/embedding and skip the SetupWizard pop so the rail is reachable."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
+    monkeypatch.setattr(cfg, "embedding_model", "fake/embed-model")
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "reranker_model", "")
+    monkeypatch.setattr(ChatScreen, "_needs_setup", lambda self: False)
+
+
+async def test_chat_screen_mounts_with_rail_present(_seeded_models) -> None:
+    """ChatScreen.compose places the rail to the left of the chat column."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.widgets.model_rail import ModelRail
+
+    app = _ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_screen = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        rail = chat_screen.query_one("#model-rail", ModelRail)
+        assert rail.display is True
+
+
+async def test_chat_screen_ctrl_b_toggles_rail(_seeded_models) -> None:
+    """Ctrl+B hides the rail and sets the user-hidden flag so a later widen won't unhide it."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.widgets.model_rail import ModelRail
+
+    app = _ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_screen = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        rail = chat_screen.query_one("#model-rail", ModelRail)
+        assert rail.display is True
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        assert rail.display is False
+        assert chat_screen._rail_user_hidden is True
+        await pilot.press("ctrl+b")
+        await pilot.pause()
+        assert rail.display is True
+        assert chat_screen._rail_user_hidden is False
+
+
+async def test_chat_screen_auto_collapses_rail_on_narrow_terminal(_seeded_models) -> None:
+    """on_resize hides the rail below _MIN_WIDTH_FOR_RAIL and restores it above."""
+    from textual import events as _events
+    from textual.geometry import Size
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.widgets.model_rail import ModelRail
+
+    app = _ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_screen = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        rail = chat_screen.query_one("#model-rail", ModelRail)
+        assert rail.display is True
+        chat_screen.on_resize(
+            _events.Resize(
+                size=Size(60, 40), virtual_size=Size(60, 40), container_size=Size(60, 40)
+            )
+        )
+        assert rail.display is False
+        # Widen back; the user did not manually hide, so the rail returns.
+        chat_screen.on_resize(
+            _events.Resize(
+                size=Size(120, 40), virtual_size=Size(120, 40), container_size=Size(120, 40)
+            )
+        )
+        assert rail.display is True
+        # Manual hide is sticky against re-widening.
+        chat_screen._rail_user_hidden = True
+        rail.display = False
+        chat_screen.on_resize(
+            _events.Resize(
+                size=Size(120, 40), virtual_size=Size(120, 40), container_size=Size(120, 40)
+            )
+        )
+        assert rail.display is False
 
 
 async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:

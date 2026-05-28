@@ -33,8 +33,6 @@ log = logging.getLogger(__name__)
 
 _CSS_FILE = Path(__file__).parent / "model_rail.tcss"
 
-_NULLABLE_SCOPES: frozenset[str] = frozenset({"vision", "rerank"})
-
 _SCOPE_TO_LABEL: dict[str, str] = {
     "chat": msg.MODEL_RAIL_CHAT_LABEL,
     "embed": msg.MODEL_RAIL_EMBED_LABEL,
@@ -71,13 +69,15 @@ class RoleRow(Widget, can_focus=False):
         return bool(getattr(cfg, self._key))
 
     def refresh_state(self) -> None:
-        """Repaint the dot + active/off classes from current cfg."""
+        """Repaint the dot, active/off classes, and the picker label from cfg."""
         active = self.is_active
         self.set_class(active, "-active")
         self.set_class(not active, "-off")
         with contextlib.suppress(Exception):
-            dot = self.query_one(".role-dot", Static)
-            dot.update(msg.ACTIVE_DOT if active else msg.INACTIVE_DOT)
+            self.query_one(".role-dot", Static).update(
+                msg.ACTIVE_DOT if active else msg.INACTIVE_DOT
+            )
+            self.query_one(ModelPickerButton).repaint()
 
 
 class ModelRail(Widget, can_focus=False):

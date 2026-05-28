@@ -1,3 +1,14 @@
+/* The body row stacks the model rail (left) next to the main chat column. */
+#chat-body {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#chat-main {
+    width: 1fr;
+    height: 1fr;
+}
+
 #chat-log {
     height: 1fr;
     align: left bottom;

@@ -215,7 +215,7 @@ class TestModelSwitchSafety:
             screen = app.screen
             screen.streaming = True
 
-            chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
+            chat_btn = screen.query_one("#rail-pick-chat", ModelPickerButton)
             ref = "ollama/new-model:latest"
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),

@@ -17,7 +17,7 @@ from textual import events, getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import DOMNode
@@ -47,7 +47,8 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelPickerButton
+from lilbee.cli.tui.widgets.model_rail import ModelRail
 from lilbee.cli.tui.widgets.slash_command_catalog import SlashCommandCatalog
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -187,7 +188,12 @@ class ChatScreen(Screen[None]):
         Binding("f2", "show_command_catalog", "All commands", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
+        Binding("ctrl+b", "toggle_rail", "Models", show=False, priority=True),
     ]
+
+    # Below this terminal width the rail auto-collapses so the chat column
+    # is never squeezed. The toggle binding overrides this until next resize.
+    _MIN_WIDTH_FOR_RAIL: ClassVar[int] = 80
 
     def __init__(self) -> None:
         super().__init__()
@@ -200,6 +206,10 @@ class ChatScreen(Screen[None]):
         self._history_index: int = -1
         self._tail_scroll_y: float = 0.0
         self._auto_follow: bool = True
+        # ``True`` when the user explicitly hid the rail with Ctrl+B. The
+        # auto-collapse on narrow terminals respects this so widening the
+        # terminal later doesn't un-hide the rail behind the user's back.
+        self._rail_user_hidden: bool = False
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -229,11 +239,14 @@ class ChatScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        yield VerticalScroll(
-            ChatWelcome(id="chat-welcome"),
-            id="chat-log",
-        )
-        yield CompletionOverlay(id="completion-overlay")
+        with Horizontal(id="chat-body"):
+            yield ModelRail(id="model-rail")
+            with Vertical(id="chat-main"):
+                yield VerticalScroll(
+                    ChatWelcome(id="chat-welcome"),
+                    id="chat-log",
+                )
+                yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
             with PromptArea(id="chat-prompt-area"):
                 yield ScopeChip(id="scope-chip")
@@ -242,7 +255,6 @@ class ChatScreen(Screen[None]):
                     id="chat-input",
                 )
                 yield ArgHintLine(id="arg-hint")
-                yield ModelBar(id="model-bar")
             yield TaskBar()
             yield HelpHint(id="help-hint")
             yield Footer()
@@ -1518,8 +1530,24 @@ class ChatScreen(Screen[None]):
         self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
-        """Re-scan installed models and refresh the dropdowns."""
-        self.query_one("#model-bar", ModelBar).refresh_models()
+        """Re-scan installed models and refresh the rail."""
+        self.query_one("#model-rail", ModelRail).refresh_models()
+
+    def action_toggle_rail(self) -> None:
+        """Ctrl+B: hide or show the model rail and remember the user's choice."""
+        rail = self.query_one("#model-rail", ModelRail)
+        rail.display = not rail.display
+        self._rail_user_hidden = not rail.display
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Auto-collapse the rail below ``_MIN_WIDTH_FOR_RAIL`` unless the user hid it manually."""
+        if self._rail_user_hidden:
+            return
+        try:
+            rail = self.query_one("#model-rail", ModelRail)
+        except NoMatches:
+            return
+        rail.display = event.size.width >= self._MIN_WIDTH_FOR_RAIL
 
     def action_vim_scroll_down(self) -> None:
         """Vim j: scroll down in normal mode."""

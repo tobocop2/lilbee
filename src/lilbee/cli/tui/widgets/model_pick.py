@@ -47,6 +47,7 @@ def apply_model_pick(
     key: str,
     ref: str | None,
     on_done: Callable[[], None],
+    reload_worker: bool = True,
 ) -> None:
     """Persist a picker selection and reload the affected worker.
 
@@ -58,6 +59,10 @@ def apply_model_pick(
     confirm modal first so the user is not surprised by the rebuild
     requirement. ``on_done`` runs after a successful write, never after
     a cancel and never after the catalog jump.
+
+    Pass ``reload_worker=False`` when the caller resets the worker another
+    way (the chat screen cancels its stream and resets services on a chat
+    swap, so reloading the chat role here too would tear that work down twice).
     """
     if ref is None:
         return
@@ -70,9 +75,9 @@ def apply_model_pick(
     if not ref and (defn is None or not defn.nullable):
         return
     if key == "embedding_model" and ref and get_services().store.has_chunks():
-        _push_embed_swap_confirm(host, key, ref, on_done)
+        _push_embed_swap_confirm(host, key, ref, on_done, reload_worker)
         return
-    _persist(host.app, key, ref, on_done)
+    _persist(host.app, key, ref, on_done, reload_worker)
 
 
 def _open_catalog_for_key(host: Widget, key: str) -> None:
@@ -94,12 +99,14 @@ def _open_catalog_for_key(host: Widget, key: str) -> None:
     host.app.push_screen(CatalogScreen(focus_task=tab_id))
 
 
-def _push_embed_swap_confirm(host: Widget, key: str, ref: str, on_done: Callable[[], None]) -> None:
+def _push_embed_swap_confirm(
+    host: Widget, key: str, ref: str, on_done: Callable[[], None], reload_worker: bool
+) -> None:
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
     host.app.push_screen(
         ConfirmDialog(msg.EMBED_SWAP_CONFIRM_TITLE, msg.EMBED_SWAP_CONFIRM_MESSAGE),
-        lambda confirmed: _on_embed_confirm(host.app, key, ref, confirmed, on_done),
+        lambda confirmed: _on_embed_confirm(host.app, key, ref, confirmed, on_done, reload_worker),
     )
 
 
@@ -109,16 +116,19 @@ def _on_embed_confirm(
     ref: str,
     confirmed: bool | None,
     on_done: Callable[[], None],
+    reload_worker: bool,
 ) -> None:
     if not confirmed:
         app.notify(msg.EMBED_SWAP_CANCELLED)
         return
-    _persist(app, key, ref, on_done)
+    _persist(app, key, ref, on_done, reload_worker)
 
 
-def _persist(app: App, key: str, ref: str, on_done: Callable[[], None]) -> None:
+def _persist(
+    app: App, key: str, ref: str, on_done: Callable[[], None], reload_worker: bool
+) -> None:
     apply_active_model(app, key, ref)
     role = _MODEL_KEY_TO_WORKER_ROLE.get(key)
-    if role is not None:
+    if reload_worker and role is not None:
         get_services().reload_role(role)
     on_done()
