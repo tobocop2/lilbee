@@ -399,5 +399,6 @@ MODEL_PICKER_VISION_TOOLTIP = (
 MODEL_PICKER_RERANK_TOOLTIP = (
     "Optional. Model used to sharpen search results. Click to pick one or browse the catalog."
 )
+MODEL_PICKER_BROWSE_CATALOG = "Browse catalog to download..."
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"

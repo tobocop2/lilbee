@@ -86,6 +86,43 @@ async def test_apply_model_pick_empty_ignored_for_non_nullable() -> None:
         mock_apply.assert_not_called()
 
 
+async def test_picker_always_appends_browse_catalog_row() -> None:
+    """Every picker (populated or empty) ends with a 'Browse catalog' row."""
+    from lilbee.cli.tui.screens.model_picker import BROWSE_CATALOG_REF, _PickerOptions
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+
+    empty = _PickerOptions(options=[]).to_sections(search="")
+    assert len(empty) == 1 and len(empty[0].rows) == 1
+    assert empty[0].rows[-1].ref == BROWSE_CATALOG_REF
+
+    populated = _PickerOptions(options=[ModelOption(label="model-a", ref="hf:org/a")]).to_sections(
+        search=""
+    )
+    assert populated[0].rows[-1].ref == BROWSE_CATALOG_REF
+    assert populated[0].rows[0].ref == "hf:org/a"
+
+
+async def test_apply_model_pick_browse_ref_opens_catalog_for_vision() -> None:
+    """Selecting the browse-catalog sentinel pushes CatalogScreen on Vision tab."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import TAB_VISION
+    from lilbee.cli.tui.screens.model_picker import BROWSE_CATALOG_REF
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        done = MagicMock()
+        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
+            apply_model_pick(app.screen, key="vision_model", ref=BROWSE_CATALOG_REF, on_done=done)
+            await pilot.pause()
+            await pilot.pause()
+        mock_apply.assert_not_called()
+        done.assert_not_called()
+        assert isinstance(app.screen, CatalogScreen)
+        assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_VISION
+
+
 async def test_catalog_opens_focused_on_vision_tab() -> None:
     """CatalogScreen(focus_task=TAB_VISION) lands on the Vision tab, not Chat."""
     from textual.widgets import TabbedContent

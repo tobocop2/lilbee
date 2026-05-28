@@ -29,6 +29,11 @@ from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 
 PickerScope = Literal["chat", "embed", "vision", "rerank"]
 
+# Sentinel ref returned by the picker when the user picks the "Browse catalog
+# to download" row. apply_model_pick intercepts it and navigates to the
+# Catalog focused on the role's task tab; it is never persisted as a real ref.
+BROWSE_CATALOG_REF = "__browse_catalog__"
+
 
 def _picker_title(scope: PickerScope) -> str:
     """Return the modal heading for the requested scope."""
@@ -41,6 +46,24 @@ def _picker_title(scope: PickerScope) -> str:
     return msg.MODEL_PICKER_TITLE_CHAT
 
 
+def _browse_catalog_row() -> CatalogRow:
+    """The 'Browse catalog' action row appended to every picker."""
+    return LocalCatalogRow(
+        name=msg.MODEL_PICKER_BROWSE_CATALOG,
+        task="",
+        params="--",
+        size="--",
+        quant="--",
+        downloads="--",
+        featured=False,
+        installed=False,
+        sort_downloads=0,
+        sort_size=0.0,
+        ref=BROWSE_CATALOG_REF,
+        backend="",
+    )
+
+
 @dataclass
 class _PickerOptions:
     """Bridge from the dropdown's ``ModelOption`` shape to ``CatalogRow``."""
@@ -49,7 +72,11 @@ class _PickerOptions:
 
     def to_sections(self, search: str) -> list[ModelListSection]:
         rows = [_option_to_row(o) for o in self.options if _matches(o, search)]
-        return [ModelListSection(heading=None, rows=rows)] if rows else []
+        # The browse-catalog action row is always present (filter-agnostic) so
+        # the on-ramp is reachable even when the search box is empty AND when
+        # it has narrowed the list to zero installed matches.
+        rows.append(_browse_catalog_row())
+        return [ModelListSection(heading=None, rows=rows)]
 
 
 def _option_to_row(option: ModelOption) -> CatalogRow:

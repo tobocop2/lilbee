@@ -40,12 +40,19 @@ def apply_model_pick(
 
     ``ref is None`` means the user cancelled (Esc); leave the field alone.
     ``ref == ""`` for a nullable field means the user picked the explicit
-    "disabled" row; clear the field. Embedding-model swaps against a
-    populated store route through a confirm modal first so the user is
-    not surprised by the rebuild requirement. ``on_done`` runs after a
-    successful write, never after a cancel.
+    "disabled" row; clear the field. ``ref == BROWSE_CATALOG_REF`` is the
+    on-ramp action: open the Catalog focused on the role's task tab.
+    Embedding-model swaps against a populated store route through a
+    confirm modal first so the user is not surprised by the rebuild
+    requirement. ``on_done`` runs after a successful write, never after
+    a cancel and never after the catalog jump.
     """
     if ref is None:
+        return
+    from lilbee.cli.tui.screens.model_picker import BROWSE_CATALOG_REF
+
+    if ref == BROWSE_CATALOG_REF:
+        _open_catalog_for_key(host, key)
         return
     defn = SETTINGS_MAP.get(key)
     if not ref and (defn is None or not defn.nullable):
@@ -54,6 +61,25 @@ def apply_model_pick(
         _push_embed_swap_confirm(host, key, ref, on_done)
         return
     _persist(host.app, key, ref, on_done)
+
+
+def _open_catalog_for_key(host: Widget, key: str) -> None:
+    """Push CatalogScreen focused on the task tab matching the role's key."""
+    # circular: model_pick -> catalog (catalog imports settings_widgets which
+    # imports model_picker, which transitively pulls in model_pick).
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_utils import TASK_TO_TAB_ID
+    from lilbee.cli.tui.screens.settings_widgets import (
+        model_field_to_picker_scope,
+        picker_scope_to_task,
+    )
+
+    scope = model_field_to_picker_scope().get(key)
+    if scope is None:
+        log.debug("Cannot open catalog for unknown model key %r", key)
+        return
+    tab_id = TASK_TO_TAB_ID[picker_scope_to_task(scope)]
+    host.app.push_screen(CatalogScreen(focus_task=tab_id))
 
 
 def _push_embed_swap_confirm(host: Widget, key: str, ref: str, on_done: Callable[[], None]) -> None:
