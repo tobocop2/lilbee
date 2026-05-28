@@ -25,7 +25,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_setting
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.model_pick import apply_model_pick
+from lilbee.cli.tui.widgets.model_pick import apply_model_pick, config_key_for_scope
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
@@ -246,16 +246,6 @@ _SCOPE_TO_TOOLTIP: dict[str, str] = {
 }
 
 
-def _config_key_for_scope(scope: PickerScope) -> str:
-    """Inverse of ``model_field_to_picker_scope``: scope -> config attribute name."""
-    from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
-
-    for key, sc in model_field_to_picker_scope().items():
-        if sc == scope:
-            return key
-    raise KeyError(scope)
-
-
 class ModelPickerButton(Static, can_focus=True):
     """Pill button that opens a ModelPickerModal scoped to one of the four roles."""
 
@@ -267,7 +257,7 @@ class ModelPickerButton(Static, can_focus=True):
     def __init__(self, *, scope: PickerScope, button_id: str) -> None:
         super().__init__(id=button_id)
         self._scope: PickerScope = scope
-        self._key: str = _config_key_for_scope(scope)
+        self._key: str = config_key_for_scope(scope)
         self._options: list[ModelOption] = []
         self.tooltip = _SCOPE_TO_TOOLTIP[scope]
 
@@ -294,9 +284,14 @@ class ModelPickerButton(Static, can_focus=True):
 
     def open_picker(self) -> None:
         # Lazy import: model_picker imports ModelOption from this module.
+        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        modal = ModelPickerModal(scope=self._scope, options=self._options)
+        defn = SETTINGS_MAP.get(self._key)
+        options = list(self._options)
+        if defn is not None and defn.nullable:
+            options = [ModelOption(label=msg.MODEL_PICKER_DISABLE_LABEL, ref=""), *options]
+        modal = ModelPickerModal(scope=self._scope, options=options)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:

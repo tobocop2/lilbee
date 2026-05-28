@@ -139,6 +139,67 @@ async def test_catalog_opens_focused_on_vision_tab() -> None:
         assert app.screen.query_one("#catalog-tabs", TabbedContent).active == TAB_VISION
 
 
+class _RailTestApp(LilbeeAppHost):
+    """Minimal host that pushes only the model rail (no full chat screen)."""
+
+    CSS = ""
+
+    def compose(self):
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.model_rail import ModelRail
+
+        yield ModelRail(id="rail-host")
+        yield Footer()
+
+
+async def test_rail_renders_four_roles_with_optional_off_by_default(monkeypatch) -> None:
+    """A fresh rail has Chat/Embed active and Vision/Rerank in the off state."""
+    from lilbee.core.config import cfg
+
+    from lilbee.cli.tui.widgets.model_rail import ModelRail, RoleRow
+
+    monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
+    monkeypatch.setattr(cfg, "embedding_model", "fake/embed-model")
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "reranker_model", "")
+
+    app = _RailTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        rail = app.screen.query_one(ModelRail)
+        rows = {row.scope: row for row in rail.query(RoleRow)}
+        assert set(rows) == {"chat", "embed", "vision", "rerank"}
+        assert rows["chat"].is_active
+        assert rows["embed"].is_active
+        assert not rows["vision"].is_active
+        assert not rows["rerank"].is_active
+        # The off rows carry the muted class and the hollow dot.
+        assert rows["vision"].has_class("-off")
+        assert rows["rerank"].has_class("-off")
+
+
+async def test_rail_optional_row_lights_up_when_config_changes(monkeypatch) -> None:
+    """Assigning a vision_model via the settings signal flips the row to active."""
+    from lilbee.core.config import cfg
+
+    from lilbee.cli.tui.widgets.model_rail import ModelRail, RoleRow
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    app = _RailTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        rail = app.screen.query_one(ModelRail)
+        vision = next(r for r in rail.query(RoleRow) if r.scope == "vision")
+        assert not vision.is_active
+
+        monkeypatch.setattr(cfg, "vision_model", "hf:org/vlm-q4")
+        app.settings_changed_signal.publish(("vision_model", "hf:org/vlm-q4"))
+        await pilot.pause()
+        assert vision.is_active
+        assert vision.has_class("-active")
+
+
 async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
     """Embed swap against a populated store pushes ConfirmDialog before writing."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

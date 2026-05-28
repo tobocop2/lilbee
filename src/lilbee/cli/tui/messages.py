@@ -401,4 +401,14 @@ MODEL_PICKER_RERANK_TOOLTIP = (
 )
 MODEL_PICKER_BROWSE_CATALOG = "Browse catalog to download..."
 MODEL_PICKER_SEARCH_PLACEHOLDER = "Search models..."
+
+# Model rail (chat-screen left panel)
+MODEL_RAIL_HEADING = "MODELS"
+MODEL_RAIL_OPTIONAL_HEADING = "OPTIONAL"
+MODEL_RAIL_CHAT_LABEL = "Chat"
+MODEL_RAIL_EMBED_LABEL = "Embed"
+MODEL_RAIL_VISION_LABEL = "Vision"
+MODEL_RAIL_RERANK_LABEL = "Rerank"
+ACTIVE_DOT = "●"
+INACTIVE_DOT = "○"
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"

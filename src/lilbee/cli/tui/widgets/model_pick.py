@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from textual.app import App
     from textual.widget import Widget
 
+    from lilbee.cli.tui.screens.model_picker import PickerScope
+
 log = logging.getLogger(__name__)
 
 # Single source of truth for "after a model-key write, which worker pool role
@@ -27,6 +29,16 @@ _MODEL_KEY_TO_WORKER_ROLE: dict[str, WorkerRole] = {
     "reranker_model": WorkerRole.RERANK,
     "vision_model": WorkerRole.VISION,
 }
+
+
+def config_key_for_scope(scope: PickerScope) -> str:
+    """Inverse of ``model_field_to_picker_scope``: scope -> config attribute name."""
+    from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
+
+    for key, sc in model_field_to_picker_scope().items():
+        if sc == scope:
+            return key
+    raise KeyError(scope)
 
 
 def apply_model_pick(
