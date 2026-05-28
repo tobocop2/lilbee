@@ -319,6 +319,93 @@ def test_empty_placement_starts_no_monitor(tmp_path: Path, patched: dict) -> Non
         fleet.shutdown()
 
 
+def test_start_with_empty_eager_roles_spawns_nothing(
+    tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deferred build: launches are planned (joint placement) but no server spawns
+    # until a role is used, so an embed-only ingest never loads chat's VRAM.
+    reaped: list[Path] = []
+    monkeypatch.setattr(fleet_mod, "reap_orphans", reaped.append)
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start(
+        [_launch(tmp_path, WorkerRole.CHAT), _launch(tmp_path, WorkerRole.EMBED)],
+        eager_roles=frozenset(),
+    )
+    try:
+        assert reaped == [tmp_path]  # orphans still reaped at build
+        assert fleet._monitor is None  # nothing spawned -> no supervisor yet
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []
+        assert fleet.healthy_clients(WorkerRole.EMBED) == []
+    finally:
+        fleet.shutdown()
+
+
+def test_ensure_role_brings_up_only_that_role(tmp_path: Path, patched: dict) -> None:
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start(
+        [_launch(tmp_path, WorkerRole.CHAT), _launch(tmp_path, WorkerRole.EMBED)],
+        eager_roles=frozenset(),
+    )
+    try:
+        fleet.ensure_role(WorkerRole.EMBED)
+        assert len(fleet.healthy_clients(WorkerRole.EMBED)) == 1
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []  # chat stays deferred
+        assert fleet._monitor is not None  # monitor starts with the first server
+    finally:
+        fleet.shutdown()
+
+
+def test_ensure_all_brings_up_remaining_roles(tmp_path: Path, patched: dict) -> None:
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start(
+        [_launch(tmp_path, WorkerRole.CHAT), _launch(tmp_path, WorkerRole.EMBED)],
+        eager_roles=frozenset(),
+    )
+    try:
+        fleet.ensure_role(WorkerRole.EMBED)
+        fleet.ensure_all()
+        assert len(fleet.healthy_clients(WorkerRole.CHAT)) == 1
+        assert len(fleet.healthy_clients(WorkerRole.EMBED)) == 1
+    finally:
+        fleet.shutdown()
+
+
+def test_ensure_role_is_idempotent(tmp_path: Path, patched: dict) -> None:
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start([_launch(tmp_path, WorkerRole.EMBED)], eager_roles=frozenset())
+    try:
+        fleet.ensure_role(WorkerRole.EMBED)
+        fleet.ensure_role(WorkerRole.EMBED)  # second call must not spawn a duplicate
+        assert len(fleet.healthy_clients(WorkerRole.EMBED)) == 1
+    finally:
+        fleet.shutdown()
+
+
+def test_ensure_role_for_unplanned_role_is_noop(tmp_path: Path, patched: dict) -> None:
+    # A role with nothing pending (unconfigured / not installed) brings up nothing.
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start([_launch(tmp_path, WorkerRole.EMBED)], eager_roles=frozenset())
+    try:
+        fleet.ensure_role(WorkerRole.CHAT)  # not planned -> no-op, no raise
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []
+        assert fleet._monitor is None
+    finally:
+        fleet.shutdown()
+
+
+def test_start_with_eager_subset_defers_the_rest(tmp_path: Path, patched: dict) -> None:
+    fleet = Fleet(data_dir=tmp_path)
+    fleet.start(
+        [_launch(tmp_path, WorkerRole.CHAT), _launch(tmp_path, WorkerRole.EMBED)],
+        eager_roles={WorkerRole.EMBED},
+    )
+    try:
+        assert len(fleet.healthy_clients(WorkerRole.EMBED)) == 1  # eager
+        assert fleet.healthy_clients(WorkerRole.CHAT) == []  # deferred
+    finally:
+        fleet.shutdown()
+
+
 def test_fleet_start_degrades_unready_role_without_raising(
     tmp_path: Path, patched: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:

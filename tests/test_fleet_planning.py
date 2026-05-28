@@ -179,9 +179,7 @@ class TestBuildFleetWiring:
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
-    def test_server_model_inputs_skips_role_whose_model_is_not_installed(
-        self, monkeypatch
-    ) -> None:
+    def test_server_model_inputs_skips_role_whose_model_is_not_installed(self, monkeypatch) -> None:
         # Search-only indexing must not require an installed chat model: a
         # configured-but-missing chat model is skipped, not fatal, so the embed
         # server still gets planned.
@@ -428,13 +426,16 @@ class TestBuildFleetWiring:
             ),
         )
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a: MagicMock())
-        started = {"n": 0}
+        started: dict[str, object] = {}
         monkeypatch.setattr(
-            planning_mod.Fleet, "start", lambda self, launches: started.__setitem__("n", 1)
+            planning_mod.Fleet,
+            "start",
+            lambda self, launches, *, eager_roles=None: started.update(eager=eager_roles),
         )
         fleet = planning_mod.build_fleet()
         assert isinstance(fleet, planning_mod.Fleet)
-        assert started["n"] == 1
+        # Build plans joint placement but defers all spawns to the provider.
+        assert started["eager"] == frozenset()
 
     def test_build_fleet_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -460,6 +461,8 @@ class TestBuildFleetWiring:
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
-        monkeypatch.setattr(planning_mod.Fleet, "start", lambda self, launches: None)
+        monkeypatch.setattr(
+            planning_mod.Fleet, "start", lambda self, launches, *, eager_roles=None: None
+        )
         planning_mod.build_fleet()
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback

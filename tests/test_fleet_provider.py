@@ -799,3 +799,44 @@ class TestChatWithTools:
         p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
         with pytest.raises(ProviderError, match="serves the configured chat model"):
             p.chat_with_tools([], tools=[], model="org/repo/other.gguf")
+
+
+class TestLazyRoleSpawn:
+    """The provider brings up a role only when it is first used; a warm role
+    skips the spawn path entirely, and warm-up brings up everything."""
+
+    def test_server_clients_spawns_only_the_requested_role(self) -> None:
+        up: dict[WorkerRole, list] = {}
+        client = _fake_client()
+        fleet = MagicMock()
+        fleet.healthy_clients.side_effect = lambda role: up.get(role, [])
+        fleet.ensure_role.side_effect = lambda role: up.setdefault(role, []).append(client)
+        p = FleetProvider()
+        p._fleet = fleet  # non-None so _server_clients won't try to build
+
+        clients = p._server_clients(WorkerRole.EMBED)
+
+        assert clients == [client]
+        fleet.ensure_role.assert_called_once_with(WorkerRole.EMBED)  # chat never brought up
+        assert WorkerRole.CHAT not in up
+
+    def test_server_clients_warm_role_skips_spawn(self) -> None:
+        client = _fake_client()
+        fleet = MagicMock()
+        fleet.healthy_clients.side_effect = lambda role: (
+            [client] if role is WorkerRole.EMBED else []
+        )
+        p = FleetProvider()
+        p._fleet = fleet
+
+        assert p._server_clients(WorkerRole.EMBED) == [client]
+        fleet.ensure_role.assert_not_called()  # already warm -> no spawn-lock path
+
+    def test_warm_up_brings_up_all_roles(self, monkeypatch) -> None:
+        fleet = MagicMock()
+        monkeypatch.setattr(planning_mod, "build_fleet", lambda *_a: fleet)
+        p = FleetProvider()
+
+        p._warm_up_blocking()  # the warm_up_pool thread target, run synchronously
+
+        fleet.ensure_all.assert_called_once()

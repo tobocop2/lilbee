@@ -145,6 +145,12 @@ class FleetProvider:
             fleet = self._fleet
         if fleet is None:
             fleet = self._build_fleet_once()
+        # Hot path: a warm role returns without touching the spawn lock. Only a
+        # role with no healthy server yet is brought up (lazily) on demand.
+        clients = fleet.healthy_clients(role)
+        if clients:
+            return clients
+        fleet.ensure_role(role)
         return fleet.healthy_clients(role)
 
     def _build_fleet_once(self) -> Fleet:
@@ -482,13 +488,13 @@ class FleetProvider:
         return _supports_tools_cached(str(path), mtime_ns)
 
     def warm_up_pool(self) -> None:
-        """Spawn the configured role servers off the caller's thread (idempotent).
+        """Spawn every configured role server off the caller's thread (idempotent).
 
-        Building the fleet loads every role's model (seconds on a cold large
-        model), so it runs on a background thread and this returns at once: the
-        eager-start at TUI mount must not freeze the UI. The spawn listeners
-        still fire during the build, so the UI shows per-role progress. A second
-        call while a build is in flight (or once the fleet is up) is a no-op.
+        Loading every role's model (seconds on a cold large model) runs on a
+        background thread and this returns at once: the eager-start at TUI mount
+        must not freeze the UI. The spawn listeners still fire during the build,
+        so the UI shows per-role progress. A second call while a build is in
+        flight (or once the fleet is up) is a no-op.
         """
         with self._lock:
             if self._fleet is not None or self._warming:
@@ -501,14 +507,14 @@ class FleetProvider:
         ).start()
 
     def _warm_up_blocking(self) -> None:
-        """Build the fleet on a background thread; clears the warming guard when done.
+        """Build the fleet and bring up all roles on a background thread.
 
         Runs on a daemon thread with no caller to catch failures, so a build
         error is logged and swallowed: a role that can't spawn surfaces a
         user-facing ProviderError on the next call, not a thread traceback.
         """
         try:
-            self._build_fleet_once()
+            self._build_fleet_once().ensure_all()
         except Exception:
             log.warning("Fleet warm-up failed; roles will spawn on first use.", exc_info=True)
         finally:

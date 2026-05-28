@@ -321,5 +321,7 @@ def build_fleet(
     by_index = {d.index: d for d in devices}
     launches = plan_launches(None, binary, by_index, devices)
     fleet = Fleet(data_dir=cfg.data_dir, on_spawning=on_spawning, on_spawned=on_spawned)
-    fleet.start(launches)
+    # Plan joint placement for every role, but spawn none: the provider brings up
+    # each role on first use (warm_up_pool brings up all).
+    fleet.start(launches, eager_roles=frozenset())
     return fleet

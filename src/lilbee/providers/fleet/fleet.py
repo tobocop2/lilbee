@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -318,7 +318,11 @@ class Fleet:
         self.ready_timeout = ready_timeout
         self.data_dir = data_dir
         self._servers: list[FleetServer] = []
+        # Launches planned (joint placement) but not yet spawned, keyed by role.
+        self._pending: dict[WorkerRole, list[InstanceLaunch]] = {}
         self._lock = threading.RLock()
+        # Serializes lazy bring-up so two roles don't cold-load at once.
+        self._spawn_lock = threading.Lock()
         self._monitor: threading.Thread | None = None
         self._stop_monitor = threading.Event()
         self._on_spawning = on_spawning
@@ -363,21 +367,67 @@ class Fleet:
                 server.failed_start_detail(),
             )
 
-    def start(self, launches: list[InstanceLaunch]) -> None:
-        """Reap prior orphans, spawn every launch, wait for readiness, monitor.
+    def start(
+        self,
+        launches: list[InstanceLaunch],
+        *,
+        eager_roles: Collection[WorkerRole] | None = None,
+    ) -> None:
+        """Reap prior orphans, register launches, and bring up the eager roles.
 
-        Each role is independent: a server that fails to become ready is left
-        not-ready (its calls error) while the others still serve. The monitor
-        keeps retrying a dead one (bounded by the restart cap).
+        ``eager_roles=None`` brings up every role now (the warm default); an empty
+        set defers all spawns to ``ensure_role`` / ``ensure_all``. Each role is
+        independent: a server that fails to become ready is left not-ready (its
+        calls error) while the others still serve, and the monitor keeps retrying
+        a dead one (bounded by the restart cap).
         """
         if self.data_dir is not None:
             reap_orphans(self.data_dir)
+        with self._lock:
+            for launch in launches:
+                self._pending.setdefault(launch.role, []).append(launch)
+            roles = list(self._pending) if eager_roles is None else list(eager_roles)
+        for role in roles:
+            self.ensure_role(role)
+
+    def _bring_up_role(self, role: WorkerRole) -> None:
+        """Spawn *role*'s pending servers (outside the routing lock) and register them."""
+        with self._lock:
+            launches = self._pending.pop(role, [])
+        fresh: list[FleetServer] = []
         for launch in launches:
+            if self._stop_monitor.is_set():
+                break
             server = FleetServer(launch)
-            self._servers.append(server)
             self._bring_up(server)
-        if self._servers:
-            self._start_monitor()
+            fresh.append(server)
+        with self._lock:
+            if self._stop_monitor.is_set():
+                for server in fresh:
+                    server.stop()
+                return
+            self._servers.extend(fresh)
+            if self._servers and self._monitor is None:
+                self._start_monitor()
+
+    def ensure_role(self, role: WorkerRole) -> None:
+        """Bring up *role* if it has no server running yet. Idempotent, serialized.
+
+        A no-op when the role is already up (a crashed one is the monitor's job to
+        restart) or has nothing pending (unconfigured / not-installed role).
+        """
+        with self._spawn_lock:
+            with self._lock:
+                already_up = any(s.role == role for s in self._servers)
+            if not already_up:
+                self._bring_up_role(role)
+
+    def ensure_all(self) -> None:
+        """Bring up every role that still has pending launches."""
+        with self._lock:
+            roles = list(self._pending)
+        for role in roles:
+            self.ensure_role(role)
 
     def restart_role(self, role: WorkerRole, launches: list[InstanceLaunch]) -> None:
         """Replace *role*'s servers with *launches*; other roles keep serving.
@@ -389,6 +439,7 @@ class Fleet:
         fresh servers are stopped rather than stranded.
         """
         with self._lock:
+            self._pending.pop(role, None)  # a reload supersedes any deferred launch
             old = [s for s in self._servers if s.role == role]
             self._servers = [s for s in self._servers if s.role != role]
         for server in old:

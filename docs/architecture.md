@@ -126,7 +126,10 @@ The local engine is a managed `llama-server` fleet (`FleetProvider`,
 `src/lilbee/providers/fleet/`): lilbee starts one `llama-server` per
 configured role, routes each call to the least-busy healthy server for that role,
 and tears them down on exit. A single machine is a fleet-of-one; the same code
-scales to N GPUs by bin-packing models across them. There is no separate engine to
+scales to N GPUs by bin-packing models across them. Placement is planned jointly
+for every configured role up front, but each role's server spawns lazily on first
+use, so a batch `lilbee add` that only embeds never loads the chat model's VRAM;
+the interactive warm-up (`worker_pool_eager_start`) brings every role up at once. There is no separate engine to
 install or run, and no in-process binding: the engine is 100% llama.cpp, and lilbee
 adds a placement planner, a process supervisor, and a thin httpx router. All four
 roles run over HTTP: chat and vision use `/v1/chat/completions` (chat with

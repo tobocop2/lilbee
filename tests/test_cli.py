@@ -2057,7 +2057,9 @@ class TestIngestShutdownError:
             failed: list[str] = []
             skipped: list[str] = []
             with (
-                mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=shutdown_err),
+                mock.patch(
+                    "lilbee.data.ingest.pipeline._produce_records", side_effect=shutdown_err
+                ),
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
@@ -2070,6 +2072,25 @@ class TestIngestShutdownError:
                 )
 
         asyncio.run(_run())
+
+
+class TestBatchIngestNoEagerWarm:
+    def test_sync_runner_disables_eager_warm(self, monkeypatch):
+        """Batch ingest is headless: by the time the sync runs, the eager warm is
+        off, so services init never spawns the chat role's server."""
+        import lilbee.data.ingest as ingest_mod
+        from lilbee.cli.commands.ingest_sync import _run_sync_with_signal_cancel
+
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        seen: dict[str, object] = {}
+
+        async def _fake_sync(**_kwargs):
+            seen["eager"] = cfg.worker_pool_eager_start
+            return object()
+
+        monkeypatch.setattr(ingest_mod, "sync", _fake_sync)
+        _run_sync_with_signal_cancel()
+        assert seen["eager"] is False
 
 
 class TestAddWithUrls:

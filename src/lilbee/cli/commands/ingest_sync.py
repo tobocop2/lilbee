@@ -285,6 +285,12 @@ def _run_sync_with_signal_cancel(
     from lilbee.data.ingest import sync
     from lilbee.runtime.progress import noop_callback
 
+    # Batch ingest is a headless one-shot: skip the eager warm so services init
+    # doesn't spawn every role. With lazy per-role spawn, the sync brings up only
+    # the embed server (plus vision/chat if those steps actually run), instead of
+    # holding an idle chat server's VRAM for the whole build.
+    cfg.worker_pool_eager_start = False
+
     cancel_event = threading.Event()
     callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
     previous_handler = signal.getsignal(signal.SIGINT)
