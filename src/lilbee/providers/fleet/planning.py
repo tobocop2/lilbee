@@ -188,9 +188,11 @@ def _server_model_inputs(
     """Build placement inputs for the configured server roles.
 
     When *roles* is given, only those roles are considered. Skips an unconfigured
-    optional role and a vision model with no resolvable mmproj projector.
+    optional role, a vision model with no resolvable mmproj projector, and a role
+    whose configured model is not installed on disk.
     """
     from lilbee.core.config import cfg
+    from lilbee.providers.base import ProviderError
 
     inputs: list[ModelPlacementInput] = []
     model_refs: dict[WorkerRole, str] = {}
@@ -202,7 +204,17 @@ def _server_model_inputs(
             continue  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
-        inputs.append(_estimate_role(role, ref))
+        try:
+            estimate = _estimate_role(role, ref)
+        except (ProviderError, OSError):
+            # The configured model is not installed/resolvable. Skip this role
+            # rather than failing the whole fleet build: search-only indexing
+            # must not require an installed chat model, and a genuinely-needed
+            # role surfaces a clear per-role error on first use instead of a
+            # build-time traceback.
+            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            continue
+        inputs.append(estimate)
         model_refs[role] = ref
     return inputs, model_refs
 

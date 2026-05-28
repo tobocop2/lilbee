@@ -179,6 +179,28 @@ class TestBuildFleetWiring:
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
+    def test_server_model_inputs_skips_role_whose_model_is_not_installed(
+        self, monkeypatch
+    ) -> None:
+        # Search-only indexing must not require an installed chat model: a
+        # configured-but-missing chat model is skipped, not fatal, so the embed
+        # server still gets planned.
+        from lilbee.providers.base import ProviderError
+
+        def _estimate(role, ref, **_k):
+            if role is WorkerRole.CHAT:
+                raise ProviderError("not installed", provider="llama-server")
+            return ModelPlacementInput(role, _GB)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/missing-chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        inputs, refs = planning_mod._server_model_inputs()
+        assert WorkerRole.CHAT not in refs
+        assert {i.role for i in inputs} == {WorkerRole.EMBED}
+
     def test_server_model_inputs_includes_configured_rerank(self, monkeypatch) -> None:
         monkeypatch.setattr(
             planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
