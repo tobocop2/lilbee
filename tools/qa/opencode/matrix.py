@@ -950,7 +950,10 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
                 pane = tmux_capture(session)
                 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
                 (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
-                print(f"[{cell.family}] full pane -> results/{cell.family}.pane.txt ({len(pane)} chars)")
+                print(
+                    f"[{cell.family}] full pane -> results/{cell.family}.pane.txt "
+                    f"({len(pane)} chars)"
+                )
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)

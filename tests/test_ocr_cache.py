@@ -64,7 +64,9 @@ async def test_vision_fallback_uses_cache_and_skips_ocr(tmp_path: Path, monkeypa
     def _boom(*_a, **_k):
         raise AssertionError("pdf_ocr must not run on a cache hit")
 
-    monkeypatch.setattr(extract, "get_services", lambda: SimpleNamespace(provider=SimpleNamespace(pdf_ocr=_boom)))
+    monkeypatch.setattr(
+        extract, "get_services", lambda: SimpleNamespace(provider=SimpleNamespace(pdf_ocr=_boom))
+    )
 
     seen: dict[str, object] = {}
 

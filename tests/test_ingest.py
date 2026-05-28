@@ -608,7 +608,9 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest.skip_marker import load_skip_markers
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
+        with mock.patch(
+            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+        ):
             first = await sync(quiet=True)
             assert "scanned.pdf" in first.skipped
             assert "scanned.pdf" in load_skip_markers(cfg.data_root)
@@ -621,7 +623,9 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
+        with mock.patch(
+            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+        ):
             await sync(quiet=True)
             # retry_skipped drops the marker so the file is attempted again.
             retried = await sync(quiet=True, retry_skipped=True)
@@ -631,7 +635,9 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest import sync
 
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
-        with mock.patch("lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks):
+        with mock.patch(
+            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._zero_chunks
+        ):
             await sync(quiet=True)
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe

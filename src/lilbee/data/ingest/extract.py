@@ -121,28 +121,29 @@ async def _vision_ocr_fallback(
         model=cfg.vision_model,
         extra=str(cfg.vision_ocr_max_tokens),
     )
-    page_texts = load_ocr_pages(key)
-    if page_texts is None:
-        try:
-            page_texts = await asyncio.to_thread(
-                get_services().provider.pdf_ocr,
-                path,
-                backend="vision",
-                model=cfg.vision_model,
-                per_page_timeout_s=cfg.ocr_timeout,
-                quiet=quiet,
-                on_progress=on_progress,
-            )
-        except (asyncio.CancelledError, TaskCancelledError):
-            # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
-            # per-page on_progress callback must abort the file, not be logged as an
-            # OCR failure and swallowed.
-            raise
-        except Exception:
-            log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
-            return []
-        store_ocr_pages(key, [(p.page, p.text) for p in page_texts])
-    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+    cached = load_ocr_pages(key)
+    if cached is not None:
+        return await _chunk_and_embed_pages(cached, source_name, content_type, on_progress)
+    try:
+        pages = await asyncio.to_thread(
+            get_services().provider.pdf_ocr,
+            path,
+            backend="vision",
+            model=cfg.vision_model,
+            per_page_timeout_s=cfg.ocr_timeout,
+            quiet=quiet,
+            on_progress=on_progress,
+        )
+    except (asyncio.CancelledError, TaskCancelledError):
+        # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
+        # per-page on_progress callback must abort the file, not be logged as an
+        # OCR failure and swallowed.
+        raise
+    except Exception:
+        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
+        return []
+    store_ocr_pages(key, [(p.page, p.text) for p in pages])
+    return await _chunk_and_embed_pages(pages, source_name, content_type, on_progress)
 
 
 def _run_tesseract_sync(path: Path) -> Any:
