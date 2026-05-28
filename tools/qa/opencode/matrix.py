@@ -223,18 +223,27 @@ completion count so a stale pane can't carry a prior cell's glyph.
 # should discover the lilbee_search MCP tool itself; only Smalls get a "look up"
 # nudge. See tools/qa/opencode/README.md for the rationale.
 _TIER_PROMPTS: dict[str, str] = {
+    # Small models answer common Godot API from memory (Node._process etc.), so the
+    # small-tier prompt is explicit ("search the indexed reference") and targets an
+    # obscure class detail the model cannot fabricate, forcing a real lilbee_search.
     "small": (
-        "Look up Node._process(delta) in the Godot 4 class reference and tell me "
-        "what it does and when the engine calls it."
+        "Search the indexed Godot 4 class reference for the AStarGrid2D class. "
+        "Then, using only what the search returns, tell me what its get_id_path "
+        "method returns."
     ),
+    # Mid models discover the tool on their own: natural phrasing, anchored to exact
+    # signatures and flag values they would have to verify against the reference.
     "mid": (
-        "In Godot 4, how do you connect a signal between two nodes? Walk me through "
-        "Object.connect, Signal.emit, and the CONNECT_* flags with actual signatures."
+        "In Godot 4 I am connecting signals between nodes. What is the exact "
+        "signature of Object.connect, and what do the CONNECT_DEFERRED and "
+        "CONNECT_ONE_SHOT flags do? Include their integer values."
     ),
+    # Giants get a natural codegen task that only passes if the generated GDScript
+    # uses real Godot 4 names (verified via lilbee_search, not hallucinated).
     "giant": (
-        "Write a Godot 4 GDScript scene script that procedurally generates a 2D "
-        "dungeon using TileMap and TileSet. It should expose a regenerate() signal "
-        "so the game can rebuild on demand."
+        "Write a Godot 4 GDScript script that procedurally generates a 2D dungeon "
+        "using TileMapLayer and TileSet, exposing a regenerate() signal so the game "
+        "can rebuild on demand. Use the actual Godot 4 method names for placing tiles."
     ),
 }
 
@@ -858,6 +867,35 @@ def _count_ok_chat_completions(workspace: Path) -> int:
     return sum(1 for line in text.splitlines() if 'POST /v1/chat/completions HTTP/1.1" 200' in line)
 
 
+_ANSWER_SETTLE_TIMEOUT_S = 240.0
+_ANSWER_SETTLE_QUIET_POLLS = 3
+_ANSWER_SETTLE_INTERVAL_S = 4.0
+
+
+def wait_for_answer_settle(session: str) -> None:
+    """Wait for opencode to finish rendering the post-tool answer before capture.
+
+    ``run_scenario`` returns the instant the gear marker plus a fresh chat
+    completion appear, but opencode is still streaming the answer turn then, so a
+    pane captured immediately shows the tool call and no answer. Poll until the
+    pane stops changing for a few consecutive intervals (generation idle), capped
+    by a timeout so a model that streams forever cannot hang the sweep.
+    """
+    deadline = time.monotonic() + _ANSWER_SETTLE_TIMEOUT_S
+    prev = tmux_capture(session)
+    quiet = 0
+    while time.monotonic() < deadline:
+        time.sleep(_ANSWER_SETTLE_INTERVAL_S)
+        cur = tmux_capture(session)
+        if cur == prev:
+            quiet += 1
+            if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
+                return
+        else:
+            quiet = 0
+            prev = cur
+
+
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     """Orchestrate one matrix cell: setup, scenarios, teardown, cleanup."""
     result = CellResult(family=cell.family, ref=cell.ref)
@@ -873,6 +911,13 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
                 print(f"[{cell.family}] launching opencode in tmux session {session}")
                 launch_opencode_in_tmux(workspace, session)
                 result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
+                if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
+                    print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
+                    wait_for_answer_settle(session)
+                pane = tmux_capture(session)
+                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+                (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
+                print(f"[{cell.family}] full pane -> results/{cell.family}.pane.txt ({len(pane)} chars)")
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)
