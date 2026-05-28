@@ -361,6 +361,28 @@ def seed_shared_workspace() -> Path:
     return SHARED_WORKSPACE
 
 
+_AGENTS_MD = """\
+## Instructions
+
+You are working with Godot 4.4. Your training data is outdated -- many classes and
+methods were renamed or replaced in Godot 4.x, so you cannot rely on memory.
+
+**You MUST use the `lilbee_search` MCP tool to look up Godot APIs.** The Godot 4.4
+class reference is indexed locally in lilbee. Do NOT guess or use web search -- call
+`lilbee_search` with the exact class or method name.
+
+### Workflow
+
+1. **Plan** -- list every Godot class and method your answer or code needs.
+2. **Search** -- call `lilbee_search` for each one individually. Do not skip a class
+   even if you are confident; verify every method signature.
+3. **Answer / write** -- use only class names, methods, and properties exactly as
+   confirmed by the search results. If something was not found, do not use it.
+4. **Verify** -- before finishing, re-check every class and method you used against a
+   `lilbee_search` result and fix anything that does not match.
+"""
+
+
 def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     """Per-cell workspace seeded by copying the pre-built Godot corpus lancedb.
 
@@ -390,6 +412,12 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
         f'embedding_model = "{_EMBED_REF}"\n'
         f"chat_n_ctx_target = {_CHAT_CTX_TARGET}\n"
     )
+    # opencode reads AGENTS.md from the project dir. This is the published
+    # godot-with-lilbee workflow: it tells the model its Godot knowledge is stale
+    # and it MUST look every class/method up via lilbee_search before using it.
+    # Without it a capable coder model just writes GDScript from memory and never
+    # calls the tool, so the integration looks broken when it is only untriggered.
+    (workspace / "AGENTS.md").write_text(_AGENTS_MD)
     return workspace
 
 
