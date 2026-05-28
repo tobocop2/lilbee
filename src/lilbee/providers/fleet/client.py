@@ -15,6 +15,7 @@ from lilbee.providers.base import (
     ChatToolResult,
     FinishReason,
     ProviderError,
+    ProviderErrorKind,
     TokenUsage,
     ToolCall,
     ToolCallDelta,
@@ -57,6 +58,20 @@ def _raise_for_status(resp: httpx.Response) -> None:
         return
     resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
     body = resp.text.strip()
+    # llama-server reports an oversize prompt/conversation as a 400 whose body
+    # carries the "exceed_context_size_error" type. Tag it CONTEXT_OVERFLOW with a
+    # user-facing message so the chat route returns a clean context_length_exceeded
+    # (400) instead of a generic internal_error -- a long conversation that fills
+    # the window then reads as "too long", not "Internal server error".
+    if resp.status_code == _HTTP_BAD_REQUEST and (
+        "exceed_context_size" in body.lower() or "context size" in body.lower()
+    ):
+        raise ProviderError(
+            "The conversation exceeds this model's context window. "
+            "Start a new conversation or shorten the input.",
+            provider=_PROVIDER_NAME,
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+        )
     detail = f": {body[:600]}" if body else ""
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
@@ -81,6 +96,7 @@ _DETOKENIZE_PATH = "/detokenize"
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
+_HTTP_BAD_REQUEST = 400
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
