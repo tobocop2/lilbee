@@ -1,14 +1,15 @@
-"""Model status bar: pill buttons for chat / embedding plus mode + scope."""
+"""Model bar: a horizontal band of the four role pickers plus the Search/Chat toggle."""
 
 from __future__ import annotations
 
 import contextlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.model_picker import PickerScope
     from lilbee.modelhub.registry import ModelRegistry
 
 from textual import events, work
@@ -22,26 +23,20 @@ from lilbee.app.services import get_services, reset_services
 from lilbee.catalog import clean_display_name, display_label_for_ref, extract_quant
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.app import apply_active_model, apply_setting
+from lilbee.cli.tui.app import apply_setting
 from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.model_pick import apply_model_pick, config_key_for_scope
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
-from lilbee.providers.worker.transport import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 
 log = logging.getLogger(__name__)
 
 _MMPROJ_MARKER = "mmproj"
-
-_CLOUD_WARNING_ID = "cloud-provider-warning"
-_CLOUD_WARNING_CLASS = "cloud-warning"
-_CLOUD_WARNING_VISIBLE_CLASS = "-visible"
-
-_CHAT_MODEL_BUTTON_ID = "chat-model-button"
-_EMBED_MODEL_BUTTON_ID = "embed-model-button"
 
 # Routing-name -> display-label map derived from PROVIDER_KEYS. Any new
 # entry added there lights up the warning without further changes here.
@@ -68,18 +63,6 @@ class ModelOption(NamedTuple):
 def _is_mmproj(name: str) -> bool:
     """Return True if a model name refers to an mmproj projection file."""
     return _MMPROJ_MARKER in name.lower()
-
-
-def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
-    """Classify installed models into (chat, embedding) lists, dropping mmproj.
-
-    The chat-bar surfaces only chat + embedding pickers; vision and rerank
-    use ``classify_installed_models_full`` directly. Vision/rerank entries
-    are still discovered here so their refs are claimed in ``seen`` and
-    later buckets don't duplicate them.
-    """
-    buckets = classify_installed_models_full()
-    return (buckets[ModelTask.CHAT], buckets[ModelTask.EMBEDDING])
 
 
 def classify_installed_models_full() -> dict[ModelTask, list[ModelOption]]:
@@ -220,13 +203,6 @@ def _collect_api_models(buckets: dict[ModelTask, list[ModelOption]], seen: set[s
         log.debug("Could not discover API models", exc_info=True)
 
 
-def _options_fingerprint(opts: list[ModelOption], default: str) -> tuple[tuple[str, str], ...]:
-    """Hashable fingerprint of (options, active default) for cache hits."""
-    return ((default, default), *((o.label, o.ref) for o in opts))
-
-
-_CSS_FILE = Path(__file__).parent / "model_bar.tcss"
-
 _CHAT_MODE_TOGGLE_ID = "chat-mode-toggle"
 _CHAT_MODE_SEARCH_PILL_ID = "chat-mode-search"
 _CHAT_MODE_CHAT_PILL_ID = "chat-mode-chat"
@@ -235,21 +211,51 @@ _CHAT_MODE_DISABLED_CLASS = "-disabled"
 _CHAT_MODE_ACTIVE_CLASS = "-active"
 
 
+_SCOPE_TO_TOOLTIP: dict[str, str] = {
+    "chat": msg.MODEL_PICKER_CHAT_TOOLTIP,
+    "embed": msg.MODEL_PICKER_EMBED_TOOLTIP,
+    "vision": msg.MODEL_PICKER_VISION_TOOLTIP,
+    "rerank": msg.MODEL_PICKER_RERANK_TOOLTIP,
+}
+
+_CSS_FILE = Path(__file__).parent / "model_bar.tcss"
+
+_CLOUD_WARNING_ID = "model-bar-cloud-warning"
+
+_SCOPE_TO_LABEL: dict[str, str] = {
+    "chat": msg.MODEL_BAR_CHAT_LABEL,
+    "embed": msg.MODEL_BAR_EMBED_LABEL,
+    "vision": msg.MODEL_BAR_VISION_LABEL,
+    "rerank": msg.MODEL_BAR_RERANK_LABEL,
+}
+
+# Per-role pill colors (background, foreground) when the role is active. Chat and
+# Embed mirror the original bar; Vision and Rerank get their own accent hues.
+_SCOPE_PILL_COLORS: dict[str, tuple[str, str]] = {
+    "chat": ("$primary", "$text"),
+    "embed": ("$secondary", "$text"),
+    "vision": ("#bc8cff", "$text"),
+    "rerank": ("#f0883e", "$text"),
+}
+
+# Muted pill for an optional role that is currently off.
+_OFF_PILL_COLORS: tuple[str, str] = ("$surface-lighten-2", "$text-muted")
+
+
 class ModelPickerButton(Static, can_focus=True):
-    """Pill button that opens a ModelPickerModal scoped to chat or embed."""
+    """Pill button that opens a ModelPickerModal scoped to one of the four roles."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "open_picker", "Pick model", show=False),
         Binding("space", "open_picker", "Pick model", show=False),
     ]
 
-    def __init__(self, *, scope: Literal["chat", "embed"], button_id: str) -> None:
+    def __init__(self, *, scope: PickerScope, button_id: str) -> None:
         super().__init__(id=button_id)
-        self._scope: Literal["chat", "embed"] = scope
+        self._scope: PickerScope = scope
+        self._key: str = config_key_for_scope(scope)
         self._options: list[ModelOption] = []
-        self.tooltip = (
-            msg.MODEL_PICKER_CHAT_TOOLTIP if scope == "chat" else msg.MODEL_PICKER_EMBED_TOOLTIP
-        )
+        self.tooltip = _SCOPE_TO_TOOLTIP[scope]
 
     def on_mount(self) -> None:
         self._refresh()
@@ -261,9 +267,16 @@ class ModelPickerButton(Static, can_focus=True):
             self._refresh()
 
     def _refresh(self) -> None:
-        ref = cfg.chat_model if self._scope == "chat" else cfg.embedding_model
-        label = display_label_for_ref(ref) or ref or msg.MODEL_VALUE_NONE
+        # Only optional roles (vision/rerank) can be empty; chat/embed are
+        # non-nullable, so an empty ref means the role is off, not a model
+        # called "(none)".
+        ref = getattr(cfg, self._key)
+        label = (display_label_for_ref(ref) or ref) if ref else msg.MODEL_BAR_DISABLED
         self.update(label)
+
+    def repaint(self) -> None:
+        """Public entry for a parent container to repaint the label from cfg."""
+        self._refresh()
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -272,57 +285,55 @@ class ModelPickerButton(Static, can_focus=True):
     def action_open_picker(self) -> None:
         self.open_picker()
 
+    def _is_nullable(self) -> bool:
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP.get(self._key)
+        return defn is not None and defn.nullable
+
     def open_picker(self) -> None:
         # Lazy import: model_picker imports ModelOption from this module.
         from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 
-        modal = ModelPickerModal(scope=self._scope, options=self._options)
+        options = list(self._options)
+        # Optional role that's on: offer an explicit "turn off" action in the
+        # modal (ref "" disables it) so disabling isn't only a pill click.
+        if self._is_nullable() and getattr(cfg, self._key):
+            options.append(ModelOption(label=msg.MODEL_PICKER_TURN_OFF, ref=""))
+        modal = ModelPickerModal(scope=self._scope, options=options)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
-        if not ref:
+        if ref is not None and ref == getattr(cfg, self._key):
             return
-        if self._scope == "chat":
-            if ref == cfg.chat_model:
-                return
-            apply_active_model(self.app, "chat_model", ref)
-            self._commit_after_change()
-            return
-        if ref == cfg.embedding_model:
-            return
-        # Embed-model swap invalidates a populated vector store. Confirm first.
-        store = get_services().store
-        if store.has_chunks():
-            from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-
-            self.app.push_screen(
-                ConfirmDialog(
-                    msg.EMBED_SWAP_CONFIRM_TITLE,
-                    msg.EMBED_SWAP_CONFIRM_MESSAGE,
-                ),
-                lambda confirmed: self._on_embed_swap_confirmed(ref, confirmed),
-            )
-            return
-        self._apply_embed_change(ref)
-
-    def _on_embed_swap_confirmed(self, ref: str, confirmed: bool | None) -> None:
-        """Apply the embed swap or notify cancel; ``confirmed`` mirrors ConfirmDialog."""
-        if not confirmed:
-            self.app.notify(msg.EMBED_SWAP_CANCELLED)
-            return
-        self._apply_embed_change(ref)
-
-    def _apply_embed_change(self, ref: str) -> None:
-        """Persist the new embed ref, refresh the bar, and respawn the embed worker."""
-        apply_active_model(self.app, "embedding_model", ref)
-        self._commit_after_change()
+        # Chat swaps reset services in _commit_after_change -> apply_model_change,
+        # so the helper must not also reload the chat worker (double teardown).
+        apply_model_pick(
+            self,
+            key=self._key,
+            ref=ref,
+            on_done=self._commit_after_change,
+            reload_worker=self._scope != "chat",
+        )
 
     def _commit_after_change(self) -> None:
-        """Repaint this button and fan ``_after_model_change`` for the scope."""
+        """Repaint the label, then run the chat-screen side effect for chat swaps.
+
+        ``apply_model_pick`` already persisted the ref and (for non-chat
+        scopes) reloaded the worker. Chat swaps cancel the in-flight stream
+        and reset services here so the new chat model takes over cleanly. Works
+        Works regardless of which container the button is mounted in.
+        """
         self._refresh()
-        bar = self.screen.query(ModelBar)
-        for b in bar:
-            b._after_model_change(self._scope)
+        if self._scope != "chat":
+            return
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = self.app.screen
+        if isinstance(screen, ChatScreen):
+            screen.apply_model_change()
+        else:
+            reset_services()
 
 
 class ChatModePill(Static, can_focus=True):
@@ -447,110 +458,124 @@ class ChatModeToggle(Widget, can_focus=False):
         self._set_mode(ChatMode.CHAT.value)
 
 
+class RoleRow(Widget, can_focus=False):
+    """One role unit in the bar: a colored role pill + its picker button."""
+
+    def __init__(self, *, scope: PickerScope) -> None:
+        super().__init__()
+        self.scope: PickerScope = scope
+        self._key: str = config_key_for_scope(scope)
+
+    def compose(self) -> ComposeResult:
+        yield Static("", classes="model-bar-pill")
+        yield ModelPickerButton(scope=self.scope, button_id=f"model-pick-{self.scope}")
+
+    def on_mount(self) -> None:
+        self.refresh_state()
+
+    @property
+    def is_active(self) -> bool:
+        return bool(getattr(cfg, self._key))
+
+    def _is_nullable(self) -> bool:
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP.get(self._key)
+        return defn is not None and defn.nullable
+
+    def on_click(self, event: events.Click) -> None:
+        """Click the pill to toggle an optional role off; otherwise open the picker.
+
+        The picker button stops its own click events, so this handler only runs
+        for clicks on the role pill (or the row gutter).
+        """
+        event.stop()
+        if self._is_nullable() and self.is_active:
+            apply_model_pick(self, key=self._key, ref="", on_done=self.refresh_state)
+        else:
+            self.query_one(ModelPickerButton).open_picker()
+
+    def refresh_state(self) -> None:
+        """Repaint the role pill (colored when on, muted when off) and the picker label."""
+        active = self.is_active
+        self.set_class(active, "-active")
+        self.set_class(not active, "-off")
+        bg, fg = _SCOPE_PILL_COLORS[self.scope] if active else _OFF_PILL_COLORS
+        with contextlib.suppress(Exception):
+            self.query_one(".model-bar-pill", Static).update(
+                pill(_SCOPE_TO_LABEL[self.scope], bg, fg)
+            )
+            self.query_one(ModelPickerButton).repaint()
+
+
 class ModelBar(Widget, can_focus=False):
-    """Compact bar with picker buttons for active model assignments + mode toggle."""
+    """Horizontal band of the four role pickers + the Search/Chat toggle, below the input."""
 
     app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
+    _SCOPES: ClassVar[tuple[PickerScope, ...]] = ("chat", "embed", "vision", "rerank")
+
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        # _scan_models runs on every chat on_show but the install set rarely
-        # changes between visits; fingerprint to skip redundant set_options.
-        self._chat_options_cache: tuple[tuple[str, str], ...] = ()
-        self._embed_options_cache: tuple[tuple[str, str], ...] = ()
+        self._options_cache: dict[str, tuple[tuple[str, str], ...]] = {}
 
     def compose(self) -> ComposeResult:
-        with Horizontal():
-            yield Static(pill("Chat", "$primary", "$text"), classes="model-bar-pill")
-            yield ModelPickerButton(scope="chat", button_id=_CHAT_MODEL_BUTTON_ID)
-            yield Static(pill("Embed", "$secondary", "$text"), classes="model-bar-pill")
-            yield ModelPickerButton(scope="embed", button_id=_EMBED_MODEL_BUTTON_ID)
+        with Horizontal(classes="model-bar-roles"):
+            for scope in self._SCOPES:
+                yield RoleRow(scope=scope)
             yield ChatModeToggle()
-        yield Static("", id=_CLOUD_WARNING_ID, classes=_CLOUD_WARNING_CLASS)
+        yield Static("", id=_CLOUD_WARNING_ID, classes="cloud-warning")
 
     def on_mount(self) -> None:
         self._refresh_cloud_warning()
         self._scan_models()
-        # External activation paths (Catalog screen, /model setting, settings UI)
-        # publish on this signal but don't reach this widget's _refresh otherwise.
-        # ``app: LilbeeApp`` is declared on the class; test hosts inherit
-        # LilbeeAppHost so the signal attribute always exists. No isinstance
-        # guard needed (AGENTS.md "no test-aware production branches").
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _ = payload
+        scope = model_field_to_picker_scope().get(key)
+        if scope is None:
+            return
+        for row in self.query(RoleRow):
+            if row.scope == scope:
+                row.refresh_state()
         if key == "chat_model":
-            with contextlib.suppress(Exception):
-                self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
             self._refresh_cloud_warning()
-            self._refresh_chat_mode_toggle()
-        elif key == "embedding_model":
-            with contextlib.suppress(Exception):
-                self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton)._refresh()
 
     @work(thread=True)
     def _scan_models(self) -> None:
-        """Scan installed models in background, then populate buttons."""
-        chat, embed = _classify_installed_models()
-        call_from_thread(self, self._populate, chat, embed)
+        """Scan installed models off the UI thread and populate every role button."""
+        buckets = classify_installed_models_full()
+        scope_to_options: dict[str, list[ModelOption]] = {
+            "chat": list(buckets.get(ModelTask.CHAT, [])),
+            "embed": list(buckets.get(ModelTask.EMBEDDING, [])),
+            "vision": list(buckets.get(ModelTask.VISION, [])),
+            "rerank": list(buckets.get(ModelTask.RERANK, [])),
+        }
+        call_from_thread(self, self._populate, scope_to_options)
 
-    def _populate(
-        self,
-        chat_models: list[ModelOption],
-        embed_models: list[ModelOption],
-    ) -> None:
-        chat_opts = list(chat_models) if chat_models else [ModelOption(msg.MODEL_VALUE_NONE, "")]
-        embed_opts = list(embed_models) if embed_models else [ModelOption(msg.MODEL_VALUE_NONE, "")]
-        chat_fingerprint = _options_fingerprint(chat_opts, cfg.chat_model)
-        if chat_fingerprint != self._chat_options_cache:
-            self.query_one(f"#{_CHAT_MODEL_BUTTON_ID}", ModelPickerButton).set_options(chat_opts)
-            self._chat_options_cache = chat_fingerprint
-        embed_fingerprint = _options_fingerprint(embed_opts, cfg.embedding_model)
-        if embed_fingerprint != self._embed_options_cache:
-            self.query_one(f"#{_EMBED_MODEL_BUTTON_ID}", ModelPickerButton).set_options(embed_opts)
-            self._embed_options_cache = embed_fingerprint
+    def _populate(self, scope_to_options: dict[str, list[ModelOption]]) -> None:
+        for row in self.query(RoleRow):
+            # Empty pool stays empty: the picker shows just its "Browse catalog"
+            # row rather than a pickable "(none)" pseudo-model.
+            opts = scope_to_options.get(row.scope, [])
+            fingerprint = tuple((o.label, o.ref) for o in opts)
+            if self._options_cache.get(row.scope) != fingerprint:
+                row.query_one(ModelPickerButton).set_options(opts)
+                self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
-        self._refresh_chat_mode_toggle()
 
     def _refresh_cloud_warning(self) -> None:
-        """Show a warning if the active chat model routes to a cloud API."""
+        """Show a warning if the active chat model routes to a cloud provider."""
         warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
         label = _cloud_provider_label(cfg.chat_model)
         if label is None:
-            warning.remove_class(_CLOUD_WARNING_VISIBLE_CLASS)
+            warning.remove_class("-visible")
             return
         warning.update(msg.MODEL_BAR_CLOUD_PROVIDER_WARNING.format(provider=label))
-        warning.add_class(_CLOUD_WARNING_VISIBLE_CLASS)
-
-    def _refresh_chat_mode_toggle(self) -> None:
-        with contextlib.suppress(Exception):
-            self.query_one(ChatModeToggle).refresh_state()
-
-    def _after_model_change(self, scope: Literal["chat", "embed"]) -> None:
-        """Apply the side-effect of the role's model swap.
-
-        Chat-scope swaps route through :meth:`ChatScreen.apply_model_change`
-        so the in-flight stream cancels under the same UX that ``/model``
-        provides. Embed-scope swaps respawn only the embed worker via
-        :meth:`Services.reload_role`; the chat worker and any active
-        stream are untouched. Off-chat-screen chat swaps fall through to
-        a full ``reset_services`` because the chat-cancel path needs the
-        ChatScreen state machine.
-        """
-        if scope == "embed":
-            get_services().reload_role(WorkerRole.EMBED)
-            return
-
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = self.app.screen
-        if isinstance(screen, ChatScreen):
-            screen.apply_model_change()
-        else:
-            reset_services()
+        warning.add_class("-visible")
 
     def refresh_models(self) -> None:
-        """Re-scan models (called after downloads complete)."""
+        """Re-scan installed models (called after downloads complete)."""
         self._scan_models()
