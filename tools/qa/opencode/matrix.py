@@ -238,12 +238,14 @@ _TIER_PROMPTS: dict[str, str] = {
         "signature of Object.connect, and what do the CONNECT_DEFERRED and "
         "CONNECT_ONE_SHOT flags do? Include their integer values."
     ),
-    # Giants get a natural codegen task that only passes if the generated GDScript
-    # uses real Godot 4 names (verified via lilbee_search, not hallucinated).
+    # Giants get the published level-generator prompt verbatim, from the
+    # godot-level-generator RAG-vs-no-RAG benchmark (docs/benchmarks/
+    # godot-level-generator.md). It only "passes" cleanly when the generated
+    # GDScript uses real Godot 4 API (set_cell, AStarGrid2D.get_point_path, etc.),
+    # verified via lilbee_search rather than hallucinated.
     "giant": (
-        "Write a Godot 4 GDScript script that procedurally generates a 2D dungeon "
-        "using TileMapLayer and TileSet, exposing a regenerate() signal so the game "
-        "can rebuild on demand. Use the actual Godot 4 method names for placing tiles."
+        "make a procedural level generator that places wall and floor tiles and "
+        "scatters collectibles using pathfinding"
     ),
 }
 
