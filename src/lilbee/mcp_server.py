@@ -103,17 +103,17 @@ def _error(msg: str) -> dict[str, Any]:
     return {"error": msg}
 
 
-@_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Search the knowledge base for relevant document chunks.
-
-    ``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"raw"``, ``"wiki"``,
-    or ``"both"``. Returns chunks sorted by relevance.
-    """
     if not query or not query.strip():
         return _error("query must not be empty")
+    # No wiki built -> the "wiki" partition is empty, so a model that guesses
+    # scope="wiki" would search nothing. Fold it to "both" so the query still
+    # hits the indexed content. The tool description also tells the model not to
+    # set scope="wiki" when there is no wiki.
+    if not cfg.wiki and scope == SearchScope.WIKI.value:
+        scope = SearchScope.BOTH.value
     try:
         chunk_type = scope_to_chunk_type(scope)
     except ValueError:
@@ -131,6 +131,24 @@ def search(
         return [clean_result(r) for r in results]
     except Exception as exc:
         return _error(str(exc))
+
+
+# Describe the scope parameter to match the active config: only advertise the
+# "wiki" partition when a wiki is actually built, so a model does not pick an
+# empty scope. FastMCP reads this docstring as the tool description.
+search.__doc__ = (
+    "Search the knowledge base for relevant document chunks.\n\n"
+    '``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"raw"``, ``"wiki"``, or '
+    '``"both"`` (default). Returns chunks sorted by relevance.'
+    if cfg.wiki
+    else (
+        "Search the knowledge base for relevant document chunks.\n\n"
+        "``top_k`` defaults to ``cfg.top_k``. Returns chunks sorted by relevance. "
+        'Use the default ``scope`` ("both"); this library has no separate wiki, so '
+        'do not set scope to "wiki".'
+    )
+)
+search = _tool(search)
 
 
 @_tool
