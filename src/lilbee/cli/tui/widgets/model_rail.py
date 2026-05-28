@@ -27,6 +27,7 @@ from lilbee.cli.tui.widgets.model_pick import config_key_for_scope
 from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.model_picker import PickerScope
 
 log = logging.getLogger(__name__)
@@ -83,10 +84,11 @@ class RoleRow(Widget, can_focus=False):
 class ModelRail(Widget, can_focus=False):
     """Left-pinned rail listing the four model roles and the chat/search mode toggle."""
 
+    app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
-    _ACTIVE_SCOPES: ClassVar[tuple[str, ...]] = ("chat", "embed")
-    _OPTIONAL_SCOPES: ClassVar[tuple[str, ...]] = ("vision", "rerank")
+    _ACTIVE_SCOPES: ClassVar[tuple[PickerScope, ...]] = ("chat", "embed")
+    _OPTIONAL_SCOPES: ClassVar[tuple[PickerScope, ...]] = ("vision", "rerank")
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)

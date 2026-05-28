@@ -637,6 +637,20 @@ class TestModelBar:
             assert app.query_one("#chat-model-button", ModelPickerButton) is not None
             assert app.query_one("#embed-model-button", ModelPickerButton) is not None
 
+    async def test_refresh_models_rescans(self) -> None:
+        """ModelBar.refresh_models re-runs the installed-model scan."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            with mock.patch.object(bar, "_scan_models") as mock_scan:
+                bar.refresh_models()
+                mock_scan.assert_called_once()
+
     async def test_labels_rendered(self) -> None:
         """Chat/Embed labels render as pills (label inside the styled-space padding)."""
         from textual.widgets import Static
@@ -2156,10 +2170,6 @@ class TestClassifyInstalledModels:
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[blank, good],
             ),
-            mock.patch(
-                "lilbee.modelhub.model_manager.discover_api_models",
-                return_value={},
-            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_installed_models()
@@ -2197,10 +2207,6 @@ class TestClassifyInstalledModels:
             mock.patch(
                 "lilbee.modelhub.model_manager.classify_remote_models",
                 return_value=[],
-            ),
-            mock.patch(
-                "lilbee.modelhub.model_manager.discover_api_models",
-                return_value={},
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]

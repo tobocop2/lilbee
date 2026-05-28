@@ -9,9 +9,31 @@ import pytest
 from lilbee.cli.tui.widgets.model_pick import (
     _MODEL_KEY_TO_WORKER_ROLE,
     apply_model_pick,
+    config_key_for_scope,
 )
 from lilbee.providers.worker.transport import WorkerRole
 from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+def test_config_key_for_scope_round_trips_and_rejects_unknown() -> None:
+    assert config_key_for_scope("chat") == "chat_model"
+    assert config_key_for_scope("rerank") == "reranker_model"
+    with pytest.raises(KeyError):
+        config_key_for_scope("bogus")  # type: ignore[arg-type]
+
+
+async def test_apply_model_pick_browse_unknown_key_is_noop() -> None:
+    """An unknown key on the browse path logs and returns without navigating."""
+    from lilbee.cli.tui.screens.model_picker import BROWSE_CATALOG_REF
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        before = app.screen
+        apply_model_pick(
+            app.screen, key="not_a_model_key", ref=BROWSE_CATALOG_REF, on_done=lambda: None
+        )
+        await pilot.pause()
+        assert app.screen is before  # no CatalogScreen pushed
 
 
 @pytest.mark.parametrize(
@@ -198,6 +220,56 @@ async def test_rail_optional_row_lights_up_when_config_changes(monkeypatch) -> N
         assert vision.has_class("-active")
 
 
+async def test_rail_vision_picker_prepends_disable_row(monkeypatch) -> None:
+    """Opening the vision (nullable) picker from the rail prepends the disable row."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    app = _RailTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        vision_btn = app.screen.query_one("#rail-pick-vision", ModelPickerButton)
+        vision_btn.open_picker()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, ModelPickerModal)
+        labels = [o.label for o in modal._options.options]
+        assert labels[0] == msg.MODEL_PICKER_DISABLE_LABEL
+
+
+async def test_rail_shows_cloud_warning_for_cloud_chat_model(monkeypatch) -> None:
+    """A cloud-routed chat model lights the rail's cloud-provider warning."""
+    from lilbee.cli.tui.widgets.model_rail import _CLOUD_WARNING_ID, ModelRail
+    from lilbee.core.config import cfg
+
+    # Pick a real provider-prefixed ref so _cloud_provider_label resolves a label.
+    monkeypatch.setattr(cfg, "chat_model", "gemini/gemini-2.0-flash")
+    app = _RailTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from textual.widgets import Static
+
+        warning = app.screen.query_one(ModelRail).query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        assert warning.has_class("-visible")
+
+
+async def test_rail_ignores_non_model_settings_signal() -> None:
+    """A signal for a non-model key (e.g. chat_mode) is a no-op for the rail rows."""
+    from lilbee.cli.tui.widgets.model_rail import ModelRail, RoleRow
+
+    app = _RailTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        rail = app.screen.query_one(ModelRail)
+        # Should not raise and should not change any row state.
+        rail._on_settings_changed(("chat_mode", "search"))
+        await pilot.pause()
+        assert {r.scope for r in rail.query(RoleRow)} == {"chat", "embed", "vision", "rerank"}
+
+
 class _ChatTestApp(LilbeeAppHost):
     """Test fixture that pushes the chat screen so the rail mounts in context."""
 
@@ -292,6 +364,28 @@ async def test_chat_screen_auto_collapses_rail_on_narrow_terminal(_seeded_models
             )
         )
         assert rail.display is False
+
+
+async def test_chat_on_resize_tolerates_missing_rail(_seeded_models) -> None:
+    """on_resize is a no-op (no error) if the rail isn't mounted."""
+    from textual import events as _events
+    from textual.geometry import Size
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.widgets.model_rail import ModelRail
+
+    app = _ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_screen = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        chat_screen.query_one("#model-rail", ModelRail).remove()
+        await pilot.pause()
+        # Must not raise NoMatches.
+        chat_screen.on_resize(
+            _events.Resize(
+                size=Size(60, 40), virtual_size=Size(60, 40), container_size=Size(60, 40)
+            )
+        )
 
 
 async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:

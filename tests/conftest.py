@@ -230,6 +230,15 @@ def _isolate_cfg(tmp_path, request):
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
     cfg.data_root = tmp_path / "data_root"
+    # Clear any provider API keys the developer has in their real config.toml
+    # so tests run hermetically, as CI does (no keys). Otherwise a configured
+    # key makes a cloud model "available" and leaks into model discovery and
+    # the chat-model availability fallback, breaking tests that assume a clean
+    # environment. Tests that exercise key-dependent paths set the key themselves.
+    from lilbee.providers.sdk_backend import API_KEY_FIELDS
+
+    for field in API_KEY_FIELDS:
+        setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
     yield

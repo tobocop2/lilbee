@@ -410,10 +410,13 @@ class CatalogScreen(Screen[None]):
         except Exception:
             self._activation_settled = True
             return
-        target = self._focus_task or TAB_CHAT
-        self._active_tab_id_cache = target
-        if tabs.active != target:
-            tabs.active = target
+        if self._focus_task is not None:
+            # On-ramp: land directly on the requested task tab.
+            self._active_tab_id_cache = self._focus_task
+            if tabs.active != self._focus_task:
+                tabs.active = self._focus_task
+        elif self._active_tab_id_cache == TAB_CHAT and tabs.active != TAB_CHAT:
+            tabs.active = TAB_CHAT
         if not self._activation_settled:
             self._activation_settled = True
         self.call_after_refresh(self._refresh_grid)
