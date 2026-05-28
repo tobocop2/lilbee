@@ -186,7 +186,6 @@ class ChatScreen(Screen[None]):
         # Labeled "All commands" so it reads distinctly from `/ Slash commands`.
         Binding("f2", "show_command_catalog", "All commands", show=True, priority=True),
         Binding("f3", "toggle_chat_mode", "Search/Chat", show=False),
-        Binding("f4", "toggle_model_bar", "Toggle models", show=True, priority=True),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
@@ -1521,11 +1520,6 @@ class ChatScreen(Screen[None]):
     def refresh_model_bar(self) -> None:
         """Re-scan installed models and refresh the model bar."""
         self.query_one("#model-bar", ModelBar).refresh_models()
-
-    def action_toggle_model_bar(self) -> None:
-        """F4: collapse or expand the model bar."""
-        bar = self.query_one("#model-bar", ModelBar)
-        bar.display = not bar.display
 
     def action_vim_scroll_down(self) -> None:
         """Vim j: scroll down in normal mode."""

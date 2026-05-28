@@ -392,25 +392,6 @@ async def test_chat_screen_mounts_with_bar_present(_seeded_models) -> None:
         assert bar.display is True
 
 
-async def test_chat_screen_f4_toggles_bar(_seeded_models) -> None:
-    """F4 collapses and re-expands the always-visible bar."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-    app = _ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        chat_screen = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
-        bar = chat_screen.query_one("#model-bar", ModelBar)
-        assert bar.display is True
-        await pilot.press("f4")
-        await pilot.pause()
-        assert bar.display is False
-        await pilot.press("f4")
-        await pilot.pause()
-        assert bar.display is True
-
-
 async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
     """Embed swap against a populated store pushes ConfirmDialog before writing."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
