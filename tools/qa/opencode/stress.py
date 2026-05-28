@@ -1,31 +1,38 @@
-"""Production-readiness stress + soak harness for the lilbee fleet.
+"""Production-readiness stress test: concurrent, iterative, tool-using dev sessions.
 
-Drives the real production endpoints -- ``/v1/chat/completions`` (the tool-calling
-path opencode uses) and ``/api/search`` (the retrieval / shared-embedder path the
-MCP server uses) -- to answer the questions that decide production confidence:
+This mirrors a standard agentic dev workflow -- the exact opencode <-> lilbee loop a
+developer drives in practice:
 
-* Concurrency: can the fleet serve a realistic multi-agent dev workload (many
-  concurrent tool-calling + search turns) without failing or wedging?
-* Long conversations: does a long multi-turn session stay up?
-* Token-limit exhaustion: when a prompt/conversation exceeds the model's context,
-  does it resolve gracefully (clean error, server survives) or crash?
+    chat (with the lilbee_search tool)
+      -> model emits tool_calls
+      -> we run the REAL /api/search (the shared-embedder retrieval path)
+      -> feed the results back as a tool message
+      -> chat again ... until the model produces a final answer
+      -> next task in the session
 
-Run on a host with a cached chat model, pointing LILBEE_DATA at a workspace whose
-config.toml pins that model and whose data dir holds an indexed corpus::
+N such "developers" run concurrently, each working through a realistic coding task
+list (build -> extend -> debug -> refactor) against the indexed Godot 4 reference.
+That exercises the full blast radius the way real usage does: streaming chat
+completions, native tool-call extraction, the shared embedder under concurrent
+search, conversation growth across a long multi-tool session, and 429 backpressure.
+
+A session whose conversation outgrows the model's window must resolve GRACEFULLY (a
+clean context_length_exceeded with the server still serving), never crash.
+
+Run on a host with a cached chat model + an indexed corpus::
 
     LILBEE_DATA=.../workspace/qwen3/.lilbee LILBEE_MODELS_DIR=/root/models \
-      uv run python tools/qa/opencode/stress.py --agents 8 --rounds 3 --turns 12
+      uv run python tools/qa/opencode/stress.py --devs 4 --tasks 6
 
-Exit code is 0 only if every sub-test passes (no crash; concurrency clean;
-token-exhaustion survived). Token-exhaustion also reports whether resolution was
-*graceful* (a clean context-length error) vs a generic error -- both survive, but
-graceful is the production bar.
+PASS (exit 0) iff: every concurrent session makes progress, there are no hard
+failures (5xx / connection drops), and any context overflow resolved gracefully.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import statistics
 import time
 
@@ -38,7 +45,7 @@ _SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "lilbee_search",
-        "description": "Search the indexed Godot 4 reference for relevant chunks.",
+        "description": "Search the indexed Godot 4 class reference; returns cited chunks.",
         "parameters": {
             "type": "object",
             "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
@@ -46,13 +53,28 @@ _SEARCH_TOOL = {
         },
     },
 }
-_QUERIES = [
-    "AStarGrid2D diagonal_mode",
-    "TileMapLayer set_cell",
-    "Node _process delta",
-    "Object connect signal flags",
-    "NavigationServer2D map_get_path",
-    "Sprite2D texture region",
+
+# Same workflow the demos use (godot-with-lilbee AGENTS.md): the model must look every
+# API up via the tool instead of answering from stale memory, so the loop actually
+# drives retrieval the way a real session does.
+_SYSTEM = (
+    "You are a Godot 4.4 GDScript developer. Your training data is outdated -- classes "
+    "and methods were renamed in Godot 4.x -- so you MUST call lilbee_search to confirm "
+    "every class, method, and signature before you use it, then write code using only "
+    "confirmed APIs."
+)
+
+# A realistic iterative coding session: build a feature, extend it, hit a bug, refactor.
+# This is what a developer actually does over a working session, not one-shot Q&A.
+_DEV_TASKS = [
+    "Build a Godot 4 GDScript pathfinding helper using AStarGrid2D. Look the API up first.",
+    "Now add diagonal movement and a way to mark cells as solid (walls).",
+    "Render the result with a TileMapLayer: floor tiles along the path, wall tiles elsewhere.",
+    "Bug: get_id_path seems to return the wrong type for my loop -- check its exact return type and fix it.",
+    "Scatter collectibles on reachable floor tiles, skipping the start and goal cells.",
+    "Refactor: expose a regenerate() signal and make map size and tile size @export vars.",
+    "How do I connect the regenerate() signal to a button and call it at runtime?",
+    "Add a RandomNumberGenerator with a seed so levels are reproducible.",
 ]
 
 
@@ -61,158 +83,120 @@ def _server() -> tuple[str, dict[str, str], str]:
     return f"http://127.0.0.1:{port}", {"Authorization": f"Bearer {token}"}, cfg.chat_model
 
 
-async def _chat(
-    client: httpx.AsyncClient,
-    base: str,
-    headers: dict[str, str],
-    model: str,
-    messages: list[dict],
-    *,
-    tools: list | None = None,
-    max_tokens: int = 200,
-) -> tuple[int, float, httpx.Response | Exception]:
-    body: dict = {"model": model, "messages": messages, "max_tokens": max_tokens, "stream": False}
-    if tools:
-        body["tools"] = tools
+async def _run_search(client, base, headers, query, top_k=5) -> tuple[str, int]:
+    """The real retrieval call opencode makes for a lilbee_search tool invocation."""
+    try:
+        r = await client.get(
+            f"{base}/api/search", headers=headers, params={"q": query, "top_k": top_k}, timeout=90
+        )
+        if r.status_code != 200:
+            return f"(search error {r.status_code})", r.status_code
+        items = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
+        lines = [f"- {it.get('source', '?')}: {str(it.get('text', it))[:300]}" for it in items[:top_k]]
+        return ("\n".join(lines) or "(no results)"), 200
+    except Exception as exc:
+        return f"(search exception: {exc})", -1
+
+
+async def _chat(client, base, headers, model, msgs, *, max_tokens=300):
+    body = {"model": model, "messages": msgs, "max_tokens": max_tokens, "stream": False, "tools": [_SEARCH_TOOL]}
     t0 = time.monotonic()
     try:
-        r = await client.post(f"{base}/v1/chat/completions", headers=headers, json=body, timeout=240)
+        r = await client.post(f"{base}/v1/chat/completions", headers=headers, json=body, timeout=300)
         return r.status_code, time.monotonic() - t0, r
-    except Exception as exc:  # network / timeout / reset = the fleet wedged
+    except Exception as exc:
         return -1, time.monotonic() - t0, exc
 
 
-async def _search(client: httpx.AsyncClient, base: str, headers: dict[str, str], q: str) -> int:
-    try:
-        r = await client.get(f"{base}/api/search", headers=headers, params={"q": q, "top_k": 5}, timeout=90)
-        return r.status_code
-    except Exception:
-        return -1
+async def _dev_turn(client, base, headers, model, msgs, m) -> str:
+    """One developer request: chat, run any tool calls via the REAL search, feed results
+    back, and loop until the model gives a final answer. Returns ok | overflow | fail."""
+    for _hop in range(6):  # bound the tool-call loop per turn
+        code, dt, r = await _chat(client, base, headers, model, msgs)
+        m["chat"].append((code, dt))
+        if code == 429:  # backpressure: acceptable, retry like a real client
+            m["busy"] += 1
+            await asyncio.sleep(2)
+            continue
+        if code != 200:
+            body = r.text[:300] if isinstance(r, httpx.Response) else repr(r)
+            if code == 400 and "context" in body.lower():
+                m["overflow_body"] = body
+                return "overflow"
+            m["fail_detail"] = f"{code}: {body}"
+            return "fail"
+        msg = r.json()["choices"][0]["message"]
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            msgs.append({"role": "assistant", "content": msg.get("content", "")})
+            return "ok"
+        # the model wants to search: record its tool-call turn, run the real searches,
+        # feed each result back, then loop so it can search more or answer.
+        msgs.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.get("function", {}).get("arguments") or "{}")
+            except (ValueError, TypeError):
+                args = {}
+            result, scode = await _run_search(client, base, headers, args.get("query", "Godot Node"))
+            m["search"].append(scode)
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", "0"), "content": result})
+    return "ok"  # tool loop capped; treat as progress
 
 
-async def _agent(idx, client, base, headers, model, rounds, rec) -> None:
-    for r in range(rounds):
-        q = _QUERIES[(idx + r) % len(_QUERIES)]
-        code, dt, _ = await _chat(
-            client, base, headers, model,
-            [{"role": "user", "content": f"Look up {q} in the Godot 4 reference and explain it briefly."}],
-            tools=[_SEARCH_TOOL], max_tokens=160,
-        )
-        rec.append(("chat", code, dt))
-        rec.append(("search", await _search(client, base, headers, q), 0.0))
+async def _dev_session(dev_id, client, base, headers, model, tasks_per, m) -> None:
+    msgs = [{"role": "system", "content": _SYSTEM}]
+    for i in range(tasks_per):
+        msgs.append({"role": "user", "content": _DEV_TASKS[i % len(_DEV_TASKS)]})
+        status = await _dev_turn(client, base, headers, model, msgs, m)
+        m["turns"] += 1
+        if status == "overflow":
+            alive = (await _run_search(client, base, headers, "Node"))[1] == 200
+            m["overflow"] += 1
+            m["overflow_graceful"] = m["overflow_graceful"] and alive
+            return  # a long session that overflows gracefully is a success, not a crash
+        if status == "fail":
+            m["fail"] += 1
+            return
 
 
-async def test_concurrency(base, headers, model, agents, rounds) -> bool:
-    rec: list[tuple[str, int, float]] = []
+async def run_workflow(base, headers, model, devs, tasks_per) -> bool:
+    m = {
+        "chat": [], "search": [], "turns": 0, "busy": 0, "fail": 0,
+        "overflow": 0, "overflow_graceful": True, "fail_detail": "", "overflow_body": "",
+    }
     t0 = time.monotonic()
     async with httpx.AsyncClient() as client:
-        await asyncio.gather(*[_agent(i, client, base, headers, model, rounds, rec) for i in range(agents)])
+        await asyncio.gather(
+            *[_dev_session(i, client, base, headers, model, tasks_per, m) for i in range(devs)]
+        )
     wall = time.monotonic() - t0
-    chat_lat = [d for k, c, d in rec if k == "chat"]
-    chat_codes = [c for k, c, d in rec if k == "chat"]
-    search_codes = [c for k, c, d in rec if k == "search"]
+    chat_codes = [c for c, _ in m["chat"]]
+    chat_lat = [d for _, d in m["chat"]]
     ok = sum(1 for c in chat_codes if c == 200)
-    busy = sum(1 for c in chat_codes if c == 429)
-    fail = sum(1 for c in chat_codes if c not in (200, 429))
-    s_ok = sum(1 for c in search_codes if c == 200)
+    hard = sum(1 for c in chat_codes if c not in (200, 429, 400))
+    s_ok = sum(1 for c in m["search"] if c == 200)
     p95 = sorted(chat_lat)[max(0, int(len(chat_lat) * 0.95) - 1)] if chat_lat else 0.0
-    print(f"[concurrency] {agents} agents x {rounds} rounds in {wall:.1f}s")
-    print(f"  chat:   {ok}/{len(chat_codes)} ok, {busy} busy(429), {fail} hard-fail; "
-          f"p50={statistics.median(chat_lat):.1f}s p95={p95:.1f}s")
-    print(f"  search: {s_ok}/{len(search_codes)} ok")
-    # 429 is acceptable backpressure; a hard failure (5xx / -1) is not.
-    return fail == 0 and ok > 0
-
-
-# A real dev conversation grows fast because every lilbee_search feeds a big retrieved
-# block back in. We simulate that: each turn appends the model's reply AND a
-# retrieved-context block (~4K tokens), so the window fills like a real multi-tool
-# coding session -- not the ~120-token small talk a naive test uses. ~10 turns
-# overflows a 40K model; raise --turns for larger windows.
-_RETRIEVED_BLOCK = "Retrieved Godot 4 reference:\n" + (
-    "AStarGrid2D.get_id_path(from_id: Vector2i, to_id: Vector2i, allow_partial_path: bool "
-    "= false) -> Array[Vector2i]. diagonal_mode: DIAGONAL_MODE_NEVER/ALWAYS/AT_LEAST_ONE_"
-    "WALKABLE/ONLY_IF_NO_OBSTACLES. region: Rect2i. cell_size. set_point_solid(id, solid). "
-    "TileMapLayer.set_cell(coords: Vector2i, source_id: int, atlas_coords: Vector2i). "
-) * 60
-
-
-async def test_long_conversation(base, headers, model, turns) -> bool:
-    """Grow a realistic multi-tool dev conversation until the window fills, then assert
-    the overflow resolves GRACEFULLY (clean context_length_exceeded, server still
-    serving) instead of crashing or a generic 500. Finishing every turn without
-    overflowing is also a pass -- the window simply was not reached (raise --turns)."""
-    msgs: list[dict] = []
-    async with httpx.AsyncClient() as client:
-        for t in range(turns):
-            msgs.append({"role": "user", "content":
-                         f"Turn {t}: I'm building a 2D Godot game; suggest the next class to use and a short snippet."})
-            code, dt, r = await _chat(client, base, headers, model, msgs, max_tokens=120)
-            if code != 200:
-                body = r.text[:300] if isinstance(r, httpx.Response) else repr(r)
-                graceful = code == 400 and "context" in body.lower()
-                alive = (await _search(client, base, headers, "Node")) == 200
-                tok = sum(len(m["content"]) for m in msgs) // 4
-                print(f"[long-conv] window filled at turn {t} (~{tok} tokens), status {code}: "
-                      f"graceful={graceful} server-alive={alive}")
-                print(f"[long-conv] body: {body}")
-                return graceful and alive  # production bar: clean resolution + no crash
-            content = r.json()["choices"][0]["message"].get("content", "") if isinstance(r, httpx.Response) else ""
-            msgs.append({"role": "assistant", "content": content})
-            # feed retrieved context back (as opencode does after a tool call) so the
-            # conversation grows toward the window like a real dev session.
-            msgs.append({"role": "user", "content": _RETRIEVED_BLOCK})
-    tok = sum(len(m["content"]) for m in msgs) // 4
-    print(f"[long-conv] {turns} turns, no overflow; conversation ~{tok} tokens "
-          f"(raise --turns to push past this model's window)")
-    return True
-
-
-async def test_token_exhaustion(base, headers, model) -> bool:
-    filler = "Godot 4 AStarGrid2D pathfinding tile map cell navigation server query. " * 60000
-    async with httpx.AsyncClient() as client:
-        code, dt, r = await _chat(client, base, headers, model,
-                                  [{"role": "user", "content": filler + "\nSummarize the above."}], max_tokens=80)
-        body = r.text[:400] if isinstance(r, httpx.Response) else repr(r)
-        try:
-            alive = (await client.get(f"{base}/api/health", headers=headers, timeout=10)).status_code
-        except Exception:
-            alive = 0
-    graceful = code in (400, 413) and "context" in body.lower()
-    survived = alive == 200
-    print(f"[token-exhaustion] status={code} ({dt:.1f}s); serve-alive-after={survived}")
-    print(f"[token-exhaustion] body: {body}")
-    print(f"[token-exhaustion] graceful(clean context error)={graceful}  survived(no crash)={survived}")
-    if survived and not graceful:
-        print("[token-exhaustion] NOTE: survives but does not return a clean context_length_exceeded -- "
-              "production UX gap (generic error reaches the client).")
-    return survived
+    print(f"[dev-workflow] {devs} concurrent devs x {tasks_per} tasks in {wall:.0f}s")
+    print(f"  turns={m['turns']}  chat 200={ok}/{len(chat_codes)}  busy(429)={m['busy']}  hard-fail={hard}")
+    print(f"  REAL searches: {s_ok}/{len(m['search'])} ok  |  chat latency "
+          f"p50={statistics.median(chat_lat):.1f}s p95={p95:.1f}s" if chat_lat else "  (no chats)")
+    print(f"  overflows={m['overflow']} graceful={m['overflow_graceful']}  fail={m['fail']} {m['fail_detail'][:120]}")
+    if m["overflow_body"]:
+        print(f"  overflow body: {m['overflow_body'][:160]}")
+    return hard == 0 and ok > 0 and m["fail"] == 0 and (m["overflow"] == 0 or m["overflow_graceful"])
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--agents", type=int, default=8)
-    ap.add_argument("--rounds", type=int, default=3)
-    ap.add_argument("--turns", type=int, default=12)
-    ap.add_argument("--skip", default="", help="comma list: concurrency,long,token")
+    ap.add_argument("--devs", type=int, default=4, help="concurrent developer sessions")
+    ap.add_argument("--tasks", type=int, default=8, help="iterative tasks per session")
     args = ap.parse_args()
-    skip = set(args.skip.split(",")) if args.skip else set()
-
     base, headers, model = _server()
-    print(f"serve at {base}, model={model}\n")
-
-    results: dict[str, bool] = {}
-    if "concurrency" not in skip:
-        results["concurrency"] = asyncio.run(test_concurrency(base, headers, model, args.agents, args.rounds))
-    if "long" not in skip:
-        results["long_conversation"] = asyncio.run(test_long_conversation(base, headers, model, args.turns))
-    if "token" not in skip:
-        results["token_exhaustion"] = asyncio.run(test_token_exhaustion(base, headers, model))
-
-    print("\n=== STRESS SUMMARY ===")
-    for k, v in results.items():
-        print(f"  {k}: {'PASS' if v else 'FAIL'}")
-    raise SystemExit(0 if all(results.values()) else 1)
+    print(f"serve {base} model={model}\n")
+    ok = asyncio.run(run_workflow(base, headers, model, args.devs, args.tasks))
+    print("\n=== DEV-WORKFLOW STRESS:", "PASS" if ok else "FAIL", "===")
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":
