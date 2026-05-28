@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.data.chunk import build_chunking_config, chunk_text
+from lilbee.data.ingest.discovery import file_hash
+from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
 from lilbee.data.ingest.types import (
     MARKDOWN_OUTPUT,
     MIN_MEANINGFUL_CHARS,
@@ -109,25 +111,37 @@ async def _vision_ocr_fallback(
     Pool routing is what amortises the multi-second vision-Llama load
     cost across PDFs. Tesseract has no shared model state and is run
     inline by ``_tesseract_ocr_fallback``; this helper is vision-only.
+
+    OCR output is cached by file content + model, so a retry after a downstream
+    failure (chunk/embed/store write) reuses the pages instead of re-OCR-ing.
     """
-    try:
-        page_texts = await asyncio.to_thread(
-            get_services().provider.pdf_ocr,
-            path,
-            backend="vision",
-            model=cfg.vision_model,
-            per_page_timeout_s=cfg.ocr_timeout,
-            quiet=quiet,
-            on_progress=on_progress,
-        )
-    except (asyncio.CancelledError, TaskCancelledError):
-        # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
-        # per-page on_progress callback must abort the file, not be logged as an
-        # OCR failure and swallowed.
-        raise
-    except Exception:
-        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
-        return []
+    key = ocr_cache_key(
+        file_hash(path),
+        backend="vision",
+        model=cfg.vision_model,
+        extra=str(cfg.vision_ocr_max_tokens),
+    )
+    page_texts = load_ocr_pages(key)
+    if page_texts is None:
+        try:
+            page_texts = await asyncio.to_thread(
+                get_services().provider.pdf_ocr,
+                path,
+                backend="vision",
+                model=cfg.vision_model,
+                per_page_timeout_s=cfg.ocr_timeout,
+                quiet=quiet,
+                on_progress=on_progress,
+            )
+        except (asyncio.CancelledError, TaskCancelledError):
+            # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
+            # per-page on_progress callback must abort the file, not be logged as an
+            # OCR failure and swallowed.
+            raise
+        except Exception:
+            log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
+            return []
+        store_ocr_pages(key, [(p.page, p.text) for p in page_texts])
     return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
@@ -160,30 +174,35 @@ async def _tesseract_ocr_fallback(
 
     ``cfg.tesseract_timeout`` caps the whole-document extract; 0 means
     unlimited. Failures (including timeout) log a warning and return an
-    empty list so the caller can skip the file.
+    empty list so the caller can skip the file. OCR output is cached by file
+    content so a downstream failure doesn't force a re-OCR on retry.
     """
-    coro = asyncio.to_thread(_run_tesseract_sync, path)
-    try:
-        if cfg.tesseract_timeout > 0:
-            result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
-        else:
-            result = await coro
-    except TimeoutError:
-        log.warning(
-            "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
-            cfg.tesseract_timeout,
-            source_name,
-        )
-        return []
-    except Exception:
-        log.warning("OCR via tesseract backend failed for %s.", source_name, exc_info=True)
-        return []
+    key = ocr_cache_key(file_hash(path), backend=TESSERACT_BACKEND, model=TESSERACT_BACKEND)
+    page_texts = load_ocr_pages(key)
+    if page_texts is None:
+        coro = asyncio.to_thread(_run_tesseract_sync, path)
+        try:
+            if cfg.tesseract_timeout > 0:
+                result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+            else:
+                result = await coro
+        except TimeoutError:
+            log.warning(
+                "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
+                cfg.tesseract_timeout,
+                source_name,
+            )
+            return []
+        except Exception:
+            log.warning("OCR via tesseract backend failed for %s.", source_name, exc_info=True)
+            return []
 
-    by_page: dict[int, list[str]] = {}
-    for chunk in result.chunks or []:
-        page = int(chunk.metadata.get("first_page") or 1)
-        by_page.setdefault(page, []).append(chunk.content)
-    page_texts = [(page, "\n".join(by_page[page])) for page in sorted(by_page)]
+        by_page: dict[int, list[str]] = {}
+        for chunk in result.chunks or []:
+            page = int(chunk.metadata.get("first_page") or 1)
+            by_page.setdefault(page, []).append(chunk.content)
+        page_texts = [(page, "\n".join(by_page[page])) for page in sorted(by_page)]
+        store_ocr_pages(key, page_texts)
     return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
