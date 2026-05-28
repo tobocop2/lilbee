@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -52,6 +53,27 @@ _PANE_IDLE_TIMEOUT_S = 90.0
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
 _OPENCODE_SHARE_DIR = Path.home() / ".local" / "share" / "opencode"
+_OPENCODE_CONFIG = Path.home() / ".config" / "opencode" / "opencode.json"
+# Pre-built Godot 4 class-reference corpus (one-time `lilbee add /root/godot/doc/classes`
+# into LILBEE_DATA=<this>); each cell copies its data/ + documents/ so lilbee_search
+# has the reference without re-embedding. Override with LILBEE_QA_CORPUS.
+_GODOT_CORPUS = Path(os.environ.get("LILBEE_QA_CORPUS", str(Path.home() / "godot_corpus")))
+# opencode's built-in tools that compete with lilbee_search; disabled per cell so
+# the model uses lilbee's MCP search instead of webfetch/read/grep (search mode).
+_TOOLS_OFF = (
+    "webfetch",
+    "read",
+    "write",
+    "edit",
+    "patch",
+    "bash",
+    "glob",
+    "grep",
+    "list",
+    "todowrite",
+    "todoread",
+    "task",
+)
 _LILBEE_PROVIDER_ID = "lilbee"
 
 # Substrings whose appearance in the pane means the cell can't recover --
@@ -196,35 +218,36 @@ completion count so a stale pane can't carry a prior cell's glyph.
 """
 
 
-SMOKE_SCENARIOS: tuple[Scenario, ...] = (
-    Scenario(
-        name="S1 single tool call",
-        prompt="search the indexed docs for the chat worker file",
-        expected=(_TOOL_DISPATCH_MARKER,),
-        forbidden=_RAW_MARKER_FORBIDDEN,
-        timeout_s=_SCENARIO_TIMEOUT_S,
+# Tier prompts run against the indexed Godot 4 class reference. One prompt per
+# tier (same yardstick across same-tier models). Natural phrasing -- the model
+# should discover the lilbee_search MCP tool itself; only Smalls get a "look up"
+# nudge. See tools/qa/opencode/README.md for the rationale.
+_TIER_PROMPTS: dict[str, str] = {
+    "small": (
+        "Look up Node._process(delta) in the Godot 4 class reference and tell me "
+        "what it does and when the engine calls it."
     ),
-    Scenario(
-        name="S2 multi-tool turn",
-        prompt=(
-            "use lilbee_search to find information about the dispatch layer, "
-            "then quote the named class that resolves the model"
-        ),
+    "mid": (
+        "In Godot 4, how do you connect a signal between two nodes? Walk me through "
+        "Object.connect, Signal.emit, and the CONNECT_* flags with actual signatures."
+    ),
+    "giant": (
+        "Write a Godot 4 GDScript scene script that procedurally generates a 2D "
+        "dungeon using TileMap and TileSet. It should expose a regenerate() signal "
+        "so the game can rebuild on demand."
+    ),
+}
+
+
+def scenario_for_tier(tier: str) -> Scenario:
+    """The single QA scenario for a model's tier (Godot-reference prompt)."""
+    return Scenario(
+        name=f"{tier} godot",
+        prompt=_TIER_PROMPTS.get(tier, _TIER_PROMPTS["small"]),
         expected=(_TOOL_DISPATCH_MARKER,),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
-    ),
-    Scenario(
-        name="S3 streaming visible",
-        prompt=(
-            "use lilbee_search to find information about tool extraction, "
-            "then describe the parsing library and schema location"
-        ),
-        expected=(_TOOL_DISPATCH_MARKER,),
-        forbidden=_RAW_MARKER_FORBIDDEN,
-        timeout_s=_SCENARIO_TIMEOUT_S,
-    ),
-)
+    )
 
 
 @dataclass
@@ -233,6 +256,7 @@ class ModelCell:
     ref: str
     size_gb: float
     skip: bool = False
+    tier: str = "small"  # small | mid | giant -> picks the prompt from _TIER_PROMPTS
 
 
 @dataclass
@@ -281,6 +305,7 @@ def load_models(path: Path) -> list[ModelCell]:
             ref=raw["ref"],
             size_gb=float(raw.get("size_gb", 0.0)),
             skip=bool(raw.get("skip", False)),
+            tier=str(raw.get("tier", "small")),
         )
         for raw in data.get("model", [])
     ]
@@ -326,28 +351,51 @@ def seed_shared_workspace() -> Path:
 
 
 def write_per_cell_workspace(family: str, model_ref: str) -> Path:
-    """Per-cell workspace dir seeded from the shared fixtures.
+    """Per-cell workspace seeded by copying the pre-built Godot corpus lancedb.
 
-    Wipes any prior ``.lilbee/`` state from previous cells so the lancedb
-    + documents fingerprints start fresh; otherwise `lilbee add` reports the
-    fixtures as "Unchanged" against a stale chunk index and indexing silently
-    no-ops.
+    Wipes any prior ``.lilbee/`` from previous cells, then copies the shared
+    corpus's ``data/`` + ``documents/`` (a fast file copy, no re-embed) so
+    lilbee_search has the Godot class reference. The cell's config.toml pins the
+    target chat model. Requires the one-time corpus build (see README); a missing
+    corpus is a hard error so cells never silently run against an empty index.
     """
+    if not (_GODOT_CORPUS / "data").is_dir():
+        raise RuntimeError(
+            f"Godot corpus not found at {_GODOT_CORPUS}/data. Build it once: "
+            f"LILBEE_DATA={_GODOT_CORPUS} uv run lilbee add <godot>/doc/classes"
+        )
     workspace = WORKSPACE_DIR / family
     workspace.mkdir(parents=True, exist_ok=True)
     config_dir = workspace / ".lilbee"
     if config_dir.exists():
         shutil.rmtree(config_dir)
-    for src in seed_shared_workspace().iterdir():
-        if src.is_file():
-            shutil.copy(src, workspace / src.name)
-    config_dir.mkdir()
+    config_dir.mkdir(parents=True)
+    for sub in ("data", "documents"):
+        src = _GODOT_CORPUS / sub
+        if src.is_dir():
+            shutil.copytree(src, config_dir / sub)
     (config_dir / "config.toml").write_text(
         f'chat_model = "{model_ref}"\n'
         f'embedding_model = "{_EMBED_REF}"\n'
         f"chat_n_ctx_target = {_CHAT_CTX_TARGET}\n"
     )
     return workspace
+
+
+def scope_opencode_tools() -> None:
+    """Disable opencode's built-in tools so the model uses lilbee_search.
+
+    Models drift to opencode's built-in webfetch/read/grep over the lilbee MCP
+    search unless those are turned off (search mode). The launcher merges the
+    lilbee provider + MCP into this same config and preserves the tools key.
+    """
+    cfg: dict[str, object] = {}
+    if _OPENCODE_CONFIG.exists():
+        with contextlib.suppress(json.JSONDecodeError):
+            cfg = json.loads(_OPENCODE_CONFIG.read_text(encoding="utf-8"))
+    cfg["tools"] = {tool: False for tool in _TOOLS_OFF}
+    _OPENCODE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    _OPENCODE_CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
 def pin_opencode_default_model(model_ref: str) -> None:
@@ -516,7 +564,7 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
             *env_flags,
             "bash",
             "-lc",
-            f"cd {workspace} && exec uv run lilbee launch opencode",
+            f"cd {workspace} && exec uv run lilbee launch opencode --no-prompt",
         ],
         check=True,
     )
@@ -712,23 +760,22 @@ def setup_cell(
             )
             cell.ref = installed
     workspace = write_per_cell_workspace(cell.family, cell.ref)
-    print(f"[{cell.family}] indexing fixtures")
-    index_workspace(workspace, log_path)
+    print(f"[{cell.family}] seeded Godot corpus from {_GODOT_CORPUS}")
+    print(f"[{cell.family}] scoping opencode tools to lilbee_search")
+    scope_opencode_tools()
     print(f"[{cell.family}] pinning opencode default model")
     pin_opencode_default_model(cell.ref)
     return workspace, port, None
 
 
-def run_smoke_scenarios(family: str, session: str, workspace: Path) -> list[ScenarioResult]:
-    results: list[ScenarioResult] = []
-    for i, scen in enumerate(SMOKE_SCENARIOS):
-        print(f"[{family}] running {scen.name}")
-        result = run_scenario(session, scen, workspace)
-        results.append(result)
-        print(f"[{family}]   -> {result.status.value} ({result.elapsed_s:.1f}s) {result.detail}")
-        if i < len(SMOKE_SCENARIOS) - 1:
-            time.sleep(_INTER_SCENARIO_SETTLE_S)
-    return results
+def run_smoke_scenarios(
+    family: str, tier: str, session: str, workspace: Path
+) -> list[ScenarioResult]:
+    scen = scenario_for_tier(tier)
+    print(f"[{family}] running {scen.name}: {scen.prompt[:60]}...")
+    result = run_scenario(session, scen, workspace)
+    print(f"[{family}]   -> {result.status.value} ({result.elapsed_s:.1f}s) {result.detail}")
+    return [result]
 
 
 def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep: bool) -> None:
@@ -825,7 +872,7 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
             with suspend_other_chat_manifests(cell.ref):
                 print(f"[{cell.family}] launching opencode in tmux session {session}")
                 launch_opencode_in_tmux(workspace, session)
-                result.scenarios = run_smoke_scenarios(cell.family, session, workspace)
+                result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)

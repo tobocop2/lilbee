@@ -247,7 +247,11 @@ class OpencodeLauncher:
 
 def opencode_cmd(
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip the first-run setup prompt (for scripts)."
+        False,
+        "--no-prompt",
+        "--yes",
+        "-y",
+        help="Proceed with first-run setup without the interactive prompt (for scripts/CI).",
     ),
 ) -> None:
     """Launch opencode with lilbee as its model provider."""
