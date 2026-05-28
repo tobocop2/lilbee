@@ -47,20 +47,47 @@ _SERVER_ROLE_PARAMS: dict[WorkerRole, Callable[[Any], str]] = {
 }
 
 
-def _role_slots(role: WorkerRole) -> int:
+# Cap vision's own KV footprint at this fraction of usable VRAM when sizing its
+# batching slots, leaving room for the weights and any co-located role.
+_VISION_VRAM_FRACTION = 0.5
+
+
+def _slots_for(role: WorkerRole, weights: int, meta: dict[str, str] | None, ctx: int) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
-    Chat batches concurrent turns; vision batches concurrent OCR pages
-    (``cfg.vision_ocr_concurrency``) since one-page decode underutilizes the GPU;
-    embed/rerank run single-slot (their batching is request-side).
+    Chat batches concurrent turns; vision batches concurrent OCR pages since a
+    one-page decode underutilizes the GPU; embed/rerank are single-slot (their
+    batching is request-side). Vision's count is VRAM-aware, so a small or shared
+    GPU drops toward 1 instead of OOMing on the configured ceiling.
     """
-    from lilbee.core.config import cfg
-
     if role is WorkerRole.CHAT:
         return _CHAT_SLOTS
     if role is WorkerRole.VISION:
-        return max(1, cfg.vision_ocr_concurrency)
+        return _resolve_vision_slots(weights, meta, ctx)
     return _AUX_SLOTS
+
+
+def _resolve_vision_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+    """Largest OCR batching slot count (<= the configured ceiling) that fits VRAM.
+
+    ``cfg.vision_ocr_concurrency`` is the ceiling; the actual count is the most
+    slots whose estimated VRAM (weights + per-slot KV + overhead) stays within a
+    fraction of usable memory. On a big GPU this returns the ceiling; on a small
+    or shared one it steps down to as low as 1 rather than risk an OOM.
+    """
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.placement import estimate_model_vram
+    from lilbee.providers.model_cache import get_available_memory
+
+    ceiling = max(1, cfg.vision_ocr_concurrency)
+    if ceiling == 1:
+        return 1
+    budget = int(get_available_memory(cfg.gpu_memory_fraction) * _VISION_VRAM_FRACTION)
+    f16 = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
+    for slots in range(ceiling, 1, -1):
+        if estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=f16) <= budget:
+            return slots
+    return 1
 
 
 def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
@@ -124,8 +151,14 @@ def _vision_mmproj(model_ref: str) -> Path | None:
         return None
 
 
-def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlacementInput:
-    """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision)."""
+def _estimate_role(
+    role: WorkerRole, model_ref: str, *, slots: int | None = None
+) -> ModelPlacementInput:
+    """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision).
+
+    ``slots`` defaults to the role's resolved batching slots (vision is VRAM-aware);
+    callers/tests may pass an explicit count.
+    """
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -138,6 +171,8 @@ def _estimate_role(role: WorkerRole, model_ref: str, *, slots: int) -> ModelPlac
             weights += mmproj.stat().st_size
     meta = read_gguf_metadata(path)
     ctx = _role_ctx(role, path, meta)
+    if slots is None:
+        slots = _slots_for(role, weights, meta, ctx)
     # Chat passes --cache-type; embed/rerank/vision run f16 KV, so estimate their
     # KV at f16 to match the runtime rather than the chat-tuned cfg.kv_cache_type.
     kv_type = cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
@@ -167,7 +202,7 @@ def _server_model_inputs(
             continue  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
-        inputs.append(_estimate_role(role, ref, slots=_role_slots(role)))
+        inputs.append(_estimate_role(role, ref))
         model_refs[role] = ref
     return inputs, model_refs
 
@@ -183,14 +218,18 @@ def _launch_for(
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
-    slots = _role_slots(plan.role)
     model_path = resolve_model_path(model_ref)
     weights_bytes = model_path.stat().st_size
-    ctx = _role_ctx(plan.role, model_path, read_gguf_metadata(model_path))
+    meta = read_gguf_metadata(model_path)
+    ctx = _role_ctx(plan.role, model_path, meta)
     chosen = tuple(by_index[i] for i in plan.devices)
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
     mmproj = _vision_mmproj(model_ref) if is_vision else None
+    # Size slots from the same weights the estimator used (vision counts mmproj) so
+    # the launched --parallel matches the placement estimate.
+    mmproj_bytes = mmproj.stat().st_size if mmproj is not None and mmproj.exists() else 0
+    slots = _slots_for(plan.role, weights_bytes + mmproj_bytes, meta, ctx)
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],

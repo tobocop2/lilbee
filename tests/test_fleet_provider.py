@@ -131,24 +131,31 @@ def test_warm_up_and_on_demand_build_fleet_once(monkeypatch) -> None:
     # built under the routing lock, so two build_fleet ran at once -- double GPU
     # alloc plus two threads parsing the same GGUF metadata, which hung. Both
     # paths must now serialize through _build_fleet_once.
+    #
+    # Deterministic: warm-up stalls inside build_fleet (release Event) so the
+    # on-demand call definitely arrives at _build_lock while warm-up holds it.
     calls = {"n": 0}
     client = _fake_client()
     client.chat.return_value = "ok"
     in_build = threading.Event()
+    release = threading.Event()
 
-    def _slow_build(*_listeners) -> object:
+    def _gated_build(*_listeners) -> object:
         calls["n"] += 1
-        in_build.set()  # signal the warm-up build is in flight
-        time.sleep(0.1)
+        in_build.set()
+        release.wait(timeout=15)
         return _fake_fleet({WorkerRole.CHAT: [client]})
 
-    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    monkeypatch.setattr(planning_mod, "build_fleet", _gated_build)
     p = FleetProvider()
-    p.warm_up_pool()  # dispatches the warm-up build thread
-    assert in_build.wait(2.0)  # wait until the warm-up build is mid-flight
-    p.chat([{"role": "user", "content": "hi"}])  # on-demand call races the warm-up
-    time.sleep(0.2)  # let the warm-up thread finish
-    assert calls["n"] == 1  # one build, not a concurrent second
+    p.warm_up_pool()
+    assert in_build.wait(10.0)  # warm-up is now stalled mid-build_fleet
+    on_demand = threading.Thread(target=lambda: p.chat([{"role": "user", "content": "hi"}]))
+    on_demand.start()
+    release.set()  # warm-up returns; the queued on-demand wakes and reuses the fleet
+    on_demand.join(timeout=10.0)
+    assert not on_demand.is_alive()
+    assert calls["n"] == 1  # one build_fleet across warm-up + on-demand
 
 
 def test_rerank_routes_to_fleet() -> None:

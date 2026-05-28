@@ -109,13 +109,36 @@ def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
     assert planning_mod._flash_attn_flag() == "off"
 
 
-def test_role_slots_vision_tracks_ocr_concurrency(monkeypatch) -> None:
-    # Vision batches concurrent OCR pages; its --parallel slots follow the config.
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 6)
-    assert planning_mod._role_slots(WorkerRole.VISION) == 6
-    assert planning_mod._role_slots(WorkerRole.CHAT) == 4
-    assert planning_mod._role_slots(WorkerRole.EMBED) == 1
-    assert planning_mod._role_slots(WorkerRole.RERANK) == 1
+def test_slots_for_chat_and_aux_are_fixed() -> None:
+    # Non-vision roles ignore the model args; chat batches, aux is single-slot.
+    assert planning_mod._slots_for(WorkerRole.CHAT, 0, None, 0) == 4
+    assert planning_mod._slots_for(WorkerRole.EMBED, 0, None, 0) == 1
+    assert planning_mod._slots_for(WorkerRole.RERANK, 0, None, 0) == 1
+
+
+_VISION_META = {"block_count": "24", "embedding_length": "2048"}
+
+
+def test_resolve_vision_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
+    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 4
+
+
+def test_resolve_vision_slots_drops_to_one_on_small_gpu(monkeypatch) -> None:
+    # A tiny VRAM budget can't fit multiple slots of vision KV -> falls back to 1.
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 3 * 10**9)
+    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 1
+
+
+def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    # Even with huge VRAM, a ceiling of 1 means strictly sequential OCR.
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
+    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 1
 
 
 def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
@@ -189,6 +212,19 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 16)
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref", slots=1)
         assert inp.est_vram_bytes >= 1500  # weights + mmproj counted
+
+    def test_estimate_role_resolves_slots_when_unspecified(self, tmp_path, monkeypatch) -> None:
+        # With no explicit slots, the estimate sizes them via _slots_for (vision
+        # is VRAM-aware), so placement and the launched --parallel stay consistent.
+        model = tmp_path / "v.gguf"
+        model.write_bytes(b"x" * 1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 16)
+        inp = planning_mod._estimate_role(WorkerRole.VISION, "ref")  # slots resolved internally
+        assert inp.role is WorkerRole.VISION
+        assert inp.est_vram_bytes >= 1000
 
     def test_estimate_role_aux_kv_uses_f16_not_configured_type(self, tmp_path, monkeypatch) -> None:
         # Aux roles run f16 KV regardless of cfg.kv_cache_type, so the estimate
