@@ -103,17 +103,17 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
-    ModelBar.on_mount calls _scan_models which is @work(thread=True).
-    The real function does registry scans, HTTP calls, and litellm imports.
-    Mocking it to return empty results makes the worker thread complete
-    instantly, avoiding both thread accumulation and per-test join overhead.
+    ModelBar.on_mount spawns a @work(thread=True) scan that does registry
+    scans, HTTP calls, and litellm imports. Mocking the classify function it
+    imports to return empty results makes the worker complete instantly,
+    avoiding thread accumulation and per-test join overhead.
 
     Tests that need real classification use @pytest.mark.real_model_classify.
     """
     if "real_model_classify" not in {m.name for m in request.node.iter_markers()}:
         monkeypatch.setattr(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            lambda: ([], []),
+            "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
+            lambda: {},
         )
 
 
@@ -230,6 +230,15 @@ def _isolate_cfg(tmp_path, request):
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
     cfg.data_root = tmp_path / "data_root"
+    # Clear any provider API keys the developer has in their real config.toml
+    # so tests run hermetically, as CI does (no keys). Otherwise a configured
+    # key makes a cloud model "available" and leaks into model discovery and
+    # the chat-model availability fallback, breaking tests that assume a clean
+    # environment. Tests that exercise key-dependent paths set the key themselves.
+    from lilbee.providers.sdk_backend import API_KEY_FIELDS
+
+    for field in API_KEY_FIELDS:
+        setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
     yield
