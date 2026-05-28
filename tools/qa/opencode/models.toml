@@ -26,7 +26,7 @@ tier = "giant"
 
 [[model]]
 family = "glm-air"
-ref = "unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+ref = "unsloth/GLM-4.5-Air-GGUF/GLM-4.5-Air-Q2_K.gguf"
 size_gb = 60.0
 tier = "giant"
 
@@ -50,7 +50,7 @@ tier = "mid"
 
 [[model]]
 family = "glm-4-9b"
-ref = "legraphista/glm-4-9b-chat-GGUF/glm-4-9b-chat.Q4_K_M.gguf"
+ref = "legraphista/glm-4-9b-chat-GGUF/glm-4-9b-chat.Q4_K_S.gguf"
 size_gb = 5.5
 tier = "mid"
 
@@ -96,7 +96,7 @@ tier = "mid"
 
 [[model]]
 family = "internlm2"
-ref = "internlm/internlm2_5-7b-chat-gguf/internlm2_5-7b-chat-q4_k_m.gguf"
+ref = "internlm/internlm2_5-7b-chat-gguf/internlm2_5-7b-chat-fp16.gguf"
 size_gb = 4.7
 tier = "mid"
 

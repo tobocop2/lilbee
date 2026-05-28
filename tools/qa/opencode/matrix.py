@@ -129,10 +129,11 @@ def _list_chat_manifests() -> list[Path]:
 
 
 def _ref_for_manifest(path: Path) -> str:
-    """Convert a manifest path back to its canonical HF ref."""
-    repo = path.parent.name.replace("--", "/")
-    filename = path.name.removesuffix(".json")
-    return f"{repo}/{filename}"
+    """Convert a manifest path back to its canonical HF ref (subdir-aware)."""
+    rel = path.relative_to(_models_manifests_dir())
+    repo = rel.parts[0].replace("--", "/")
+    rest = "/".join(rel.parts[1:]).removesuffix(".json")
+    return f"{repo}/{rest}"
 
 
 def _installed_ref_for_repo(repo: str) -> str | None:
