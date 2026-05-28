@@ -15,33 +15,10 @@ RoleRow {
     margin: 0 2 0 0;
 }
 
-RoleRow .role-dot {
-    width: 2;
-    color: $text-muted;
-}
-
-RoleRow.-active .role-dot {
-    color: $success;
-}
-
-RoleRow.-active.-vision .role-dot {
-    color: #bc8cff;
-}
-
-RoleRow.-active.-rerank .role-dot {
-    color: #f0883e;
-}
-
-RoleRow .role-label {
+RoleRow .model-bar-pill {
     width: auto;
-    color: $text;
-    text-style: bold;
+    height: 1;
     margin: 0 1 0 0;
-}
-
-RoleRow.-off .role-label {
-    color: $text-muted;
-    text-style: none;
 }
 
 RoleRow ModelPickerButton {

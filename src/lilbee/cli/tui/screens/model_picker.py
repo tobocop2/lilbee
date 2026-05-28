@@ -19,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
+from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
@@ -61,6 +62,7 @@ def _browse_catalog_row() -> CatalogRow:
         sort_size=0.0,
         ref=BROWSE_CATALOG_REF,
         backend="",
+        compat=ModelCompat.SUPPORTED,
     )
 
 
@@ -80,6 +82,8 @@ class _PickerOptions:
 
 
 def _option_to_row(option: ModelOption) -> CatalogRow:
+    # Picker options are already-available models; mark SUPPORTED so the list
+    # doesn't tag every row with the "?" unknown-compat indicator.
     return LocalCatalogRow(
         name=option.label,
         task="",
@@ -93,6 +97,7 @@ def _option_to_row(option: ModelOption) -> CatalogRow:
         sort_size=0.0,
         ref=option.ref,
         backend="",
+        compat=ModelCompat.SUPPORTED,
     )
 
 

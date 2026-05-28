@@ -103,10 +103,6 @@ def _patch_chat_setup():
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
         ),
-        patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], []),
-        ),
         patch.object(ModelBar, "_scan_models"),
     ):
         yield
@@ -3253,10 +3249,10 @@ async def test_chat_needs_setup_false_when_models_exist():
 async def test_chat_refresh_model_bar():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.widgets.model_rail import ModelRail
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        rail = app.screen.query_one("#model-rail", ModelRail)
-        with patch.object(rail, "refresh_models") as mock_refresh:
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        with patch.object(bar, "refresh_models") as mock_refresh:
             app.screen.refresh_model_bar()
             mock_refresh.assert_called_once()
 
@@ -3267,11 +3263,10 @@ async def test_model_bar_refreshes_on_chat_model_signal():
     manual refresh."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.cli.tui.widgets.model_rail import ModelRail
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 
-        rail = app.screen.query_one("#model-rail", ModelRail)
-        chat_btn = rail.query_one("#rail-pick-chat", ModelPickerButton)
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        chat_btn = bar.query_one("#model-pick-chat", ModelPickerButton)
         with patch.object(chat_btn, "repaint") as mock_refresh:
             app.settings_changed_signal.publish(("chat_model", "qwen3:0.6b"))
             await _pilot.pause()
@@ -3282,11 +3277,10 @@ async def test_model_bar_refreshes_on_embedding_model_signal():
     """Embedding-model picker button mirrors chat-button signal handling."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.cli.tui.widgets.model_rail import ModelRail
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 
-        rail = app.screen.query_one("#model-rail", ModelRail)
-        embed_btn = rail.query_one("#rail-pick-embed", ModelPickerButton)
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        embed_btn = bar.query_one("#model-pick-embed", ModelPickerButton)
         with patch.object(embed_btn, "repaint") as mock_refresh:
             app.settings_changed_signal.publish(("embedding_model", "nomic-embed-text:latest"))
             await _pilot.pause()
@@ -7400,7 +7394,7 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        chat_btn = screen.query_one("#rail-pick-chat", ModelPickerButton)
+        chat_btn = screen.query_one("#model-pick-chat", ModelPickerButton)
         chat_btn.focus()
         await pilot.pause()
         screen.action_complete_next()
@@ -7657,27 +7651,27 @@ async def test_chat_tab_in_input_inserts_literal_tab():
         assert inp.has_focus
 
 
-async def test_chat_tab_cycles_between_model_buttons():
-    """Tab on a focused chat-model button advances to the embed-model button."""
+async def test_chat_tab_cycles_through_all_four_model_buttons():
+    """Tab walks all four role buttons in order: chat -> embed -> vision -> rerank."""
     from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#rail-pick-chat", ModelPickerButton).focus()
-        embed_btn = screen.query_one("#rail-pick-embed", ModelPickerButton)
-        await pilot.press("tab")
-        # Poll: the tab keypress travels through several refresh ticks
-        # before the focus watcher updates has_focus on a slow xdist
-        # shard. A single pilot.pause() is not enough.
-        for _ in range(10):
-            await pilot.pause()
-            if embed_btn.has_focus:
-                break
-        assert embed_btn.has_focus
+        screen.query_one("#model-pick-chat", ModelPickerButton).focus()
+        for next_id in ("model-pick-embed", "model-pick-vision", "model-pick-rerank"):
+            target = screen.query_one(f"#{next_id}", ModelPickerButton)
+            await pilot.press("tab")
+            # Poll: the tab keypress travels through several refresh ticks
+            # before the focus watcher updates has_focus on a slow xdist shard.
+            for _ in range(10):
+                await pilot.pause()
+                if target.has_focus:
+                    break
+            assert target.has_focus, f"Tab did not reach #{next_id}"
 
 
 async def test_chat_tab_in_normal_mode_advances_focus():
@@ -7718,7 +7712,7 @@ async def test_chat_enter_on_focused_picker_button_does_not_enter_insert_mode():
         assert isinstance(screen, ChatScreen)
         await pilot.press("escape")
         await pilot.pause()
-        screen.query_one("#rail-pick-chat", ModelPickerButton).focus()
+        screen.query_one("#model-pick-chat", ModelPickerButton).focus()
         await pilot.pause()
         assert screen._insert_mode is False
         await pilot.press("enter")

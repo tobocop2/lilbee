@@ -340,7 +340,7 @@ async def test_chat_escape_from_model_picker_button():
 
         await pilot.press("escape")
         await pilot.pause()
-        screen.query_one("#rail-pick-chat", ModelPickerButton).focus()
+        screen.query_one("#model-pick-chat", ModelPickerButton).focus()
         await pilot.pause()
 
         assert isinstance(screen.focused, ModelPickerButton)

@@ -59,10 +59,6 @@ def _patch_chat_setup():
             return_value=False,
         ),
         patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], []),
-        ),
-        patch(
             "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
         ),
         patch(
