@@ -29,8 +29,21 @@ _RERANK_PAIR_SEPARATOR = "</s></s>"
 # and this sequence count: a corpus of many tiny chunks would otherwise pack one
 # request past the server's batch/sequence limit and trip a 500.
 _EMBED_N_SEQ_MAX = 64
+# Estimate a chunk's token count from its character length so the bulk embed
+# path packs sub-batches without a /tokenize round-trip per input. The factor is
+# held below the corpus average (data.chunk.CHARS_PER_TOKEN, 4 for Latin text)
+# so the estimate over-counts tokens and a sub-batch never packs past the
+# server's n_batch (== token_cap). Rerank does not estimate: its
+# query</s></s>candidate pairs are token-dense (the separator is several tokens
+# in a few chars), so char estimation would under-count and over-pack.
+_EMBED_EST_CHARS_PER_TOKEN = 3
 
 log = logging.getLogger(__name__)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Conservative (over-counting) token estimate from character length."""
+    return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -264,7 +277,7 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[list[float]] = []
-        for sub_batch in self._truncate_and_subbatch(texts):
+        for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
             data = self._embeddings_call(sub_batch)
             vectors.extend(list(item["embedding"]) for item in data)
         return vectors
@@ -281,7 +294,7 @@ class LlamaServerClient:
             return []
         pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
         scores: list[float] = []
-        for sub_batch in self._truncate_and_subbatch(pairs):
+        for sub_batch in self._truncate_and_subbatch(pairs, estimate=False):
             data = self._embeddings_call(sub_batch)
             scores.extend(_rerank_score(item) for item in data)
         return scores
@@ -306,17 +319,22 @@ class LlamaServerClient:
             )
         return list(data)
 
-    def _truncate_and_subbatch(self, texts: list[str]) -> list[list[str]]:
+    def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
 
-        Mirrors the in-process ``batching._split_into_sub_batches``: an input
-        longer than ``token_cap`` (the server's per-slot context / n_batch) is
-        truncated to it via the server's tokenizer, since the server cannot split
-        a pooled embedding sequence. Inputs are then grouped so each request stays
-        within both the token budget and ``_EMBED_N_SEQ_MAX`` sequences -- without
-        this, a corpus of many small chunks packs one request past the server's
-        batch limit and the server returns a 500. No cap (chat/vision) sends a
-        single batch untouched.
+        An input longer than ``token_cap`` (the server's per-slot context /
+        n_batch) is truncated to it via the server's tokenizer, since the server
+        cannot split a pooled embedding sequence. Inputs are then grouped so each
+        request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
+        sequences -- without this, a corpus of many small chunks packs one request
+        past the server's batch limit and the server returns a 500. No cap
+        (chat/vision) sends a single batch untouched.
+
+        When ``estimate`` is set (the embed path) the per-input token count comes
+        from :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
+        rare input whose estimate exceeds the cap -- eliminating a round-trip per
+        chunk during bulk ingest. Rerank passes ``estimate=False`` to tokenize
+        every pair exactly, since its pairs are too token-dense to estimate.
         """
         if self._token_cap is None:
             return [texts]
@@ -325,14 +343,7 @@ class LlamaServerClient:
         current: list[str] = []
         current_tokens = 0
         for text in texts:
-            tokens = self._tokenize(text)
-            if len(tokens) > cap:
-                log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
-                item = self._detokenize(tokens[:cap])
-                item_tokens = cap
-            else:
-                item = text
-                item_tokens = max(1, len(tokens))
+            item, item_tokens = self._fit_input(text, cap, estimate=estimate)
             if current and (current_tokens + item_tokens > cap or len(current) >= _EMBED_N_SEQ_MAX):
                 batches.append(current)
                 current = []
@@ -342,6 +353,23 @@ class LlamaServerClient:
         if current:
             batches.append(current)
         return batches
+
+    def _fit_input(self, text: str, cap: int, *, estimate: bool) -> tuple[str, int]:
+        """Return ``(input, token_count)`` for one sequence, truncating if over cap.
+
+        Estimation short-circuits the common case: an estimate within the cap is
+        trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
+        the server tokenizer and truncated if it really exceeds the cap.
+        """
+        if estimate:
+            est = _estimate_tokens(text)
+            if est <= cap:
+                return text, est
+        tokens = self._tokenize(text)
+        if len(tokens) > cap:
+            log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
+            return self._detokenize(tokens[:cap]), cap
+        return text, max(1, len(tokens))
 
     def _tokenize(self, text: str) -> list[int]:
         resp = self._http.post(

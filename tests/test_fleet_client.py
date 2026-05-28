@@ -239,9 +239,29 @@ def test_embed_tokenize_request_matches_in_process_flags() -> None:
             return httpx.Response(200, json={"tokens": [1]})
         return httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
 
-    _capped_client(handler, cap=10).embed(["x"])
+    # A long input whose char estimate exceeds the cap forces the /tokenize probe.
+    _capped_client(handler, cap=2).embed(["x" * 30])
     assert seen["add_special"] is True
     assert seen["parse_special"] is False
+
+
+def test_embed_estimates_tokens_without_per_input_tokenize() -> None:
+    # Bulk ingest must not pay a /tokenize round-trip per chunk: a normal-sized
+    # input's token count is estimated from its char length, so /tokenize is
+    # never hit and every input embeds in one pass.
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path in ("/tokenize", "/detokenize"):
+            raise AssertionError("normal-sized chunks must not hit the server tokenizer")
+        inputs = json.loads(request.content)["input"]
+        sent.append(list(inputs))
+        return httpx.Response(200, json={"data": [{"embedding": [0.5]} for _ in inputs]})
+
+    chunks = ["a normal chunk of text"] * 5
+    out = _capped_client(handler, cap=8192).embed(chunks)
+    assert len(out) == 5
+    assert [c for batch in sent for c in batch] == chunks  # order preserved
 
 
 def test_rerank_truncates_oversize_pairs() -> None:
@@ -278,21 +298,21 @@ def test_chat_stream_surfaces_server_error_body() -> None:
 
 
 def test_embed_subbatches_when_token_budget_exceeded() -> None:
-    # The dropped in-process batching module split inputs to fit the server's
-    # n_batch; without it a token-dense corpus packs one request past the budget
-    # and the server 500s. Each input here is 3 tokens, cap is 4, so every input
-    # must land in its own request, and vectors come back in input order.
+    # Sub-batching still fits the server's n_batch, now driven by the char-length
+    # token estimate rather than /tokenize. With the cap at 4 tokens and the
+    # estimate at ~1 token per 3 chars, each 7-char input estimates to 3 tokens,
+    # so two cannot share a request (3+3 > 4) and each lands on its own.
     sent: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if request.url.path == "/tokenize":
-            return httpx.Response(200, json={"tokens": [1, 2, 3]})  # 3 tokens, <= cap 4
-        sent.append(list(body["input"]))
-        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]})
+        if request.url.path in ("/tokenize", "/detokenize"):
+            raise AssertionError("estimation must not hit the server tokenizer here")
+        inputs = json.loads(request.content)["input"]
+        sent.append(list(inputs))
+        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in inputs]})
 
-    out = _capped_client(handler, cap=4).embed(["a", "b", "c"])
-    assert sent == [["a"], ["b"], ["c"]]  # 3+3 > 4, so never two per request
+    out = _capped_client(handler, cap=4).embed(["x" * 7, "y" * 7, "z" * 7])
+    assert sent == [["x" * 7], ["y" * 7], ["z" * 7]]  # 3+3 > 4, so never two per request
     assert len(out) == 3  # one vector per input, order preserved
 
 
