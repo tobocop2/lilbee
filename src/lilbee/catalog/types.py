@@ -27,6 +27,7 @@ class ModelSource(StrEnum):
     REMOTE = "remote"  # Models managed by a remote SDK-backed service
     FRONTIER = "frontier"  # Cloud API-key models (Gemini/OpenAI/Anthropic/…)
     OLLAMA = "ollama"  # Models served by a reachable Ollama endpoint
+    LM_STUDIO = "lm_studio"  # Models served by a reachable LM Studio endpoint
 
     @classmethod
     def parse(cls, value: str | None) -> ModelSource | None:

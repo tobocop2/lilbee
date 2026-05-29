@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from lilbee.providers.base import filter_options
+from lilbee.providers.local_servers import (
+    LOCAL_SERVER_KEYS,
+    local_server_for_key,
+    local_server_for_label,
+)
 
 _API_PROVIDERS = frozenset(
     {
@@ -23,11 +28,9 @@ _API_PROVIDERS = frozenset(
     }
 )
 
-# All provider prefixes that route a ref away from the local registry.
-# Includes API providers and ollama (which keeps its own name:tag shape).
-PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | {"ollama"})
-
-OLLAMA_PREFIX = "ollama/"
+# All provider prefixes that route a ref away from the local registry:
+# API providers plus the local OpenAI-compatible servers (ollama, lm_studio).
+PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS)
 
 
 @dataclass(frozen=True)
@@ -35,7 +38,7 @@ class ProviderModelRef:
     """Parsed model reference with provider routing information."""
 
     raw: str
-    provider: str  # "local", "ollama", or any value in PROVIDER_PREFIXES
+    provider: str  # "local" or any value in PROVIDER_PREFIXES
     name: str  # provider-specific name with tag normalization applied
 
     @property
@@ -64,8 +67,9 @@ class ProviderModelRef:
         SDKs: ``openai/gpt-4o``, ``ollama/llama3.2:1b``, etc. Every
         dispatching SDK accepts this shape.
         """
-        if self.provider == "ollama":
-            return f"{OLLAMA_PREFIX}{self.name}"
+        spec = local_server_for_key(self.provider)
+        if spec is not None:
+            return spec.qualify(self.name)
         if self.is_api:
             return f"{self.provider}/{self.name}"
         return self.name
@@ -81,16 +85,24 @@ class ProviderModelRef:
 
 
 def format_remote_ref(name: str, provider: str) -> str:
-    """Render a remote model as a canonical ``provider/name`` ref."""
-    return ProviderModelRef(raw=name, provider=provider.lower(), name=name).for_openai_prefix()
+    """Render a remote model as a canonical ``provider/name`` ref.
+
+    *provider* may be a routing key (``"ollama"``) or a backend display
+    name (``"LM Studio"``); local-server labels are normalised to the
+    routing key so the prefix survives. API providers fall through to
+    their lowercase key unchanged.
+    """
+    spec = local_server_for_label(provider)
+    key = spec.key if spec is not None else provider.lower()
+    return ProviderModelRef(raw=name, provider=key, name=name).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
     """Classify a model string by its prefix and return the routing ref.
 
     Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``. Remote
-    providers use prefixes from :data:`PROVIDER_PREFIXES` (``ollama/``
-    plus every API provider listed there).
+    providers use prefixes from :data:`PROVIDER_PREFIXES` (the local
+    servers ``ollama/`` and ``lm_studio/`` plus every API provider).
     """
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
@@ -101,9 +113,9 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     prefix, rest = raw.split("/", 1)
     if prefix in _API_PROVIDERS:
         return ProviderModelRef(raw=raw, provider=prefix, name=rest)
-    if prefix == "ollama":
-        name = rest if ":" in rest else f"{rest}:latest"
-        return ProviderModelRef(raw=raw, provider="ollama", name=name)
+    spec = local_server_for_key(prefix)
+    if spec is not None:
+        return ProviderModelRef(raw=raw, provider=spec.key, name=spec.normalize_name(rest))
     return ProviderModelRef(raw=raw, provider="local", name=raw)
 
 

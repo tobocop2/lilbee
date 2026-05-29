@@ -1518,7 +1518,7 @@ class ChatScreen(Screen[None]):
         self._arg_hint.update_for_input(self._chat_input.value)
 
     def refresh_model_bar(self) -> None:
-        """Re-scan installed models and refresh the dropdowns."""
+        """Re-scan installed models and refresh the model bar."""
         self.query_one("#model-bar", ModelBar).refresh_models()
 
     def action_vim_scroll_down(self) -> None:

@@ -1660,6 +1660,7 @@ class TestChatModeToggleAction:
             pill.action_select()
 
 
+@pytest.mark.real_model_classify
 class TestModelBarVisionSidecarPicker:
     """`classify_installed_models_full` drops a vision-sidecar chat model into VISION too."""
 

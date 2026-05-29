@@ -801,7 +801,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="OpenAI-compatible base URL (Ollama default: http://localhost:11434)",
+        help_text=(
+            "OpenAI-compatible base URL "
+            "(Ollama: http://localhost:11434, LM Studio: http://localhost:1234/v1)"
+        ),
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

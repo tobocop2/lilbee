@@ -103,10 +103,6 @@ def _patch_chat_setup():
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
         ),
-        patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], []),
-        ),
         patch.object(ModelBar, "_scan_models"),
     ):
         yield
@@ -3263,15 +3259,15 @@ async def test_chat_refresh_model_bar():
 
 async def test_model_bar_refreshes_on_chat_model_signal():
     """bb-q6zh: external activations (Catalog, /set chat_model, settings UI) publish on
-    settings_changed_signal; the bottom model-bar button must repaint without a
+    settings_changed_signal; the rail's chat picker must repaint without a
     manual refresh."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 
         bar = app.screen.query_one("#model-bar", ModelBar)
-        chat_btn = bar.query_one("#chat-model-button", ModelPickerButton)
-        with patch.object(chat_btn, "_refresh") as mock_refresh:
+        chat_btn = bar.query_one("#model-pick-chat", ModelPickerButton)
+        with patch.object(chat_btn, "repaint") as mock_refresh:
             app.settings_changed_signal.publish(("chat_model", "qwen3:0.6b"))
             await _pilot.pause()
             mock_refresh.assert_called()
@@ -3284,8 +3280,8 @@ async def test_model_bar_refreshes_on_embedding_model_signal():
         from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
 
         bar = app.screen.query_one("#model-bar", ModelBar)
-        embed_btn = bar.query_one("#embed-model-button", ModelPickerButton)
-        with patch.object(embed_btn, "_refresh") as mock_refresh:
+        embed_btn = bar.query_one("#model-pick-embed", ModelPickerButton)
+        with patch.object(embed_btn, "repaint") as mock_refresh:
             app.settings_changed_signal.publish(("embedding_model", "nomic-embed-text:latest"))
             await _pilot.pause()
             mock_refresh.assert_called()
@@ -7398,7 +7394,7 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        chat_btn = screen.query_one("#chat-model-button", ModelPickerButton)
+        chat_btn = screen.query_one("#model-pick-chat", ModelPickerButton)
         chat_btn.focus()
         await pilot.pause()
         screen.action_complete_next()
@@ -7655,27 +7651,27 @@ async def test_chat_tab_in_input_inserts_literal_tab():
         assert inp.has_focus
 
 
-async def test_chat_tab_cycles_between_model_buttons():
-    """Tab on a focused chat-model button advances to the embed-model button."""
+async def test_chat_tab_cycles_through_all_four_model_buttons():
+    """Tab walks all four role buttons in order: chat -> embed -> vision -> rerank."""
     from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
-        screen.query_one("#chat-model-button", ModelPickerButton).focus()
-        embed_btn = screen.query_one("#embed-model-button", ModelPickerButton)
-        await pilot.press("tab")
-        # Poll: the tab keypress travels through several refresh ticks
-        # before the focus watcher updates has_focus on a slow xdist
-        # shard. A single pilot.pause() is not enough.
-        for _ in range(10):
-            await pilot.pause()
-            if embed_btn.has_focus:
-                break
-        assert embed_btn.has_focus
+        screen.query_one("#model-pick-chat", ModelPickerButton).focus()
+        for next_id in ("model-pick-embed", "model-pick-vision", "model-pick-rerank"):
+            target = screen.query_one(f"#{next_id}", ModelPickerButton)
+            await pilot.press("tab")
+            # Poll: the tab keypress travels through several refresh ticks
+            # before the focus watcher updates has_focus on a slow xdist shard.
+            for _ in range(10):
+                await pilot.pause()
+                if target.has_focus:
+                    break
+            assert target.has_focus, f"Tab did not reach #{next_id}"
 
 
 async def test_chat_tab_in_normal_mode_advances_focus():
@@ -7716,7 +7712,7 @@ async def test_chat_enter_on_focused_picker_button_does_not_enter_insert_mode():
         assert isinstance(screen, ChatScreen)
         await pilot.press("escape")
         await pilot.pause()
-        screen.query_one("#chat-model-button", ModelPickerButton).focus()
+        screen.query_one("#model-pick-chat", ModelPickerButton).focus()
         await pilot.pause()
         assert screen._insert_mode is False
         await pilot.press("enter")
@@ -12081,7 +12077,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+        with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
@@ -12109,36 +12105,14 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model"),
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
         services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
-
-
-async def test_settings_embed_swap_confirm_cancel_leaves_cfg_untouched():
-    """Cancelling the embed-swap confirm modal does NOT call apply_active_model or reload_role."""
-    from unittest.mock import patch
-
-    services_mock = MagicMock()
-    services_mock.store.has_chunks.return_value = True
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
-            patch(
-                "lilbee.cli.tui.screens.settings.get_services",
-                return_value=services_mock,
-            ),
-        ):
-            # Direct path: caller invokes _apply_picker_choice with confirmed=False.
-            screen._apply_picker_choice("embedding_model", "fake/new.gguf", False)
-        mock_apply.assert_not_called()
-        services_mock.reload_role.assert_not_called()
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
@@ -12153,9 +12127,9 @@ async def test_settings_embed_picker_against_populated_store_pushes_confirm():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
@@ -12176,33 +12150,18 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
-            patch("lilbee.cli.tui.app.apply_active_model") as mock_apply,
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
-                "lilbee.cli.tui.screens.settings.get_services",
+                "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
             screen._on_model_picker_dismissed("embedding_model", "fake/new-embed.gguf")
-            await screen.workers.wait_for_complete()
             await pilot.pause()
             mock_apply.assert_called_once()
             args = mock_apply.call_args.args
             assert args[1] == "embedding_model"
             assert args[2] == "fake/new-embed.gguf"
-
-
-def test_settings_push_embed_swap_confirm_no_op_when_unmounted():
-    """``_push_embed_swap_confirm`` short-circuits if the screen unmounted."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    # No ``app`` attribute and no DOM means push_screen would crash; the
-    # ``is_mounted`` guard returns before reaching it.
-    SettingsScreen.is_mounted = property(lambda self: False)
-    try:
-        screen._push_embed_swap_confirm("embedding_model", "fake/new.gguf")
-    finally:
-        del SettingsScreen.is_mounted
 
 
 def test_settings_model_picker_dismissed_no_op_on_blank_ref():
@@ -12212,7 +12171,7 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     screen = SettingsScreen.__new__(SettingsScreen)
-    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("chat_model", None)
         screen._on_model_picker_dismissed("chat_model", "")
         mock_apply.assert_not_called()
@@ -12231,7 +12190,7 @@ def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monk
 
     screen.query_one = _raise
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
-    with patch("lilbee.cli.tui.app.apply_active_model") as mock_apply:
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("vision_model", None)
         mock_apply.assert_not_called()
         screen._on_model_picker_dismissed("vision_model", "")
@@ -12346,7 +12305,7 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
     screen.query_one = _raise
     fake_app = type("FakeApp", (), {})()
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
-    with patch("lilbee.cli.tui.app.apply_active_model"):
+    with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")
 
 

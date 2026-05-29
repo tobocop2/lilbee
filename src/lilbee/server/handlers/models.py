@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
@@ -29,7 +29,8 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
-from lilbee.providers.model_ref import OLLAMA_PREFIX, format_remote_ref, parse_model_ref
+from lilbee.providers.local_servers import detect_local_server, local_server_for_key
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
 from lilbee.runtime.hardware import (
     FitLevel,
@@ -410,8 +411,10 @@ def _discover_hosted_sync() -> list[CatalogEntryResponse]:
     rows: list[CatalogEntryResponse] = []
     for models in discover_api_models().values():
         rows.extend(_hosted_entry(rm, ModelSource.FRONTIER) for rm in models)
+    server = detect_local_server(cfg.remote_base_url)
+    local_source = ModelSource(server.key) if server is not None else ModelSource.OLLAMA
     rows.extend(
-        _hosted_entry(rm, ModelSource.OLLAMA) for rm in classify_remote_models(cfg.remote_base_url)
+        _hosted_entry(rm, local_source) for rm in classify_remote_models(cfg.remote_base_url)
     )
     return rows
 
@@ -500,14 +503,15 @@ async def models_catalog(
 
 
 def _canonical_installed_ref(name: str, source: ModelSource) -> str:
-    """Render an Ollama model with its ``ollama/<name>`` ref.
+    """Render a local-server model with its canonical ``<server>/<name>`` ref.
 
-    Ollama's ``/api/tags`` reports bare names; the catalog reports the
-    prefixed ref. Reporting the prefixed ref here too lets clients dedup the
-    installed and catalog views instead of showing the model twice.
+    Local servers report bare names; the catalog reports the prefixed ref.
+    Reporting it here too lets clients dedup the installed and catalog views
+    instead of showing the model twice.
     """
-    if source is ModelSource.OLLAMA and not name.startswith(OLLAMA_PREFIX):
-        return format_remote_ref(name, ModelSource.OLLAMA.value)
+    spec = local_server_for_key(source.value)
+    if spec is not None and not name.startswith(spec.wire_prefix):
+        return spec.qualify(name)
     return name
 
 
@@ -558,12 +562,6 @@ async def models_pull(
     sse = SseStream()
 
     def _pull_blocking() -> None:
-        def _on_progress(data: dict[str, Any]) -> None:
-            if sse.cancel.is_set():
-                return
-            payload = sse_event(SseEvent.PROGRESS, data)
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
-
         def _on_bytes(downloaded: int, total: int) -> None:
             if sse.cancel.is_set():
                 return
@@ -574,7 +572,6 @@ async def models_pull(
             manager.pull(
                 model,
                 src,
-                on_progress=_on_progress,
                 on_bytes=_on_bytes,
                 allow_unsupported=allow_unsupported,
             )

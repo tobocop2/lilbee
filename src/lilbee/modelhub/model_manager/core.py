@@ -14,7 +14,8 @@ from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
+from lilbee.providers.local_servers import LOCAL_SERVERS, OLLAMA, detect_local_server
+from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
 
@@ -24,12 +25,13 @@ _INSTALLED_CACHE_TTL_SECONDS = 30.0
 def _prefixed_source(model: str) -> ModelSource | None:
     """Map a provider-prefixed ref to its source, or ``None`` for a bare ref.
 
-    API-provider prefixes (``gemini/``, ``openai/`` ...) are FRONTIER;
-    ``ollama/`` is OLLAMA. Bare names carry no prefix to classify on and
-    return ``None`` so the caller can fall back to backend membership.
+    Local-server prefixes (``ollama/``, ``lm_studio/``) map to that server's
+    source; API-provider prefixes are FRONTIER. A bare name returns ``None``
+    so the caller falls back to backend membership.
     """
-    if model.startswith(OLLAMA_PREFIX):
-        return ModelSource.OLLAMA
+    for spec in LOCAL_SERVERS:
+        if model.startswith(spec.wire_prefix):
+            return ModelSource(spec.key)
     try:
         ref = parse_model_ref(model)
     except ValueError:
@@ -112,19 +114,15 @@ class ModelManager:
         return sorted(m.ref for m in self._registry.list_installed())
 
     def _list_remote(self) -> list[str]:
-        """List models from the SDK backend via its HTTP API."""
-        url = f"{self._remote_base_url}/api/tags"
-        try:
-            resp = httpx.get(url, timeout=DEFAULT_HTTP_TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
-            return [m["name"] for m in data.get("models", [])]
-        except httpx.HTTPStatusError as exc:
-            log.warning("SDK backend HTTP error listing models: %s", exc)
-            return []
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            log.debug("SDK backend not reachable: %s", exc)
-            return []
+        """List model names from the configured local server (Ollama or LM Studio).
+
+        Reuses the discovery dispatch so the listing endpoint matches the
+        detected server (Ollama ``/api/tags`` vs LM Studio ``/v1/models``).
+        Returns ``[]`` when the backend is unreachable.
+        """
+        from lilbee.modelhub.model_manager.discovery import classify_remote_models
+
+        return [m.name for m in classify_remote_models(self._remote_base_url)]
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""
@@ -149,10 +147,9 @@ class ModelManager:
     def get_source(self, model: str) -> ModelSource | None:
         """Return the granular source a model lives in. Native takes precedence.
 
-        A provider-prefixed ref classifies without a network call (API
-        prefixes are FRONTIER, ``ollama/`` is OLLAMA); a bare name is OLLAMA
-        when the Ollama backend reports it installed. ``None`` when the model
-        is in no known source.
+        A provider-prefixed ref classifies without a network call; a bare name
+        gets the configured local server's source when that backend reports it
+        installed. ``None`` when the model is in no known source.
         """
         if self._is_native(model):
             return ModelSource.NATIVE
@@ -160,7 +157,8 @@ class ModelManager:
         if prefixed is not None:
             return prefixed
         if self._is_remote(model):
-            return ModelSource.OLLAMA
+            server = detect_local_server(self._remote_base_url)
+            return ModelSource(server.key) if server is not None else ModelSource.REMOTE
         return None
 
     def pull(
@@ -168,32 +166,30 @@ class ModelManager:
         model: str,
         source: ModelSource,
         *,
-        on_progress: Callable[[dict], None] | None = None,
         on_bytes: Callable[[int, int], None] | None = None,
         allow_unsupported: bool = False,
     ) -> Path | None:
-        """Pull/download model to specified source.
+        """Download a native GGUF model and return its path.
 
-        Returns the Path for native downloads, None for backend-managed pulls.
+        lilbee pulls native models only. Local servers (Ollama, LM Studio)
+        are read-only: their models are managed in their own app and surface
+        here once present, so a non-native *source* is refused.
 
         Native pulls of architectures the bundled llama.cpp doesn't support
         are refused with ``UnsupportedArchError`` unless *allow_unsupported*
-        is True. SDK-backed (REMOTE) pulls are not gated here: the remote
-        runtime owns the arch verdict.
-
-        *on_progress* receives dict events from the SDK backend.
-        *on_bytes* receives (downloaded_bytes, total_bytes) from native
-        HuggingFace downloads. The two sources report progress in different
-        shapes, so callers pass whichever matches the chosen source.
+        is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         """
-        if source is ModelSource.NATIVE and not allow_unsupported:
+        if source is not ModelSource.NATIVE:
+            server = detect_local_server(self._remote_base_url)
+            where = server.display_name if server is not None else "the configured server"
+            raise ValueError(
+                f"lilbee runs {where} models but doesn't download them. "
+                f"Add the model in {where}, then pick it here."
+            )
+        if not allow_unsupported:
             self._enforce_arch_compat(model)
-
         try:
-            if source is ModelSource.NATIVE:
-                return self._pull_native(model, on_bytes=on_bytes)
-            self._pull_remote(model, on_progress=on_progress)
-            return None
+            return self._pull_native(model, on_bytes=on_bytes)
         finally:
             self._invalidate_installed_cache()
 
@@ -232,34 +228,6 @@ class ModelManager:
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    def _pull_remote(
-        self, model: str, *, on_progress: Callable[[dict], None] | None = None
-    ) -> None:
-        """Pull model via the SDK backend's HTTP API with streaming progress."""
-        url = f"{self._remote_base_url}/api/pull"
-        try:
-            with (
-                # Model pulls stream progress over minutes; an overall
-                # timeout would cut the download. Connect/write timeouts
-                # still apply via httpx defaults when timeout=None.
-                httpx.Client(timeout=None) as client,  # noqa: S113
-                client.stream("POST", url, json={"name": model, "stream": True}) as resp,
-            ):
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    if "error" in data:
-                        raise RuntimeError(f"Failed to pull '{model}': {data['error']}")
-                    if on_progress is not None:
-                        on_progress(data)
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to SDK backend: {exc}. Is the server running?"
-            ) from exc
-        log.info("Pulled %s via SDK backend", model)
-
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove installed model. Returns True if removed."""
         try:
@@ -290,9 +258,9 @@ class ModelManager:
 
     def _remove_remote(self, model: str) -> bool:
         url = f"{self._remote_base_url}/api/delete"
-        # Ollama's API keys models by bare name; strip the canonical routing
-        # prefix the rest of lilbee carries.
-        backend_name = model.removeprefix(OLLAMA_PREFIX)
+        # Ollama's API keys models by bare name; strip the routing prefix the
+        # rest of lilbee carries.
+        backend_name = model.removeprefix(OLLAMA.wire_prefix)
         try:
             resp = httpx.request(
                 "DELETE",

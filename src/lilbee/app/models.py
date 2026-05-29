@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import functools
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -269,35 +268,6 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
-def _backend_event_to_progress(
-    on_update: Callable[[DownloadProgress], None],
-    event: dict[str, Any],
-) -> None:
-    """Adapt an Ollama-style dict event into a DownloadProgress call."""
-    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-    from lilbee.catalog import DownloadProgress
-
-    total = event.get("total", 0) or 0
-    completed = event.get("completed", 0) or 0
-    detail = event.get("status", "") or ""
-    pct = int(completed * 100 / total) if total > 0 else 0
-    on_update(DownloadProgress(percent=pct, detail=detail, is_cache_hit=False))
-
-
-def _build_pull_callbacks(
-    on_update: Callable[[DownloadProgress], None] | None,
-) -> tuple[Callable[[dict[str, Any]], None] | None, Callable[[int, int], None] | None]:
-    """Build the (dict_cb, bytes_cb) pair for ModelManager.pull from on_update."""
-    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-    from lilbee.catalog import make_download_callback
-
-    if on_update is None:
-        return None, None
-    dict_cb = functools.partial(_backend_event_to_progress, on_update)
-    bytes_cb = make_download_callback(on_update)
-    return dict_cb, bytes_cb
-
-
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -307,20 +277,23 @@ def pull_model_data(
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
 
-    Progress updates are throttled by
-    :func:`~lilbee.catalog.make_download_callback`, so callers see at
-    most roughly 10 Hz of progress events.
+    Only native models are downloadable; a non-native *source* is refused by
+    :meth:`ModelManager.pull`. Progress updates are throttled by
+    :func:`~lilbee.catalog.make_download_callback`, so callers see at most
+    roughly 10 Hz of progress events.
     """
+    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
+    from lilbee.catalog import make_download_callback
+
     manager = get_services().model_manager
 
     if manager.is_installed(ref, source):
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
-    dict_cb, bytes_cb = _build_pull_callbacks(on_update)
+    bytes_cb = make_download_callback(on_update) if on_update is not None else None
     path = manager.pull(
         ref,
         source,
-        on_progress=dict_cb,
         on_bytes=bytes_cb,
         allow_unsupported=allow_unsupported,
     )

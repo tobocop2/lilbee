@@ -592,6 +592,8 @@ class TestTaskBar:
 
 
 class _ModelBarApp(LilbeeAppHost):
+    """Hosts the four-role ModelBar so its picker buttons + mode toggle can be exercised."""
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -600,19 +602,10 @@ class _ModelBarApp(LilbeeAppHost):
 
 @pytest.mark.usefixtures("wiki_enabled")
 class TestModelBar:
-    """ModelBar tests assert the scope picker, which only renders when wiki is on."""
+    """Behavior of the four role picker buttons + mode toggle in the bar."""
 
-    @pytest.fixture(autouse=True)
-    def mock_classify(self):
-        empty = ([], [])
-        with mock.patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=empty,
-        ):
-            yield
-
-    async def test_renders_picker_buttons_and_no_scope_select(self) -> None:
-        """ModelBar mounts only the two model pickers; scope lives in ScopeChip."""
+    async def test_renders_four_picker_buttons_and_no_scope_select(self) -> None:
+        """The bar mounts one picker per role; scope lives in ScopeChip, not a Select."""
         from textual.widgets import Select
 
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -620,10 +613,10 @@ class TestModelBar:
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(160, 40)) as pilot:
             await pilot.pause()
             buttons = list(app.query(ModelPickerButton))
-            assert len(buttons) == 2
+            assert len(buttons) == 4
             assert list(app.query(Select)) == []
 
     async def test_button_ids_are_present(self) -> None:
@@ -634,21 +627,8 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one("#chat-model-button", ModelPickerButton) is not None
-            assert app.query_one("#embed-model-button", ModelPickerButton) is not None
-
-    async def test_labels_rendered(self) -> None:
-        """Chat/Embed labels render as pills (label inside the styled-space padding)."""
-        from textual.widgets import Static
-
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            pills = [str(s.render()) for s in app.query(Static) if "model-bar-pill" in s.classes]
-            assert any(" Chat " in p for p in pills)
-            assert any(" Embed " in p for p in pills)
+            assert app.query_one("#model-pick-chat", ModelPickerButton) is not None
+            assert app.query_one("#model-pick-embed", ModelPickerButton) is not None
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -725,7 +705,7 @@ class TestModelBar:
                 assert cfg.chat_mode == "chat"
 
     async def test_chat_mode_toggle_repaints_when_embedding_set(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -739,7 +719,7 @@ class TestModelBar:
                 toggle = app.query_one(ChatModeToggle)
                 assert "-disabled" in toggle.classes
                 patched.return_value = True
-                app.query_one(ModelBar)._refresh_chat_mode_toggle()
+                toggle.refresh_state()
                 await pilot.pause()
                 assert "-disabled" not in toggle.classes
 
@@ -851,40 +831,10 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            chat_btn = app.query_one("#chat-model-button", ModelPickerButton)
-            embed_btn = app.query_one("#embed-model-button", ModelPickerButton)
+            chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
+            embed_btn = app.query_one("#model-pick-embed", ModelPickerButton)
             assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
             assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
-
-    async def test_cloud_warning_hidden_for_local_model(self) -> None:
-        cfg.chat_model = TEST_LOCAL_REF
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            warning = app.query_one("#cloud-provider-warning", Static)
-            assert "-visible" not in warning.classes
-
-    async def test_cloud_warning_hidden_for_ollama_model(self) -> None:
-        cfg.chat_model = "ollama/qwen3:8b"
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            warning = app.query_one("#cloud-provider-warning", Static)
-            assert "-visible" not in warning.classes
-
-    async def test_cloud_warning_visible_and_names_provider(self) -> None:
-        cfg.chat_model = "openai/gpt-4o"
-        cfg.embedding_model = TEST_EMBED_REF
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            warning = app.query_one("#cloud-provider-warning", Static)
-            assert "-visible" in warning.classes
-            rendered = str(warning.render())
-            assert "OpenAI" in rendered
-            assert "sensitive" in rendered.lower()
 
 
 class TestCloudProviderLabel:
@@ -898,14 +848,6 @@ class TestCloudProviderLabel:
 class TestModelPickerButton:
     """ModelPickerButton labels mirror cfg and route picks via apply_active_model."""
 
-    @pytest.fixture(autouse=True)
-    def mock_classify(self):
-        with mock.patch(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], []),
-        ):
-            yield
-
     async def test_button_label_reflects_cfg_chat_model(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
@@ -914,25 +856,21 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             rendered = str(btn.render())
             assert TEST_LOCAL_REF in rendered or "Test" in rendered
 
-    async def test_populate_repaints_buttons_when_options_arrive(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+    async def test_set_options_updates_button_pool(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar._populate(
-                [ModelOption("Test Chat", TEST_LOCAL_REF)],
-                [ModelOption("Test Embed", TEST_EMBED_REF)],
-            )
+            chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
+            chat_btn.set_options([ModelOption("Test Chat", TEST_LOCAL_REF)])
             await pilot.pause()
-            chat_btn = app.query_one("#chat-model-button", ModelPickerButton)
             assert chat_btn._options[0].ref == TEST_LOCAL_REF
 
     async def test_picker_dismiss_with_new_ref_writes_cfg(self) -> None:
@@ -943,7 +881,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             new_ref = "ollama/new-chat:latest"
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
@@ -961,7 +899,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             write_tracker = mock.Mock()
             with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(TEST_LOCAL_REF)
@@ -976,7 +914,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             write_tracker = mock.Mock()
             with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(None)
@@ -992,7 +930,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             new_ref = "ollama/new-embed:latest"
             store_mock = mock.MagicMock()
             store_mock.has_chunks.return_value = False
@@ -1001,7 +939,7 @@ class TestModelPickerButton:
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
                 mock.patch(
@@ -1022,7 +960,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             write_tracker = mock.Mock()
             with mock.patch("lilbee.app.settings.persistent_settings.update_values", write_tracker):
                 btn._on_picker_dismissed(TEST_EMBED_REF)
@@ -1047,11 +985,11 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1076,11 +1014,11 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1105,11 +1043,11 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1135,11 +1073,11 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1164,7 +1102,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#embed-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-embed", ModelPickerButton)
             new_ref = "ollama/new-embed:latest"
             services_mock = mock.MagicMock()
             services_mock.store.has_chunks.return_value = False
@@ -1172,7 +1110,7 @@ class TestModelPickerButton:
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1195,13 +1133,13 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             services_mock = mock.MagicMock()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values"),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
-                    "lilbee.cli.tui.widgets.model_bar.get_services",
+                    "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
                 ),
             ):
@@ -1218,7 +1156,7 @@ class TestModelPickerButton:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            btn = app.query_one("#chat-model-button", ModelPickerButton)
+            btn = app.query_one("#model-pick-chat", ModelPickerButton)
             await pilot.click(btn)
             await pilot.pause()
             assert isinstance(app.screen, ModelPickerModal)
@@ -1231,7 +1169,7 @@ class TestModelPickerButton:
         cfg.chat_mode = "search"
         with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
             app = _ModelBarApp()
-            async with app.run_test() as pilot:
+            async with app.run_test(size=(160, 40)) as pilot:
                 await pilot.pause()
                 toggle = app.query_one(ChatModeToggle)
                 await pilot.click(toggle)
@@ -1595,7 +1533,8 @@ class TestModelPickerModal:
             inp.value = "qw"
             await pilot.pause(0.15)
             ml = modal.query_one("#picker-list", ModelList)
-            assert ml.option_count == 1
+            # "qw" matches one model; the always-present "Browse catalog" row brings it to 2.
+            assert ml.option_count == 2
 
     async def test_modal_filters_options_by_search(self) -> None:
         from textual.widgets import Button, Input
@@ -1623,7 +1562,8 @@ class TestModelPickerModal:
             inp.value = "llama"
             await pilot.pause(0.15)  # let the debounce timer fire
             ml = modal.query_one("#picker-list", ModelList)
-            assert ml.option_count == 1
+            # "llama" matches one model; the always-present "Browse catalog" row brings it to 2.
+            assert ml.option_count == 2
 
     async def test_modal_escape_dismisses_with_none(self) -> None:
         from textual.widgets import Button
@@ -1953,10 +1893,18 @@ class TestIsMmproj:
         assert _is_mmproj("qwen3:8b") is False
 
 
+def _classify_chat_embed():
+    """Test helper: (chat, embed) slices of the full classification."""
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.widgets.model_bar import classify_installed_models_full
+
+    buckets = classify_installed_models_full()
+    return buckets[ModelTask.CHAT], buckets[ModelTask.EMBEDDING]
+
+
 @pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
     def test_native_models_classified_by_task(self, tmp_path) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.registry import ModelManifest
 
         chat_manifest = ModelManifest(
@@ -1995,7 +1943,7 @@ class TestClassifyInstalledModels:
                 embed_manifest,
                 vision_manifest,
             ]
-            chat, embed = _classify_installed_models()
+            chat, embed = _classify_chat_embed()
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
@@ -2003,7 +1951,6 @@ class TestClassifyInstalledModels:
         assert embed_manifest.ref in embed_refs
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.model_manager import RemoteModel
         from lilbee.modelhub.registry import ModelManifest
 
@@ -2033,7 +1980,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
-            chat, embed = _classify_installed_models()
+            chat, embed = _classify_chat_embed()
 
         all_refs = [ref for _, ref in chat + embed]
         assert not any("mmproj" in r.lower() for r in all_refs)
@@ -2045,7 +1992,6 @@ class TestClassifyInstalledModels:
         origin must survive in config. The human label still shows the
         tag without the prefix so the dropdown stays readable.
         """
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.model_manager import RemoteModel
 
         remote_chat = RemoteModel(
@@ -2074,7 +2020,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, embed = _classify_installed_models()
+            chat, embed = _classify_chat_embed()
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
@@ -2089,7 +2035,6 @@ class TestClassifyInstalledModels:
         Refs are distinct (``<repo>/<file>.gguf`` vs ``ollama/<name>``),
         so both rows survive the dedup pass and appear in the picker.
         """
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.model_manager import RemoteModel
         from lilbee.modelhub.registry import ModelManifest
 
@@ -2119,7 +2064,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [native]
-            chat, _ = _classify_installed_models()
+            chat, _ = _classify_chat_embed()
 
         chat_refs = {ref for _, ref in chat}
         assert native.ref in chat_refs
@@ -2127,7 +2072,6 @@ class TestClassifyInstalledModels:
 
     def test_remote_blank_name_dropped(self, tmp_path) -> None:
         """Remote entries with an empty name are skipped before reaching the picker."""
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.model_manager import RemoteModel
 
         cfg.models_dir = tmp_path / "models"
@@ -2156,7 +2100,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, _ = _classify_installed_models()
+            chat, _ = _classify_chat_embed()
 
         chat_labels = [label for label, _ in chat]
         chat_refs = [ref for _, ref in chat]
@@ -2165,7 +2109,6 @@ class TestClassifyInstalledModels:
 
     def test_multi_quant_same_repo_disambiguates_label(self, tmp_path) -> None:
         """Two quants from the same repo render with quant suffixes."""
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.registry import ModelManifest
 
         repo = "Qwen/Qwen3-0.6B-GGUF"
@@ -2194,7 +2137,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]
-            chat, _ = _classify_installed_models()
+            chat, _ = _classify_chat_embed()
 
         labels = sorted(label for label, _ in chat)
         assert labels == ["Qwen3 0.6B (Q4_K_M)", "Qwen3 0.6B (Q8_0)"]
@@ -2202,7 +2145,6 @@ class TestClassifyInstalledModels:
         assert refs == [m_q4.ref, m_q8.ref]
 
     def test_no_models_returns_empty(self, tmp_path) -> None:
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
@@ -2219,7 +2161,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, embed = _classify_installed_models()
+            chat, embed = _classify_chat_embed()
 
         assert chat == []
         assert embed == []
@@ -2232,7 +2174,6 @@ class TestClassifyInstalledModels:
         chat bucket (that would let an unrelated model get picked as a
         chat model via the TUI).
         """
-        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
         from lilbee.modelhub.registry import ModelManifest
 
         bogus = ModelManifest(
@@ -2257,7 +2198,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [bogus]
-            chat, embed = _classify_installed_models()
+            chat, embed = _classify_chat_embed()
 
         chat_refs = [ref for _, ref in chat]
         embed_refs = [ref for _, ref in embed]
