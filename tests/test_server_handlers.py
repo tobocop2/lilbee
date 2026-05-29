@@ -1213,8 +1213,11 @@ class TestHostedCatalogEntries:
             ("qwen2.5-coder", ModelSource.LM_STUDIO)
         ]
 
-    def test_discover_hosted_sync_unknown_backend_defaults_to_ollama(self, monkeypatch) -> None:
-        """An unrecognized backend URL keeps the generic OLLAMA local source."""
+    def test_discover_hosted_sync_unknown_backend_uses_generic_remote(self, monkeypatch) -> None:
+        """An unrecognized backend URL keeps the generic REMOTE source.
+
+        Matches the fallback get_source and the CLI use for an undetected server.
+        """
         import lilbee.server.handlers.models as h
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
@@ -1235,7 +1238,7 @@ class TestHostedCatalogEntries:
             ],
         )
         rows = h._discover_hosted_sync()
-        assert rows[0].source == ModelSource.OLLAMA
+        assert rows[0].source == ModelSource.REMOTE
 
 
 class TestModelsCatalog:

@@ -120,6 +120,7 @@ class ModelManager:
         detected server (Ollama ``/api/tags`` vs LM Studio ``/v1/models``).
         Returns ``[]`` when the backend is unreachable.
         """
+        # circular: discovery -> app.services -> model_manager.__init__ -> core
         from lilbee.modelhub.model_manager.discovery import classify_remote_models
 
         models = classify_remote_models(self._remote_base_url, timeout=DEFAULT_HTTP_TIMEOUT)
@@ -259,9 +260,11 @@ class ModelManager:
 
     def _remove_remote(self, model: str) -> bool:
         url = f"{self._remote_base_url}/api/delete"
-        # Ollama's API keys models by bare name; strip the routing prefix the
-        # rest of lilbee carries.
-        backend_name = model.removeprefix(OLLAMA.wire_prefix)
+        # The local server keys models by bare name; strip the routing prefix
+        # lilbee carries for the detected server.
+        server = detect_local_server(self._remote_base_url)
+        prefix = server.wire_prefix if server is not None else OLLAMA.wire_prefix
+        backend_name = model.removeprefix(prefix)
         try:
             resp = httpx.request(
                 "DELETE",

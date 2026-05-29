@@ -406,7 +406,7 @@ def _discover_hosted_sync() -> list[CatalogEntryResponse]:
     for models in discover_api_models().values():
         rows.extend(_hosted_entry(rm, ModelSource.FRONTIER) for rm in models)
     server = detect_local_server(cfg.remote_base_url)
-    local_source = ModelSource(server.key) if server is not None else ModelSource.OLLAMA
+    local_source = ModelSource(server.key) if server is not None else ModelSource.REMOTE
     rows.extend(
         _hosted_entry(rm, local_source) for rm in classify_remote_models(cfg.remote_base_url)
     )
@@ -420,7 +420,7 @@ def _hosted_cache_key() -> str:
     ``PROVIDER_KEYS`` so adding a provider does not silently reuse a
     stale cache entry.
     """
-    keys = ":".join(getattr(cfg, field, "") or "" for _, field, *_ in PROVIDER_KEYS)
+    keys = ":".join(getattr(cfg, field) or "" for _, field, *_ in PROVIDER_KEYS)
     return f"{cfg.remote_base_url}:{keys}"
 
 

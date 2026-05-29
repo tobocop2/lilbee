@@ -597,6 +597,18 @@ class TestModelManagerRemove:
         assert mock_req.call_args[1]["content"] == b'{"model": "llama3:latest"}'
         assert result is True
 
+    def test_remove_unknown_backend_sends_name_unchanged(self) -> None:
+        """An unrecognized backend has no known prefix to strip, so the name passes through."""
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+
+        with mock.patch("httpx.request", return_value=mock_response) as mock_req:
+            mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
+            result = mgr.remove("custom-model", ModelSource.REMOTE)
+
+        assert mock_req.call_args[1]["content"] == b'{"model": "custom-model"}'
+        assert result is True
+
     def test_litellm_remove_not_found(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 404

@@ -89,7 +89,7 @@ _source_option = typer.Option(
     None,
     "--source",
     "-s",
-    help="Filter by source: 'native' or 'remote' (default: all).",
+    help="Filter by source: native, remote, ollama, lm_studio, or frontier (default: all).",
 )
 _task_option = typer.Option(
     None,
