@@ -53,7 +53,9 @@ class TestMcpList:
     def test_invalid_source_returns_explicit_error(self):
         with patch("lilbee.app.models.list_models_data") as fn:
             result = model_list(source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
+        assert result == {
+            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+        }
         fn.assert_not_called()
 
 
@@ -91,7 +93,9 @@ class TestMcpRemove:
     def test_invalid_source_explicit_error(self):
         with patch("lilbee.app.models.remove_model_data") as fn:
             result = model_rm("qwen3:0.6b", source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
+        assert result == {
+            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+        }
         fn.assert_not_called()
 
 
@@ -172,7 +176,9 @@ class TestMcpPull:
     @pytest.mark.asyncio
     async def test_pull_invalid_source(self):
         result = await model_pull("qwen3:0.6b", source="bogus")
-        assert result == {"error": "invalid source 'bogus'; expected one of: native, remote"}
+        assert result == {
+            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+        }
 
 
 class TestLogProgressFailure:

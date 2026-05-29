@@ -24,10 +24,13 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.catalog.refs import hf_repo_from_ref
-from lilbee.catalog.types import CatalogSize, CatalogSort, ModelSource, ModelTask
+from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
 from lilbee.core.config import cfg
+from lilbee.modelhub.model_manager import classify_remote_models, discover_api_models
+from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
-from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
+from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
 from lilbee.runtime.hardware import (
     FitLevel,
     SizeVariantInfo,
@@ -165,12 +168,39 @@ def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
 
 
 def _resolve_via_parse(model: str, available: set[str]) -> str | None:
-    """Resolve a provider-prefixed ref to its bare provider name in *available*."""
+    """Resolve a provider-prefixed ref against *available*.
+
+    The backend lists hosted models under their bare provider names (e.g.
+    ``gemini-2.0-flash``, ``qwen3:0.6b``), while selections arrive carrying
+    the routing prefix (``gemini/gemini-2.0-flash``, ``ollama/qwen3:0.6b``).
+    When the bare name is visible, return the *prefixed* ref so it keeps its
+    provider routing and skips the native catalog/installed check downstream,
+    mirroring how the TUI persists a frontier/Ollama selection verbatim.
+    """
     try:
         parsed = parse_model_ref(model)
     except ValueError:
         return None
-    return parsed.name if parsed.name in available else None
+    return model if parsed.name in available else None
+
+
+def _resolve_via_provider_key(model: str) -> str | None:
+    """Accept an API-provider-prefixed ref when that provider's key is configured.
+
+    Frontier models surface through ``discover_api_models`` (a per-key listing),
+    not the default ``provider.list_models()``, so a ref like
+    ``gemini/gemini-2.0-flash`` never appears in *available* even when it is
+    perfectly routable. As long as the provider's key is set, litellm can route
+    it (and validates the exact model name at call time), so the prefixed ref is
+    accepted verbatim, matching how the TUI persists a frontier selection.
+    """
+    try:
+        parsed = parse_model_ref(model)
+    except ValueError:
+        return None
+    if parsed.is_api and get_provider_api_key(parsed.provider) is not None:
+        return model
+    return None
 
 
 def _require_model_available(model: str) -> str:
@@ -183,7 +213,11 @@ def _require_model_available(model: str) -> str:
     available = set(get_services().provider.list_models())
     if model in available:
         return model
-    hit = _resolve_via_catalog(model, available) or _resolve_via_parse(model, available)
+    hit = (
+        _resolve_via_catalog(model, available)
+        or _resolve_via_parse(model, available)
+        or _resolve_via_provider_key(model)
+    )
     if hit is None:
         raise not_available
     return hit
@@ -316,6 +350,101 @@ def _build_catalog_entry(
     )
 
 
+def _hosted_entry(rm: RemoteModel, source: ModelSource) -> CatalogEntryResponse:
+    """Build a selectable, no-download catalog row for a discovered hosted model."""
+    return CatalogEntryResponse(
+        hf_repo=format_remote_ref(rm.name, rm.provider),
+        gguf_filename="",
+        task=rm.task,
+        display_name=rm.name,
+        param_count=rm.parameter_size,
+        size_gb=0,
+        min_ram_gb=0,
+        description="",
+        quality_tier="",
+        featured=False,
+        downloads=0,
+        installed=True,
+        source=source,
+        fit=None,
+        size_variants=[],
+        provider=rm.provider,
+        key_status=KeyStatus.READY if source is ModelSource.FRONTIER else None,
+    )
+
+
+_HOSTED_MODELS_TTL = 60
+
+
+class _HostedModelsCache:
+    """TTL cache for discovered hosted rows (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._time: float = 0.0
+        self._key: str = ""
+        self._result: list[CatalogEntryResponse] | None = None
+
+    def get(self, key: str) -> list[CatalogEntryResponse] | None:
+        now = time.monotonic()
+        fresh = (now - self._time) < _HOSTED_MODELS_TTL
+        if self._result is not None and key == self._key and fresh:
+            return self._result
+        return None
+
+    def set(self, key: str, result: list[CatalogEntryResponse]) -> None:
+        self._time = time.monotonic()
+        self._key = key
+        self._result = result
+
+
+_hosted_cache = _HostedModelsCache()
+
+
+def _discover_hosted_sync() -> list[CatalogEntryResponse]:
+    """All hosted rows (frontier + ollama), unfiltered. Blocking, call via to_thread.
+
+    Both discovery calls fail soft (empty dict / list) when no keys are
+    configured or the Ollama endpoint is unreachable, so the catalog
+    degrades to native-only here without special-casing.
+    """
+    rows: list[CatalogEntryResponse] = []
+    for models in discover_api_models().values():
+        rows.extend(_hosted_entry(rm, ModelSource.FRONTIER) for rm in models)
+    rows.extend(
+        _hosted_entry(rm, ModelSource.OLLAMA)
+        for rm in classify_remote_models(cfg.remote_base_url)
+    )
+    return rows
+
+
+def _hosted_cache_key() -> str:
+    """Cache key over the inputs that change discovery output.
+
+    Enumerates configured provider-key fields generically from
+    ``PROVIDER_KEYS`` so adding a provider does not silently reuse a
+    stale cache entry.
+    """
+    keys = ":".join(getattr(cfg, field, "") or "" for _, field, *_ in PROVIDER_KEYS)
+    return f"{cfg.remote_base_url}:{keys}"
+
+
+async def _collect_hosted_entries(
+    *, task: ModelTask | None, search: str
+) -> list[CatalogEntryResponse]:
+    """Hosted catalog rows filtered by task/search, off the event loop + TTL-cached."""
+    key = _hosted_cache_key()
+    rows = _hosted_cache.get(key)
+    if rows is None:
+        rows = await asyncio.to_thread(_discover_hosted_sync)
+        _hosted_cache.set(key, rows)
+    if task is not None:
+        rows = [r for r in rows if r.task == task]
+    if search:
+        needle = search.lower()
+        rows = [r for r in rows if needle in r.display_name.lower()]
+    return rows
+
+
 async def models_catalog(
     task: str | None = None,
     search: str = "",
@@ -350,17 +479,24 @@ async def models_catalog(
     available_bytes = available_memory_for_fit()
     families_by_repo = _families_by_repo()
 
+    native_rows = [
+        _build_catalog_entry(e, available_bytes=available_bytes, families_by_repo=families_by_repo)
+        for e in enriched
+    ]
+    # Hosted rows (frontier + ollama) are selectable and download-free, so
+    # they're shown on the first page only (mirrors the featured first-page
+    # convention), skipped for featured-only and installed=False filters, and
+    # counted toward ``total``.
+    hosted_rows: list[CatalogEntryResponse] = []
+    if offset == 0 and not featured and installed is not False:
+        hosted_rows = await _collect_hosted_entries(task=parsed_task, search=search)
+
     return ModelsCatalogResponse(
-        total=result.total,
+        total=result.total + len(hosted_rows),
         limit=result.limit,
         offset=result.offset,
         has_more=result.has_more,
-        models=[
-            _build_catalog_entry(
-                e, available_bytes=available_bytes, families_by_repo=families_by_repo
-            )
-            for e in enriched
-        ],
+        models=hosted_rows + native_rows,
     )
 
 

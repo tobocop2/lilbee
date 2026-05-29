@@ -56,7 +56,12 @@ class TestModelSource:
         assert ModelSource.REMOTE.value == "remote"
 
     def test_members(self) -> None:
-        assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.REMOTE}
+        assert set(ModelSource) == {
+            ModelSource.NATIVE,
+            ModelSource.REMOTE,
+            ModelSource.FRONTIER,
+            ModelSource.OLLAMA,
+        }
 
     def test_parse_none_and_empty_return_none(self) -> None:
         assert ModelSource.parse(None) is None
@@ -71,6 +76,12 @@ class TestModelSource:
 
         with pytest.raises(ValueError, match="invalid source 'bogus'"):
             ModelSource.parse("bogus")
+
+    def test_has_frontier_and_ollama(self) -> None:
+        assert ModelSource.FRONTIER == "frontier"
+        assert ModelSource.OLLAMA == "ollama"
+        assert ModelSource.parse("frontier") is ModelSource.FRONTIER
+        assert ModelSource.parse("ollama") is ModelSource.OLLAMA
 
 
 def _install_registry_model(
