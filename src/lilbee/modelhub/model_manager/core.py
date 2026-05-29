@@ -28,15 +28,13 @@ def _prefixed_source(model: str) -> ModelSource | None:
     ``ollama/`` is OLLAMA. Bare names carry no prefix to classify on and
     return ``None`` so the caller can fall back to backend membership.
     """
+    if model.startswith(OLLAMA_PREFIX):
+        return ModelSource.OLLAMA
     try:
         ref = parse_model_ref(model)
     except ValueError:
         return None
-    if ref.is_api:
-        return ModelSource.FRONTIER
-    if ref.provider == "ollama":
-        return ModelSource.OLLAMA
-    return None
+    return ModelSource.FRONTIER if ref.is_api else None
 
 
 class ModelManager:
@@ -149,12 +147,12 @@ class ModelManager:
         return model in self.list_installed(ModelSource.REMOTE)
 
     def get_source(self, model: str) -> ModelSource | None:
-        """Find which granular source a model lives in. Native takes precedence.
+        """Return the granular source a model lives in. Native takes precedence.
 
-        Distinguishes OLLAMA and FRONTIER so the installed list agrees with
-        the catalog instead of flattening every remote model to ``remote``.
-        A provider-prefixed ref classifies without a network call; a bare
-        name is OLLAMA when the (Ollama) backend reports it installed.
+        A provider-prefixed ref classifies without a network call (API
+        prefixes are FRONTIER, ``ollama/`` is OLLAMA); a bare name is OLLAMA
+        when the Ollama backend reports it installed. ``None`` when the model
+        is in no known source.
         """
         if self._is_native(model):
             return ModelSource.NATIVE
