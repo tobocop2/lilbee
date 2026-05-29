@@ -862,6 +862,62 @@ class TestRemoteModelProvider:
         assert len(result) == 1
         assert result[0].provider == "OpenAI"
 
+    def test_classify_lm_studio_models_via_openai_endpoint(self) -> None:
+        """LM Studio is listed via ``/v1/models`` and labeled ``LM Studio``."""
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager import classify_remote_models
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "qwen2.5-7b-instruct"},
+                {"id": "nomic-embed-text-v1.5"},
+                {"id": "bge-reranker-v2-m3"},
+            ]
+        }
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response) as mock_get:
+            result = classify_remote_models("http://localhost:1234/v1")
+
+        # Hit the OpenAI-compatible endpoint (no doubled /v1), not Ollama's /api/tags.
+        assert mock_get.call_args.args[0] == "http://localhost:1234/v1/models"
+        assert [m.name for m in result] == [
+            "qwen2.5-7b-instruct",
+            "nomic-embed-text-v1.5",
+            "bge-reranker-v2-m3",
+        ]
+        assert all(m.provider == "LM Studio" for m in result)
+        # Name-pattern classification still works without family metadata.
+        by_name = {m.name: m.task for m in result}
+        assert by_name["qwen2.5-7b-instruct"] == ModelTask.CHAT
+        assert by_name["nomic-embed-text-v1.5"] == ModelTask.EMBEDDING
+        assert by_name["bge-reranker-v2-m3"] == ModelTask.RERANK
+
+    def test_classify_lm_studio_skips_entries_without_id(self) -> None:
+        """``/v1/models`` rows lacking an ``id`` are skipped, not crashed on."""
+        from lilbee.modelhub.model_manager import classify_remote_models
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"data": [{"id": ""}, {}, {"id": "qwen2.5-7b-instruct"}]}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            result = classify_remote_models("http://localhost:1234/v1")
+
+        assert [m.name for m in result] == ["qwen2.5-7b-instruct"]
+
+    def test_classify_lm_studio_returns_empty_on_http_error(self) -> None:
+        """A down LM Studio server yields [] so read-only callers stay responsive."""
+        import httpx
+
+        from lilbee.modelhub.model_manager import classify_remote_models
+
+        with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
+            result = classify_remote_models("http://localhost:1234/v1")
+
+        assert result == []
+
     def test_remote_model_default_provider(self) -> None:
         model = RemoteModel(name="test", task="chat", family="llama", parameter_size="8B")
         assert model.provider == "Remote"

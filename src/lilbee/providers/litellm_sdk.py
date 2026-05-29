@@ -22,7 +22,13 @@ import httpx
 
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.model_ref import OLLAMA_PREFIX, ProviderModelRef
+from lilbee.providers.local_servers import (
+    OLLAMA,
+    detect_local_server,
+    local_server_for_key,
+    openai_models_url,
+)
+from lilbee.providers.model_ref import ProviderModelRef
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -37,7 +43,6 @@ from lilbee.providers.sdk_backend import (
 log = logging.getLogger(__name__)
 
 _PROVIDER_NAME = "litellm"
-_OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
 # Substrings dropped from the "LiteLLM" logger before they reach the user's
 # terminal. Two classes of noise: (1) the model-cost-map fetch failure that
@@ -135,12 +140,6 @@ class _LitellmResponseView:
         return getattr(choice, "finish_reason", None) if choice is not None else None
 
 
-def _is_ollama(base_url: str) -> bool:
-    """Return True if *base_url* looks like an Ollama instance."""
-    url_lower = base_url.lower()
-    return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
-
-
 @functools.cache
 def litellm_available() -> bool:
     """Return True if the ``litellm`` package is installed.
@@ -184,11 +183,16 @@ def _cache_ollama_defaults(model: str, params_text: str) -> None:
 
 
 def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
-    """Format *ref* for litellm using the OpenAI ``provider/model`` convention."""
-    if ref.is_api:
+    """Format *ref* for litellm using the OpenAI ``provider/model`` convention.
+
+    API and local-server refs already carry their canonical prefix. A bare
+    ``local`` ref forced through the SDK (``llm_provider=remote``) gets the
+    prefix of whichever local server its ``api_base`` points at.
+    """
+    if ref.is_api or local_server_for_key(ref.provider) is not None:
         return ref.for_openai_prefix()
-    if api_base and _is_ollama(api_base):
-        return f"{OLLAMA_PREFIX}{ref.name}"
+    if api_base and (spec := detect_local_server(api_base)) is not None:
+        return spec.qualify(ref.name)
     return ref.name
 
 
@@ -470,9 +474,10 @@ class LitellmSdkBackend:
         return RerankResult(scores=scores, model=model)
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-        """List models from Ollama or an OpenAI-compatible server."""
+        """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``."""
         clean_base = base_url.rstrip("/")
-        if _is_ollama(clean_base):
+        spec = detect_local_server(clean_base)
+        if spec is OLLAMA:
             return self._list_ollama_models(clean_base)
         return self._list_openai_models(clean_base, api_key)
 
@@ -528,7 +533,9 @@ class LitellmSdkBackend:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         try:
-            resp = httpx.get(f"{base_url}/v1/models", headers=headers, timeout=DEFAULT_HTTP_TIMEOUT)
+            resp = httpx.get(
+                openai_models_url(base_url), headers=headers, timeout=DEFAULT_HTTP_TIMEOUT
+            )
             resp.raise_for_status()
             data = resp.json()
             return [m["id"] for m in data.get("data", [])]
@@ -543,8 +550,21 @@ class LitellmSdkBackend:
         base_url: str,
         on_progress: Callable[..., Any] | None = None,
     ) -> None:
-        """Pull a model via the Ollama ``/api/pull`` endpoint."""
+        """Pull a model via the Ollama ``/api/pull`` endpoint.
+
+        Only servers that expose an HTTP pull endpoint are supported.
+        LM Studio has none; its models are downloaded in its own app and
+        appear here once present.
+        """
         clean_base = base_url.rstrip("/")
+        spec = detect_local_server(clean_base)
+        if spec is None or not spec.supports_pull:
+            server = spec.display_name if spec is not None else "This server"
+            raise ProviderError(
+                f"{server} doesn't download models over the network. "
+                f"Add the model in its own app, then pick it here.",
+                provider=_PROVIDER_NAME,
+            )
         try:
             with (
                 # Streaming Ollama /api/pull; unbounded read is intentional
@@ -576,11 +596,15 @@ class LitellmSdkBackend:
         Parses and caches per-model generation defaults from the
         ``parameters`` field. Also extracts the ``capabilities`` list
         (newer Ollama versions) so callers can check for vision support.
+        Returns ``None`` for servers without a metadata endpoint (LM Studio).
         """
         clean_base = base_url.rstrip("/")
+        spec = detect_local_server(clean_base)
+        if spec is None or not spec.supports_show:
+            return None
         # Ollama's API uses bare model names; the routing-layer prefix has
         # to come off before the request goes out.
-        ollama_name = model[len(OLLAMA_PREFIX) :] if model.startswith(OLLAMA_PREFIX) else model
+        ollama_name = model.removeprefix(OLLAMA.wire_prefix)
         try:
             resp = httpx.post(
                 f"{clean_base}/api/show",
