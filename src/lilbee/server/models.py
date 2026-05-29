@@ -166,6 +166,12 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    chat_ready: bool = False
+    """True once the chat engine is loaded and ready to serve a first token.
+
+    A launcher polls this to wait out the cold model load before handing off to
+    a client, so the client never lands on an apparently-dead stream.
+    """
 
 
 class AskResponse(BaseModel):

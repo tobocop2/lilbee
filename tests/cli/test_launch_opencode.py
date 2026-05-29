@@ -53,6 +53,19 @@ def _healthy_by_default(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _warm_by_default(request, monkeypatch):
+    """Default the chat warm-wait to an instant success so launch tests do not
+    poll the (absent) server for the full warm timeout.
+
+    Tests marked ``no_warm_default`` (the warm-gate's own unit tests) skip this.
+    """
+    if "no_warm_default" in request.keywords:
+        return
+    # run_launcher imports the name into its own module, so patch it there.
+    monkeypatch.setattr("lilbee.cli.launchers.launcher.wait_for_chat_warm", lambda _port: True)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_env(tmp_path, monkeypatch) -> Path:
     """Isolate cfg.data_dir and redirect Path.home so launcher writes land in tmp."""
     monkeypatch.delenv("LILBEE_DATA", raising=False)
@@ -164,6 +177,90 @@ def test_health_ok_returns_false_on_non_200(monkeypatch):
     resp.status_code = 503
     monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
     assert launch_mod.health_ok(8765) is False
+
+
+@pytest.mark.no_warm_default
+def test_chat_ready_true_when_health_reports_warm(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"chat_ready": True}
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod.chat_ready(8765) is True
+
+
+@pytest.mark.no_warm_default
+def test_chat_ready_false_when_health_reports_cold(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"chat_ready": False}
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod.chat_ready(8765) is False
+
+
+@pytest.mark.no_warm_default
+def test_chat_ready_false_on_connection_error(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    def _boom(url, timeout):
+        raise launch_mod.httpx.HTTPError("refused")
+
+    monkeypatch.setattr(launch_mod.httpx, "get", _boom)
+    assert launch_mod.chat_ready(8765) is False
+
+
+@pytest.mark.no_warm_default
+def test_wait_for_chat_warm_returns_true_once_ready(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    calls = {"n": 0}
+
+    def _ready(_port):
+        calls["n"] += 1
+        return calls["n"] >= 2  # cold on the first probe, warm on the second
+
+    monkeypatch.setattr(launch_mod, "chat_ready", _ready)
+    monkeypatch.setattr(launch_mod.time, "sleep", lambda _s: None)
+    assert launch_mod.wait_for_chat_warm(8765) is True
+    assert calls["n"] >= 2
+
+
+@pytest.mark.no_warm_default
+def test_wait_for_chat_warm_returns_false_on_timeout(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    monkeypatch.setattr(launch_mod, "chat_ready", lambda _port: False)
+    monkeypatch.setattr(launch_mod.time, "sleep", lambda _s: None)
+    assert launch_mod.wait_for_chat_warm(8765, timeout_s=0.0) is False
+
+
+def test_launch_opencode_waits_for_chat_warm_before_handoff(tmp_path):
+    """The launcher must block on the warm-gate before exec'ing the client, so
+    the client never opens onto a cold, silent stream."""
+    _write_server_session()
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    order: list[str] = []
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch(
+            "lilbee.cli.launchers.launcher.wait_for_chat_warm",
+            side_effect=lambda _port: order.append("warm") or True,
+        ) as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            side_effect=lambda *a, **k: order.append("run") or completed,
+        ),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+
+    assert result.exit_code == 0
+    warm.assert_called_once_with(_PORT)
+    assert order == ["warm", "run"]  # warmed before the client launched
 
 
 def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):
