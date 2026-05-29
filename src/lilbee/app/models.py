@@ -73,13 +73,12 @@ class ModelEntry(BaseModel):
         )
 
     @classmethod
-    def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
-        # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-        from lilbee.catalog.types import ModelSource
+    def from_backend(cls, ref: str, remote: RemoteModel | None, source: ModelSource) -> ModelEntry:
+        from lilbee.providers.local_servers import canonical_local_ref
 
         return cls(
-            name=ref,
-            source=ModelSource.REMOTE.value,
+            name=canonical_local_ref(ref, source.value),
+            source=source.value,
             task=remote.task if remote else None,
             size_gb=None,
             display_name=remote.parameter_size if remote else "",
@@ -214,11 +213,17 @@ def _collect_native_entries() -> list[ModelEntry]:
 
 def _collect_backend_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
+    from lilbee.catalog.types import ModelSource
     from lilbee.modelhub.model_manager import classify_remote_models
+    from lilbee.providers.local_servers import detect_local_server
 
+    server = detect_local_server(cfg.remote_base_url)
+    source = ModelSource(server.key) if server is not None else ModelSource.REMOTE
     remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
     remote_by_name = {rm.name: rm for rm in remote_list}
-    return [ModelEntry.from_backend(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
+    return [
+        ModelEntry.from_backend(ref, remote_by_name[ref], source) for ref in sorted(remote_by_name)
+    ]
 
 
 def list_models_data(
@@ -236,8 +241,13 @@ def list_models_data(
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:
         entries.extend(_collect_native_entries())
-    if source is None or source is ModelSource.REMOTE:
-        entries.extend(_collect_backend_entries())
+    if source is not ModelSource.NATIVE:
+        backend = _collect_backend_entries()
+        # A specific local-server source (ollama/lm_studio/frontier) narrows the
+        # backend list; REMOTE and None keep every backend entry.
+        if source not in (None, ModelSource.REMOTE):
+            backend = [e for e in backend if e.source == source.value]
+        entries.extend(backend)
     if task:
         entries = [e for e in entries if e.task == task]
     return ListModelsResult(models=entries, total=len(entries))

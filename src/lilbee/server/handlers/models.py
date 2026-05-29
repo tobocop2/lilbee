@@ -29,7 +29,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
-from lilbee.providers.local_servers import detect_local_server, local_server_for_key
+from lilbee.providers.local_servers import canonical_local_ref, detect_local_server
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
 from lilbee.runtime.hardware import (
@@ -496,19 +496,6 @@ async def models_catalog(
     )
 
 
-def _canonical_installed_ref(name: str, source: ModelSource) -> str:
-    """Render a local-server model with its canonical ``<server>/<name>`` ref.
-
-    Local servers report bare names; the catalog reports the prefixed ref.
-    Reporting it here too lets clients dedup the installed and catalog views
-    instead of showing the model twice.
-    """
-    spec = local_server_for_key(source.value)
-    if spec is not None and not name.startswith(spec.wire_prefix):
-        return spec.qualify(name)
-    return name
-
-
 async def models_installed() -> ModelsInstalledResponse:
     """Return installed models with their granular source and canonical ref."""
     manager = get_services().model_manager
@@ -516,7 +503,7 @@ async def models_installed() -> ModelsInstalledResponse:
     for name in manager.list_installed():
         source = manager.get_source(name) or ModelSource.REMOTE
         models.append(
-            InstalledModelEntry(name=_canonical_installed_ref(name, source), source=source)
+            InstalledModelEntry(name=canonical_local_ref(name, source.value), source=source)
         )
     return ModelsInstalledResponse(models=models)
 

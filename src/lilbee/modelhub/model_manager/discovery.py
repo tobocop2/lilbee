@@ -123,7 +123,9 @@ def _discover_via_openai_models(
     """Classify models from an OpenAI-compatible ``/v1/models`` endpoint.
 
     These servers report only ids (no family), so task detection runs off the
-    name patterns, which LM Studio ids usually carry.
+    name patterns, which LM Studio ids usually carry. Every id is surfaced: LM
+    Studio presents LM Link remote/cloud models here as if local, so the list
+    is intentionally not filtered to locally-downloaded models.
     """
     try:
         resp = httpx.get(openai_models_url(base_url), timeout=timeout)

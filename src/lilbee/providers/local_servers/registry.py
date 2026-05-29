@@ -36,6 +36,19 @@ def local_server_for_key(key: str) -> LocalServerSpec | None:
     return None
 
 
+def canonical_local_ref(name: str, source_key: str) -> str:
+    """Prefix a bare *name* with its local server's wire prefix.
+
+    *source_key* is a ModelSource value (``"ollama"``). No-op for non-local
+    sources and for names already carrying the prefix, so callers can dedup
+    the installed and catalog views.
+    """
+    spec = local_server_for_key(source_key)
+    if spec is None or name.startswith(spec.wire_prefix):
+        return name
+    return spec.qualify(name)
+
+
 def local_server_for_label(label: str) -> LocalServerSpec | None:
     """Return the spec matching *label* by routing key or display name.
 

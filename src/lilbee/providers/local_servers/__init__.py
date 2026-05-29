@@ -12,6 +12,7 @@ from lilbee.providers.local_servers.ollama import OLLAMA
 from lilbee.providers.local_servers.registry import (
     LOCAL_SERVER_KEYS,
     LOCAL_SERVERS,
+    canonical_local_ref,
     detect_local_server,
     local_server_for_key,
     local_server_for_label,
@@ -25,6 +26,7 @@ __all__ = [
     "LOCAL_SERVER_KEYS",
     "OLLAMA",
     "LocalServerSpec",
+    "canonical_local_ref",
     "detect_local_server",
     "local_server_for_key",
     "local_server_for_label",

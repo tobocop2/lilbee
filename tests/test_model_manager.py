@@ -875,6 +875,22 @@ class TestRemoteModelProvider:
         assert by_name["nomic-embed-text-v1.5"] == ModelTask.EMBEDDING
         assert by_name["bge-reranker-v2-m3"] == ModelTask.RERANK
 
+    def test_classify_lm_studio_surfaces_remote_lm_link_models(self) -> None:
+        """LM Link remote/cloud models appear in /v1/models and are not filtered out."""
+        from lilbee.modelhub.model_manager import classify_remote_models
+
+        mock_response = mock.Mock()
+        # A cloud/remote id LM Studio exposes via LM Link, alongside a local one.
+        mock_response.json.return_value = {
+            "data": [{"id": "local-qwen2.5-7b"}, {"id": "openai/gpt-oss-120b"}]
+        }
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            result = classify_remote_models("http://localhost:1234/v1")
+
+        assert {m.name for m in result} == {"local-qwen2.5-7b", "openai/gpt-oss-120b"}
+
     def test_classify_lm_studio_skips_entries_without_id(self) -> None:
         """``/v1/models`` rows lacking an ``id`` are skipped, not crashed on."""
         from lilbee.modelhub.model_manager import classify_remote_models
