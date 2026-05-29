@@ -122,7 +122,8 @@ class ModelManager:
         """
         from lilbee.modelhub.model_manager.discovery import classify_remote_models
 
-        return [m.name for m in classify_remote_models(self._remote_base_url)]
+        models = classify_remote_models(self._remote_base_url, timeout=DEFAULT_HTTP_TIMEOUT)
+        return [m.name for m in models]
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""

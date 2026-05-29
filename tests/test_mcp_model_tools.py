@@ -54,7 +54,8 @@ class TestMcpList:
         with patch("lilbee.app.models.list_models_data") as fn:
             result = model_list(source="bogus")
         assert result == {
-            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+            "error": "invalid source 'bogus'; expected one of: "
+            "native, remote, frontier, ollama, lm_studio"
         }
         fn.assert_not_called()
 
@@ -94,7 +95,8 @@ class TestMcpRemove:
         with patch("lilbee.app.models.remove_model_data") as fn:
             result = model_rm("qwen3:0.6b", source="bogus")
         assert result == {
-            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+            "error": "invalid source 'bogus'; expected one of: "
+            "native, remote, frontier, ollama, lm_studio"
         }
         fn.assert_not_called()
 
@@ -177,7 +179,8 @@ class TestMcpPull:
     async def test_pull_invalid_source(self):
         result = await model_pull("qwen3:0.6b", source="bogus")
         assert result == {
-            "error": "invalid source 'bogus'; expected one of: native, remote, frontier, ollama"
+            "error": "invalid source 'bogus'; expected one of: "
+            "native, remote, frontier, ollama, lm_studio"
         }
 
 

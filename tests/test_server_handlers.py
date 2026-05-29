@@ -1187,6 +1187,56 @@ class TestHostedCatalogEntries:
         await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
         assert calls["n"] == 1
 
+    def test_discover_hosted_sync_stamps_lm_studio_source(self, monkeypatch) -> None:
+        """When the backend is LM Studio, local rows carry the LM_STUDIO source."""
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        monkeypatch.setattr(h.cfg, "remote_base_url", "http://localhost:1234/v1")
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="qwen2.5-coder",
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider="LM Studio",
+                )
+            ],
+        )
+        rows = h._discover_hosted_sync()
+        assert [(r.display_name, r.source) for r in rows] == [
+            ("qwen2.5-coder", ModelSource.LM_STUDIO)
+        ]
+
+    def test_discover_hosted_sync_unknown_backend_defaults_to_ollama(self, monkeypatch) -> None:
+        """An unrecognized backend URL keeps the generic OLLAMA local source."""
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        monkeypatch.setattr(h.cfg, "remote_base_url", "http://my-host.internal:9000")
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="custom-model",
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider="Ollama",
+                )
+            ],
+        )
+        rows = h._discover_hosted_sync()
+        assert rows[0].source == ModelSource.OLLAMA
+
 
 class TestModelsCatalog:
     @pytest.fixture(autouse=True)
@@ -1758,6 +1808,21 @@ class TestModelsInstalled:
         ):
             result = await handlers.models_installed()
         assert result.models[0].name == "ollama/qwen3:0.6b"
+
+    async def test_lm_studio_model_reports_granular_source_and_canonical_ref(self):
+        """A bare LM Studio name surfaces as source 'lm_studio' with the prefixed ref."""
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["qwen2.5-coder"]
+        mock_manager.get_source.return_value = ModelSource.LM_STUDIO
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "lm_studio/qwen2.5-coder"
+        assert result.models[0].source == "lm_studio"
 
 
 class TestModelsPull:

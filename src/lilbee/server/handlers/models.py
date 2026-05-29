@@ -171,12 +171,9 @@ def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
 def _resolve_via_parse(model: str, available: set[str]) -> str | None:
     """Resolve a provider-prefixed ref against *available*.
 
-    The backend lists hosted models under their bare provider names (e.g.
-    ``gemini-2.0-flash``, ``qwen3:0.6b``), while selections arrive carrying
-    the routing prefix (``gemini/gemini-2.0-flash``, ``ollama/qwen3:0.6b``).
-    When the bare name is visible, return the *prefixed* ref so it keeps its
-    provider routing and skips the native catalog/installed check downstream,
-    mirroring how the TUI persists a frontier/Ollama selection verbatim.
+    The backend lists hosted models under bare names while selections carry the
+    routing prefix. When the bare name is visible, return the prefixed ref so it
+    keeps provider routing instead of falling through to the native check.
     """
     try:
         parsed = parse_model_ref(model)
@@ -188,12 +185,9 @@ def _resolve_via_parse(model: str, available: set[str]) -> str | None:
 def _resolve_via_provider_key(model: str) -> str | None:
     """Accept an API-provider-prefixed ref when that provider's key is configured.
 
-    Frontier models surface through ``discover_api_models`` (a per-key listing),
-    not the default ``provider.list_models()``, so a ref like
-    ``gemini/gemini-2.0-flash`` never appears in *available* even when it is
-    perfectly routable. As long as the provider's key is set, litellm can route
-    it (and validates the exact model name at call time), so the prefixed ref is
-    accepted verbatim, matching how the TUI persists a frontier selection.
+    Frontier models surface through ``discover_api_models``, not the default
+    ``list_models()``, so they never appear in *available*. With the key set,
+    litellm routes the ref (and validates the model name at call time).
     """
     try:
         parsed = parse_model_ref(model)
@@ -402,11 +396,11 @@ _hosted_cache = _HostedModelsCache()
 
 
 def _discover_hosted_sync() -> list[CatalogEntryResponse]:
-    """All hosted rows (frontier + ollama), unfiltered. Blocking, call via to_thread.
+    """All hosted rows (frontier + the configured local server), unfiltered.
 
-    Both discovery calls fail soft (empty dict / list) when no keys are
-    configured or the Ollama endpoint is unreachable, so the catalog
-    degrades to native-only here without special-casing.
+    Blocking; call via to_thread. Local rows take the detected server's source
+    (Ollama or LM Studio). Both discovery calls fail soft when no keys are set
+    or the endpoint is unreachable, so the catalog degrades to native-only.
     """
     rows: list[CatalogEntryResponse] = []
     for models in discover_api_models().values():

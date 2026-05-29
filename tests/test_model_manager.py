@@ -61,6 +61,7 @@ class TestModelSource:
             ModelSource.REMOTE,
             ModelSource.FRONTIER,
             ModelSource.OLLAMA,
+            ModelSource.LM_STUDIO,
         }
 
     def test_parse_none_and_empty_return_none(self) -> None:
@@ -82,6 +83,18 @@ class TestModelSource:
         assert ModelSource.OLLAMA == "ollama"
         assert ModelSource.parse("frontier") is ModelSource.FRONTIER
         assert ModelSource.parse("ollama") is ModelSource.OLLAMA
+
+    def test_local_server_keys_map_to_sources(self) -> None:
+        """Each local server's routing key is a valid ModelSource value.
+
+        ``get_source`` and the catalog derive a model's source via
+        ``ModelSource(spec.key)``; this contract keeps that mapping total.
+        """
+        from lilbee.providers.local_servers import LOCAL_SERVERS
+
+        for spec in LOCAL_SERVERS:
+            assert isinstance(ModelSource(spec.key), ModelSource)
+        assert ModelSource("lm_studio") is ModelSource.LM_STUDIO
 
 
 def _install_registry_model(
@@ -375,6 +388,38 @@ class TestModelManagerGetSource:
             result = mgr.get_source("gemini/gemini-2.5-pro")
         assert result == ModelSource.FRONTIER
         mock_get.assert_not_called()
+
+    def test_lm_studio_prefixed_ref_is_lm_studio_source_without_network(self) -> None:
+        """An ``lm_studio/`` ref classifies on the prefix, no network call."""
+        mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+        with mock.patch("httpx.get") as mock_get:
+            result = mgr.get_source("lm_studio/qwen2.5-coder")
+        assert result == ModelSource.LM_STUDIO
+        mock_get.assert_not_called()
+
+    def test_bare_model_on_lm_studio_backend_is_lm_studio_source(self) -> None:
+        """A bare name an LM Studio backend reports installed classifies as LM_STUDIO."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"data": [{"id": "qwen2.5-coder"}]}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+            result = mgr.get_source("qwen2.5-coder")
+
+        assert result == ModelSource.LM_STUDIO
+
+    def test_bare_model_on_unknown_backend_is_remote_source(self) -> None:
+        """A bare name a non-Ollama/LM-Studio backend reports stays generic REMOTE."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": [{"name": "custom-model"}]}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
+            result = mgr.get_source("custom-model")
+
+        assert result == ModelSource.REMOTE
 
     def test_native_takes_precedence(self, tmp_path: Path) -> None:
         """When model exists in both sources, NATIVE takes precedence."""

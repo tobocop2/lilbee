@@ -51,22 +51,11 @@ class ProviderModelRef:
 
     @property
     def is_remote(self) -> bool:
-        """True if this model must route through a remote SDK (API or Ollama).
-
-        Remote means "not a locally-loaded GGUF". Both Ollama (HTTP
-        localhost server) and hosted API providers share the same
-        dispatch path; they go through whichever SDK backend is wired
-        up.
-        """
+        """True if this model routes through a remote SDK (any non-``local`` provider)."""
         return self.provider != "local"
 
     def for_openai_prefix(self) -> str:
-        """Name formatted with canonical ``provider/model`` prefix.
-
-        The prefix convention is the same one used by OpenAI-compatible
-        SDKs: ``openai/gpt-4o``, ``ollama/llama3.2:1b``, etc. Every
-        dispatching SDK accepts this shape.
-        """
+        """Name with its canonical ``provider/model`` prefix (``ollama/llama3.2:1b``)."""
         spec = local_server_for_key(self.provider)
         if spec is not None:
             return spec.qualify(self.name)
