@@ -75,15 +75,35 @@ def estimate_model_vram(
 def _estimate_kv_cache_bytes(
     meta: dict[str, str] | None, *, ctx: int, slots: int, kv_elem_bytes: int
 ) -> int:
-    """Coarse KV-cache size: ``2 x layers x kv_dim x ctx x slots x elem_bytes``."""
+    """KV-cache size for *ctx* x *slots*: ``layers x kv_width x ctx x slots x elem``."""
     if meta is None:
         return 0
     layers = _int_field(meta, "block_count")
-    kv_dim = _int_field(meta, "embedding_length")
-    if layers == 0 or kv_dim == 0:
+    kv_width = _kv_cache_width(meta)
+    if layers == 0 or kv_width == 0:
         return 0
-    per_token = 2 * layers * kv_dim * kv_elem_bytes
-    return per_token * ctx * slots
+    return layers * kv_width * kv_elem_bytes * ctx * slots
+
+
+def _kv_cache_width(meta: dict[str, str]) -> int:
+    """Per-layer per-token KV width (K + V), grouped-query aware.
+
+    A grouped-query model stores ``n_kv_heads x head_dim`` for each of K and V,
+    which is smaller than ``embedding_length`` when ``head_count_kv < head_count``.
+    Using ``embedding_length`` (the multi-head assumption) overestimates a GQA
+    giant's KV several-fold and can mark a usable context unplaceable. Falls back
+    to the multi-head width (``2 x embedding_length``) when head metadata is
+    absent, matching the prior estimate for those models; ``0`` when no shape is
+    derivable.
+    """
+    embed = _int_field(meta, "embedding_length")
+    n_heads = _int_field(meta, "head_count")
+    n_kv = _int_field(meta, "head_count_kv") or n_heads
+    if n_kv and n_heads:
+        head_dim = _int_field(meta, "key_length") or (embed // n_heads if n_heads else 0)
+        if head_dim:
+            return 2 * n_kv * head_dim
+    return 2 * embed
 
 
 def _int_field(meta: dict[str, str], key: str) -> int:
