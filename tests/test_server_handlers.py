@@ -1396,7 +1396,7 @@ class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -1411,26 +1411,6 @@ class TestModelsPull:
         non_empty = [e for e in events if e]
         assert any('"current": 500' in e for e in non_empty)
         assert any('"total": 1000' in e for e in non_empty)
-
-    async def test_yields_progress_events_litellm(self):
-        """Litellm pulls use on_progress (dict), not on_bytes (int, int)."""
-        mock_manager = MagicMock()
-
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
-            if on_progress:
-                on_progress({"status": "downloading"})
-                on_progress({"status": "success"})
-            return
-
-        mock_manager.pull.side_effect = fake_pull
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            events = [e async for e in handlers.models_pull("test", source="remote")]
-        non_empty = [e for e in events if e]
-        assert any("downloading" in e for e in non_empty)
-        assert any("success" in e for e in non_empty)
 
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
@@ -1450,9 +1430,7 @@ class TestModelsPull:
         barrier = threading.Event()
         mock_manager = MagicMock()
 
-        def blocking_pull(
-            model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
-        ):
+        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 on_bytes(100, 1000)
             barrier.wait(timeout=2)
@@ -2617,22 +2595,6 @@ class TestAddHandlerCancel:
 
 
 class TestModelPullProgressCancel:
-    async def test_cancel_skips_progress(self):
-        """When cancel is set, the progress callback returns early."""
-        from lilbee.server.handlers import SseStream
-
-        sse = SseStream()
-        sse.cancel.set()
-
-        # Simulate the progress callback pattern from models_pull
-        def _on_progress(data):
-            if sse.cancel.is_set():
-                return
-            sse.queue.put_nowait("should_not_appear")
-
-        _on_progress({"status": "downloading"})
-        assert sse.queue.empty()
-
     async def test_cancel_during_pull_skips_later_progress(self):
         """When cancel is set before pull starts, all progress calls return early."""
         import threading
@@ -2640,7 +2602,7 @@ class TestModelPullProgressCancel:
         mock_manager = MagicMock()
         progress_called = threading.Event()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 # All progress calls should see cancel already set
                 on_bytes(500, 1000)
@@ -2671,42 +2633,6 @@ class TestModelPullProgressCancel:
 
         assert progress_called.is_set()  # Pull did call on_bytes
         assert not any("current" in e for e in events if e)
-
-    async def test_cancel_during_litellm_pull_skips_progress(self):
-        """When cancel is set before litellm pull starts, on_progress returns early."""
-        import threading
-
-        mock_manager = MagicMock()
-        progress_called = threading.Event()
-
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
-            if on_progress:
-                on_progress({"status": "should_be_suppressed"})
-                progress_called.set()
-
-        mock_manager.pull.side_effect = fake_pull
-
-        original_init = handlers.SseStream.__init__
-
-        def patched_init(self):
-            original_init(self)
-            self.cancel.set()
-
-        with (
-            patch(
-                "lilbee.server.handlers.models.get_services",
-                return_value=MagicMock(model_manager=mock_manager),
-            ),
-            patch.object(handlers.SseStream, "__init__", patched_init),
-        ):
-            gen = handlers.models_pull("test", source="remote")
-            events = []
-            async for event in gen:
-                events.append(event)
-            await asyncio.sleep(0.2)
-
-        assert progress_called.is_set()
-        assert not any("should_be_suppressed" in e for e in events if e)
 
 
 class TestSearchRouteErrors:

@@ -107,7 +107,7 @@ class _FakeManager:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False):
         self.pull_calls.append((model, source))
         if on_bytes is not None:
             on_bytes(50, 100)
@@ -391,34 +391,6 @@ class TestPullModelData:
         assert events
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
-
-    def test_build_pull_callbacks_none_when_no_on_update(self):
-        dict_cb, bytes_cb = model_mod._build_pull_callbacks(None)
-        assert dict_cb is None
-        assert bytes_cb is None
-
-    def test_pull_litellm_adapts_dict_events(self, native_manifests):
-        events = []
-
-        class _Litellm(_FakeManager):
-            def pull(
-                self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
-            ):
-                self.pull_calls.append((model, source))
-                if on_progress is not None:
-                    on_progress({"status": "pulling", "completed": 25, "total": 100})
-                return
-
-        manager = _Litellm()
-        with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
-            result = model_mod.pull_model_data(
-                _OLLAMA_REF, ModelSource.REMOTE, on_update=events.append
-            )
-        assert result.status == PullStatus.OK
-        assert result.path is None
-        assert events
-        assert events[0].percent == 25
-        assert events[0].detail == "pulling"
 
 
 class TestPullCmd:

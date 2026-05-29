@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import functools
-import json
 import logging
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -550,45 +549,18 @@ class LitellmSdkBackend:
         base_url: str,
         on_progress: Callable[..., Any] | None = None,
     ) -> None:
-        """Pull a model via the Ollama ``/api/pull`` endpoint.
+        """Refuse to pull: local servers (Ollama, LM Studio) are read-only.
 
-        Only servers that expose an HTTP pull endpoint are supported.
-        LM Studio has none; its models are downloaded in its own app and
-        appear here once present.
+        Their models are managed in their own app and surface here once
+        present, so lilbee never downloads them over the network.
         """
-        clean_base = base_url.rstrip("/")
-        spec = detect_local_server(clean_base)
-        if spec is None or not spec.supports_pull:
-            server = spec.display_name if spec is not None else "This server"
-            raise ProviderError(
-                f"{server} doesn't download models over the network. "
-                f"Add the model in its own app, then pick it here.",
-                provider=_PROVIDER_NAME,
-            )
-        try:
-            with (
-                # Streaming Ollama /api/pull; unbounded read is intentional
-                # since model downloads can exceed any wall-clock timeout.
-                httpx.Client(timeout=None) as client,  # noqa: S113
-                client.stream(
-                    "POST",
-                    f"{clean_base}/api/pull",
-                    json={"name": model, "stream": True},
-                ) as resp,
-            ):
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    event = json.loads(line)
-                    if on_progress:
-                        on_progress(event)
-                    if event.get("status") == "success":
-                        break
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"Cannot pull model {model!r}: {exc}", provider=_PROVIDER_NAME
-            ) from exc
+        spec = detect_local_server(base_url.rstrip("/"))
+        server = spec.display_name if spec is not None else "This server"
+        raise ProviderError(
+            f"{server} doesn't download models over the network. "
+            f"Add the model in its own app, then pick it here.",
+            provider=_PROVIDER_NAME,
+        )
 
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Get model info via the Ollama ``/api/show`` endpoint.

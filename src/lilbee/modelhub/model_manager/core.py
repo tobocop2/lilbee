@@ -14,6 +14,7 @@ from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.local_servers import detect_local_server
 
 log = logging.getLogger(__name__)
 
@@ -142,32 +143,30 @@ class ModelManager:
         model: str,
         source: ModelSource,
         *,
-        on_progress: Callable[[dict], None] | None = None,
         on_bytes: Callable[[int, int], None] | None = None,
         allow_unsupported: bool = False,
     ) -> Path | None:
-        """Pull/download model to specified source.
+        """Download a native GGUF model and return its path.
 
-        Returns the Path for native downloads, None for backend-managed pulls.
+        lilbee pulls native models only. Local servers (Ollama, LM Studio)
+        are read-only: their models are managed in their own app and surface
+        here once present, so a non-native *source* is refused.
 
         Native pulls of architectures the bundled llama.cpp doesn't support
         are refused with ``UnsupportedArchError`` unless *allow_unsupported*
-        is True. SDK-backed (REMOTE) pulls are not gated here: the remote
-        runtime owns the arch verdict.
-
-        *on_progress* receives dict events from the SDK backend.
-        *on_bytes* receives (downloaded_bytes, total_bytes) from native
-        HuggingFace downloads. The two sources report progress in different
-        shapes, so callers pass whichever matches the chosen source.
+        is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         """
-        if source is ModelSource.NATIVE and not allow_unsupported:
+        if source is not ModelSource.NATIVE:
+            server = detect_local_server(self._remote_base_url)
+            where = server.display_name if server is not None else "the configured server"
+            raise ValueError(
+                f"lilbee runs {where} models but doesn't download them. "
+                f"Add the model in {where}, then pick it here."
+            )
+        if not allow_unsupported:
             self._enforce_arch_compat(model)
-
         try:
-            if source is ModelSource.NATIVE:
-                return self._pull_native(model, on_bytes=on_bytes)
-            self._pull_remote(model, on_progress=on_progress)
-            return None
+            return self._pull_native(model, on_bytes=on_bytes)
         finally:
             self._invalidate_installed_cache()
 
@@ -205,34 +204,6 @@ class ModelManager:
         path = download_model(entry, on_progress=on_bytes, on_complete=register_downloaded_model)
         log.info("Downloaded %s to %s", model, path)
         return path
-
-    def _pull_remote(
-        self, model: str, *, on_progress: Callable[[dict], None] | None = None
-    ) -> None:
-        """Pull model via the SDK backend's HTTP API with streaming progress."""
-        url = f"{self._remote_base_url}/api/pull"
-        try:
-            with (
-                # Model pulls stream progress over minutes; an overall
-                # timeout would cut the download. Connect/write timeouts
-                # still apply via httpx defaults when timeout=None.
-                httpx.Client(timeout=None) as client,  # noqa: S113
-                client.stream("POST", url, json={"name": model, "stream": True}) as resp,
-            ):
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    if "error" in data:
-                        raise RuntimeError(f"Failed to pull '{model}': {data['error']}")
-                    if on_progress is not None:
-                        on_progress(data)
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to SDK backend: {exc}. Is the server running?"
-            ) from exc
-        log.info("Pulled %s via SDK backend", model)
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove installed model. Returns True if removed."""

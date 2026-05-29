@@ -58,13 +58,16 @@ class LocalServerSpec:
 
 
 OLLAMA = LocalServerSpec(
+    # Read-only, like LM Studio: lilbee runs and lists Ollama models but does
+    # not pull them. Models are managed in Ollama itself. ``supports_show`` is
+    # kept on because /api/show is a read used to surface generation defaults.
     key="ollama",
     display_name=BackendName.OLLAMA,
     wire_prefix="ollama/",
     default_base_url="http://localhost:11434",
     url_patterns=("localhost:11434", "127.0.0.1:11434", "ollama"),
     appends_latest_tag=True,
-    supports_pull=True,
+    supports_pull=False,
     supports_show=True,
 )
 

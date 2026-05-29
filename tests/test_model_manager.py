@@ -448,130 +448,26 @@ class TestModelManagerPull:
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 
-    def test_litellm_pull_success(self, tmp_path: Path) -> None:
+    def test_remote_pull_refused_naming_the_server(self, tmp_path: Path) -> None:
+        """Local servers are read-only; a remote pull is refused without any HTTP call."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-
-        events = [
-            {"status": "pulling manifest"},
-            {"status": "downloading", "digest": "sha256:abc", "total": 100, "completed": 50},
-            {"status": "downloading", "digest": "sha256:abc", "total": 100, "completed": 100},
-            {"status": "success"},
-        ]
-
-        mock_response = mock.Mock()
-        mock_response.iter_lines.return_value = iter([__import__("json").dumps(e) for e in events])
-        mock_response.raise_for_status = mock.Mock()
-        mock_response.__enter__ = mock.Mock(return_value=mock_response)
-        mock_response.__exit__ = mock.Mock(return_value=False)
-
-        mock_client = mock.Mock()
-        mock_client.stream.return_value = mock_response
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
-
-        progress_calls: list[dict] = []
-
-        def on_progress(data: dict) -> None:
-            progress_calls.append(data)
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.REMOTE, on_progress=on_progress)
-
-        mock_client.stream.assert_called_once()
-        call_args = mock_client.stream.call_args
-        assert call_args[0] == ("POST", "http://localhost:11434/api/pull")
-        assert call_args[1]["json"] == {"name": "llama3:latest", "stream": True}
-
-        assert result is None  # litellm pull doesn't return a path
-        assert len(progress_calls) > 0
-
-    def test_litellm_pull_error(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-
-        mock_response = mock.Mock()
-        mock_response.iter_lines.return_value = iter(['{"error": "model not found"}'])
-        mock_response.raise_for_status = mock.Mock()
-        mock_response.__enter__ = mock.Mock(return_value=mock_response)
-        mock_response.__exit__ = mock.Mock(return_value=False)
-
-        mock_client = mock.Mock()
-        mock_client.stream.return_value = mock_response
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with (
-            mock.patch("httpx.Client", return_value=mock_client),
-            pytest.raises(RuntimeError, match="model not found"),
-        ):
-            mgr.pull("nonexistent:model", ModelSource.REMOTE)
-
-    def test_litellm_connection_error_during_pull(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-
-        mock_client = mock.Mock()
-        mock_client.stream.side_effect = httpx.ConnectError("Connection refused")
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        with (
-            mock.patch("httpx.Client", return_value=mock_client),
-            pytest.raises(RuntimeError, match="Cannot connect to SDK backend"),
+            mock.patch("httpx.Client") as mock_client,
+            pytest.raises(ValueError, match="Ollama"),
         ):
             mgr.pull("llama3:latest", ModelSource.REMOTE)
+        mock_client.assert_not_called()
 
-    def test_litellm_pull_without_progress_callback(self, tmp_path: Path) -> None:
+    def test_remote_pull_refused_for_lm_studio(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        events = [
-            {"status": "pulling manifest"},
-            {"status": "success"},
-        ]
-
-        mock_response = mock.Mock()
-        mock_response.iter_lines.return_value = iter([__import__("json").dumps(e) for e in events])
-        mock_response.raise_for_status = mock.Mock()
-        mock_response.__enter__ = mock.Mock(return_value=mock_response)
-        mock_response.__exit__ = mock.Mock(return_value=False)
-
-        mock_client = mock.Mock()
-        mock_client.stream.return_value = mock_response
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.REMOTE)
-
-        assert result is None
-
-    def test_litellm_pull_skips_empty_lines(self, tmp_path: Path) -> None:
-        """Empty strings from iter_lines are skipped."""
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
-
-        mock_response = mock.Mock()
-        mock_response.iter_lines.return_value = iter(["", '{"status": "success"}'])
-        mock_response.raise_for_status = mock.Mock()
-        mock_response.__enter__ = mock.Mock(return_value=mock_response)
-        mock_response.__exit__ = mock.Mock(return_value=False)
-
-        mock_client = mock.Mock()
-        mock_client.stream.return_value = mock_response
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
-
-        mgr = ModelManager(models_dir, "http://localhost:11434")
-        with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.REMOTE)
-
-        assert result is None
+        mgr = ModelManager(models_dir, "http://localhost:1234/v1")
+        with pytest.raises(ValueError, match="LM Studio"):
+            mgr.pull("qwen2.5-7b-instruct", ModelSource.REMOTE)
 
 
 class TestModelManagerRemove:

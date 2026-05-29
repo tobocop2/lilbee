@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
@@ -410,12 +410,6 @@ async def models_pull(
     sse = SseStream()
 
     def _pull_blocking() -> None:
-        def _on_progress(data: dict[str, Any]) -> None:
-            if sse.cancel.is_set():
-                return
-            payload = sse_event(SseEvent.PROGRESS, data)
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
-
         def _on_bytes(downloaded: int, total: int) -> None:
             if sse.cancel.is_set():
                 return
@@ -426,7 +420,6 @@ async def models_pull(
             manager.pull(
                 model,
                 src,
-                on_progress=_on_progress,
                 on_bytes=_on_bytes,
                 allow_unsupported=allow_unsupported,
             )
