@@ -348,7 +348,8 @@ class TestModelManagerGetSource:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.get_source("my-model.gguf") == ModelSource.NATIVE
 
-    def test_litellm_model(self) -> None:
+    def test_bare_ollama_model_is_ollama_source(self) -> None:
+        """A bare name the Ollama backend reports installed classifies as OLLAMA."""
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
@@ -357,7 +358,23 @@ class TestModelManagerGetSource:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             result = mgr.get_source("llama3:latest")
 
-        assert result == ModelSource.REMOTE
+        assert result == ModelSource.OLLAMA
+
+    def test_ollama_prefixed_ref_is_ollama_source_without_network(self) -> None:
+        """An ``ollama/`` ref classifies on the prefix, no /api/tags call."""
+        mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+        with mock.patch("httpx.get") as mock_get:
+            result = mgr.get_source("ollama/llama3:latest")
+        assert result == ModelSource.OLLAMA
+        mock_get.assert_not_called()
+
+    def test_api_prefixed_ref_is_frontier_source(self) -> None:
+        """A hosted API ref classifies as FRONTIER without a network call."""
+        mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+        with mock.patch("httpx.get") as mock_get:
+            result = mgr.get_source("gemini/gemini-2.5-pro")
+        assert result == ModelSource.FRONTIER
+        mock_get.assert_not_called()
 
     def test_native_takes_precedence(self, tmp_path: Path) -> None:
         """When model exists in both sources, NATIVE takes precedence."""
@@ -625,6 +642,18 @@ class TestModelManagerRemove:
         call_kwargs = mock_req.call_args[1]
         assert call_kwargs["content"] == b'{"model": "llama3:latest"}'
         assert call_kwargs["headers"]["Content-Type"] == "application/json"
+        assert result is True
+
+    def test_remove_strips_ollama_prefix_for_backend(self) -> None:
+        """A canonical ``ollama/<name>`` ref deletes by bare name on the backend."""
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+
+        with mock.patch("httpx.request", return_value=mock_response) as mock_req:
+            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            result = mgr.remove("ollama/llama3:latest", ModelSource.OLLAMA)
+
+        assert mock_req.call_args[1]["content"] == b'{"model": "llama3:latest"}'
         assert result is True
 
     def test_litellm_remove_not_found(self) -> None:

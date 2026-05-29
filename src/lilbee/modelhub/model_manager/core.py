@@ -14,10 +14,29 @@ from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.model_ref import OLLAMA_PREFIX, parse_model_ref
 
 log = logging.getLogger(__name__)
 
 _INSTALLED_CACHE_TTL_SECONDS = 30.0
+
+
+def _prefixed_source(model: str) -> ModelSource | None:
+    """Map a provider-prefixed ref to its source, or ``None`` for a bare ref.
+
+    API-provider prefixes (``gemini/``, ``openai/`` ...) are FRONTIER;
+    ``ollama/`` is OLLAMA. Bare names carry no prefix to classify on and
+    return ``None`` so the caller can fall back to backend membership.
+    """
+    try:
+        ref = parse_model_ref(model)
+    except ValueError:
+        return None
+    if ref.is_api:
+        return ModelSource.FRONTIER
+    if ref.provider == "ollama":
+        return ModelSource.OLLAMA
+    return None
 
 
 class ModelManager:
@@ -130,11 +149,20 @@ class ModelManager:
         return model in self.list_installed(ModelSource.REMOTE)
 
     def get_source(self, model: str) -> ModelSource | None:
-        """Find which source a model lives in. Native takes precedence."""
+        """Find which granular source a model lives in. Native takes precedence.
+
+        Distinguishes OLLAMA and FRONTIER so the installed list agrees with
+        the catalog instead of flattening every remote model to ``remote``.
+        A provider-prefixed ref classifies without a network call; a bare
+        name is OLLAMA when the (Ollama) backend reports it installed.
+        """
         if self._is_native(model):
             return ModelSource.NATIVE
+        prefixed = _prefixed_source(model)
+        if prefixed is not None:
+            return prefixed
         if self._is_remote(model):
-            return ModelSource.REMOTE
+            return ModelSource.OLLAMA
         return None
 
     def pull(
@@ -264,11 +292,14 @@ class ModelManager:
 
     def _remove_remote(self, model: str) -> bool:
         url = f"{self._remote_base_url}/api/delete"
+        # Ollama's API keys models by bare name; strip the canonical routing
+        # prefix the rest of lilbee carries.
+        backend_name = model.removeprefix(OLLAMA_PREFIX)
         try:
             resp = httpx.request(
                 "DELETE",
                 url,
-                content=json.dumps({"model": model}).encode(),
+                content=json.dumps({"model": backend_name}).encode(),
                 headers={"Content-Type": "application/json"},
                 timeout=DEFAULT_HTTP_TIMEOUT,
             )
