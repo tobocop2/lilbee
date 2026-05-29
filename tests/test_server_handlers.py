@@ -1731,6 +1731,34 @@ class TestModelsInstalled:
             result = await handlers.models_installed()
         assert result.models[0].source == "remote"
 
+    async def test_ollama_model_reports_granular_source_and_canonical_ref(self):
+        """A bare Ollama name surfaces as source 'ollama' with the prefixed ref."""
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["qwen3:0.6b"]
+        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "ollama/qwen3:0.6b"
+        assert result.models[0].source == "ollama"
+
+    async def test_already_prefixed_ollama_ref_not_double_prefixed(self):
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["ollama/qwen3:0.6b"]
+        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "ollama/qwen3:0.6b"
+
 
 class TestModelsPull:
     async def test_yields_progress_events_native(self):

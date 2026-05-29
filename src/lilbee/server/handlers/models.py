@@ -29,7 +29,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
-from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
+from lilbee.providers.model_ref import OLLAMA_PREFIX, format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
 from lilbee.runtime.hardware import (
     FitLevel,
@@ -411,8 +411,7 @@ def _discover_hosted_sync() -> list[CatalogEntryResponse]:
     for models in discover_api_models().values():
         rows.extend(_hosted_entry(rm, ModelSource.FRONTIER) for rm in models)
     rows.extend(
-        _hosted_entry(rm, ModelSource.OLLAMA)
-        for rm in classify_remote_models(cfg.remote_base_url)
+        _hosted_entry(rm, ModelSource.OLLAMA) for rm in classify_remote_models(cfg.remote_base_url)
     )
     return rows
 
@@ -500,14 +499,27 @@ async def models_catalog(
     )
 
 
+def _canonical_installed_ref(name: str, source: ModelSource) -> str:
+    """Render an Ollama model with its ``ollama/<name>`` ref.
+
+    Ollama's ``/api/tags`` reports bare names; the catalog reports the
+    prefixed ref. Reporting the prefixed ref here too lets clients dedup the
+    installed and catalog views instead of showing the model twice.
+    """
+    if source is ModelSource.OLLAMA and not name.startswith(OLLAMA_PREFIX):
+        return format_remote_ref(name, ModelSource.OLLAMA.value)
+    return name
+
+
 async def models_installed() -> ModelsInstalledResponse:
-    """Return list of installed models with their source."""
+    """Return installed models with their granular source and canonical ref."""
     manager = get_services().model_manager
-    names = manager.list_installed()
     models = []
-    for name in names:
-        src = manager.get_source(name)
-        models.append(InstalledModelEntry(name=name, source=src or ModelSource.REMOTE))
+    for name in manager.list_installed():
+        source = manager.get_source(name) or ModelSource.REMOTE
+        models.append(
+            InstalledModelEntry(name=_canonical_installed_ref(name, source), source=source)
+        )
     return ModelsInstalledResponse(models=models)
 
 
