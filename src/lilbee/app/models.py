@@ -245,7 +245,7 @@ def list_models_data(
         backend = _collect_backend_entries()
         # A specific local-server source (ollama/lm_studio/frontier) narrows the
         # backend list; REMOTE and None keep every backend entry.
-        if source not in (None, ModelSource.REMOTE):
+        if source is not None and source is not ModelSource.REMOTE:
             backend = [e for e in backend if e.source == source.value]
         entries.extend(backend)
     if task:
