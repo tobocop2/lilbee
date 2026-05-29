@@ -28,8 +28,8 @@ from lilbee.data.ingest.skip_marker import (
     load_skip_markers,
     write_skip_markers,
 )
-from lilbee.data.store import ChunkWrite
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.data.store import ChunkWrite
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota

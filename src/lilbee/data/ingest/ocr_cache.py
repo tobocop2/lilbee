@@ -18,6 +18,9 @@ from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
+# A cached page is serialized as a [page_number, text] pair.
+_PAGE_ENTRY_LEN = 2
+
 _CACHE_DIRNAME = "ocr_cache"
 # Bump when the entry format or what counts as "the same OCR" changes, so old
 # entries miss instead of being misread.
@@ -60,7 +63,7 @@ def load_ocr_pages(key: str) -> list[tuple[int, str]] | None:
     for entry in raw:
         if (
             isinstance(entry, list)
-            and len(entry) == 2
+            and len(entry) == _PAGE_ENTRY_LEN
             and isinstance(entry[0], int)
             and isinstance(entry[1], str)
         ):

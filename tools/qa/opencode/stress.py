@@ -70,7 +70,8 @@ _DEV_TASKS = [
     "Build a Godot 4 GDScript pathfinding helper using AStarGrid2D. Look the API up first.",
     "Now add diagonal movement and a way to mark cells as solid (walls).",
     "Render the result with a TileMapLayer: floor tiles along the path, wall tiles elsewhere.",
-    "Bug: get_id_path seems to return the wrong type for my loop -- check its exact return type and fix it.",
+    "Bug: get_id_path seems to return the wrong type for my loop -- "
+    "check its exact return type and fix it.",
     "Scatter collectibles on reachable floor tiles, skipping the start and goal cells.",
     "Refactor: expose a regenerate() signal and make map size and tile size @export vars.",
     "How do I connect the regenerate() signal to a button and call it at runtime?",
@@ -92,17 +93,27 @@ async def _run_search(client, base, headers, query, top_k=5) -> tuple[str, int]:
         if r.status_code != 200:
             return f"(search error {r.status_code})", r.status_code
         items = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
-        lines = [f"- {it.get('source', '?')}: {str(it.get('text', it))[:300]}" for it in items[:top_k]]
+        lines = [
+            f"- {it.get('source', '?')}: {str(it.get('text', it))[:300]}" for it in items[:top_k]
+        ]
         return ("\n".join(lines) or "(no results)"), 200
     except Exception as exc:
         return f"(search exception: {exc})", -1
 
 
 async def _chat(client, base, headers, model, msgs, *, max_tokens=300):
-    body = {"model": model, "messages": msgs, "max_tokens": max_tokens, "stream": False, "tools": [_SEARCH_TOOL]}
+    body = {
+        "model": model,
+        "messages": msgs,
+        "max_tokens": max_tokens,
+        "stream": False,
+        "tools": [_SEARCH_TOOL],
+    }
     t0 = time.monotonic()
     try:
-        r = await client.post(f"{base}/v1/chat/completions", headers=headers, json=body, timeout=300)
+        r = await client.post(
+            f"{base}/v1/chat/completions", headers=headers, json=body, timeout=300
+        )
         return r.status_code, time.monotonic() - t0, r
     except Exception as exc:
         return -1, time.monotonic() - t0, exc
@@ -132,13 +143,17 @@ async def _dev_turn(client, base, headers, model, msgs, m) -> str:
             return "ok"
         # the model wants to search: record its tool-call turn, run the real searches,
         # feed each result back, then loop so it can search more or answer.
-        msgs.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+        msgs.append(
+            {"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls}
+        )
         for tc in tool_calls:
             try:
                 args = json.loads(tc.get("function", {}).get("arguments") or "{}")
             except (ValueError, TypeError):
                 args = {}
-            result, scode = await _run_search(client, base, headers, args.get("query", "Godot Node"))
+            result, scode = await _run_search(
+                client, base, headers, args.get("query", "Godot Node")
+            )
             m["search"].append(scode)
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", "0"), "content": result})
     return "ok"  # tool loop capped; treat as progress
@@ -162,8 +177,15 @@ async def _dev_session(dev_id, client, base, headers, model, tasks_per, m) -> No
 
 async def run_workflow(base, headers, model, devs, tasks_per) -> bool:
     m = {
-        "chat": [], "search": [], "turns": 0, "busy": 0, "fail": 0,
-        "overflow": 0, "overflow_graceful": True, "fail_detail": "", "overflow_body": "",
+        "chat": [],
+        "search": [],
+        "turns": 0,
+        "busy": 0,
+        "fail": 0,
+        "overflow": 0,
+        "overflow_graceful": True,
+        "fail_detail": "",
+        "overflow_body": "",
     }
     t0 = time.monotonic()
     async with httpx.AsyncClient() as client:
@@ -178,13 +200,25 @@ async def run_workflow(base, headers, model, devs, tasks_per) -> bool:
     s_ok = sum(1 for c in m["search"] if c == 200)
     p95 = sorted(chat_lat)[max(0, int(len(chat_lat) * 0.95) - 1)] if chat_lat else 0.0
     print(f"[dev-workflow] {devs} concurrent devs x {tasks_per} tasks in {wall:.0f}s")
-    print(f"  turns={m['turns']}  chat 200={ok}/{len(chat_codes)}  busy(429)={m['busy']}  hard-fail={hard}")
-    print(f"  REAL searches: {s_ok}/{len(m['search'])} ok  |  chat latency "
-          f"p50={statistics.median(chat_lat):.1f}s p95={p95:.1f}s" if chat_lat else "  (no chats)")
-    print(f"  overflows={m['overflow']} graceful={m['overflow_graceful']}  fail={m['fail']} {m['fail_detail'][:120]}")
+    print(
+        f"  turns={m['turns']}  chat 200={ok}/{len(chat_codes)}  "
+        f"busy(429)={m['busy']}  hard-fail={hard}"
+    )
+    print(
+        f"  REAL searches: {s_ok}/{len(m['search'])} ok  |  chat latency "
+        f"p50={statistics.median(chat_lat):.1f}s p95={p95:.1f}s"
+        if chat_lat
+        else "  (no chats)"
+    )
+    print(
+        f"  overflows={m['overflow']} graceful={m['overflow_graceful']}  "
+        f"fail={m['fail']} {m['fail_detail'][:120]}"
+    )
     if m["overflow_body"]:
         print(f"  overflow body: {m['overflow_body'][:160]}")
-    return hard == 0 and ok > 0 and m["fail"] == 0 and (m["overflow"] == 0 or m["overflow_graceful"])
+    return (
+        hard == 0 and ok > 0 and m["fail"] == 0 and (m["overflow"] == 0 or m["overflow_graceful"])
+    )
 
 
 def main() -> None:
