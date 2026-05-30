@@ -89,7 +89,7 @@ _source_option = typer.Option(
     None,
     "--source",
     "-s",
-    help="Filter by source: 'native' or 'remote' (default: all).",
+    help="Filter by source: native, remote, ollama, lm_studio, or frontier (default: all).",
 )
 _task_option = typer.Option(
     None,
@@ -289,7 +289,14 @@ def rm_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     src = _parse_source_or_bad_param(source)
     _confirm_remove_or_exit(ref, yes)
-    data = remove_model_data(ref, source=src)
+    try:
+        data = remove_model_data(ref, source=src)
+    except ValueError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(1) from None
     if cfg.json_mode:
         json_output(data.model_dump())
         if not data.deleted:

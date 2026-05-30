@@ -970,16 +970,290 @@ class TestSetChatModel:
             await handlers.set_chat_model("qwen3:0.6b")
 
     async def test_provider_prefixed_bare_form_resolves_via_parse(self, tmp_path, mock_svc):
-        """An ``ollama/<name>`` resolves to bare ``<name>`` when that's what list_models returns."""
+        """An ``ollama/<name>`` whose bare form the backend lists is accepted verbatim.
+
+        The backend reports the bare ``qwen3:0.6b``; the prefixed selection
+        keeps its ``ollama/`` routing prefix (rather than collapsing to the
+        bare name), so validation skips the native catalog/installed check,
+        the same path the TUI takes when persisting an Ollama selection.
+        """
         mock_svc.provider.list_models.return_value = ["qwen3:0.6b"]
-        with pytest.raises(ValueError, match="not installed"):
-            # parse path: "ollama/qwen3:0.6b" -> name="qwen3:0.6b" which is in
-            # available; validate rejects the bare colon-form as not installed
-            # because no manifest exists for that ref in the native registry.
-            await handlers.set_chat_model("ollama/qwen3:0.6b")
+        result = await handlers.set_chat_model("ollama/qwen3:0.6b")
+        assert result.model == "ollama/qwen3:0.6b"
+        assert cfg.chat_model == "ollama/qwen3:0.6b"
+
+    async def test_accepts_frontier_ref(self, tmp_path, mock_svc):
+        """A discovered frontier ref (``gemini/gemini-2.0-flash``) is selectable.
+
+        Frontier models surface through ``discover_api_models`` (a per-key
+        listing), NOT ``provider.list_models()``, so the bare name is absent
+        from the routable set the validator checks. The ref is accepted because
+        the Gemini key is configured (litellm validates the exact name at call
+        time), and the ``gemini/`` prefix is persisted verbatim so it routes to
+        the provider. (The bare name is deliberately NOT in ``list_models`` here
+        so the test exercises the real path rather than a happy-path mock.)
+        """
+        cfg.gemini_api_key = "test-gemini-key"
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        result = await handlers.set_chat_model("gemini/gemini-2.0-flash")
+        assert result.model == "gemini/gemini-2.0-flash"
+        assert cfg.chat_model == "gemini/gemini-2.0-flash"
+
+    async def test_rejects_frontier_ref_without_key(self, tmp_path, mock_svc):
+        """A frontier ref is not routable when the provider's key is unset."""
+        cfg.gemini_api_key = ""
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("gemini/gemini-2.0-flash")
+
+
+class TestHostedCatalogEntries:
+    def test_catalog_entry_response_hosted_fields(self) -> None:
+        from lilbee.catalog.types import KeyStatus, ModelSource, ModelTask
+        from lilbee.server.models import CatalogEntryResponse
+
+        e = CatalogEntryResponse(
+            hf_repo="gemini/gemini-2.0-flash",
+            gguf_filename="",
+            task=ModelTask.CHAT,
+            display_name="gemini-2.0-flash",
+            param_count="",
+            size_gb=0,
+            min_ram_gb=0,
+            description="",
+            quality_tier="",
+            featured=False,
+            downloads=0,
+            installed=True,
+            source=ModelSource.FRONTIER,
+            provider="Gemini",
+            key_status=KeyStatus.READY,
+        )
+        assert e.provider == "Gemini"
+        assert e.key_status == KeyStatus.READY
+        native = CatalogEntryResponse(
+            hf_repo="r",
+            gguf_filename="f",
+            task=ModelTask.CHAT,
+            display_name="d",
+            param_count="",
+            size_gb=1,
+            min_ram_gb=1,
+            description="",
+            quality_tier="",
+            featured=False,
+            downloads=0,
+            installed=False,
+            source=ModelSource.NATIVE,
+        )
+        assert native.provider == "" and native.key_status is None
+
+    def test_hosted_entry_from_remote_frontier(self) -> None:
+        from lilbee.catalog.types import KeyStatus, ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+        from lilbee.providers.model_ref import format_remote_ref
+        from lilbee.server.handlers.models import _hosted_entry
+
+        rm = RemoteModel(
+            name="gemini-2.0-flash",
+            task=ModelTask.CHAT,
+            family="",
+            parameter_size="",
+            provider="Gemini",
+        )
+        row = _hosted_entry(rm, ModelSource.FRONTIER)
+        assert row.source == ModelSource.FRONTIER
+        assert row.hf_repo == format_remote_ref("gemini-2.0-flash", "Gemini")
+        assert row.display_name == "gemini-2.0-flash"
+        assert row.provider == "Gemini"
+        assert row.key_status == KeyStatus.READY
+        assert row.installed is True and row.fit is None and row.size_gb == 0
+
+    def test_hosted_entry_from_remote_ollama(self) -> None:
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+        from lilbee.server.handlers.models import _hosted_entry
+
+        rm = RemoteModel(
+            name="llama3.1:8b",
+            task=ModelTask.CHAT,
+            family="llama",
+            parameter_size="8B",
+            provider="Ollama",
+        )
+        row = _hosted_entry(rm, ModelSource.OLLAMA)
+        assert row.source == ModelSource.OLLAMA
+        assert row.key_status is None and row.provider == "Ollama"
+
+    async def test_collect_hosted_entries(self, monkeypatch) -> None:
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        h._hosted_cache.set("", [])  # prime then clear to defeat any prior TTL entry
+        h._hosted_cache._result = None
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name="gemini-2.0-flash",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            },
+        )
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="llama3.1:8b",
+                    task=ModelTask.CHAT,
+                    family="llama",
+                    parameter_size="8B",
+                    provider="Ollama",
+                ),
+                RemoteModel(
+                    name="nomic-embed",
+                    task=ModelTask.EMBEDDING,
+                    family="nomic-bert",
+                    parameter_size="",
+                    provider="Ollama",
+                ),
+            ],
+        )
+        chat = await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
+        sources = {(r.display_name, r.source) for r in chat}
+        assert ("gemini-2.0-flash", ModelSource.FRONTIER) in sources
+        assert ("llama3.1:8b", ModelSource.OLLAMA) in sources
+        assert all(r.task == ModelTask.CHAT for r in chat)
+        assert ("nomic-embed", ModelSource.OLLAMA) not in sources
+        searched = await h._collect_hosted_entries(task=ModelTask.CHAT, search="gemini")
+        assert {r.display_name for r in searched} == {"gemini-2.0-flash"}
+
+    async def test_collect_hosted_entries_no_task_filter(self, monkeypatch) -> None:
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        h._hosted_cache._result = None
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="nomic-embed",
+                    task=ModelTask.EMBEDDING,
+                    family="nomic-bert",
+                    parameter_size="",
+                    provider="Ollama",
+                )
+            ],
+        )
+        rows = await h._collect_hosted_entries(task=None, search="")
+        assert {r.display_name for r in rows} == {"nomic-embed"}
+
+    async def test_collect_hosted_entries_uses_cache(self, monkeypatch) -> None:
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        h._hosted_cache._result = None
+        calls = {"n": 0}
+
+        def _discover():
+            calls["n"] += 1
+            return {
+                "Gemini": [
+                    RemoteModel(
+                        name="gemini-2.0-flash",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            }
+
+        monkeypatch.setattr(h, "discover_api_models", _discover)
+        monkeypatch.setattr(h, "classify_remote_models", lambda *a, **k: [])
+        await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
+        await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
+        assert calls["n"] == 1
+
+    def test_discover_hosted_sync_stamps_lm_studio_source(self, monkeypatch) -> None:
+        """When the backend is LM Studio, local rows carry the LM_STUDIO source."""
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        monkeypatch.setattr(h.cfg, "remote_base_url", "http://localhost:1234/v1")
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="qwen2.5-coder",
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider="LM Studio",
+                )
+            ],
+        )
+        rows = h._discover_hosted_sync()
+        assert [(r.display_name, r.source) for r in rows] == [
+            ("qwen2.5-coder", ModelSource.LM_STUDIO)
+        ]
+
+    def test_discover_hosted_sync_unknown_backend_uses_generic_remote(self, monkeypatch) -> None:
+        """An unrecognized backend URL keeps the generic REMOTE source.
+
+        Matches the fallback get_source and the CLI use for an undetected server.
+        """
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        monkeypatch.setattr(h.cfg, "remote_base_url", "http://my-host.internal:9000")
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(
+            h,
+            "classify_remote_models",
+            lambda *a, **k: [
+                RemoteModel(
+                    name="custom-model",
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider="Ollama",
+                )
+            ],
+        )
+        rows = h._discover_hosted_sync()
+        assert rows[0].source == ModelSource.REMOTE
 
 
 class TestModelsCatalog:
+    @pytest.fixture(autouse=True)
+    def _no_hosted_discovery(self, monkeypatch):
+        """Native-only by default: stub discovery empty + clear the hosted cache.
+
+        Individual tests that exercise hosted rows re-monkeypatch these.
+        """
+        import lilbee.server.handlers.models as h
+
+        h._hosted_cache._result = None
+        monkeypatch.setattr(h, "discover_api_models", lambda: {})
+        monkeypatch.setattr(h, "classify_remote_models", lambda *a, **k: [])
+
     @staticmethod
     def _manifest(hf_repo: str, gguf_filename: str, task: str = "chat"):
         from lilbee.modelhub.registry import ModelManifest
@@ -991,6 +1265,125 @@ class TestModelsCatalog:
             task=task,
             downloaded_at="2026-01-01T00:00:00+00:00",
         )
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_includes_hosted_on_first_page(self, mock_get_catalog, mock_svc, monkeypatch):
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog import CatalogResult
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
+        mock_svc.registry.list_installed.return_value = []
+        h._hosted_cache._result = None
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name="gemini-2.0-flash",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            },
+        )
+        resp = await handlers.models_catalog(task="chat")
+        frontier = [m for m in resp.models if m.source == ModelSource.FRONTIER]
+        assert frontier and frontier[0].display_name == "gemini-2.0-flash"
+        assert frontier[0].key_status == "ready"
+        assert resp.total == 1  # 0 native + 1 hosted
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_skipped_when_featured_filter(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog import CatalogResult
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
+        mock_svc.registry.list_installed.return_value = []
+        h._hosted_cache._result = None
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name="g",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            },
+        )
+        resp = await handlers.models_catalog(task="chat", featured=True)
+        assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_skipped_on_later_page(self, mock_get_catalog, mock_svc, monkeypatch):
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog import CatalogResult
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=20, models=[])
+        mock_svc.registry.list_installed.return_value = []
+        h._hosted_cache._result = None
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name="g",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            },
+        )
+        resp = await handlers.models_catalog(task="chat", offset=20)
+        assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_hosted_skipped_when_installed_false(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog import CatalogResult
+        from lilbee.catalog.types import ModelSource, ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
+        mock_svc.registry.list_installed.return_value = []
+        h._hosted_cache._result = None
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {
+                "Gemini": [
+                    RemoteModel(
+                        name="g",
+                        task=ModelTask.CHAT,
+                        family="",
+                        parameter_size="",
+                        provider="Gemini",
+                    )
+                ]
+            },
+        )
+        resp = await handlers.models_catalog(task="chat", installed=False)
+        assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
@@ -1391,12 +1784,55 @@ class TestModelsInstalled:
             result = await handlers.models_installed()
         assert result.models[0].source == "remote"
 
+    async def test_ollama_model_reports_granular_source_and_canonical_ref(self):
+        """A bare Ollama name surfaces as source 'ollama' with the prefixed ref."""
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["qwen3:0.6b"]
+        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "ollama/qwen3:0.6b"
+        assert result.models[0].source == "ollama"
+
+    async def test_already_prefixed_ollama_ref_not_double_prefixed(self):
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["ollama/qwen3:0.6b"]
+        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "ollama/qwen3:0.6b"
+
+    async def test_lm_studio_model_reports_granular_source_and_canonical_ref(self):
+        """A bare LM Studio name surfaces as source 'lm_studio' with the prefixed ref."""
+        from lilbee.catalog.types import ModelSource
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["qwen2.5-coder"]
+        mock_manager.get_source.return_value = ModelSource.LM_STUDIO
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            result = await handlers.models_installed()
+        assert result.models[0].name == "lm_studio/qwen2.5-coder"
+        assert result.models[0].source == "lm_studio"
+
 
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -1411,26 +1847,6 @@ class TestModelsPull:
         non_empty = [e for e in events if e]
         assert any('"current": 500' in e for e in non_empty)
         assert any('"total": 1000' in e for e in non_empty)
-
-    async def test_yields_progress_events_litellm(self):
-        """Litellm pulls use on_progress (dict), not on_bytes (int, int)."""
-        mock_manager = MagicMock()
-
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
-            if on_progress:
-                on_progress({"status": "downloading"})
-                on_progress({"status": "success"})
-            return
-
-        mock_manager.pull.side_effect = fake_pull
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            events = [e async for e in handlers.models_pull("test", source="remote")]
-        non_empty = [e for e in events if e]
-        assert any("downloading" in e for e in non_empty)
-        assert any("success" in e for e in non_empty)
 
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
@@ -1450,9 +1866,7 @@ class TestModelsPull:
         barrier = threading.Event()
         mock_manager = MagicMock()
 
-        def blocking_pull(
-            model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
-        ):
+        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 on_bytes(100, 1000)
             barrier.wait(timeout=2)
@@ -1484,7 +1898,7 @@ class TestModelsDelete:
             "lilbee.server.handlers.models.get_services",
             return_value=MagicMock(model_manager=mock_manager),
         ):
-            result = await handlers.models_delete("test", source="remote")
+            result = await handlers.models_delete("test", source="native")
         assert result.deleted is True
         assert result.model == "test"
 
@@ -1498,6 +1912,25 @@ class TestModelsDelete:
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
+
+    async def test_read_only_source_returns_409(self):
+        """Refusing to remove a read-only local-server model surfaces as a 409."""
+        from litestar.exceptions import HTTPException
+
+        mock_manager = MagicMock()
+        mock_manager.remove.side_effect = ValueError(
+            "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        )
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await handlers.models_delete("ollama/llama3:latest", source="ollama")
+        assert exc_info.value.status_code == 409
+        assert "doesn't remove them" in str(exc_info.value.detail)
 
 
 class TestModelsShow:
@@ -2617,22 +3050,6 @@ class TestAddHandlerCancel:
 
 
 class TestModelPullProgressCancel:
-    async def test_cancel_skips_progress(self):
-        """When cancel is set, the progress callback returns early."""
-        from lilbee.server.handlers import SseStream
-
-        sse = SseStream()
-        sse.cancel.set()
-
-        # Simulate the progress callback pattern from models_pull
-        def _on_progress(data):
-            if sse.cancel.is_set():
-                return
-            sse.queue.put_nowait("should_not_appear")
-
-        _on_progress({"status": "downloading"})
-        assert sse.queue.empty()
-
     async def test_cancel_during_pull_skips_later_progress(self):
         """When cancel is set before pull starts, all progress calls return early."""
         import threading
@@ -2640,7 +3057,7 @@ class TestModelPullProgressCancel:
         mock_manager = MagicMock()
         progress_called = threading.Event()
 
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
             if on_bytes:
                 # All progress calls should see cancel already set
                 on_bytes(500, 1000)
@@ -2671,42 +3088,6 @@ class TestModelPullProgressCancel:
 
         assert progress_called.is_set()  # Pull did call on_bytes
         assert not any("current" in e for e in events if e)
-
-    async def test_cancel_during_litellm_pull_skips_progress(self):
-        """When cancel is set before litellm pull starts, on_progress returns early."""
-        import threading
-
-        mock_manager = MagicMock()
-        progress_called = threading.Event()
-
-        def fake_pull(model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
-            if on_progress:
-                on_progress({"status": "should_be_suppressed"})
-                progress_called.set()
-
-        mock_manager.pull.side_effect = fake_pull
-
-        original_init = handlers.SseStream.__init__
-
-        def patched_init(self):
-            original_init(self)
-            self.cancel.set()
-
-        with (
-            patch(
-                "lilbee.server.handlers.models.get_services",
-                return_value=MagicMock(model_manager=mock_manager),
-            ),
-            patch.object(handlers.SseStream, "__init__", patched_init),
-        ):
-            gen = handlers.models_pull("test", source="remote")
-            events = []
-            async for event in gen:
-                events.append(event)
-            await asyncio.sleep(0.2)
-
-        assert progress_called.is_set()
-        assert not any("should_be_suppressed" in e for e in events if e)
 
 
 class TestSearchRouteErrors:

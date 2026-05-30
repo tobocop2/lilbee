@@ -31,6 +31,8 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container. lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
+Already running [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai)? Point lilbee at either one and keep managing your models there. lilbee also comes with first-class model management built in, so you can browse Hugging Face, download a model, and give it a role without leaving the app. Use whichever you prefer.
+
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
 > ## ⚠️ Beta software
