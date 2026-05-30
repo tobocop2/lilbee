@@ -10,7 +10,6 @@ adapter lands (e.g. ``LiterLlmSdkBackend``), add it to the
 
 from __future__ import annotations
 
-import json
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -406,39 +405,15 @@ class TestListChatModels:
 
 
 class TestPullModel:
-    def test_streams_progress_events(self, backend: LlmSdkBackend) -> None:
-        events: list[dict[str, Any]] = []
-        resp_ctx = mock.MagicMock()
-        resp_ctx.__enter__ = lambda self: resp_ctx
-        resp_ctx.__exit__ = lambda self, *a: None
-        resp_ctx.iter_lines.return_value = [
-            json.dumps({"status": "downloading"}),
-            "",  # empty lines skipped
-            json.dumps({"status": "success"}),
-        ]
-        resp_ctx.raise_for_status = mock.MagicMock()
-
-        client_ctx = mock.MagicMock()
-        client_ctx.__enter__ = lambda self: client_ctx
-        client_ctx.__exit__ = lambda self, *a: None
-        client_ctx.stream.return_value = resp_ctx
-
-        with mock.patch("httpx.Client", return_value=client_ctx):
-            backend.pull_model(
-                "m",
-                base_url="http://localhost:11434",
-                on_progress=events.append,
-            )
-        assert events == [{"status": "downloading"}, {"status": "success"}]
-
-    def test_http_error_wraps_in_provider_error(self, backend: LlmSdkBackend) -> None:
-        client_ctx = mock.MagicMock()
-        client_ctx.__enter__ = lambda self: client_ctx
-        client_ctx.__exit__ = lambda self, *a: None
-        client_ctx.stream.side_effect = httpx.ConnectError("refused")
-
+    def test_refused_for_read_only_ollama(self, backend: LlmSdkBackend) -> None:
+        """Ollama is read-only: pull is refused without any network call."""
         with (
-            mock.patch("httpx.Client", return_value=client_ctx),
-            pytest.raises(ProviderError, match="Cannot pull model"),
+            mock.patch("httpx.Client") as client,
+            pytest.raises(ProviderError, match="Ollama"),
         ):
             backend.pull_model("m", base_url="http://localhost:11434")
+        client.assert_not_called()
+
+    def test_refused_for_read_only_lm_studio(self, backend: LlmSdkBackend) -> None:
+        with pytest.raises(ProviderError, match="LM Studio"):
+            backend.pull_model("m", base_url="http://localhost:1234/v1")

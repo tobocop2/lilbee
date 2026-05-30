@@ -12,6 +12,7 @@ class BackendName(StrEnum):
     """Display name shown in the UI for whichever backend the SDK is talking to."""
 
     OLLAMA = "Ollama"
+    LM_STUDIO = "LM Studio"
     OPENROUTER = "OpenRouter"
     GEMINI = "Gemini"
     ANTHROPIC = "Anthropic"

@@ -806,16 +806,17 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
     """Remove an installed model.
 
     Args:
-        model: Model ref to remove.
-        source: Restrict to "native" or "remote"; empty = both.
+        model: Model ref to remove. lilbee removes only native models it
+            downloaded; Ollama and LM Studio models are read-only.
+        source: Restrict to a known source; empty = resolve from the ref.
     """
     from lilbee.app.models import remove_model_data
 
     try:
         src = ModelSource.parse(source)
+        return remove_model_data(model, source=src).model_dump()
     except ValueError as exc:
         return _error(str(exc))
-    return remove_model_data(model, source=src).model_dump()
 
 
 @mcp.tool()
