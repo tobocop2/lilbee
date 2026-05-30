@@ -1871,6 +1871,44 @@ class TestLiteLLMShowModelCapabilities:
         assert caps == []
 
 
+class TestLMStudioCapabilityGuards:
+    """LM Studio has no Ollama-style /api/pull or /api/show endpoints."""
+
+    _LM_STUDIO_BASE = "http://localhost:1234/v1"
+
+    def _backend(self):  # type: ignore[no-untyped-def]
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        return LitellmSdkBackend()
+
+    def test_pull_model_raises_user_facing_error(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        backend = self._backend()
+        with pytest.raises(ProviderError) as exc:
+            backend.pull_model("qwen2.5-7b-instruct", base_url=self._LM_STUDIO_BASE)
+        # User-facing message names LM Studio and the fix; no internal vocabulary.
+        assert "LM Studio" in str(exc.value)
+        assert "dispatch" not in str(exc.value).lower()
+
+    def test_pull_model_makes_no_http_call(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        backend = self._backend()
+        with mock.patch("httpx.Client") as client, pytest.raises(ProviderError):
+            backend.pull_model("qwen2.5-7b-instruct", base_url=self._LM_STUDIO_BASE)
+        client.assert_not_called()
+
+    def test_show_model_returns_none_without_http_call(self) -> None:
+        backend = self._backend()
+        with mock.patch("httpx.post") as post:
+            result = backend.show_model(
+                "lm_studio/qwen2.5-7b-instruct", base_url=self._LM_STUDIO_BASE
+            )
+        assert result is None
+        post.assert_not_called()
+
+
 class TestShowModelNotFound:
     def test_returns_none_for_missing_model(self) -> None:
         from lilbee.providers.llama_cpp import LlamaCppProvider
@@ -4164,31 +4202,64 @@ class TestReadMmprojProjectorTypePartial:
         assert result == "resampler"
 
 
-class TestIsOllama:
-    def test_localhost_default_port(self) -> None:
-        from lilbee.providers.litellm_sdk import _is_ollama
+class TestOpenAIModelsUrl:
+    def test_appends_v1_models_when_absent(self) -> None:
+        from lilbee.providers.local_servers import openai_models_url
 
-        assert _is_ollama("http://localhost:11434") is True
+        assert openai_models_url("http://localhost:11434") == "http://localhost:11434/v1/models"
 
-    def test_127_default_port(self) -> None:
-        from lilbee.providers.litellm_sdk import _is_ollama
+    def test_does_not_double_v1_when_present(self) -> None:
+        from lilbee.providers.local_servers import openai_models_url
 
-        assert _is_ollama("http://127.0.0.1:11434") is True
+        assert openai_models_url("http://localhost:1234/v1") == "http://localhost:1234/v1/models"
+
+    def test_tolerates_trailing_slash(self) -> None:
+        from lilbee.providers.local_servers import openai_models_url
+
+        assert openai_models_url("http://localhost:1234/v1/") == "http://localhost:1234/v1/models"
+
+
+class TestDetectLocalServer:
+    def test_ollama_default_port(self) -> None:
+        from lilbee.providers.local_servers import OLLAMA, detect_local_server
+
+        assert detect_local_server("http://localhost:11434") is OLLAMA
+
+    def test_ollama_127_default_port(self) -> None:
+        from lilbee.providers.local_servers import OLLAMA, detect_local_server
+
+        assert detect_local_server("http://127.0.0.1:11434") is OLLAMA
 
     def test_ollama_in_url(self) -> None:
-        from lilbee.providers.litellm_sdk import _is_ollama
+        from lilbee.providers.local_servers import OLLAMA, detect_local_server
 
-        assert _is_ollama("https://ollama.example.com") is True
+        assert detect_local_server("https://ollama.example.com") is OLLAMA
+
+    def test_lm_studio_default_port(self) -> None:
+        from lilbee.providers.local_servers import LM_STUDIO, detect_local_server
+
+        assert detect_local_server("http://localhost:1234") is LM_STUDIO
+
+    def test_lm_studio_127_with_v1(self) -> None:
+        from lilbee.providers.local_servers import LM_STUDIO, detect_local_server
+
+        assert detect_local_server("http://127.0.0.1:1234/v1") is LM_STUDIO
+
+    def test_lm_studio_port_not_confused_with_ollama(self) -> None:
+        """LM Studio's pattern must not match Ollama's longer port substring."""
+        from lilbee.providers.local_servers import OLLAMA, detect_local_server
+
+        assert detect_local_server("http://localhost:11434") is OLLAMA
 
     def test_openai_url(self) -> None:
-        from lilbee.providers.litellm_sdk import _is_ollama
+        from lilbee.providers.local_servers import detect_local_server
 
-        assert _is_ollama("https://api.openai.com") is False
+        assert detect_local_server("https://api.openai.com") is None
 
     def test_custom_url(self) -> None:
-        from lilbee.providers.litellm_sdk import _is_ollama
+        from lilbee.providers.local_servers import detect_local_server
 
-        assert _is_ollama("http://myserver:8080") is False
+        assert detect_local_server("http://myserver:8080") is None
 
 
 class TestRouteModel:
@@ -4237,6 +4308,30 @@ class TestRouteModel:
 
         ref = parse_model_ref("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
         assert _route_model(ref, "https://example.com/v1") == ref.name
+
+    def test_lm_studio_ref_routes_to_lm_studio_prefix(self) -> None:
+        """LM Studio refs carry litellm's ``lm_studio/`` provider prefix."""
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref("lm_studio/qwen2.5-7b-instruct")
+        assert _route_model(ref, "http://localhost:1234/v1") == "lm_studio/qwen2.5-7b-instruct"
+
+    def test_local_ref_on_lm_studio_url_adds_prefix(self) -> None:
+        """A bare local ref forced through an LM Studio base URL gets prefixed."""
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
+        assert _route_model(ref, "http://localhost:1234/v1") == f"lm_studio/{ref.name}"
+
+    def test_lm_studio_ref_routes_regardless_of_api_base(self) -> None:
+        """An ``lm_studio/`` ref keeps its prefix even with no api_base set."""
+        from lilbee.providers.litellm_sdk import _route_model
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref("lm_studio/some-model")
+        assert _route_model(ref, None) == "lm_studio/some-model"
 
 
 class TestInjectProviderKeys:

@@ -14,11 +14,11 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum, StrEnum
+from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant, extract_quant
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.types import KeyStatus, ModelCompat, ModelTask
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
@@ -160,13 +160,6 @@ class LocalCatalogRow:
     fit: FitChip | None = None
     compat: ModelCompat = ModelCompat.UNKNOWN
     kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
-
-
-class KeyStatus(Enum):
-    """Whether the user has the API key needed to use a frontier model."""
-
-    READY = "ready"
-    MISSING_KEY = "missing_key"
 
 
 @dataclass

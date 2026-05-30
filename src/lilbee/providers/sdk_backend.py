@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 # Display name for the active backend the SDK is talking to. The
 # adapter's own identity is exposed separately via provider_name.
 from lilbee.providers.backend_names import BackendName
+from lilbee.providers.local_servers import detect_local_server
 
 if TYPE_CHECKING:
     # circular: sdk_backend -> model_ref -> types -> sdk_backend (annotation-only)
@@ -61,9 +62,10 @@ def get_provider_api_key(provider: str) -> str | None:
     return value or None
 
 
-_BACKEND_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
-    ("localhost:11434", BackendName.OLLAMA),
-    ("ollama", BackendName.OLLAMA),
+# Hosted API providers identified by URL substring. Local OpenAI-compatible
+# servers (Ollama, LM Studio) are matched ahead of this table via the
+# local-servers registry, so they are not listed here.
+_REMOTE_API_URL_PATTERNS: tuple[tuple[str, BackendName], ...] = (
     ("openrouter", BackendName.OPENROUTER),
     ("openai", BackendName.OPENAI),
     ("anthropic", BackendName.ANTHROPIC),
@@ -78,11 +80,14 @@ def detect_backend_name(base_url: str) -> BackendName:
     """Return the display name of the backend behind ``base_url``.
 
     Adapter-agnostic; any SDK implementation can delegate to this helper.
-    Falls back to ``BackendName.REMOTE`` when the URL matches none of
-    the known patterns.
+    Checks the local-server registry (Ollama, LM Studio) first, then the
+    hosted-API URL patterns, and falls back to ``BackendName.REMOTE``.
     """
+    local = detect_local_server(base_url)
+    if local is not None:
+        return local.display_name
     url_lower = base_url.lower()
-    for pattern, name in _BACKEND_URL_PATTERNS:
+    for pattern, name in _REMOTE_API_URL_PATTERNS:
         if pattern in url_lower:
             return name
     return BackendName.REMOTE

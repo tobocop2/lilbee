@@ -25,6 +25,9 @@ class ModelSource(StrEnum):
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
     REMOTE = "remote"  # Models managed by a remote SDK-backed service
+    FRONTIER = "frontier"  # Cloud API-key models (Gemini/OpenAI/Anthropic/…)
+    OLLAMA = "ollama"  # Models served by a reachable Ollama endpoint
+    LM_STUDIO = "lm_studio"  # Models served by a reachable LM Studio endpoint
 
     @classmethod
     def parse(cls, value: str | None) -> ModelSource | None:
@@ -40,6 +43,13 @@ class ModelSource(StrEnum):
         except ValueError as exc:
             valid = ", ".join(s.value for s in cls)
             raise ValueError(f"invalid source {value!r}; expected one of: {valid}") from exc
+
+
+class KeyStatus(StrEnum):
+    """Whether a hosted provider's API key is configured."""
+
+    READY = "ready"
+    MISSING_KEY = "missing_key"
 
 
 class CatalogSize(StrEnum):

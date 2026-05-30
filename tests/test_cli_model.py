@@ -107,19 +107,20 @@ class _FakeManager:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False):
+    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False):
         self.pull_calls.append((model, source))
         if on_bytes is not None:
             on_bytes(50, 100)
         return f"/fake/{model}.gguf"
 
     def remove(self, model, source=None) -> bool:
+        # Mirror ModelManager: only native models are removable; local servers
+        # are read-only, so a non-native source is refused.
         self.remove_calls.append((model, source))
-        if (source is ModelSource.NATIVE or source is None) and model in self._native:
+        if source is not None and source is not ModelSource.NATIVE:
+            raise ValueError("lilbee runs Ollama models but doesn't remove them.")
+        if model in self._native:
             self._native.remove(model)
-            return True
-        if (source is ModelSource.REMOTE or source is None) and model in self._litellm:
-            self._litellm.remove(model)
             return True
         return False
 
@@ -179,13 +180,20 @@ class TestModelEntryFactories:
 
     def test_from_backend_with_remote(self):
         remote = _remote(_OLLAMA_REF, task="chat", parameter_size="8B")
-        entry = ModelEntry.from_backend(_OLLAMA_REF, remote)
-        assert entry.source == "remote"
+        entry = ModelEntry.from_backend(_OLLAMA_REF, remote, ModelSource.OLLAMA)
+        assert entry.source == "ollama"
         assert entry.task == "chat"
         assert entry.display_name == "8B"
 
+    def test_from_backend_prefixes_bare_name(self):
+        remote = _remote("qwen2.5-coder", task="chat", parameter_size="7B")
+        entry = ModelEntry.from_backend("qwen2.5-coder", remote, ModelSource.LM_STUDIO)
+        assert entry.source == "lm_studio"
+        assert entry.name == "lm_studio/qwen2.5-coder"
+
     def test_from_backend_missing_remote(self):
-        entry = ModelEntry.from_backend(_OLLAMA_REF, None)
+        entry = ModelEntry.from_backend(_OLLAMA_REF, None, ModelSource.OLLAMA)
+        assert entry.source == "ollama"
         assert entry.task is None
         assert entry.display_name == ""
 
@@ -196,7 +204,7 @@ class TestListModelsData:
         assert isinstance(data, ListModelsResult)
         assert data.total == 2
         sources = {e.source for e in data.models}
-        assert sources == {"native", "remote"}
+        assert sources == {"native", "ollama"}
 
     def test_filter_source_native_skips_litellm_http(self, fake_manager, native_manifests):
         with patch("lilbee.modelhub.model_manager.classify_remote_models") as classify:
@@ -205,10 +213,26 @@ class TestListModelsData:
         assert data.total == 1
         assert data.models[0].name == _CHAT_REF
 
-    def test_filter_source_litellm(self, fake_manager, native_manifests, with_remote_classify):
+    def test_filter_source_remote_keeps_all_backend(
+        self, fake_manager, native_manifests, with_remote_classify
+    ):
+        # REMOTE is the generic backend bucket: every backend entry, granular source.
         data = model_mod.list_models_data(source=ModelSource.REMOTE)
         assert data.total == 1
-        assert data.models[0].source == "remote"
+        assert data.models[0].source == "ollama"
+
+    def test_filter_source_ollama_matches_backend(
+        self, fake_manager, native_manifests, with_remote_classify
+    ):
+        data = model_mod.list_models_data(source=ModelSource.OLLAMA)
+        assert {e.source for e in data.models} == {"ollama"}
+
+    def test_filter_source_lm_studio_empty_against_ollama_backend(
+        self, fake_manager, native_manifests, with_remote_classify
+    ):
+        # Backend is Ollama (default base url), so an LM Studio filter yields nothing.
+        data = model_mod.list_models_data(source=ModelSource.LM_STUDIO)
+        assert data.models == []
 
     def test_task_filter_drops_entries_without_matching_task(
         self, fake_manager, native_manifests, with_remote_classify
@@ -392,34 +416,6 @@ class TestPullModelData:
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
 
-    def test_build_pull_callbacks_none_when_no_on_update(self):
-        dict_cb, bytes_cb = model_mod._build_pull_callbacks(None)
-        assert dict_cb is None
-        assert bytes_cb is None
-
-    def test_pull_litellm_adapts_dict_events(self, native_manifests):
-        events = []
-
-        class _Litellm(_FakeManager):
-            def pull(
-                self, model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False
-            ):
-                self.pull_calls.append((model, source))
-                if on_progress is not None:
-                    on_progress({"status": "pulling", "completed": 25, "total": 100})
-                return
-
-        manager = _Litellm()
-        with patch("lilbee.app.models.get_services", return_value=MagicMock(model_manager=manager)):
-            result = model_mod.pull_model_data(
-                _OLLAMA_REF, ModelSource.REMOTE, on_update=events.append
-            )
-        assert result.status == PullStatus.OK
-        assert result.path is None
-        assert events
-        assert events[0].percent == 25
-        assert events[0].detail == "pulling"
-
 
 class TestPullCmd:
     def test_json_stream_emits_done_event(self, fake_manager, native_manifests):
@@ -521,6 +517,20 @@ class TestRmCmd:
         assert result.exit_code == 1
         parsed = RemoveResult.model_validate_json(result.output)
         assert parsed.deleted is False
+
+    def test_read_only_refusal_exits_1(self, fake_manager, native_manifests):
+        msg = "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        with patch("lilbee.cli.model.remove_model_data", side_effect=ValueError(msg)):
+            result = runner.invoke(app, ["model", "rm", "--yes", "ollama/llama3:latest"])
+        assert result.exit_code == 1
+        assert "doesn't remove them" in result.output
+
+    def test_json_read_only_refusal_exits_1(self, fake_manager, native_manifests):
+        msg = "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        with patch("lilbee.cli.model.remove_model_data", side_effect=ValueError(msg)):
+            result = runner.invoke(app, ["--json", "model", "rm", "--yes", "ollama/llama3:latest"])
+        assert result.exit_code == 1
+        assert "doesn't remove them" in result.output
 
     def test_invalid_source(self, fake_manager):
         result = runner.invoke(app, ["model", "rm", "--yes", _CHAT_REF, "--source", "bad"])
