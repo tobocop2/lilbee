@@ -150,6 +150,8 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 If your models already live in Ollama or LM Studio, point lilbee at the running endpoint and those models appear in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own models and any cloud models. They're read-only: lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use. Mix all of it freely, and pick whatever fits how you work.
 
+On a `pip` or `uv` install, talking to Ollama or LM Studio needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, and Docker builds already include it. See [Install](#install).
+
 ### See when a model won't load before you download it
 
 Hugging Face has thousands of GGUFs, but the bundled llama.cpp only supports a subset of architectures and brand-new ones take time to reach the pinned runtime. lilbee tags incompatible models in the catalog and refuses the download (with an override confirm), so you don't wait through a multi-GB pull only to hit "unsupported architecture" at load.
