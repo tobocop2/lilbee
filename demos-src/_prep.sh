@@ -77,6 +77,28 @@ seed_indexed_corpus() {
     "$LILBEE" rebuild --data-dir "$data"
 }
 
+seed_ollama_corpus() {
+    # tui-ollama-document: index the manual with the OLLAMA embedder into an
+    # isolated data dir whose models dir is empty, so the catalog and model
+    # bar show only the Ollama-served model (no native models in play).
+    # Requires Ollama running with qwen3:0.6b + nomic-embed-text pulled, and a
+    # lilbee built with the litellm extra (the remote provider routes there).
+    local data="$ROOT/tui-ollama-document"
+    local models="$ROOT/tui-ollama-document-models"
+    mkdir -p "$data/documents" "$models"
+    if "$LILBEE" status --data-dir "$data" 2>/dev/null | grep -q crown-victoria-manual; then
+        return 0
+    fi
+    log "indexing manual via ollama into $data"
+    cp "$CV_MANUAL" "$data/documents/crown-victoria-manual.pdf"
+    LILBEE_MODELS_DIR="$models" \
+        LILBEE_LLM_PROVIDER=remote \
+        LILBEE_REMOTE_BASE_URL="http://localhost:11434" \
+        LILBEE_CHAT_MODEL="ollama/qwen3:0.6b" \
+        LILBEE_EMBEDDING_MODEL="ollama/nomic-embed-text" \
+        "$LILBEE" rebuild --data-dir "$data"
+}
+
 reset_clean_slate() {
     local tape="$1"
     local data="$ROOT/$tape"
@@ -354,6 +376,11 @@ main() {
     for tape in "${SEEDED_TAPES[@]}"; do
         seed_indexed_corpus "$tape"
     done
+
+    # tui-ollama-document indexes the manual through Ollama, not a native
+    # model. Best-effort: skip if Ollama isn't reachable so prep still
+    # completes for the native tapes.
+    seed_ollama_corpus || log "skipped tui-ollama-document (ollama not reachable?)"
 
     # Page-cache the chat model so each tape's `lilbee` launch mmaps fast.
     # Inference itself can only be warmed *inside* the tape recording.
