@@ -36,11 +36,20 @@ def display_name(ref: str) -> str:
     return f"{stem[: match.start()]} {match.group('quant')}"
 
 
+def _model_entry(ref: str, chat_ctx: int | None) -> dict[str, Any]:
+    """One opencode model entry, carrying the served window so opencode trims to it."""
+    entry: dict[str, Any] = {"name": display_name(ref)}
+    if chat_ctx is not None:
+        entry["limit"] = {"context": chat_ctx}
+    return entry
+
+
 def opencode_config(
     *,
     base_url: str,
     api_key: str,
     model_refs: list[str],
+    chat_ctx: int | None = None,
 ) -> dict[str, Any]:
     """Return the opencode.json block wiring lilbee as a provider.
 
@@ -48,7 +57,9 @@ def opencode_config(
     the chat-completions ``/v1`` and MCP ``/mcp`` suffixes are appended here.
     The MCP block points opencode at the daemon's streamable-http endpoint with
     the bearer token, so retrieval shares the daemon's warm models instead of
-    spawning a second process.
+    spawning a second process. ``chat_ctx`` is the active model's served window;
+    when set it becomes each model's ``limit.context`` so opencode trims history
+    to fit instead of overflowing on a long agentic session.
     """
     return {
         "$schema": "https://opencode.ai/config.json",
@@ -60,7 +71,7 @@ def opencode_config(
                     "baseURL": f"{base_url}/v1",
                     "apiKey": api_key,
                 },
-                "models": {ref: {"name": display_name(ref)} for ref in sorted(model_refs)},
+                "models": {ref: _model_entry(ref, chat_ctx) for ref in sorted(model_refs)},
             }
         },
         "mcp": {

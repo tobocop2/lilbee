@@ -1,6 +1,5 @@
 """Tests for the Litestar HTTP adapter."""
 
-import asyncio
 import json
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -334,125 +333,91 @@ class TestChatStreamRoute:
 
 
 class TestStreamSingleFlightGate:
-    """The chat-streaming endpoints serialize to one in-flight request via chat_lock()."""
+    """The chat endpoints admit up to the backend's slot capacity, then 429."""
 
     @pytest.fixture(autouse=True)
-    def _isolate_chat_lock(self):
-        """Reset the lru_cache-backed chat_lock so each test gets a fresh lock
-        bound to its own event loop. Without this the lock object outlives the
-        loop that constructed it, and the next test's wait_for fails to wake
-        from a stale waiter list.
-        """
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
+    def _isolate_gate(self):
+        """Reset the lru_cache-backed gate so each test starts at zero in-flight."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
 
-        chat_lock.cache_clear()
+        chat_gate.cache_clear()
         yield
-        chat_lock.cache_clear()
+        chat_gate.cache_clear()
+
+    @staticmethod
+    def _fill_gate() -> None:
+        """Mark every chat slot busy so the next request must wait, then 429."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
+
+        chat_gate()._in_flight = 999
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_concurrent_ask_stream_returns_429_after_wait_timeout(self, mock_stream, client):
-        """A second /api/ask/stream while the first holds the lock waits up to
-        the configured timeout, then returns 429 + Retry-After.
-        """
+        """A second /api/ask/stream while every slot is busy waits, then 429s."""
         from lilbee.server.chat_dispatch import concurrency as concurrency_mod
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(chat_lock().acquire())
-            try:
-                with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
-                    resp = client.post("/api/ask/stream", json={"question": "hi"})
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                chat_lock().release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/ask/stream", json={"question": "hi"})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.chat_stream")
     def test_concurrent_chat_stream_returns_429_after_wait_timeout(self, mock_stream, client):
-        """A second /api/chat/stream while the first holds the lock waits then 429s."""
+        """A second /api/chat/stream while every slot is busy waits, then 429s."""
         from lilbee.server.chat_dispatch import concurrency as concurrency_mod
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(chat_lock().acquire())
-            try:
-                with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
-                    resp = client.post(
-                        "/api/chat/stream",
-                        json={"question": "hi", "history": []},
-                    )
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                chat_lock().release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
     def test_concurrent_ask_returns_429_after_wait_timeout(self, mock_ask, client):
-        """Non-streaming /api/ask shares the same chat_lock as the streaming endpoints."""
+        """Non-streaming /api/ask shares the same admission gate."""
         from lilbee.server.chat_dispatch import concurrency as concurrency_mod
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_ask.return_value = {"answer": "x", "sources": []}
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(chat_lock().acquire())
-            try:
-                with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
-                    resp = client.post("/api/ask", json={"question": "hi"})
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                chat_lock().release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/ask", json={"question": "hi"})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
     def test_concurrent_chat_returns_429_after_wait_timeout(self, mock_chat, client):
-        """Non-streaming /api/chat shares the same chat_lock as the streaming endpoints."""
+        """Non-streaming /api/chat shares the same admission gate."""
         from lilbee.server.chat_dispatch import concurrency as concurrency_mod
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
 
         mock_chat.return_value = {"answer": "x", "sources": []}
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(chat_lock().acquire())
-            try:
-                with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
-                    resp = client.post("/api/chat", json={"question": "hi", "history": []})
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                chat_lock().release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/chat", json={"question": "hi", "history": []})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_sequential_streams_succeed(self, mock_stream, client):
-        """After the first stream completes, the second one is allowed."""
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
+        """After the first stream completes, its slot frees and the second is allowed."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp1 = client.post("/api/ask/stream", json={"question": "first"})
         assert resp1.status_code == 201
         assert b"event: token" in resp1.content
-        # Lock must have been released by the gated_stream's finally.
-        assert chat_lock().locked() is False
+        # The slot must have been released by the gated_stream's finally.
+        assert chat_gate().in_flight == 0
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp2 = client.post("/api/ask/stream", json={"question": "second"})
         assert resp2.status_code == 201
 
     @mock.patch("lilbee.server.handlers.ask_stream")
-    def test_lock_released_on_provider_error(self, mock_stream, client):
-        """When the SSE generator raises, the lock is still released for the next caller."""
-        from lilbee.server.chat_dispatch.concurrency import chat_lock
+    def test_slot_released_on_provider_error(self, mock_stream, client):
+        """When the SSE generator raises, the slot is still freed for the next caller."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
 
         async def _raising_gen():
             yield "event: token\ndata: {}\n\n"
@@ -462,10 +427,10 @@ class TestStreamSingleFlightGate:
         import contextlib
 
         # The TestClient sees the partial response; the generator's finally
-        # block still runs and releases the lock.
+        # block still runs and frees the slot.
         with contextlib.suppress(Exception):
             client.post("/api/ask/stream", json={"question": "boom"})
-        assert chat_lock().locked() is False
+        assert chat_gate().in_flight == 0
 
 
 class TestSyncRoute:

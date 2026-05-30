@@ -67,10 +67,12 @@ from lilbee.server.models import HealthResponse, StatusResponse
 
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
+    provider = get_services().provider
     return HealthResponse(
         status="ok",
         version=get_version(),
-        chat_ready=get_services().provider.role_ready(WorkerRole.CHAT),
+        chat_ready=provider.role_ready(WorkerRole.CHAT),
+        chat_ctx=provider.served_chat_ctx(),
     )
 
 

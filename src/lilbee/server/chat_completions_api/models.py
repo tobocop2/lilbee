@@ -186,6 +186,9 @@ class ModelEntry(BaseModel):
     object: Literal["model"] = "model"
     owned_by: str = "lilbee"
     created: int
+    context_window: int | None = None
+    """The context the active chat engine serves, so a client can trim history to
+    fit. None when the engine is not up yet or the window is unknown."""
 
 
 class ModelsListResponse(BaseModel):

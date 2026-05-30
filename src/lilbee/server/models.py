@@ -172,6 +172,9 @@ class HealthResponse(BaseModel):
     A launcher polls this to wait out the cold model load before handing off to
     a client, so the client never lands on an apparently-dead stream.
     """
+    chat_ctx: int | None = None
+    """Per-slot context the chat engine serves, so a launcher can tell the client
+    its window and the client trims history to fit. None until the engine is up."""
 
 
 class AskResponse(BaseModel):

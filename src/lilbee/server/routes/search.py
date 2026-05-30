@@ -18,8 +18,8 @@ from lilbee.server.auth import read_only
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
-    acquire_chat_lock_or_busy,
-    chat_lock,
+    acquire_chat_slot_or_busy,
+    release_chat_slot,
 )
 from lilbee.server.models import (
     AskRequest,
@@ -45,8 +45,10 @@ def _raise_chat_http_error(exc: Exception) -> NoReturn:
 
 async def _acquire_chat_lock_or_raise() -> None:
     """Translate the canonical busy signal into Litestar's HTTP 429 envelope."""
+    from lilbee.app.services import get_services
+
     try:
-        await acquire_chat_lock_or_busy()
+        await acquire_chat_slot_or_busy(get_services().provider.max_concurrent_chats())
     except ChatBusyError as exc:
         raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"}) from exc
 
@@ -64,7 +66,7 @@ async def _gated_stream(
         async for chunk in generator:
             yield chunk
     finally:
-        chat_lock().release()
+        await release_chat_slot()
 
 
 @get("/api/search")
@@ -101,7 +103,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
     except Exception as exc:
         _raise_chat_http_error(exc)
     finally:
-        chat_lock().release()
+        await release_chat_slot()
 
 
 @post("/api/ask/stream")
@@ -139,7 +141,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
     except Exception as exc:
         _raise_chat_http_error(exc)
     finally:
-        chat_lock().release()
+        await release_chat_slot()
 
 
 @post("/api/chat/stream")

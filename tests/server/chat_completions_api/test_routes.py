@@ -21,7 +21,7 @@ from lilbee.providers.base import (
 )
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
-from lilbee.server.chat_dispatch.concurrency import chat_lock
+from lilbee.server.chat_dispatch.concurrency import chat_gate
 
 INSTALLED_REF = "vendor/Model-GGUF/model-Q4.gguf"
 
@@ -46,6 +46,10 @@ def _installed_chat_model(ref: str = INSTALLED_REF) -> MagicMock:
 def _services_with(provider: MagicMock, installed: list[MagicMock]) -> Any:
     from tests.conftest import make_mock_services
 
+    # The chat route admits against this and advertises this window; give bare
+    # mocks valid scalars so the gate math and /v1/models shape stay correct.
+    provider.max_concurrent_chats.return_value = 1
+    provider.served_chat_ctx.return_value = None
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=installed)
     _populate_known_models(services, installed)
@@ -100,9 +104,9 @@ def _auth_token():
 @pytest.fixture(autouse=True)
 def _clear_chat_lock():
     """Drop the cached chat lock between tests so each test starts clean."""
-    chat_lock.cache_clear()
+    chat_gate.cache_clear()
     yield
-    chat_lock.cache_clear()
+    chat_gate.cache_clear()
 
 
 class FakeProviderStream:
@@ -176,6 +180,25 @@ class TestListModelsEndpoint:
             resp = await client.get("/v1/models", headers=_h())
         expected = int(datetime.fromisoformat("2026-05-15T00:00:00+00:00").timestamp())
         assert resp.json()["data"][0]["created"] == expected
+
+    async def test_context_window_advertised_for_active_model_only(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The served window is advertised on the active chat model so a client
+        trims history to fit; other listed models carry no window."""
+        from lilbee.core.config import cfg
+
+        other = _installed_chat_model("z/Other/o.gguf")
+        services_with_chat_model.registry.list_installed = MagicMock(
+            return_value=[_installed_chat_model(INSTALLED_REF), other]
+        )
+        monkeypatch.setattr(cfg, "chat_model", INSTALLED_REF)
+        services_with_chat_model.provider.served_chat_ctx.return_value = 40960
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        by_id = {m["id"]: m for m in resp.json()["data"]}
+        assert by_id[INSTALLED_REF]["context_window"] == 40960
+        assert by_id["z/Other/o.gguf"]["context_window"] is None
 
     async def test_subdir_native_model_listed_and_servable(self, _auth_token):
         """F6: a registered subdir-filename giant is advertised by /v1/models and
@@ -486,7 +509,7 @@ class TestNonStreamingCompletion:
         body = resp.json()
         assert body["error"]["code"] == "internal_error"
         assert body["error"]["type"] == "api_error"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_context_window_exceeded_returns_400_with_openai_envelope(
         self, services_with_chat_model, _auth_token
@@ -515,7 +538,7 @@ class TestNonStreamingCompletion:
         assert body["error"]["code"] == "context_length_exceeded"
         assert body["error"]["type"] == "invalid_request_error"
         assert "161000" in body["error"]["message"]
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_missing_role_model_returns_404_not_500(
         self, services_with_chat_model, _auth_token
@@ -545,7 +568,7 @@ class TestNonStreamingCompletion:
         assert body["error"]["type"] == "invalid_request_error"
         assert "nomic-ai/embed/embed.gguf" in body["error"]["message"]
         assert "lilbee model pull" in body["error"]["message"]
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_usage_tokens_populated_from_provider_result(
         self, services_with_chat_model, _auth_token
@@ -598,7 +621,7 @@ class TestNonStreamingCompletion:
         body = resp.json()
         assert body["error"]["code"] == "internal_error"
         assert body["error"]["type"] == "api_error"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
 
 class TestStreamingCompletion:
@@ -638,7 +661,7 @@ class TestStreamingCompletion:
             )
         # Drain the body so the generator's finally clause fires.
         assert resp.content
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_unknown_model_returns_404_preflush(
         self, services_with_chat_model, _auth_token
@@ -663,7 +686,7 @@ class TestStreamingCompletion:
         assert resp.status_code == 404
         body = resp.json()
         assert body["error"]["code"] == "model_not_found"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_tools_against_non_tool_model_returns_400_preflush(
         self, services_with_chat_model, _auth_token
@@ -693,7 +716,7 @@ class TestStreamingCompletion:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "model_does_not_support_tools"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_provider_exception_emits_internal_error_frame(
         self, services_with_chat_model, _auth_token
@@ -713,7 +736,7 @@ class TestStreamingCompletion:
         assert chunks[0]["error"]["code"] == "internal_error"
         assert chunks[0]["error"]["type"] == "api_error"
         assert chunks[-1] == "[DONE]"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_context_window_exceeded_emits_400_error_frame(
         self, services_with_chat_model, _auth_token
@@ -749,7 +772,7 @@ class TestStreamingCompletion:
         assert chunk["error"]["code"] == "context_length_exceeded"
         assert chunk["error"]["type"] == "invalid_request_error"
         assert chunks[-1] == "[DONE]"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_non_overflow_provider_error_emits_internal_error_frame(
         self, services_with_chat_model, _auth_token
@@ -776,7 +799,7 @@ class TestStreamingCompletion:
         assert chunks[0]["error"]["code"] == "internal_error"
         assert chunks[0]["error"]["type"] == "api_error"
         assert chunks[-1] == "[DONE]"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_emits_usage_chunk_from_final_usage_frame(
         self, services_with_chat_model, _auth_token
@@ -834,7 +857,7 @@ class TestStreamingCompletion:
         assert chunks[0]["error"]["code"] == "model_not_found"
         assert "nomic-ai/embed/embed.gguf" in chunks[0]["error"]["message"]
         assert chunks[-1] == "[DONE]"
-        assert not chat_lock().locked()
+        assert chat_gate().in_flight == 0
 
     async def test_stream_with_tools_emits_tool_call_chunks(
         self, services_with_chat_model, _auth_token
@@ -942,9 +965,9 @@ class TestBusy:
         # Tight timeout so the test runs fast; the production default is 60s.
         monkeypatch.setattr(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05)
 
-        # Pre-acquire the chat lock so the route sees it held.
-        lock = chat_lock()
-        await lock.acquire()
+        # Fill the single chat slot so the route sees the backend busy.
+        gate = chat_gate()
+        await gate.acquire(1, 60)
         try:
             async with AsyncTestClient(_build_app()) as client:
                 resp = await client.post(
@@ -956,7 +979,7 @@ class TestBusy:
                     },
                 )
         finally:
-            lock.release()
+            await gate.release()
         assert resp.status_code == 429
         body = resp.json()
         assert body["error"]["code"] == "rate_limit_exceeded"
@@ -987,11 +1010,7 @@ class TestRouteDispatchErrorBranches:
             model="vendor/missing",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        import asyncio
-
-        lock = asyncio.Lock()
-        await lock.acquire()
-        response = await _run_non_stream(req, lock)
+        response = await _run_non_stream(req)
         assert response.status_code == 404
         assert response.content["error"]["code"] == "model_not_found"
 
@@ -1011,11 +1030,7 @@ class TestRouteDispatchErrorBranches:
             model="vendor/notools",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        import asyncio
-
-        lock = asyncio.Lock()
-        await lock.acquire()
-        response = await _run_non_stream(req, lock)
+        response = await _run_non_stream(req)
         assert response.status_code == 400
         assert response.content["error"]["code"] == "model_does_not_support_tools"
 
@@ -1039,11 +1054,7 @@ class TestRouteDispatchErrorBranches:
             messages=(CanonicalMessage(role="user", content="hi"),),
             stream=True,
         )
-        import asyncio
-
-        lock = asyncio.Lock()
-        await lock.acquire()
-        frames = [frame async for frame in _gated_completions_stream(req, lock)]
+        frames = [frame async for frame in _gated_completions_stream(req)]
         joined = b"".join(frames).decode()
         assert "model_not_found" in joined
 
@@ -1067,11 +1078,7 @@ class TestRouteDispatchErrorBranches:
             messages=(CanonicalMessage(role="user", content="hi"),),
             stream=True,
         )
-        import asyncio
-
-        lock = asyncio.Lock()
-        await lock.acquire()
-        frames = [frame async for frame in _gated_completions_stream(req, lock)]
+        frames = [frame async for frame in _gated_completions_stream(req)]
         joined = b"".join(frames).decode()
         assert "model_does_not_support_tools" in joined
 

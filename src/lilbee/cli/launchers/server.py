@@ -97,6 +97,22 @@ def chat_ready(port: int) -> bool:
     return bool(resp.json().get("chat_ready", False))
 
 
+def served_chat_ctx(port: int) -> int | None:
+    """The chat window ``/api/health`` reports, or None if unknown/unreachable.
+
+    A launcher passes this to the client so it trims history to the model's
+    actual window instead of overflowing on a long agentic session.
+    """
+    try:
+        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != _HTTP_OK:
+        return None
+    ctx = resp.json().get("chat_ctx")
+    return ctx if isinstance(ctx, int) and ctx > 0 else None
+
+
 def wait_for_chat_warm(port: int, timeout_s: float = _WARM_TIMEOUT_S) -> bool:
     """Block until the chat model is loaded, showing a warming indicator.
 

@@ -284,6 +284,9 @@ def _launch_for(
         token_cap=ctx if plan.role in _EMBED_ROLES else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
         weights_bytes=weights_bytes,
+        # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
+        slots=slots,
+        ctx=ctx,
     )
 
 

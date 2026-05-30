@@ -90,6 +90,46 @@ def test_pick_free_port_returns_int() -> None:
     assert isinstance(pick_free_port(), int)
 
 
+def _ready_server(tmp_path: Path, role: WorkerRole, *, slots: int, ctx: int) -> FleetServer:
+    launch = InstanceLaunch(
+        role=role,
+        argv=["/bin/llama-server"],
+        env_overrides={},
+        model="m.gguf",
+        port_file=tmp_path / f"{role.value}-{slots}-{ctx}.port",
+        slots=slots,
+        ctx=ctx,
+    )
+    server = FleetServer(launch)
+    server.ready = True
+    return server
+
+
+def test_chat_slot_capacity_sums_ready_chat_servers(tmp_path: Path) -> None:
+    fleet = fleet_mod.Fleet()
+    fleet._servers = [
+        _ready_server(tmp_path, WorkerRole.CHAT, slots=4, ctx=16384),
+        _ready_server(tmp_path, WorkerRole.EMBED, slots=8, ctx=512),
+    ]
+    assert fleet.chat_slot_capacity() == 4  # embed slots do not count toward chat
+    assert fleet.chat_served_ctx() == 16384
+
+
+def test_chat_capacity_ignores_unready_chat_server(tmp_path: Path) -> None:
+    fleet = fleet_mod.Fleet()
+    cold = _ready_server(tmp_path, WorkerRole.CHAT, slots=4, ctx=16384)
+    cold.ready = False
+    fleet._servers = [cold]
+    assert fleet.chat_slot_capacity() == 1  # floor, never zero
+    assert fleet.chat_served_ctx() is None
+
+
+def test_chat_capacity_defaults_with_no_servers() -> None:
+    fleet = fleet_mod.Fleet()
+    assert fleet.chat_slot_capacity() == 1
+    assert fleet.chat_served_ctx() is None
+
+
 def test_spawn_claims_port_writes_pid_file_and_creates_client(
     tmp_path: Path, patched: dict
 ) -> None:

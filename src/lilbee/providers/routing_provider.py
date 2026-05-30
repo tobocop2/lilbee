@@ -310,6 +310,18 @@ class RoutingProvider(LLMProvider):
             return True
         return self._local.role_ready(role)
 
+    def max_concurrent_chats(self) -> int:
+        """Chat concurrency of the local engine; 1 until one exists."""
+        if self._local is None:
+            return 1
+        return self._local.max_concurrent_chats()
+
+    def served_chat_ctx(self) -> int | None:
+        """Per-slot chat context of the local engine, or None when none exists."""
+        if self._local is None:
+            return None
+        return self._local.served_chat_ctx()
+
     def add_spawn_listener(
         self,
         *,

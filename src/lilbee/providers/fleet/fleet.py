@@ -90,6 +90,8 @@ class InstanceLaunch:
     port_file: Path
     token_cap: int | None = None  # per-slot ctx for embed/rerank input truncation
     weights_bytes: int = 0  # model file size on disk; scales the cold-load timeout
+    slots: int = 1  # --parallel continuous-batching slots; chat concurrency capacity
+    ctx: int = 0  # per-slot context the server runs with; what a client should fit to
 
 
 class FleetServer:
@@ -130,6 +132,16 @@ class FleetServer:
     @property
     def role(self) -> WorkerRole:
         return self._launch.role
+
+    @property
+    def slots(self) -> int:
+        """Continuous-batching slots this server runs (its chat concurrency)."""
+        return self._launch.slots
+
+    @property
+    def ctx(self) -> int:
+        """Per-slot context this server runs with."""
+        return self._launch.ctx
 
     @property
     def model(self) -> str:
@@ -468,6 +480,26 @@ class Fleet:
                 for s in self._servers
                 if s.role == role and s.ready and s.is_alive() and s.client is not None
             ]
+
+    def chat_slot_capacity(self) -> int:
+        """Total chat batching slots across ready chat servers (>= 1).
+
+        This is how many chat generations the fleet can run at once via
+        llama-server continuous batching, so it bounds the chat admission gate.
+        """
+        with self._lock:
+            total = sum(s.slots for s in self._servers if s.role is WorkerRole.CHAT and s.ready)
+        return max(1, total)
+
+    def chat_served_ctx(self) -> int | None:
+        """Per-slot context the ready chat server runs with, or None if none up.
+
+        A client uses this to trim its history to what the model can actually
+        accept in one request.
+        """
+        with self._lock:
+            ctxs = [s.ctx for s in self._servers if s.role is WorkerRole.CHAT and s.ready and s.ctx]
+        return min(ctxs) if ctxs else None
 
     def _start_monitor(self) -> None:
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)

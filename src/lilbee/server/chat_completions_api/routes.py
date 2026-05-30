@@ -16,6 +16,7 @@ from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
+from lilbee.core.config import cfg
 from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
@@ -37,8 +38,8 @@ from lilbee.server.chat_completions_api.translate import (
 from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
-    acquire_chat_lock_or_busy,
-    chat_lock,
+    acquire_chat_slot_or_busy,
+    release_chat_slot,
 )
 from lilbee.server.chat_dispatch.dispatch import (
     dispatch_chat,
@@ -57,11 +58,19 @@ async def list_models_endpoint(request: Request) -> Response:
     if auth_error is not None:
         return auth_error
 
-    registry = get_services().registry
+    services = get_services()
+    registry = services.registry
+    # The served window applies to the active chat model; advertise it so a
+    # client trims history to fit instead of overflowing on a long session.
+    served_ctx = services.provider.served_chat_ctx()
     chat_models = [m for m in registry.list_installed() if m.task == ModelTask.CHAT]
     payload = ModelsListResponse(
         data=[
-            ModelEntry(id=m.ref, created=_parse_created(m.downloaded_at))
+            ModelEntry(
+                id=m.ref,
+                created=_parse_created(m.downloaded_at),
+                context_window=served_ctx if m.ref == cfg.chat_model else None,
+            )
             for m in sorted(chat_models, key=lambda m: m.ref)
         ]
     )
@@ -90,7 +99,7 @@ async def chat_completions_endpoint(
         return preflush_error
 
     try:
-        await acquire_chat_lock_or_busy()
+        await acquire_chat_slot_or_busy(get_services().provider.max_concurrent_chats())
     except ChatBusyError:
         return _error_response(
             429,
@@ -99,14 +108,12 @@ async def chat_completions_endpoint(
             headers={"Retry-After": "1"},
         )
 
-    lock = chat_lock()
-
     if req.stream:
         return Stream(
-            _gated_completions_stream(req, lock),
+            _gated_completions_stream(req),
             media_type="text/event-stream",
         )
-    return await _run_non_stream(req, lock)
+    return await _run_non_stream(req)
 
 
 def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
@@ -136,29 +143,31 @@ def _internal_error_response() -> Response:
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
 
-async def _run_non_stream(req: CanonicalChatRequest, lock: asyncio.Lock) -> Response:
+async def _run_non_stream(req: CanonicalChatRequest) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
-        resp = dispatch_chat(req)
+        # dispatch_chat blocks for the whole generation; run it off the event loop
+        # so a slow chat does not stall other admitted requests.
+        resp = await asyncio.to_thread(dispatch_chat, req)
     except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
             return _internal_error_response()
         return _error_response(classified.http_status, classified.code, classified.message)
     finally:
-        lock.release()
+        await release_chat_slot()
     body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
     return Response(body.model_dump(exclude_none=True), media_type="application/json")
 
 
 async def _gated_completions_stream(
-    req: CanonicalChatRequest, lock: asyncio.Lock
+    req: CanonicalChatRequest,
 ) -> AsyncGenerator[bytes, None]:
-    """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, releasing *lock* on exit.
+    """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
 
     Pre-flight errors (unknown model, tools-against-non-tool-model) are
     surfaced as a single SSE ``data:`` frame carrying the error
-    envelope, then ``[DONE]``. The lock is released in ``finally`` so
+    envelope, then ``[DONE]``. The chat slot is released in ``finally`` so
     natural completion, exception, and client disconnect (GeneratorExit)
     all unwind cleanly.
     """
@@ -178,7 +187,7 @@ async def _gated_completions_stream(
             else:
                 yield _sse_error_frame(classified.code, classified.message)
     finally:
-        lock.release()
+        await release_chat_slot()
 
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:

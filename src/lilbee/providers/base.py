@@ -395,6 +395,25 @@ class LLMProvider(Protocol):
         del role
         return True
 
+    def max_concurrent_chats(self) -> int:
+        """Upper bound on simultaneous chat generations this provider can serve.
+
+        Default ``1``: a single in-process model cannot take concurrent generate
+        calls, so chat is serialized. A server-backed provider that batches (the
+        fleet) overrides this with its slot capacity, so the chat admission gate
+        lets that many run at once instead of one at a time.
+        """
+        return 1
+
+    def served_chat_ctx(self) -> int | None:
+        """Per-slot context the active chat server runs with, or None if unknown.
+
+        A client trims its conversation to this so a long agentic session fits
+        the model's actual window instead of overflowing. Default ``None``:
+        providers without a managed context (SDK wrappers) advertise nothing.
+        """
+        return None
+
     def add_spawn_listener(
         self,
         *,

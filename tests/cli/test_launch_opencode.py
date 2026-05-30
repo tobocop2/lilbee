@@ -63,6 +63,9 @@ def _warm_by_default(request, monkeypatch):
         return
     # run_launcher imports the name into its own module, so patch it there.
     monkeypatch.setattr("lilbee.cli.launchers.launcher.wait_for_chat_warm", lambda _port: True)
+    # opencode's prepare() reads the served window over HTTP; default it to
+    # unknown so tests do not hit the network. The limit.context test overrides.
+    monkeypatch.setattr("lilbee.cli.launchers.opencode.served_chat_ctx", lambda _port: None)
 
 
 @pytest.fixture(autouse=True)
@@ -235,6 +238,47 @@ def test_wait_for_chat_warm_returns_false_on_timeout(monkeypatch):
     monkeypatch.setattr(launch_mod, "chat_ready", lambda _port: False)
     monkeypatch.setattr(launch_mod.time, "sleep", lambda _s: None)
     assert launch_mod.wait_for_chat_warm(8765, timeout_s=0.0) is False
+
+
+@pytest.mark.no_warm_default
+def test_served_chat_ctx_reads_health_window(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"chat_ready": True, "chat_ctx": 40960}
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod.served_chat_ctx(8765) == 40960
+
+
+@pytest.mark.no_warm_default
+def test_served_chat_ctx_none_when_window_absent(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"chat_ready": True}
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    assert launch_mod.served_chat_ctx(8765) is None
+
+
+def test_opencode_config_sets_limit_context_when_known():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(
+        base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=32768
+    )
+    entry = block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
+    assert entry["limit"] == {"context": 32768}
+
+
+def test_opencode_config_omits_limit_when_ctx_unknown():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(
+        base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=None
+    )
+    assert "limit" not in block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
 
 
 def test_launch_opencode_waits_for_chat_warm_before_handoff(tmp_path):
