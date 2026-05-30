@@ -87,6 +87,7 @@
           <button type="button" class="reeltab" role="tab" id="reel-tab-add"      aria-controls="reel-pane-add"      aria-selected="false" tabindex="-1">add files</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-crawl"    aria-controls="reel-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-catalog"  aria-controls="reel-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
+          <button type="button" class="reeltab" role="tab" id="reel-tab-ollama"   aria-controls="reel-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-settings" aria-controls="reel-pane-settings" aria-selected="false" tabindex="-1">settings</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-agent"    aria-controls="reel-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
           <button type="button" class="reeltab" role="tab" id="reel-tab-pdf"      aria-controls="reel-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
@@ -132,6 +133,13 @@
             <img alt="lilbee model catalog with Hugging Face search" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif">
           </div>
           <p class="reel-caption">Browse models on Hugging Face Hub, pull one live, switch a role without leaving the terminal.</p>
+        </div>
+
+        <div class="reelpane" role="tabpanel" id="reel-pane-ollama" aria-labelledby="reel-tab-ollama" hidden>
+          <div class="reel-frame">
+            <img alt="talk to a PDF with a chat model served by Ollama: ollama ls shows the model, then lilbee answers from the Crown Victoria manual with a citation" src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.gif">
+          </div>
+          <p class="reel-caption">Already running <a href="https://ollama.com">Ollama</a>? Point lilbee at it. The model stays in Ollama; lilbee does the search, retrieval, and the cited answer from the Crown Victoria manual.</p>
         </div>
 
         <div class="reelpane" role="tabpanel" id="reel-pane-settings" aria-labelledby="reel-tab-settings" hidden>
