@@ -11,7 +11,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
-from lilbee.data.store import scope_to_chunk_type
+from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -72,6 +72,8 @@ async def search_route(
         raise ValidationException(str(exc)) from exc
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
+    except EmbeddingModelMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
@@ -88,6 +90,8 @@ async def ask_route(data: AskRequest) -> AskResponse:
             options=data.options,
             chunk_type=data.chunk_type,
         )
+    except EmbeddingModelMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
@@ -118,13 +122,16 @@ async def chat_route(data: ChatRequest) -> AskResponse:
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
-    return await handlers.chat(
-        question=data.question,
-        history=history,
-        top_k=data.top_k,
-        options=data.options,
-        chunk_type=data.chunk_type,
-    )
+    try:
+        return await handlers.chat(
+            question=data.question,
+            history=history,
+            top_k=data.top_k,
+            options=data.options,
+            chunk_type=data.chunk_type,
+        )
+    except EmbeddingModelMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @post("/api/chat/stream")
