@@ -34,6 +34,17 @@ class TestParseModelRef:
         assert ref.provider == "ollama"
         assert ref.name == "qwen3:latest"
 
+    def test_lm_studio_prefix(self) -> None:
+        ref = parse_model_ref("lm_studio/qwen2.5-7b-instruct")
+        assert ref.provider == "lm_studio"
+        assert ref.name == "qwen2.5-7b-instruct"
+
+    def test_lm_studio_prefix_does_not_append_latest_tag(self) -> None:
+        """LM Studio ids are used verbatim; only Ollama appends ``:latest``."""
+        ref = parse_model_ref("lm_studio/some-model")
+        assert ref.provider == "lm_studio"
+        assert ref.name == "some-model"
+
     def test_openai_prefix(self) -> None:
         ref = parse_model_ref("openai/gpt-4o")
         assert ref.provider == "openai"
@@ -115,6 +126,13 @@ class TestProviderModelRefProperties:
         ref = parse_model_ref("ollama/qwen3:8b")
         assert ref.needs_api_base is True
 
+    def test_lm_studio_model_is_remote_and_needs_api_base(self) -> None:
+        ref = parse_model_ref("lm_studio/qwen2.5-7b-instruct")
+        assert ref.is_remote is True
+        assert ref.is_api is False
+        assert ref.is_local is False
+        assert ref.needs_api_base is True
+
 
 class TestForOpenaiPrefix:
     def test_ollama_model(self) -> None:
@@ -128,6 +146,10 @@ class TestForOpenaiPrefix:
     def test_anthropic_model(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         assert ref.for_openai_prefix() == "anthropic/claude-sonnet-4-20250514"
+
+    def test_lm_studio_model(self) -> None:
+        ref = parse_model_ref("lm_studio/qwen2.5-7b-instruct")
+        assert ref.for_openai_prefix() == "lm_studio/qwen2.5-7b-instruct"
 
     def test_local_model(self) -> None:
         ref = parse_model_ref(_LOCAL_REF)
@@ -166,6 +188,28 @@ class TestFormatRemoteRef:
             provider="Ollama",
         )
         assert format_remote_ref(model.name, model.provider) == "ollama/qwen3:8b"
+
+    def test_lm_studio_display_name_normalizes_to_routing_key(self) -> None:
+        """The ``"LM Studio"`` display name must map to the ``lm_studio/`` prefix.
+
+        Lower-casing alone would yield ``"lm studio"`` and silently drop the
+        prefix, corrupting the stored ``chat_model`` ref; the display->key
+        normalization in ``format_remote_ref`` prevents that.
+        """
+        model = RemoteModel(
+            name="qwen2.5-7b-instruct",
+            task="chat",
+            family="",
+            parameter_size="",
+            provider="LM Studio",
+        )
+        ref = format_remote_ref(model.name, model.provider)
+        assert ref == "lm_studio/qwen2.5-7b-instruct"
+        # Round-trips back through the parser without losing the prefix.
+        assert parse_model_ref(ref).provider == "lm_studio"
+
+    def test_lm_studio_routing_key_form(self) -> None:
+        assert format_remote_ref("some-model", "lm_studio") == "lm_studio/some-model"
 
     def test_openrouter_with_nested_path(self) -> None:
         """OpenRouter model ids carry a vendor/model path that must round-trip."""

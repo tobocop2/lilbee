@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import functools
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -74,13 +73,12 @@ class ModelEntry(BaseModel):
         )
 
     @classmethod
-    def from_backend(cls, ref: str, remote: RemoteModel | None) -> ModelEntry:
-        # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-        from lilbee.catalog.types import ModelSource
+    def from_backend(cls, ref: str, remote: RemoteModel | None, source: ModelSource) -> ModelEntry:
+        from lilbee.providers.local_servers import canonical_local_ref
 
         return cls(
-            name=ref,
-            source=ModelSource.REMOTE.value,
+            name=canonical_local_ref(ref, source.value),
+            source=source.value,
             task=remote.task if remote else None,
             size_gb=None,
             display_name=remote.parameter_size if remote else "",
@@ -215,11 +213,17 @@ def _collect_native_entries() -> list[ModelEntry]:
 
 def _collect_backend_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
+    from lilbee.catalog.types import ModelSource
     from lilbee.modelhub.model_manager import classify_remote_models
+    from lilbee.providers.local_servers import detect_local_server
 
+    server = detect_local_server(cfg.remote_base_url)
+    source = ModelSource(server.key) if server is not None else ModelSource.REMOTE
     remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
     remote_by_name = {rm.name: rm for rm in remote_list}
-    return [ModelEntry.from_backend(ref, remote_by_name[ref]) for ref in sorted(remote_by_name)]
+    return [
+        ModelEntry.from_backend(ref, remote_by_name[ref], source) for ref in sorted(remote_by_name)
+    ]
 
 
 def list_models_data(
@@ -237,8 +241,13 @@ def list_models_data(
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:
         entries.extend(_collect_native_entries())
-    if source is None or source is ModelSource.REMOTE:
-        entries.extend(_collect_backend_entries())
+    if source is not ModelSource.NATIVE:
+        backend = _collect_backend_entries()
+        # A specific local-server source (ollama/lm_studio/frontier) narrows the
+        # backend list; REMOTE and None keep every backend entry.
+        if source is not None and source is not ModelSource.REMOTE:
+            backend = [e for e in backend if e.source == source.value]
+        entries.extend(backend)
     if task:
         entries = [e for e in entries if e.task == task]
     return ListModelsResult(models=entries, total=len(entries))
@@ -269,35 +278,6 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
-def _backend_event_to_progress(
-    on_update: Callable[[DownloadProgress], None],
-    event: dict[str, Any],
-) -> None:
-    """Adapt an Ollama-style dict event into a DownloadProgress call."""
-    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-    from lilbee.catalog import DownloadProgress
-
-    total = event.get("total", 0) or 0
-    completed = event.get("completed", 0) or 0
-    detail = event.get("status", "") or ""
-    pct = int(completed * 100 / total) if total > 0 else 0
-    on_update(DownloadProgress(percent=pct, detail=detail, is_cache_hit=False))
-
-
-def _build_pull_callbacks(
-    on_update: Callable[[DownloadProgress], None] | None,
-) -> tuple[Callable[[dict[str, Any]], None] | None, Callable[[int, int], None] | None]:
-    """Build the (dict_cb, bytes_cb) pair for ModelManager.pull from on_update."""
-    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
-    from lilbee.catalog import make_download_callback
-
-    if on_update is None:
-        return None, None
-    dict_cb = functools.partial(_backend_event_to_progress, on_update)
-    bytes_cb = make_download_callback(on_update)
-    return dict_cb, bytes_cb
-
-
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -307,20 +287,23 @@ def pull_model_data(
 ) -> PullResult:
     """Pull *ref* from *source* and return a typed result.
 
-    Progress updates are throttled by
-    :func:`~lilbee.catalog.make_download_callback`, so callers see at
-    most roughly 10 Hz of progress events.
+    Only native models are downloadable; a non-native *source* is refused by
+    :meth:`ModelManager.pull`. Progress updates are throttled by
+    :func:`~lilbee.catalog.make_download_callback`, so callers see at most
+    roughly 10 Hz of progress events.
     """
+    # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
+    from lilbee.catalog import make_download_callback
+
     manager = get_services().model_manager
 
     if manager.is_installed(ref, source):
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
-    dict_cb, bytes_cb = _build_pull_callbacks(on_update)
+    bytes_cb = make_download_callback(on_update) if on_update is not None else None
     path = manager.pull(
         ref,
         source,
-        on_progress=dict_cb,
         on_bytes=bytes_cb,
         allow_unsupported=allow_unsupported,
     )
