@@ -11,7 +11,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
-from lilbee.data.store import scope_to_chunk_type
+from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -33,11 +33,14 @@ _SERVICE_UNAVAILABLE_STATUS = 503
 def _raise_chat_http_error(exc: Exception) -> NoReturn:
     """Translate a chat/RAG failure into the Litestar HTTP envelope.
 
-    ValueError is a 422 validation error; a recognized typed dispatch/provider
-    failure carries its own status; anything else is a 503.
+    ValueError is a 422 validation error; an embedder/index mismatch is a 409
+    conflict; a recognized typed dispatch/provider failure carries its own
+    status; anything else is a 503.
     """
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
+    if isinstance(exc, EmbeddingModelMismatchError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     classified = classify_provider_error(exc)
     status = classified.http_status if classified is not None else _SERVICE_UNAVAILABLE_STATUS
     raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -83,6 +86,8 @@ async def search_route(
         raise ValidationException(str(exc)) from exc
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
+    except EmbeddingModelMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:

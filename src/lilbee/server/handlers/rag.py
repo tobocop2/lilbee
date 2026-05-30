@@ -15,7 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
-from lilbee.data.store import ChunkType
+from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.reasoning import (
@@ -28,7 +28,7 @@ from lilbee.retrieval.reasoning import (
     stream_chat_with_cap,
     strip_reasoning,
 )
-from lilbee.runtime.progress import SseEvent
+from lilbee.runtime.progress import SseErrorCode, SseEvent
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
@@ -165,9 +165,13 @@ async def _stream_rag_response(
     for warming in _chat_warming_events():
         yield warming
 
-    rag = get_services().searcher.build_rag_context(
-        question, top_k=top_k, history=history, chunk_type=chunk_type
-    )
+    try:
+        rag = get_services().searcher.build_rag_context(
+            question, top_k=top_k, history=history, chunk_type=chunk_type
+        )
+    except EmbeddingModelMismatchError as mismatch:
+        yield sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH)
+        return
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
@@ -254,9 +258,13 @@ async def _stream_chat_response(
     for warming in _chat_warming_events():
         yield warming
 
-    rag = get_services().searcher.build_rag_context(
-        question, top_k=top_k, history=history, chunk_type=chunk_type
-    )
+    try:
+        rag = get_services().searcher.build_rag_context(
+            question, top_k=top_k, history=history, chunk_type=chunk_type
+        )
+    except EmbeddingModelMismatchError as exc:
+        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH)
+        return
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
