@@ -12,7 +12,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
-from lilbee.data.store import ChunkType
+from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
@@ -20,7 +20,7 @@ from lilbee.retrieval.reasoning import (
     effective_reasoning_cap,
     stream_chat_with_cap,
 )
-from lilbee.runtime.progress import SseEvent
+from lilbee.runtime.progress import SseErrorCode, SseEvent
 from lilbee.server.handlers.sse import (
     SseStream,
     _resolve_generation_options,
@@ -131,9 +131,13 @@ async def _stream_rag_response(
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
 
-    rag = get_services().searcher.build_rag_context(
-        question, top_k=top_k, history=history, chunk_type=chunk_type
-    )
+    try:
+        rag = get_services().searcher.build_rag_context(
+            question, top_k=top_k, history=history, chunk_type=chunk_type
+        )
+    except EmbeddingModelMismatchError as exc:
+        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH)
+        return
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
