@@ -31,7 +31,7 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container. lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
-Already running [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai)? Point lilbee at either one and keep managing your models there. lilbee also comes with first-class model management built in, so you can browse Hugging Face, download a model, and give it a role without leaving the app. Use whichever you prefer.
+Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). Battle-tested managers are always supported too. If you already use [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai), point lilbee at your existing setup and skip its native model support if you prefer.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
@@ -146,7 +146,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Already running Ollama or LM Studio? Keep them.
 
-**lilbee now works with [Ollama](https://ollama.com/) and [LM Studio](https://lmstudio.ai/).** Finding and running models for you is the default and the simplest path: lilbee pulls them, runs them on Metal / Vulkan / CUDA, and you never stand up a server. But you don't have to adopt a new model manager to use lilbee.
+**lilbee works with [Ollama](https://ollama.com/) and [LM Studio](https://lmstudio.ai/).** Finding and running models for you is the default and the simplest path: lilbee pulls them, runs them on Metal / Vulkan / CUDA, and you never stand up a server. But you don't have to adopt a new model manager to use lilbee.
 
 If your models already live in Ollama or LM Studio, point lilbee at the running endpoint and those models appear in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own models and any cloud models. They're read-only: lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use. Mix all of it freely, and pick whatever fits how you work.
 
