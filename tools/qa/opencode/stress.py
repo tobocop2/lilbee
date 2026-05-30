@@ -119,6 +119,62 @@ async def _chat(client, base, headers, model, msgs, *, max_tokens=300):
         return -1, time.monotonic() - t0, exc
 
 
+_BENCH_PROMPT = (
+    "Write a Godot 4 GDScript CharacterBody2D controller with WASD movement and a jump. Code only."
+)
+
+
+async def _benchmark_decode_tps(client, base, headers, model, *, max_tokens=256):
+    """Measure single-stream decode throughput, the headline tok/s for the benchmark.
+
+    Streams one clean generation (no tools, no contention) and reports tokens per
+    second excluding the prompt-eval phase: ``completion_tokens / (total - ttft)``.
+    That isolates generation speed, which is the number a local-model benchmark
+    documents, from prefill. Returns ``(ttft_s, decode_tps, tokens, total_s)`` or
+    ``None`` if the stream never produced a token.
+    """
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": _BENCH_PROMPT}],
+        "max_tokens": max_tokens,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    t0 = time.monotonic()
+    ttft = None
+    counted = 0
+    usage_tokens = None
+    async with client.stream(
+        "POST", f"{base}/v1/chat/completions", headers=headers, json=body, timeout=300
+    ) as resp:
+        if resp.status_code != 200:
+            return None
+        async for line in resp.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+            except ValueError:
+                continue
+            usage = obj.get("usage")
+            if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
+                usage_tokens = usage["completion_tokens"]
+            choices = obj.get("choices") or []
+            delta = choices[0].get("delta", {}) if choices else {}
+            if delta.get("content"):
+                if ttft is None:
+                    ttft = time.monotonic() - t0
+                counted += 1
+    total = time.monotonic() - t0
+    if ttft is None:
+        return None
+    tokens = usage_tokens if usage_tokens else counted
+    return ttft, tokens / max(total - ttft, 1e-6), tokens, total
+
+
 async def _dev_turn(client, base, headers, model, msgs, m) -> str:
     """One developer request: chat, run any tool calls via the REAL search, feed results
     back, and loop until the model gives a final answer. Returns ok | overflow | fail."""
@@ -186,9 +242,13 @@ async def run_workflow(base, headers, model, devs, tasks_per) -> bool:
         "overflow_graceful": True,
         "fail_detail": "",
         "overflow_body": "",
+        "bench": None,
     }
     t0 = time.monotonic()
     async with httpx.AsyncClient() as client:
+        # Measure decode throughput on a clean single stream first, before the
+        # concurrent load distorts it, so the documented tok/s is peak speed.
+        m["bench"] = await _benchmark_decode_tps(client, base, headers, model)
         await asyncio.gather(
             *[_dev_session(i, client, base, headers, model, tasks_per, m) for i in range(devs)]
         )
@@ -200,6 +260,14 @@ async def run_workflow(base, headers, model, devs, tasks_per) -> bool:
     s_ok = sum(1 for c in m["search"] if c == 200)
     p95 = sorted(chat_lat)[max(0, int(len(chat_lat) * 0.95) - 1)] if chat_lat else 0.0
     print(f"[dev-workflow] {devs} concurrent devs x {tasks_per} tasks in {wall:.0f}s")
+    if m["bench"] is not None:
+        ttft, tps, toks, total = m["bench"]
+        print(
+            f"  throughput: {tps:.1f} tok/s decode  "
+            f"(ttft={ttft * 1000:.0f}ms, {toks} tok in {total:.1f}s single stream)"
+        )
+    else:
+        print("  throughput: (decode benchmark produced no tokens)")
     print(
         f"  turns={m['turns']}  chat 200={ok}/{len(chat_codes)}  "
         f"busy(429)={m['busy']}  hard-fail={hard}"
