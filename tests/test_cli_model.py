@@ -114,12 +114,13 @@ class _FakeManager:
         return f"/fake/{model}.gguf"
 
     def remove(self, model, source=None) -> bool:
+        # Mirror ModelManager: only native models are removable; local servers
+        # are read-only, so a non-native source is refused.
         self.remove_calls.append((model, source))
-        if (source is ModelSource.NATIVE or source is None) and model in self._native:
+        if source is not None and source is not ModelSource.NATIVE:
+            raise ValueError("lilbee runs Ollama models but doesn't remove them.")
+        if model in self._native:
             self._native.remove(model)
-            return True
-        if (source is ModelSource.REMOTE or source is None) and model in self._litellm:
-            self._litellm.remove(model)
             return True
         return False
 
@@ -516,6 +517,20 @@ class TestRmCmd:
         assert result.exit_code == 1
         parsed = RemoveResult.model_validate_json(result.output)
         assert parsed.deleted is False
+
+    def test_read_only_refusal_exits_1(self, fake_manager, native_manifests):
+        msg = "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        with patch("lilbee.cli.model.remove_model_data", side_effect=ValueError(msg)):
+            result = runner.invoke(app, ["model", "rm", "--yes", "ollama/llama3:latest"])
+        assert result.exit_code == 1
+        assert "doesn't remove them" in result.output
+
+    def test_json_read_only_refusal_exits_1(self, fake_manager, native_manifests):
+        msg = "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        with patch("lilbee.cli.model.remove_model_data", side_effect=ValueError(msg)):
+            result = runner.invoke(app, ["--json", "model", "rm", "--yes", "ollama/llama3:latest"])
+        assert result.exit_code == 1
+        assert "doesn't remove them" in result.output
 
     def test_invalid_source(self, fake_manager):
         result = runner.invoke(app, ["model", "rm", "--yes", _CHAT_REF, "--source", "bad"])

@@ -1898,7 +1898,7 @@ class TestModelsDelete:
             "lilbee.server.handlers.models.get_services",
             return_value=MagicMock(model_manager=mock_manager),
         ):
-            result = await handlers.models_delete("test", source="remote")
+            result = await handlers.models_delete("test", source="native")
         assert result.deleted is True
         assert result.model == "test"
 
@@ -1912,6 +1912,25 @@ class TestModelsDelete:
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
+
+    async def test_read_only_source_returns_409(self):
+        """Refusing to remove a read-only local-server model surfaces as a 409."""
+        from litestar.exceptions import HTTPException
+
+        mock_manager = MagicMock()
+        mock_manager.remove.side_effect = ValueError(
+            "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        )
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await handlers.models_delete("ollama/llama3:latest", source="ollama")
+        assert exc_info.value.status_code == 409
+        assert "doesn't remove them" in str(exc_info.value.detail)
 
 
 class TestModelsShow:

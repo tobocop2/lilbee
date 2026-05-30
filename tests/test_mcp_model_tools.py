@@ -100,6 +100,13 @@ class TestMcpRemove:
         }
         fn.assert_not_called()
 
+    def test_read_only_source_returns_error(self):
+        """A read-only local-server model surfaces the refusal as an MCP error."""
+        msg = "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
+        with patch("lilbee.app.models.remove_model_data", side_effect=ValueError(msg)):
+            result = model_rm("ollama/llama3:latest", source="ollama")
+        assert result == {"error": msg}
+
 
 class TestMcpPull:
     @staticmethod

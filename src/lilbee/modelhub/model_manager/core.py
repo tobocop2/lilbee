@@ -1,20 +1,16 @@
 """ModelManager: native and SDK-backed model lifecycle operations."""
 
-import json
 import logging
 import time
 from collections.abc import Callable
-from http import HTTPStatus
 from pathlib import Path
-
-import httpx
 
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.local_servers import LOCAL_SERVERS, OLLAMA, detect_local_server
+from lilbee.providers.local_servers import LOCAL_SERVERS, detect_local_server
 from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
@@ -231,15 +227,23 @@ class ModelManager:
         return path
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
-        """Remove installed model. Returns True if removed."""
+        """Remove an installed native model. Returns True if removed.
+
+        lilbee removes only native GGUF models it downloaded. Local servers
+        (Ollama, LM Studio) are read-only: a model that lives on one is refused
+        (mirrors ``pull``), since its lifecycle is managed in that app. A bare
+        ``source`` is resolved so a local-server ref is caught either way.
+        """
+        effective = source if source is not None else self.get_source(model)
+        if effective is not None and effective is not ModelSource.NATIVE:
+            server = detect_local_server(self._remote_base_url)
+            where = server.display_name if server is not None else "the configured server"
+            raise ValueError(
+                f"lilbee runs {where} models but doesn't remove them. "
+                f"Manage them in {where} instead."
+            )
         try:
-            if source is None:
-                native_removed = self._remove_native(model)
-                backend_removed = self._remove_remote(model)
-                return native_removed or backend_removed
-            if source is ModelSource.NATIVE:
-                return self._remove_native(model)
-            return self._remove_remote(model)
+            return self._remove_native(model)
         finally:
             self._invalidate_installed_cache()
 
@@ -257,30 +261,3 @@ class ModelManager:
             log.info("Removed native model %s", model)
             return True
         return False
-
-    def _remove_remote(self, model: str) -> bool:
-        url = f"{self._remote_base_url}/api/delete"
-        # The local server keys models by bare name; strip the routing prefix
-        # lilbee carries for the detected server.
-        server = detect_local_server(self._remote_base_url)
-        prefix = server.wire_prefix if server is not None else OLLAMA.wire_prefix
-        backend_name = model.removeprefix(prefix)
-        try:
-            resp = httpx.request(
-                "DELETE",
-                url,
-                content=json.dumps({"model": backend_name}).encode(),
-                headers={"Content-Type": "application/json"},
-                timeout=DEFAULT_HTTP_TIMEOUT,
-            )
-            if resp.status_code == HTTPStatus.OK:
-                log.info("Removed backend model %s", model)
-                return True
-            if resp.status_code == HTTPStatus.NOT_FOUND:
-                return False
-            log.warning("Unexpected status %d removing %s", resp.status_code, model)
-            return False
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
-                f"Cannot connect to SDK backend: {exc}. Is the server running?"
-            ) from exc

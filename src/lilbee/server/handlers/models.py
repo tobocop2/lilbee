@@ -567,10 +567,19 @@ async def models_pull(
 
 
 async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:
-    """Delete a model. Returns deletion status, model name, and freed space."""
+    """Delete a model. Returns deletion status, model name, and freed space.
+
+    lilbee removes only native models it downloaded; removing a read-only
+    local-server model (Ollama, LM Studio) is refused with a 409.
+    """
+    from litestar.exceptions import HTTPException
+
     manager = get_services().model_manager
     src = _parse_source(source)
-    deleted = manager.remove(model, src)
+    try:
+        deleted = manager.remove(model, src)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)
 
 

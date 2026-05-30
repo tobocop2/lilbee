@@ -571,86 +571,74 @@ class TestModelManagerRemove:
         removed = mgr.remove("../../etc/passwd", ModelSource.NATIVE)
         assert removed is False
 
-    def test_litellm_remove_success(self) -> None:
-        mock_response = mock.Mock()
-        mock_response.status_code = 200
-
-        with mock.patch("httpx.request", return_value=mock_response) as mock_req:
+    def test_remove_refuses_ollama_source(self) -> None:
+        """Ollama is read-only: an explicit OLLAMA source is refused, never deleted."""
+        with mock.patch("httpx.request") as mock_req:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.REMOTE)
+            with pytest.raises(ValueError, match="Ollama models but doesn't remove them"):
+                mgr.remove("ollama/llama3:latest", ModelSource.OLLAMA)
+        mock_req.assert_not_called()
 
-        mock_req.assert_called_once()
-        call_kwargs = mock_req.call_args[1]
-        assert call_kwargs["content"] == b'{"model": "llama3:latest"}'
-        assert call_kwargs["headers"]["Content-Type"] == "application/json"
-        assert result is True
+    def test_remove_refuses_lm_studio_source(self) -> None:
+        """LM Studio is read-only: an explicit LM_STUDIO source is refused."""
+        with mock.patch("httpx.request") as mock_req:
+            mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+            with pytest.raises(ValueError, match="LM Studio models but doesn't remove them"):
+                mgr.remove("lm_studio/qwen2.5-coder", ModelSource.LM_STUDIO)
+        mock_req.assert_not_called()
 
-    def test_remove_strips_ollama_prefix_for_backend(self) -> None:
-        """A canonical ``ollama/<name>`` ref deletes by bare name on the backend."""
-        mock_response = mock.Mock()
-        mock_response.status_code = 200
+    def test_remove_refuses_generic_remote_source(self) -> None:
+        """A generic REMOTE source on an undetected backend is refused too."""
+        mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
+        with pytest.raises(ValueError, match="doesn't remove them"):
+            mgr.remove("custom-model", ModelSource.REMOTE)
 
-        with mock.patch("httpx.request", return_value=mock_response) as mock_req:
+    def test_remove_refuses_ollama_prefixed_ref_without_network(self) -> None:
+        """An ``ollama/`` ref with source=None resolves on the prefix, no network call."""
+        with mock.patch("httpx.get") as mock_get, mock.patch("httpx.request") as mock_req:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("ollama/llama3:latest", ModelSource.OLLAMA)
+            with pytest.raises(ValueError, match="doesn't remove them"):
+                mgr.remove("ollama/llama3:latest")
+        mock_get.assert_not_called()
+        mock_req.assert_not_called()
 
-        assert mock_req.call_args[1]["content"] == b'{"model": "llama3:latest"}'
-        assert result is True
-
-    def test_remove_unknown_backend_sends_name_unchanged(self) -> None:
-        """An unrecognized backend has no known prefix to strip, so the name passes through."""
+    def test_remove_refuses_bare_backend_model_with_source_none(self) -> None:
+        """A bare name the backend reports installed resolves to a read-only source."""
         mock_response = mock.Mock()
-        mock_response.status_code = 200
+        mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
+        mock_response.raise_for_status = mock.Mock()
 
-        with mock.patch("httpx.request", return_value=mock_response) as mock_req:
-            mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
-            result = mgr.remove("custom-model", ModelSource.REMOTE)
-
-        assert mock_req.call_args[1]["content"] == b'{"model": "custom-model"}'
-        assert result is True
-
-    def test_litellm_remove_not_found(self) -> None:
-        mock_response = mock.Mock()
-        mock_response.status_code = 404
-
-        with mock.patch("httpx.request", return_value=mock_response):
+        with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("nonexistent:latest", ModelSource.REMOTE)
+            with pytest.raises(ValueError, match="doesn't remove them"):
+                mgr.remove("llama3:latest")
 
-        assert result is False
-
-    def test_litellm_connection_error_during_remove(self) -> None:
-        with mock.patch("httpx.request", side_effect=httpx.ConnectError("Connection refused")):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            with pytest.raises(RuntimeError, match="Cannot connect to SDK backend"):
-                mgr.remove("llama3:latest", ModelSource.REMOTE)
-
-    def test_litellm_remove_unexpected_status(self) -> None:
-        mock_response = mock.Mock()
-        mock_response.status_code = 500
-
-        with mock.patch("httpx.request", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.REMOTE)
-
-        assert result is False
-
-    def test_none_source_removes_from_all(self, tmp_path: Path) -> None:
-        """source=None tries native first, then litellm."""
+    def test_none_source_removes_native(self, tmp_path: Path) -> None:
+        """source=None removes a native model without touching any backend."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         model_file = models_dir / "my-model.gguf"
         model_file.write_text("fake")
 
-        mock_response = mock.Mock()
-        mock_response.status_code = 200
-
-        with mock.patch("httpx.request", return_value=mock_response):
+        with mock.patch("httpx.request") as mock_req:
             mgr = ModelManager(models_dir, "http://localhost:11434")
             result = mgr.remove("my-model.gguf", None)
 
         assert result is True
         assert not model_file.exists()
+        mock_req.assert_not_called()
+
+    def test_remove_unknown_model_source_none_returns_false(self) -> None:
+        """source=None on a model in no known source is a no-op, not a refusal."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            result = mgr.remove("nonexistent.gguf")
+
+        assert result is False
 
 
 class TestServicesIntegration:
