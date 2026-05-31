@@ -57,8 +57,12 @@ def test_push_setup_wizard_no_op_when_unmounted():
 
 
 def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir):
-    """Initialized data dir plus resolvable models skips the wizard."""
+    """Initialized data dir plus resolvable native models skips the wizard."""
     cfg.lancedb_dir.mkdir(parents=True)
+    # Explicit native refs so the check is deterministic regardless of the
+    # developer's loaded config.toml (which may hold remote refs).
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         return_value="/some/resolved/path",
@@ -67,10 +71,12 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
 
 
 def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
-    """Unresolvable chat/embedding model still triggers the wizard."""
+    """Unresolvable native chat/embedding model still triggers the wizard."""
     from lilbee.providers.base import ProviderError
 
     cfg.lancedb_dir.mkdir(parents=True)
+    cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
+    cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
         "lilbee.providers.llama_cpp.provider.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
@@ -78,21 +84,46 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
         assert _make_screen()._needs_setup() is True
 
 
-def test_needs_setup_skips_native_probe_for_remote_prefixed_models(isolated_data_dir):
+def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_dir):
     """ollama/ and API-prefixed models bypass the llama-cpp registry check.
 
-    The native resolver only knows about GGUFs. A remote ref resolves at
-    call time via litellm, so asking resolve_model_path about it would
-    always raise and wrongly trigger the setup wizard.
+    The native resolver only knows about GGUFs, so a usable remote ref
+    must not be sent through resolve_model_path. Usability is decided by
+    ``validate_persisted_model`` (litellm present, server live, key set).
     """
+    from lilbee.modelhub.model_manager import ValidationResult
+
+    cfg.lancedb_dir.mkdir(parents=True)
+    cfg.chat_model = "ollama/qwen3:0.6b"
+    cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
+    with (
+        mock.patch(
+            "lilbee.modelhub.model_manager.validate_persisted_model",
+            return_value=ValidationResult.OK,
+        ),
+        mock.patch("lilbee.providers.llama_cpp.provider.resolve_model_path") as resolve,
+    ):
+        assert _make_screen()._needs_setup() is False
+        resolve.assert_not_called()
+
+
+def test_needs_setup_true_when_remote_model_unusable(isolated_data_dir):
+    """An unusable remote ref (litellm missing, server down, no key) opens the wizard.
+
+    Regression: this used to be skipped on the assumption that remote refs
+    always resolve at call time, leaving a user with an unservable
+    ``ollama/`` model stuck in a broken app instead of setup.
+    """
+    from lilbee.modelhub.model_manager import ValidationResult
+
     cfg.lancedb_dir.mkdir(parents=True)
     cfg.chat_model = "ollama/qwen3:0.6b"
     cfg.embedding_model = "ollama/nomic-embed-text:v1.5"
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
-    ) as resolve:
-        assert _make_screen()._needs_setup() is False
-        resolve.assert_not_called()
+        "lilbee.modelhub.model_manager.validate_persisted_model",
+        return_value=ValidationResult.UNKNOWN,
+    ):
+        assert _make_screen()._needs_setup() is True
 
 
 def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
