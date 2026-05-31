@@ -3242,11 +3242,15 @@ class TestChatEmbeddingReadyCoverage:
         set_services(mock_svc)
         try:
             app = ChatTestApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                screen = app.screen
-                assert isinstance(screen, ChatScreen)
-                assert screen._embedding_ready() is True
+            # Keep the ChatScreen mounted; wizard routing is covered separately.
+            with mock.patch(
+                "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
+            ):
+                async with app.run_test(size=(120, 40)) as pilot:
+                    await pilot.pause()
+                    screen = app.screen
+                    assert isinstance(screen, ChatScreen)
+                    assert screen._embedding_ready() is True
         finally:
             set_services(None)
             cfg.embedding_model = snapshot_embed
@@ -3265,15 +3269,19 @@ class TestChatEmbeddingReadyCoverage:
         set_services(mock_svc)
         try:
             app = ChatTestApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                screen = app.screen
-                assert isinstance(screen, ChatScreen)
-                with mock.patch(
-                    "lilbee.providers.llama_cpp.provider.resolve_model_path"
-                ) as resolve:
-                    assert screen._embedding_ready() is False
-                    resolve.assert_not_called()
+            # Keep the ChatScreen mounted; wizard routing is covered separately.
+            with mock.patch(
+                "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
+            ):
+                async with app.run_test(size=(120, 40)) as pilot:
+                    await pilot.pause()
+                    screen = app.screen
+                    assert isinstance(screen, ChatScreen)
+                    with mock.patch(
+                        "lilbee.providers.llama_cpp.provider.resolve_model_path"
+                    ) as resolve:
+                        assert screen._embedding_ready() is False
+                        resolve.assert_not_called()
         finally:
             set_services(None)
             cfg.embedding_model = snapshot_embed
