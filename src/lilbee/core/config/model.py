@@ -132,7 +132,11 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: str = ConfigField(default="auto", writable=True)
-    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    # Per-server local model-manager URLs. Blank means "use the server's spec
+    # default" (resolved in providers.local_servers.config_urls); the default
+    # URL literal lives only in the spec, which core must not import.
+    ollama_base_url: str = ConfigField(default="", writable=True)
+    lm_studio_base_url: str = ConfigField(default="", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
     openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
     gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
@@ -699,6 +703,12 @@ class Config(BaseSettings):
         from lilbee.providers.model_ref import parse_model_ref
 
         return parse_model_ref(v).for_openai_prefix()
+
+    @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
+    @classmethod
+    def _strip_trailing_slash(cls, v: str) -> str:
+        """Canonicalize a local-server URL once at the write boundary."""
+        return v.rstrip("/")
 
     @field_validator("cors_origins", mode="before")
     @classmethod

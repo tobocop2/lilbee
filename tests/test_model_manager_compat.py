@@ -91,11 +91,13 @@ def test_pull_remote_source_refused_before_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """REMOTE source is read-only: refused before the arch gate can run."""
-    mgr = ModelManager(tmp_path / "models", "http://localhost:11434")
+    mgr = ModelManager(tmp_path / "models")
 
     def _fail(_ref: str, _client: object) -> str:
         raise AssertionError("gate must not fire for a refused REMOTE pull")
 
     monkeypatch.setattr(compat, "resolve_arch_for_pull", _fail)
-    with pytest.raises(ValueError, match="Ollama"):
+    # Generic REMOTE source maps to no specific server, so the refusal names
+    # "the configured server" rather than Ollama/LM Studio.
+    with pytest.raises(ValueError, match="the configured server"):
         mgr.pull("ollama:llama3", ModelSource.REMOTE)

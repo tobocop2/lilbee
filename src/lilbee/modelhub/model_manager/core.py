@@ -10,7 +10,7 @@ from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.local_servers import LOCAL_SERVERS, detect_local_server
+from lilbee.providers.local_servers import LOCAL_SERVERS, local_server_for_key
 from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
@@ -38,9 +38,8 @@ def _prefixed_source(model: str) -> ModelSource | None:
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, remote_base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, models_dir: Path) -> None:
         self._models_dir = models_dir
-        self._remote_base_url = remote_base_url.rstrip("/")
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
@@ -110,16 +109,16 @@ class ModelManager:
         return sorted(m.ref for m in self._registry.list_installed())
 
     def _list_remote(self) -> list[str]:
-        """List model names from the configured local server (Ollama or LM Studio).
+        """List model names across every configured local server (Ollama, LM Studio).
 
-        Reuses the discovery dispatch so the listing endpoint matches the
-        detected server (Ollama ``/api/tags`` vs LM Studio ``/v1/models``).
-        Returns ``[]`` when the backend is unreachable.
+        Reuses the discovery dispatch so each listing endpoint matches its
+        server (Ollama ``/api/tags`` vs LM Studio ``/v1/models``). Returns
+        ``[]`` when the backends are unreachable.
         """
         # circular: discovery -> app.services -> model_manager.__init__ -> core
-        from lilbee.modelhub.model_manager.discovery import classify_remote_models
+        from lilbee.modelhub.model_manager.discovery import classify_all_remote_models
 
-        models = classify_remote_models(self._remote_base_url, timeout=DEFAULT_HTTP_TIMEOUT)
+        models = classify_all_remote_models(timeout=DEFAULT_HTTP_TIMEOUT)
         return [m.name for m in models]
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
@@ -146,8 +145,8 @@ class ModelManager:
         """Return the granular source a model lives in. Native takes precedence.
 
         A provider-prefixed ref classifies without a network call; a bare name
-        gets the configured local server's source when that backend reports it
-        installed. ``None`` when the model is in no known source.
+        that a backend reports installed is ``REMOTE`` (the prefix is what names
+        the specific server). ``None`` when the model is in no known source.
         """
         if self._is_native(model):
             return ModelSource.NATIVE
@@ -155,8 +154,7 @@ class ModelManager:
         if prefixed is not None:
             return prefixed
         if self._is_remote(model):
-            server = detect_local_server(self._remote_base_url)
-            return ModelSource(server.key) if server is not None else ModelSource.REMOTE
+            return ModelSource.REMOTE
         return None
 
     def pull(
@@ -178,8 +176,8 @@ class ModelManager:
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
         """
         if source is not ModelSource.NATIVE:
-            server = detect_local_server(self._remote_base_url)
-            where = server.display_name if server is not None else "the configured server"
+            spec = local_server_for_key(source.value)
+            where = spec.display_name if spec is not None else "the configured server"
             raise ValueError(
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
@@ -236,8 +234,8 @@ class ModelManager:
         """
         effective = source if source is not None else self.get_source(model)
         if effective is not None and effective is not ModelSource.NATIVE:
-            server = detect_local_server(self._remote_base_url)
-            where = server.display_name if server is not None else "the configured server"
+            spec = local_server_for_key(effective.value)
+            where = spec.display_name if spec is not None else "the configured server"
             raise ValueError(
                 f"lilbee runs {where} models but doesn't remove them. "
                 f"Manage them in {where} instead."

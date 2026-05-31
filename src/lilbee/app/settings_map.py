@@ -30,6 +30,7 @@ class SettingGroup(StrEnum):
     INGEST = "Ingest"
     WIKI = "Wiki"
     CRAWLING = "Crawling"
+    LOCAL_SERVERS = "Local-Servers"
     API_KEYS = "API-Keys"
     SYSTEM = "System"
     DISPLAY = "Display"
@@ -797,14 +798,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Provider routing: auto picks the first key present; force a specific one when set"
         ),
     ),
-    "remote_base_url": SettingDef(
+    "ollama_base_url": SettingDef(
         str,
         nullable=False,
-        group=SettingGroup.API_KEYS,
-        help_text=(
-            "OpenAI-compatible base URL "
-            "(Ollama: http://localhost:11434, LM Studio: http://localhost:1234/v1)"
-        ),
+        group=SettingGroup.LOCAL_SERVERS,
+        help_text="Ollama server URL (blank uses http://localhost:11434)",
+    ),
+    "lm_studio_base_url": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.LOCAL_SERVERS,
+        help_text="LM Studio server URL (blank uses http://localhost:1234/v1)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

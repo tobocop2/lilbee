@@ -56,7 +56,8 @@ All settings override via environment variables:
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
 - `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
 - `LILBEE_LLM_PROVIDER` — provider: `auto` (default), `llama-cpp`, `remote` (requires `pip install lilbee[litellm]`)
-- `LILBEE_REMOTE_BASE_URL` — SDK backend endpoint (default: `http://localhost:11434`)
+- `LILBEE_OLLAMA_BASE_URL` — Ollama server URL (blank uses `http://localhost:11434`)
+- `LILBEE_LM_STUDIO_BASE_URL` — LM Studio server URL (blank uses `http://localhost:1234/v1`)
 - `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
 - `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
 - `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)

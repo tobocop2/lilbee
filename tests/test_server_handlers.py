@@ -1109,7 +1109,7 @@ class TestHostedCatalogEntries:
         )
         monkeypatch.setattr(
             h,
-            "classify_remote_models",
+            "classify_all_remote_models",
             lambda *a, **k: [
                 RemoteModel(
                     name="llama3.1:8b",
@@ -1145,7 +1145,7 @@ class TestHostedCatalogEntries:
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(
             h,
-            "classify_remote_models",
+            "classify_all_remote_models",
             lambda *a, **k: [
                 RemoteModel(
                     name="nomic-embed",
@@ -1182,7 +1182,7 @@ class TestHostedCatalogEntries:
             }
 
         monkeypatch.setattr(h, "discover_api_models", _discover)
-        monkeypatch.setattr(h, "classify_remote_models", lambda *a, **k: [])
+        monkeypatch.setattr(h, "classify_all_remote_models", lambda *a, **k: [])
         await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
         await h._collect_hosted_entries(task=ModelTask.CHAT, search="")
         assert calls["n"] == 1
@@ -1193,11 +1193,11 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        monkeypatch.setattr(h.cfg, "remote_base_url", "http://localhost:1234/v1")
+        monkeypatch.setattr(h.cfg, "lm_studio_base_url", "http://localhost:1234/v1")
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(
             h,
-            "classify_remote_models",
+            "classify_all_remote_models",
             lambda *a, **k: [
                 RemoteModel(
                     name="qwen2.5-coder",
@@ -1213,8 +1213,8 @@ class TestHostedCatalogEntries:
             ("qwen2.5-coder", ModelSource.LM_STUDIO)
         ]
 
-    def test_discover_hosted_sync_unknown_backend_uses_generic_remote(self, monkeypatch) -> None:
-        """An unrecognized backend URL keeps the generic REMOTE source.
+    def test_discover_hosted_sync_unknown_provider_uses_generic_remote(self, monkeypatch) -> None:
+        """A row whose provider label maps to no known local server stays generic REMOTE.
 
         Matches the fallback get_source and the CLI use for an undetected server.
         """
@@ -1222,18 +1222,18 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        monkeypatch.setattr(h.cfg, "remote_base_url", "http://my-host.internal:9000")
+        monkeypatch.setattr(h.cfg, "ollama_base_url", "http://my-host.internal:9000")
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(
             h,
-            "classify_remote_models",
+            "classify_all_remote_models",
             lambda *a, **k: [
                 RemoteModel(
                     name="custom-model",
                     task=ModelTask.CHAT,
                     family="",
                     parameter_size="",
-                    provider="Ollama",
+                    provider="Remote",
                 )
             ],
         )
@@ -1252,7 +1252,7 @@ class TestModelsCatalog:
 
         h._hosted_cache._result = None
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
-        monkeypatch.setattr(h, "classify_remote_models", lambda *a, **k: [])
+        monkeypatch.setattr(h, "classify_all_remote_models", lambda *a, **k: [])
 
     @staticmethod
     def _manifest(hf_repo: str, gguf_filename: str, task: str = "chat"):
@@ -2275,7 +2275,8 @@ class TestGetConfig:
         dumped = result.model_dump()
         assert "chat_model" in dumped
         assert "rag_system_prompt" in dumped
-        assert "remote_base_url" in dumped
+        assert "ollama_base_url" in dumped
+        assert "lm_studio_base_url" in dumped
         assert "diversity_max_per_source" in dumped
         assert "mmr_lambda" in dumped
         assert "query_expansion_count" in dumped
@@ -2812,10 +2813,10 @@ class TestListExternalModels:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
-        cfg.remote_base_url = "https://provider-a.example"
+        cfg.ollama_base_url = "https://provider-a.example"
         await handlers.list_external_models()
 
-        cfg.remote_base_url = "https://provider-b.example"
+        cfg.ollama_base_url = "https://provider-b.example"
         await handlers.list_external_models()
 
         assert mock_svc.return_value.provider.list_models.call_count == 2

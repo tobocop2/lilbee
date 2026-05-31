@@ -42,6 +42,9 @@ pytestmark = [
 @pytest.fixture(autouse=True)
 def _isolate_cfg():
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
+    # ollama/ refs resolve their api_base from this field, so point it at the
+    # real server for the duration of each test.
+    cfg.ollama_base_url = OLLAMA_HOST
     yield
     for name, val in snapshot.items():
         setattr(cfg, name, val)
@@ -51,7 +54,7 @@ class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
         """Real embedding via Ollama returns float vectors."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.embed(["hello world"])
 
         assert len(result) == 1
@@ -61,7 +64,7 @@ class TestSdkEmbed:
     def test_embed_batch(self) -> None:
         """Batch embedding returns one vector per input."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         texts = ["hello", "world", "test"]
         result = provider.embed(texts)
 
@@ -73,7 +76,7 @@ class TestSdkChat:
     def test_chat_returns_response(self) -> None:
         """Real chat completion via Ollama returns non-empty text."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say hello in exactly one word."}],
             options={"temperature": 0},
@@ -85,7 +88,7 @@ class TestSdkChat:
     def test_chat_stream_yields_tokens(self) -> None:
         """Streaming chat yields string tokens."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Count from 1 to 3."}],
             stream=True,
@@ -101,7 +104,7 @@ class TestSdkChat:
     def test_chat_with_model_override(self) -> None:
         """Model override in chat() works."""
         cfg.chat_model = OLLAMA_MODEL
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
             [{"role": "user", "content": "Say yes."}],
             model=OLLAMA_MODEL,
@@ -115,7 +118,7 @@ class TestSdkChat:
 class TestSdkModelManagement:
     def test_list_models(self) -> None:
         """list_models returns models from Ollama."""
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         models = provider.list_models()
 
         assert isinstance(models, list)
@@ -124,7 +127,7 @@ class TestSdkModelManagement:
 
     def test_show_model(self) -> None:
         """show_model returns model info dict."""
-        provider = SdkLLMProvider(LitellmSdkBackend(), base_url=OLLAMA_HOST)
+        provider = SdkLLMProvider(LitellmSdkBackend())
         info = provider.show_model(OLLAMA_MODEL)
 
         assert info is not None
@@ -137,7 +140,7 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "remote"
-        cfg.remote_base_url = OLLAMA_HOST
+        cfg.ollama_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
 
         assert isinstance(provider, SdkLLMProvider)
@@ -148,6 +151,6 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "ollama"
-        cfg.remote_base_url = OLLAMA_HOST
+        cfg.ollama_base_url = OLLAMA_HOST
         with pytest.raises(ProviderError, match="Unknown LLM provider"):
             create_provider(cfg)
