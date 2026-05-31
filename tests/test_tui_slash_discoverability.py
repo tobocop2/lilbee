@@ -632,10 +632,10 @@ class TestDiscoveryBindingsAsync:
 
 
 class TestDropdownNavigationAsync:
-    """Ctrl+N / Ctrl+P / Down / Up cycle the visible dropdown without
-    disturbing the input value or collapsing the option list."""
+    """Ctrl+N / Ctrl+P / Down / Up preview matches into the input (vim
+    ``<C-n>`` insert-completion) while the dropdown stays open; Esc reverts."""
 
-    async def test_ctrl_n_moves_highlight_without_touching_input(
+    async def test_ctrl_n_previews_first_then_steps_forward(
         self, _mock_resolve, _mock_services
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -654,14 +654,17 @@ class TestDropdownNavigationAsync:
             first = overlay.get_current()
             await pilot.press("ctrl+n")
             await pilot.pause()
-            second = overlay.get_current()
-            # Input is untouched; highlight moved to the next option;
-            # dropdown stays open with the same option list.
-            assert inp.value == "/"
+            # First Ctrl+N previews the highlighted (first) command; for a
+            # command the previewed value is the command name itself.
+            assert inp.value == first
             assert overlay.is_visible
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            second = overlay.get_current()
             assert second != first
+            assert inp.value == second
 
-    async def test_ctrl_p_moves_highlight_back(self, _mock_resolve, _mock_services) -> None:
+    async def test_ctrl_p_steps_back_and_previews(self, _mock_resolve, _mock_services) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -674,18 +677,17 @@ class TestDropdownNavigationAsync:
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp.value = "/"
             await pilot.pause()
-            first = overlay.get_current()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            first = inp.value
             await pilot.press("ctrl+n")
             await pilot.pause()
             await pilot.press("ctrl+p")
             await pilot.pause()
-            assert overlay.get_current() == first
-            assert inp.value == "/"
+            assert inp.value == first
             assert overlay.is_visible
 
-    async def test_down_navigates_dropdown_when_visible(
-        self, _mock_resolve, _mock_services
-    ) -> None:
+    async def test_down_previews_into_input(self, _mock_resolve, _mock_services) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -701,9 +703,31 @@ class TestDropdownNavigationAsync:
             first = overlay.get_current()
             await pilot.press("down")
             await pilot.pause()
-            assert overlay.get_current() != first
-            assert inp.value == "/"
+            assert inp.value == first
+            assert inp.value != "/"
             assert overlay.is_visible
+
+    async def test_esc_reverts_previewed_candidate(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert inp.value != "/"
+            await pilot.press("escape")
+            await pilot.pause()
+            # Esc restores exactly what the user had typed and closes the menu.
+            assert inp.value == "/"
+            assert not overlay.is_visible
 
     async def test_ctrl_p_opens_palette_when_overlay_hidden(
         self, _mock_resolve, _mock_services
@@ -723,7 +747,7 @@ class TestDropdownNavigationAsync:
                 await pilot.pause()
             palette.assert_called_once()
 
-    async def test_up_navigates_dropdown_when_visible(self, _mock_resolve, _mock_services) -> None:
+    async def test_up_steps_back_and_previews(self, _mock_resolve, _mock_services) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -738,11 +762,12 @@ class TestDropdownNavigationAsync:
             await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
-            mid = overlay.get_current()
+            await pilot.press("down")
+            await pilot.pause()
+            stepped = inp.value
             await pilot.press("up")
             await pilot.pause()
-            assert overlay.get_current() != mid
-            assert inp.value == "/"
+            assert inp.value != stepped
             assert overlay.is_visible
 
 
@@ -769,10 +794,11 @@ class TestEnterAcceptsHighlightAsync:
             assert highlighted is not None and highlighted.startswith("/")
             await pilot.press("enter")
             await pilot.pause()
-            # Input now holds "<command> " (trailing space invites args), and
-            # the message was NOT submitted because Enter was consumed by the
-            # accept-on-overlay path.
-            assert inp.value == f"{highlighted} "
+            # Enter fills the highlighted command (nothing was previewed yet)
+            # and is consumed, so the message is NOT submitted; a second Enter
+            # would submit.
+            assert inp.value == highlighted
+            assert not overlay.is_visible
 
     async def test_enter_submits_when_selection_matches_input(
         self, _mock_resolve, _mock_services
@@ -957,9 +983,7 @@ class TestArgCompletionsLiveFilterAsync:
                 await pilot.pause()
                 assert not overlay.is_visible
 
-    async def test_ctrl_n_in_arg_mode_is_highlight_only(
-        self, _mock_resolve, _mock_services
-    ) -> None:
+    async def test_ctrl_n_in_arg_mode_previews_model(self, _mock_resolve, _mock_services) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -978,11 +1002,14 @@ class TestArgCompletionsLiveFilterAsync:
                 first = overlay.get_current()
                 await pilot.press("ctrl+n")
                 await pilot.pause()
-                # Highlight advanced; the input the user typed is untouched.
-                assert overlay.get_current() != first
-                assert inp.value == "/model "
+                # Ctrl+N previews the highlighted model into the input,
+                # preserving the "/model " prefix, and the menu stays open.
+                assert inp.value == f"/model {first}"
+                assert overlay.is_visible
 
-    async def test_tab_in_arg_mode_accepts_highlight(self, _mock_resolve, _mock_services) -> None:
+    async def test_tab_in_arg_mode_completes_unique_model(
+        self, _mock_resolve, _mock_services
+    ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = _ChatHostApp()
@@ -998,19 +1025,19 @@ class TestArgCompletionsLiveFilterAsync:
             ):
                 inp.value = "/model qw"
                 await pilot.pause()
-                highlighted = overlay.get_current()
-                assert highlighted == "qwen3:8b"
+                # "qw" matches only qwen3:8b; Tab fills the shared (full) prefix,
+                # which then collapses the now fully-typed dropdown.
                 await pilot.press("tab")
                 await pilot.pause()
-                assert inp.value == f"/model {highlighted} "
+                assert inp.value == "/model qwen3:8b"
                 assert not overlay.is_visible
 
 
 class TestCompletionOpenAndAcceptAsync:
-    """Opening a closed dropdown leaves the typed text intact; accepting a
+    """Opening a closed dropdown previews the first match; accepting a
     directory keeps the cursor on the slash so the user can keep descending."""
 
-    async def test_tab_opens_closed_overlay_without_mutation(
+    async def test_tab_opens_closed_overlay_and_previews_first(
         self, _mock_resolve, _mock_services
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1031,9 +1058,11 @@ class TestCompletionOpenAndAcceptAsync:
             await pilot.press("tab")
             await pilot.pause()
             assert overlay.is_visible
-            assert inp.value == "/"
+            # Commands share only "/", so Tab previews the first match.
+            assert inp.value == overlay.get_current()
+            assert inp.value != "/"
 
-    async def test_ctrl_n_opens_closed_overlay_without_mutation(
+    async def test_ctrl_n_opens_closed_overlay_and_previews_first(
         self, _mock_resolve, _mock_services
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1054,7 +1083,8 @@ class TestCompletionOpenAndAcceptAsync:
             await pilot.press("ctrl+n")
             await pilot.pause()
             assert overlay.is_visible
-            assert inp.value == "/"
+            assert inp.value == overlay.get_current()
+            assert inp.value != "/"
 
     async def test_directory_accept_omits_trailing_space(
         self, _mock_resolve, _mock_services

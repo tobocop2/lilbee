@@ -2405,6 +2405,61 @@ class TestGetCompletions:
         r = get_completions(f"/add {d}/")
         assert any("testfile.txt" in x for x in r)
 
+    def test_add_tilde_completions_not_filtered_out(self, tmp_path, monkeypatch) -> None:
+        """Regression: ``~/`` expands to absolute paths that do not start with
+        the raw ``~/`` partial, so the arg filter must not wipe them."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "alpha.txt").touch()
+        (d / "subdir").mkdir()
+        monkeypatch.setenv("HOME", str(d))
+        r = get_completions("/add ~/")
+        assert any("alpha.txt" in x for x in r)
+        assert any("subdir/" in x for x in r)
+
+    def test_add_relative_dot_completions_not_filtered_out(self, tmp_path, monkeypatch) -> None:
+        """Regression: ``./`` lists entries by basename, which don't start with
+        ``./``; the arg filter must not wipe them."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "beta.txt").touch()
+        monkeypatch.chdir(d)
+        r = get_completions("/add ./")
+        assert any("beta.txt" in x for x in r)
+
+
+class TestLongestCommonPrefix:
+    def test_empty_list(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
+
+        assert longest_common_prefix([]) == ""
+
+    def test_single_value(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
+
+        assert longest_common_prefix(["/model qwen"]) == "/model qwen"
+
+    def test_shared_prefix(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
+
+        assert longest_common_prefix(["/add Documents/", "/add Downloads/"]) == "/add Do"
+
+    def test_no_shared_prefix(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
+
+        assert longest_common_prefix(["abc", "xyz"]) == ""
+
+    def test_prefix_is_full_shortest(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
+
+        assert longest_common_prefix(["/add foo", "/add foobar"]) == "/add foo"
+
 
 class TestModelOptions:
     def test_returns_models(self) -> None:

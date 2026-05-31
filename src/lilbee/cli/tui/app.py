@@ -373,7 +373,7 @@ class LilbeeApp(App[None]):
             except NoMatches:
                 overlay = None
             if overlay is not None and overlay.is_visible:
-                overlay.cycle_prev()
+                screen.action_complete_prev()
                 return
         super().action_command_palette()
 

@@ -59,10 +59,16 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     sources = _ARG_SOURCES.get(cmd)
     if sources is None:
         return []
-    options = _path_options(partial) if cmd == "/add" else sources()
-    if partial:
-        low = partial.lower()
-        options = [o for o in options if o.lower().startswith(low)]
+    if cmd == "/add":
+        # _path_options already prefix-filters against the basename and returns
+        # bare segment names (not the typed prefix), so the generic startswith
+        # filter below would wrongly wipe them.
+        options = _path_options(partial)
+    else:
+        options = sources()
+        if partial:
+            low = partial.lower()
+            options = [o for o in options if o.lower().startswith(low)]
     return [o for o in options if o.lower() != partial.lower()]
 
 
@@ -105,9 +111,11 @@ def _theme_options() -> list[str]:
 
 
 def _path_options(partial: str = "") -> list[str]:
-    """Return filesystem completions for a partial path.
-    Handles relative paths, absolute paths, and ~ expansion.
-    Directories get a trailing / so the user knows to keep typing.
+    """Return basename completions for the path segment being typed.
+
+    Handles relative paths, absolute paths, and ~ expansion. Only the final
+    segment is returned (the caller keeps whatever prefix the user typed, so
+    ``~/`` stays ``~/``); directories get a trailing ``/`` to invite descent.
     """
     try:
         expanded = Path(partial).expanduser() if partial else Path(".")
@@ -127,16 +135,24 @@ def _path_options(partial: str = "") -> list[str]:
                 continue
             if prefix and not p.name.lower().startswith(prefix):
                 continue
-            display = str(p) if partial and Path(partial) != Path(".") else p.name
-            if p.is_dir():
-                display = display.rstrip("/") + "/"
-            results.append(display)
+            results.append(p.name + "/" if p.is_dir() else p.name)
             if len(results) >= _MAX_PATH_COMPLETIONS:
                 break
         return results
     except Exception:
         log.debug("Failed to list paths for autocomplete", exc_info=True)
         return []
+
+
+def longest_common_prefix(values: list[str]) -> str:
+    """Return the longest string that prefixes every value (``""`` if none)."""
+    if not values:
+        return ""
+    shortest = min(values, key=len)
+    for i, ch in enumerate(shortest):
+        if any(v[i] != ch for v in values):
+            return shortest[:i]
+    return shortest
 
 
 _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
@@ -203,6 +219,11 @@ class CompletionOverlay(Vertical):
         if not self._options or self._index >= len(self._options):
             return None
         return self._options[self._index]
+
+    @property
+    def options(self) -> list[str]:
+        """The currently shown completion options."""
+        return list(self._options)
 
     def hide(self) -> None:
         """Hide the overlay."""
