@@ -21,9 +21,18 @@ CMD_CRAWL_USAGE = "Usage: /crawl <url> [--depth N] [--max-pages N]"
 CMD_CRAWL_STARTED = "Crawling {url}..."
 CMD_CRAWL_PAGE = "Crawling [{current}/{total}]: {url}"
 CMD_CRAWL_PAGE_INDETERMINATE = "Crawling... ({current} pages so far): {url}"
+MODEL_REASON_DEFAULT = "it could not be resolved"
 MODEL_FALLBACK_NOTICE = (
-    "{label} model {original!r} is unavailable; using {effective!r} for this session. "
+    "{label} model {original!r} is unavailable ({reason}); using {effective!r} for this session. "
     "Pick a different model or restore the original to clear this notice."
+)
+MODEL_FALLBACK_FAILED = (
+    "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
+    "rejected; keeping {original!r}. Pick a working {label} model in settings."
+)
+MODEL_UNUSABLE_OPENING_SETUP = (
+    "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
+    "to. Opening setup so you can pick one."
 )
 CMD_CRAWL_SUCCESS = "Crawled {count} page(s) from {url}"
 CMD_CRAWL_FAILED = "Crawl failed: {error}"

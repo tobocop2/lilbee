@@ -498,14 +498,14 @@ class TestAppCanonicalizeFallbackNotice:
     """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
     when canonicalize returns a different effective ref."""
 
-    async def test_fallback_writes_cfg_and_persists_so_warning_does_not_repeat(
-        self, caplog
-    ) -> None:
-        """Fallback writes cfg, persists via settings, logs WARNING, does not toast.
+    async def test_fallback_writes_cfg_persists_and_toasts_the_reason(self, caplog) -> None:
+        """Fallback writes cfg, persists via settings, logs WARNING, and toasts why.
 
         Persisting through the settings boundary is what makes this a
         one-time notice. Without it the warning fires every restart for
-        as long as the stale ref sits in config.toml.
+        as long as the stale ref sits in config.toml. The toast carries
+        the reason so the user understands the swap rather than finding a
+        silently-changed model.
         """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
@@ -519,6 +519,7 @@ class TestAppCanonicalizeFallbackNotice:
             original="missing/model",
             effective="fallback/model",
             status=ValidationResult.NOT_INSTALLED,
+            reason="it isn't installed",
         )
         embed_canon = CanonicalRef(
             original="missing/embed",
@@ -551,12 +552,98 @@ class TestAppCanonicalizeFallbackNotice:
                 assert persisted_args[0] == cfg.data_root
                 assert persisted_args[1].get("chat_model") == "fallback/model"
             assert cfg.chat_model == "fallback/model"
-            assert not notifications, "fallback must not toast the user"
+            assert notifications, "fallback must toast the user so the swap is visible"
+            toast = notifications[0][0]
+            assert "fallback/model" in toast and "isn't installed" in toast
             assert any("fallback/model" in record.getMessage() for record in caplog.records), (
                 "fallback must be logged at WARNING for diagnosis"
             )
         finally:
             cfg.chat_model = snapshot_chat
+
+    async def test_swap_rejection_does_not_crash_startup(self, caplog) -> None:
+        """A rejected fallback swap is logged and skipped, never fatal.
+
+        Startup canonicalization is a best-effort convenience. If
+        ``apply_settings_update`` rejects the chosen ref (e.g. a task
+        mismatch), the app must keep the user's original ref and boot.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        app = LilbeeApp()
+        embed_canon = CanonicalRef(
+            original="ollama/nomic-embed-text:latest",
+            effective="owner/Phi-4-mini-instruct-GGUF/Phi-4.Q4_K_M.gguf",
+            status=ValidationResult.UNKNOWN,
+        )
+        ok_canon = CanonicalRef(
+            original="ok/model", effective="ok/model", status=ValidationResult.OK
+        )
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_chat_model",
+                return_value=ok_canon,
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                return_value=embed_canon,
+            ),
+            mock.patch(
+                "lilbee.cli.tui.app.apply_settings_update",
+                side_effect=ValueError("is a chat model, not embedding"),
+            ),
+            caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
+        ):
+            # Must not raise.
+            app._canonicalize_persisted_models()
+        assert any("ollama/nomic-embed-text" in r.getMessage() for r in caplog.records), (
+            "a rejected swap must be logged at WARNING"
+        )
+
+    async def test_no_fallback_toasts_reason_and_leaves_ref(self, caplog) -> None:
+        """When nothing is installed to fall back to, the ref is left intact
+        and a toast explains why (the chat screen then opens the wizard)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        app = LilbeeApp()
+        embed_canon = CanonicalRef(
+            original="ollama/nomic-embed-text:latest",
+            effective="ollama/nomic-embed-text:latest",
+            status=ValidationResult.UNKNOWN,
+            reason="the litellm extra isn't installed; run pip install 'lilbee[litellm]'",
+        )
+        ok_canon = CanonicalRef(
+            original="ok/model", effective="ok/model", status=ValidationResult.OK
+        )
+        notifications: list[Any] = []
+        snapshot_embed = cfg.embedding_model
+        try:
+            with (
+                mock.patch(
+                    "lilbee.modelhub.model_manager.canonicalize_chat_model",
+                    return_value=ok_canon,
+                ),
+                mock.patch(
+                    "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                    return_value=embed_canon,
+                ),
+                mock.patch.object(
+                    app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
+                ),
+                mock.patch("lilbee.cli.tui.app.apply_settings_update") as mock_apply,
+                caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
+            ):
+                app._canonicalize_persisted_models()
+                mock_apply.assert_not_called()
+            assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
+            assert notifications, "the user must be told why before the wizard opens"
+            toast = notifications[0][0]
+            assert "litellm" in toast and "setup" in toast.lower()
+        finally:
+            cfg.embedding_model = snapshot_embed
 
 
 class TestCatalogToggleViewWhileSwitching:
