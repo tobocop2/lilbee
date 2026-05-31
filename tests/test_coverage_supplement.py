@@ -253,7 +253,9 @@ class TestCatalogVimNavListView:
                 self.push_screen(CatalogScreen())
 
         with (
-            mock.patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
+            mock.patch(
+                "lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]
+            ),
             mock.patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=mock.MagicMock(models=[], total=0, has_more=False),
@@ -607,7 +609,9 @@ class TestCatalogSelectFrontierRow:
         # through Config.chat_model's validator (a bare ref would raise
         # and regress b3a36798).
         with (
-            mock.patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
+            mock.patch(
+                "lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]
+            ),
             mock.patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=mock.MagicMock(models=[], total=0, has_more=False),
@@ -643,7 +647,9 @@ class TestCatalogSelectFrontierRow:
                 self.push_screen(CatalogScreen())
 
         with (
-            mock.patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
+            mock.patch(
+                "lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]
+            ),
             mock.patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=mock.MagicMock(models=[], total=0, has_more=False),
@@ -684,7 +690,9 @@ class TestCatalogProviderAvailabilityDebounce:
                 self.push_screen(CatalogScreen())
 
         with (
-            mock.patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
+            mock.patch(
+                "lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]
+            ),
             mock.patch(
                 "lilbee.cli.tui.screens.catalog.get_catalog",
                 return_value=mock.MagicMock(models=[], total=0, has_more=False),

@@ -112,7 +112,7 @@ def lilbee_env_with_ollama(
         lilbee_data,
         extra={
             "LILBEE_LLM_PROVIDER": "remote",
-            "LILBEE_REMOTE_BASE_URL": ollama_url,
+            "LILBEE_OLLAMA_BASE_URL": ollama_url,
             "LILBEE_CHAT_MODEL": chat_ref,
         },
     )

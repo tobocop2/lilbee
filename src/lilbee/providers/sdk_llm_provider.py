@@ -21,7 +21,9 @@ from typing import Any, Literal, overload
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
-from lilbee.providers.model_ref import parse_model_ref, translate_options
+from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
+from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -33,6 +35,13 @@ from lilbee.providers.worker.transport import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
+
+
+def _api_base_for(ref: ProviderModelRef) -> str | None:
+    """Endpoint for a local-server ref; ``None`` for hosted APIs (no base needed)."""
+    if ref.provider in LOCAL_SERVER_KEYS:
+        return base_url_for(ref.provider)
+    return None
 
 
 def inject_provider_keys() -> None:
@@ -57,11 +66,9 @@ class SdkLLMProvider(LLMProvider):
         self,
         backend: LlmSdkBackend,
         *,
-        base_url: str = "http://localhost:11434",
         api_key: str = "",
     ) -> None:
         self._backend = backend
-        self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._initialized = False
 
@@ -91,7 +98,7 @@ class SdkLLMProvider(LLMProvider):
         request = EmbeddingRequest(
             ref=ref,
             inputs=texts,
-            api_base=self._base_url if ref.needs_api_base else None,
+            api_base=_api_base_for(ref),
             api_key=self._api_key or None,
         )
         try:
@@ -140,7 +147,7 @@ class SdkLLMProvider(LLMProvider):
             ref=ref,
             messages=list(messages),
             options=translated,
-            api_base=self._base_url if ref.needs_api_base else None,
+            api_base=_api_base_for(ref),
             api_key=self._api_key or None,
         )
         if stream:
@@ -219,17 +226,20 @@ class SdkLLMProvider(LLMProvider):
         )
 
     def list_models(self) -> list[str]:
-        """List models from the backend (empty list on SDK errors)."""
-        try:
-            return self._backend.list_models(base_url=self._base_url, api_key=self._api_key)
-        except NotImplementedError:
-            return []
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise ProviderError(
-                f"Listing models failed: {exc}", provider=self._backend.provider_name
-            ) from exc
+        """List models across every configured local server (empty list on SDK errors)."""
+        names: list[str] = []
+        for _spec, base_url in configured_local_servers():
+            try:
+                names.extend(self._backend.list_models(base_url=base_url, api_key=self._api_key))
+            except NotImplementedError:
+                continue
+            except ProviderError:
+                raise
+            except Exception as exc:
+                raise ProviderError(
+                    f"Listing models failed: {exc}", provider=self._backend.provider_name
+                ) from exc
+        return names
 
     def list_chat_models(self, provider: str) -> list[str]:
         """List frontier chat models known to the backend for *provider*.
@@ -252,7 +262,8 @@ class SdkLLMProvider(LLMProvider):
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull a model via the backend."""
         try:
-            self._backend.pull_model(model, base_url=self._base_url, on_progress=on_progress)
+            base_url = _api_base_for(parse_model_ref(model)) or ""
+            self._backend.pull_model(model, base_url=base_url, on_progress=on_progress)
         except NotImplementedError as exc:
             raise ProviderError(
                 f"Cannot pull model {model!r}: backend does not support pulling",
@@ -268,7 +279,8 @@ class SdkLLMProvider(LLMProvider):
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata, or None when unsupported or not found."""
         try:
-            return self._backend.show_model(model, base_url=self._base_url)
+            base_url = _api_base_for(parse_model_ref(model)) or ""
+            return self._backend.show_model(model, base_url=base_url)
         except NotImplementedError:
             return None
         except ProviderError:
@@ -296,7 +308,7 @@ class SdkLLMProvider(LLMProvider):
             ref=ref,
             query=query,
             candidates=candidates,
-            api_base=self._base_url if ref.needs_api_base else None,
+            api_base=_api_base_for(ref),
             api_key=self._api_key or None,
         )
         try:

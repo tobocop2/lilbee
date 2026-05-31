@@ -38,11 +38,15 @@ def _manifest(hf_repo: str, gguf_filename: str, *, size: int, task: str) -> Mode
     )
 
 
-def _remote(name: str, task: str, parameter_size: str = "8B") -> MagicMock:
+def _remote(
+    name: str, task: str, parameter_size: str = "8B", provider: str = "Ollama"
+) -> MagicMock:
     rm = MagicMock()
     rm.name = name
     rm.task = task
     rm.parameter_size = parameter_size
+    # Source is derived from the provider label, so it must be a real string.
+    rm.provider = provider
     return rm
 
 
@@ -150,14 +154,14 @@ def native_manifests():
 
 @pytest.fixture
 def no_remote_classify():
-    with patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]):
+    with patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]):
         yield
 
 
 @pytest.fixture
 def with_remote_classify():
     remote = [_remote(_OLLAMA_REF, task="chat", parameter_size="8B")]
-    with patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=remote):
+    with patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=remote):
         yield remote
 
 
@@ -207,7 +211,7 @@ class TestListModelsData:
         assert sources == {"native", "ollama"}
 
     def test_filter_source_native_skips_litellm_http(self, fake_manager, native_manifests):
-        with patch("lilbee.modelhub.model_manager.classify_remote_models") as classify:
+        with patch("lilbee.modelhub.model_manager.classify_all_remote_models") as classify:
             data = model_mod.list_models_data(source=ModelSource.NATIVE)
         classify.assert_not_called()
         assert data.total == 1
