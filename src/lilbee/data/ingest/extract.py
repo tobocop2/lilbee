@@ -37,13 +37,11 @@ from lilbee.runtime.progress import (
 log = logging.getLogger(__name__)
 
 
-def _has_meaningful_text(result: Any) -> bool:
-    """Check if extraction produced meaningful text."""
-    chunks = getattr(result, "chunks", None)
-    if chunks:
-        total = sum(len(c.content.strip()) for c in chunks)
-        return total > MIN_MEANINGFUL_CHARS
-    return False
+def _has_meaningful_text(result: ExtractionResult) -> bool:
+    """True when extraction yielded real text; content is primary, chunks the fallback."""
+    if len(result.content.strip()) > MIN_MEANINGFUL_CHARS:
+        return True
+    return sum(len(c.content.strip()) for c in result.chunks or []) > MIN_MEANINGFUL_CHARS
 
 
 def content_type_to_mode(content_type: str) -> ExtractMode:

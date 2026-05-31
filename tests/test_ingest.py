@@ -1153,10 +1153,10 @@ class TestSyncStructuredFormats:
 
 
 class TestHasMeaningfulText:
-    def test_empty_chunks_returns_false(self):
+    def test_empty_content_and_chunks_returns_false(self):
         from lilbee.data.ingest.extract import _has_meaningful_text
 
-        result = mock.MagicMock(chunks=[])
+        result = mock.MagicMock(content="", chunks=[])
         assert _has_meaningful_text(result) is False
 
     def test_short_text_returns_false(self):
@@ -1164,15 +1164,23 @@ class TestHasMeaningfulText:
 
         chunk = mock.MagicMock()
         chunk.content = "short"
-        result = mock.MagicMock(chunks=[chunk])
+        result = mock.MagicMock(content="short", chunks=[chunk])
         assert _has_meaningful_text(result) is False
 
-    def test_meaningful_text_returns_true(self):
+    def test_meaningful_chunks_returns_true(self):
         from lilbee.data.ingest.extract import _has_meaningful_text
 
         chunk = mock.MagicMock()
         chunk.content = "A" * 100
-        result = mock.MagicMock(chunks=[chunk])
+        result = mock.MagicMock(content="", chunks=[chunk])
+        assert _has_meaningful_text(result) is True
+
+    def test_content_rich_empty_chunks_returns_true(self):
+        """A text PDF whose extractor populated content but no chunks must
+        take the text path, not vision OCR (bb-4u58)."""
+        from lilbee.data.ingest.extract import _has_meaningful_text
+
+        result = mock.MagicMock(content="A" * 100, chunks=[])
         assert _has_meaningful_text(result) is True
 
 
