@@ -50,6 +50,8 @@ scripts/*
 !scripts/check_style_rules.py
 !scripts/porkbun-dns-setup.sh
 !scripts/demo.sh
+!scripts/release.sh
+!scripts/release_notes.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py

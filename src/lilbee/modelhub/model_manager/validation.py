@@ -26,7 +26,9 @@ from lilbee.modelhub.model_manager.discovery import (
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.litellm_sdk import litellm_available
-from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS
+from lilbee.providers.local_servers import LocalServerSpec
+from lilbee.providers.local_servers.config_urls import base_url_for
+from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
 from lilbee.providers.model_ref import ProviderModelRef, format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, provider_has_key
 
@@ -73,23 +75,22 @@ def _is_local_installed(ref: str) -> bool:
         return False
 
 
-def _local_server_reachable(base_url: str) -> bool:
+def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
     """True if the local model server lists at least one model within the probe budget."""
     try:
-        return bool(classify_remote_models(base_url, timeout=_PROBE_TIMEOUT_S))
+        return bool(classify_remote_models(base_url, spec, timeout=_PROBE_TIMEOUT_S))
     except Exception:  # pragma: no cover - defensive; classify swallows its own errors
         log.debug("Local model server probe failed for %r", base_url, exc_info=True)
         return False
 
 
-def _classify_local_server_ref() -> tuple[ValidationResult, str | None]:
+def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult, str | None]:
     """Classify an ollama/lm_studio ref: needs the litellm extra and a live server."""
     if not litellm_available():
         return ValidationResult.UNKNOWN, REASON_LITELLM_MISSING
-    if not _local_server_reachable(cfg.remote_base_url):
-        return ValidationResult.UNKNOWN, REASON_SERVER_UNREACHABLE.format(
-            base_url=cfg.remote_base_url
-        )
+    base_url = base_url_for(spec.key)
+    if not _local_server_reachable(spec, base_url):
+        return ValidationResult.UNKNOWN, REASON_SERVER_UNREACHABLE.format(base_url=base_url)
     return ValidationResult.OK, None
 
 
@@ -97,7 +98,10 @@ def _classify_uninstalled_ref(parsed: ProviderModelRef) -> tuple[ValidationResul
     """Classify a parsed ref that is not installed locally, by provider kind."""
     provider = (parsed.provider or "").lower()
     if provider in LOCAL_SERVER_KEYS:
-        return _classify_local_server_ref()
+        spec = local_server_for_key(provider)
+        if spec is None:  # pragma: no cover - LOCAL_SERVER_KEYS guarantees a match
+            return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
+        return _classify_local_server_ref(spec)
     if provider in PROVIDER_API_KEY_FIELD:
         if provider_has_key(provider):
             return ValidationResult.OK, None
