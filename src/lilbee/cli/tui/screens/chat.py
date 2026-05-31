@@ -43,7 +43,11 @@ from lilbee.cli.tui.screens.chat_helpers import (
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
-from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+from lilbee.cli.tui.widgets.autocomplete import (
+    CompletionOverlay,
+    get_completions,
+    longest_common_prefix,
+)
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -194,7 +198,13 @@ class ChatScreen(Screen[None]):
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._insert_mode: bool = True
-        self._completing = False
+        # Count of programmatic input edits whose (async) Changed events should
+        # not re-filter the dropdown. The setter posts Changed after our flag
+        # window would close, so a counter consumed in the handler is used.
+        self._suppress_refresh = 0
+        # The user-typed text the open dropdown is filtering against. While
+        # navigating, the input holds a previewed candidate; Esc restores this.
+        self._completion_origin: str | None = None
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
@@ -233,8 +243,10 @@ class ChatScreen(Screen[None]):
             ChatWelcome(id="chat-welcome"),
             id="chat-log",
         )
-        yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
+            # Sits directly above the prompt area so it never covers the line
+            # you're typing (the input stays pinned to the bottom edge).
+            yield CompletionOverlay(id="completion-overlay")
             with PromptArea(id="chat-prompt-area"):
                 yield ScopeChip(id="scope-chip")
                 yield ChatInput(
@@ -473,22 +485,27 @@ class ChatScreen(Screen[None]):
         return None
 
     def _accept_overlay_selection_on_enter(self) -> bool:
-        """Accept the highlight as ``<selection> ``; True if Enter was consumed."""
+        """Accept the highlighted completion on Enter; True if Enter was consumed.
+
+        If the input already holds the highlighted candidate (the user cycled
+        to it), Enter falls through to submit. Otherwise the candidate is
+        filled in and Enter is consumed so a second Enter submits.
+        """
         overlay = self._completion_overlay
         if not overlay.is_visible:
             return False
-        selection = overlay.get_current()
-        inp = self._chat_input
-        if not selection or selection == inp.value.rstrip():
+        display = overlay.get_current()
+        if display is None:
             overlay.hide()
+            self._completion_origin = None
             return False
-        cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
-        self._completing = True
-        inp.value = f"{cmd_prefix}{selection} "
-        self._completing = False
-        inp.action_end()
+        target = self._completion_value(display)
+        consumed = self._chat_input.value != target
+        if consumed:
+            self._set_input(target)
         overlay.hide()
-        return True
+        self._completion_origin = None
+        return consumed
 
     def _handle_slash(self, text: str) -> None:
         """Dispatch slash commands via the per-instance handler registry."""
@@ -1214,6 +1231,12 @@ class ChatScreen(Screen[None]):
         """Esc dismisses the overlay if visible; otherwise drops into NORMAL mode."""
         overlay = self._completion_overlay
         if overlay.is_visible:
+            # Revert any previewed candidate back to what the user typed.
+            if self._completion_origin is not None and self._chat_input.value != (
+                self._completion_origin
+            ):
+                self._set_input(self._completion_origin)
+            self._completion_origin = None
             overlay.hide()
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
@@ -1360,12 +1383,15 @@ class ChatScreen(Screen[None]):
         chip.cycle_scope()
 
     def action_complete(self) -> None:
-        """Tab: cycle autocomplete, insert a literal tab, or advance focus.
+        """Tab: fill the shared prefix, then cycle matches (readline / vim style).
 
-        - Insert mode + chat input focused + completion overlay open:
-          cycle the next completion candidate.
-        - Insert mode + chat input focused + no completion: insert
-          ``\\t`` so users can type tab characters directly.
+        - Insert mode + chat input focused + dropdown closed but matches
+          exist: open it, fill the longest common prefix, else preview the
+          first match.
+        - Insert mode + chat input focused + dropdown open: fill any further
+          shared prefix, otherwise preview the next match.
+        - Insert mode + chat input focused + no matches: insert ``\\t`` so
+          users can type tab characters directly.
         - Normal mode or focus elsewhere: advance through the focus
           chain so Tab still walks every focusable widget.
         """
@@ -1373,75 +1399,100 @@ class ChatScreen(Screen[None]):
         if not self._insert_mode or not inp.has_focus:
             self.screen.focus_next()
             return
-        if self._cycle_completion_forward(inp):
+        overlay = self._completion_overlay
+        if not overlay.is_visible and not self._open_completions():
+            inp.insert("\t")
             return
-        inp.insert("\t")
+        if self._fill_common_prefix():
+            return
+        self._preview_next()
 
     def action_complete_next(self) -> None:
-        """Ctrl+N: highlight-only nav when open, else show + insert (vim ``<C-n>``)."""
-        inp = self._chat_input
-        if not inp.has_focus:
+        """Ctrl+N: preview the next match, opening the dropdown if it is closed (vim ``<C-n>``)."""
+        if not self._chat_input.has_focus:
             return
-        overlay = self._completion_overlay
-        if overlay.is_visible:
-            overlay.cycle_next()
-            return
-        self._cycle_completion_forward(inp)
-
-    def _cycle_completion_forward(self, inp: ChatInput) -> bool:
-        """Show or cycle forward through autocomplete; returns True if it acted."""
-        overlay = self._completion_overlay
-
-        if overlay.is_visible:
-            selection = overlay.cycle_next()
-            if selection:
-                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
-                self._completing = True
-                inp.value = cmd_prefix + selection
-                self._completing = False
-                inp.action_end()
-            return True
-
-        options = get_completions(inp.value)
-        if options:
-            overlay.show_completions(options)
-            first = overlay.get_current()
-            self._completing = True
-            if first and " " in inp.value:
-                cmd_prefix = inp.value.split()[0] + " "
-                inp.value = cmd_prefix + first
-                inp.action_end()
-            elif first:
-                inp.value = first
-                inp.action_end()
-            self._completing = False
-            return True
-
-        return False
+        if self._completion_overlay.is_visible or self._open_completions():
+            self._preview_next()
 
     def action_complete_prev(self) -> None:
-        """Highlight-only nav when open, else show + insert (mirror of complete_next)."""
-        inp = self._chat_input
-        if not inp.has_focus:
+        """Ctrl+P: preview the previous match, opening the dropdown if it is closed."""
+        if not self._chat_input.has_focus:
             return
-        overlay = self._completion_overlay
-        if overlay.is_visible:
-            overlay.cycle_prev()
-            return
+        if self._completion_overlay.is_visible or self._open_completions():
+            self._preview_prev()
 
-        options = get_completions(inp.value)
-        if options:
-            overlay.show_completions(options)
-            last = overlay.get_current()
-            self._completing = True
-            if last and " " in inp.value:
-                cmd_prefix = inp.value.split()[0] + " "
-                inp.value = cmd_prefix + last
-                inp.action_end()
-            elif last:
-                inp.value = last
-                inp.action_end()
-            self._completing = False
+    def _preview_next(self) -> None:
+        """Preview the highlighted match if none is previewed yet, else step forward."""
+        overlay = self._completion_overlay
+        if self._chat_input.value == self._completion_origin:
+            display = overlay.get_current()
+        else:
+            display = overlay.cycle_next()
+        if display is not None:
+            self._preview_completion(display)
+
+    def _preview_prev(self) -> None:
+        """Step the highlight backward (wrapping to the last match) and preview it."""
+        display = self._completion_overlay.cycle_prev()
+        if display is not None:
+            self._preview_completion(display)
+
+    def _open_completions(self) -> bool:
+        """Show the dropdown for the current input and remember it as the origin."""
+        options = get_completions(self._chat_input.value)
+        if not options:
+            return False
+        self._completion_origin = self._chat_input.value
+        self._completion_overlay.show_completions(options)
+        return True
+
+    def _completion_value(self, display: str) -> str:
+        """Full input text produced by accepting ``display``, keeping the typed prefix.
+
+        Path completions are basenames, so the directory the user already
+        typed (``~/``, ``./``, absolute) is preserved and only the final
+        segment is replaced.
+        """
+        text = (
+            self._completion_origin
+            if self._completion_origin is not None
+            else (self._chat_input.value)
+        )
+        if " " not in text:
+            return display
+        cmd, _, partial = text.partition(" ")
+        if cmd.lower() == "/add":
+            head = partial[: partial.rfind("/") + 1]
+            return f"{cmd} {head}{display}"
+        return f"{cmd} {display}"
+
+    def _set_input(self, value: str) -> None:
+        """Replace the input value without triggering the live-refresh of the dropdown."""
+        inp = self._chat_input
+        if inp.value == value:
+            return
+        # The setter posts Changed asynchronously; flag one event to ignore so
+        # the previewed candidate doesn't re-filter (and collapse) the dropdown.
+        # (The value setter already moves the cursor to the end.)
+        self._suppress_refresh += 1
+        inp.value = value
+
+    def _preview_completion(self, display: str) -> None:
+        """Write the highlighted candidate into the input, leaving the dropdown open."""
+        self._set_input(self._completion_value(display))
+
+    def _fill_common_prefix(self) -> bool:
+        """Extend the input to the longest prefix shared by all matches; True if it grew."""
+        overlay = self._completion_overlay
+        values = [self._completion_value(d) for d in overlay.options]
+        shared = longest_common_prefix(values)
+        if len(shared) <= len(self._chat_input.value):
+            return False
+        self._set_input(shared)
+        # Re-filter for the newly completed prefix (descends into a directory,
+        # narrows the model list, etc.).
+        self._refresh_completion_overlay()
+        return True
 
     def action_history_prev(self) -> None:
         """Up arrow: cycle the dropdown if visible, else recall previous history entry."""
@@ -1454,7 +1505,7 @@ class ChatScreen(Screen[None]):
         # (vim/Emacs-style) rather than recalling history.
         overlay = self._completion_overlay
         if overlay.is_visible:
-            overlay.cycle_prev()
+            self._preview_prev()
             return
         if not self._input_history:
             raise SkipAction()
@@ -1477,7 +1528,7 @@ class ChatScreen(Screen[None]):
         # When the completion dropdown is up, Down navigates the dropdown.
         overlay = self._completion_overlay
         if overlay.is_visible:
-            overlay.cycle_next()
+            self._preview_next()
             return
         if self._history_index == -1:
             raise SkipAction()
@@ -1492,26 +1543,26 @@ class ChatScreen(Screen[None]):
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Refresh arg-hint and auto-show or hide the completion dropdown."""
-        if self._completing:
-            # Tab-completion is mid-flight; the cycler manages overlay state.
+        if self._suppress_refresh > 0:
+            # A programmatic edit (preview / accept / revert) is managing the
+            # overlay itself; consume one Changed and skip the live refresh.
+            self._suppress_refresh -= 1
             self._refresh_arg_hint()
             return
         self._refresh_completion_overlay()
         self._refresh_arg_hint()
 
     def _refresh_completion_overlay(self) -> None:
-        """Auto-show the dropdown for COMMAND discovery only; arg completions stay on Tab."""
+        """Live-filter the dropdown against the current input, in command and arg modes alike."""
         overlay = self._completion_overlay
         text = self._chat_input.value
-        # Once the user has typed a space, they are in arg-completion mode.
-        # Leave any Tab-triggered overlay alone and don't auto-pop one.
-        if " " in text:
-            return
         options = get_completions(text)
         if options:
+            self._completion_origin = text
             overlay.show_completions(options)
         elif overlay.is_visible:
             overlay.hide()
+            self._completion_origin = None
 
     def _refresh_arg_hint(self) -> None:
         """Push the current input value into the ArgHintLine."""
