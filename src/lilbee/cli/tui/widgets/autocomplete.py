@@ -50,16 +50,20 @@ def get_completions(text: str) -> list[str]:
 
 
 def _get_arg_completions(cmd: str, partial: str) -> list[str]:
-    """Get argument completions for a specific command."""
+    """Get argument completions for a specific command.
+
+    Drops the option that exactly equals what the user has typed so a
+    fully-typed argument collapses the dropdown and lets Enter submit,
+    mirroring the command-discovery rule for slash commands.
+    """
     sources = _ARG_SOURCES.get(cmd)
     if sources is None:
         return []
-    if cmd == "/add":
-        return _path_options(partial)
-    options = sources()
+    options = _path_options(partial) if cmd == "/add" else sources()
     if partial:
-        return [o for o in options if o.lower().startswith(partial.lower())]
-    return options
+        low = partial.lower()
+        options = [o for o in options if o.lower().startswith(low)]
+    return [o for o in options if o.lower() != partial.lower()]
 
 
 def _model_options() -> list[str]:

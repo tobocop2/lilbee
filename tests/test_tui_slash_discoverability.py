@@ -880,12 +880,37 @@ class TestOverlayBackoutAsync:
             assert screen._insert_mode is False
 
 
-class TestArgCompletionsNotAutoShownAsync:
-    """Once the user has entered arg-completion mode (typed a space), the
-    overlay must NOT auto-show. Paths and other long lists are intrusive
-    and should stay Tab-triggered."""
+_LIVE_FILTER_MODELS = ["qwen3:8b", "mistral:7b"]
 
-    async def test_typing_arg_partial_does_not_auto_show(
+
+class TestArgCompletionsLiveFilterAsync:
+    """Argument completion (after the space) auto-shows and re-filters on
+    every keystroke, just like command discovery. A fully-typed argument
+    collapses the dropdown so Enter submits."""
+
+    _MODELS = _LIVE_FILTER_MODELS
+
+    async def test_typing_arg_partial_auto_shows(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+            ):
+                # Land in arg-completion mode without going through any Tab.
+                inp.value = "/model "
+                await pilot.pause()
+                assert overlay.is_visible
+                assert set(overlay._options) == set(self._MODELS)
+
+    async def test_arg_overlay_filters_live_as_user_types(
         self, _mock_resolve, _mock_services
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -898,7 +923,160 @@ class TestArgCompletionsNotAutoShownAsync:
             assert isinstance(screen, ChatScreen)
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
-            # Land in arg-completion mode without going through any Tab.
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+            ):
+                inp.value = "/model "
+                await pilot.pause()
+                full = list(overlay._options)
+                inp.value = "/model qw"
+                await pilot.pause()
+                assert overlay.is_visible
+                assert overlay._options == ["qwen3:8b"]
+                assert len(overlay._options) < len(full)
+
+    async def test_fully_typed_arg_collapses_overlay(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+            ):
+                inp.value = "/model qw"
+                await pilot.pause()
+                assert overlay.is_visible
+                # Typing the option in full leaves nothing left to complete.
+                inp.value = "/model qwen3:8b"
+                await pilot.pause()
+                assert not overlay.is_visible
+
+    async def test_ctrl_n_in_arg_mode_is_highlight_only(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+            ):
+                inp.value = "/model "
+                await pilot.pause()
+                first = overlay.get_current()
+                await pilot.press("ctrl+n")
+                await pilot.pause()
+                # Highlight advanced; the input the user typed is untouched.
+                assert overlay.get_current() != first
+                assert inp.value == "/model "
+
+    async def test_tab_in_arg_mode_accepts_highlight(self, _mock_resolve, _mock_services) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            with mock.patch(
+                "lilbee.modelhub.models.list_installed_models", return_value=self._MODELS
+            ):
+                inp.value = "/model qw"
+                await pilot.pause()
+                highlighted = overlay.get_current()
+                assert highlighted == "qwen3:8b"
+                await pilot.press("tab")
+                await pilot.pause()
+                assert inp.value == f"/model {highlighted} "
+                assert not overlay.is_visible
+
+
+class TestCompletionOpenAndAcceptAsync:
+    """Opening a closed dropdown leaves the typed text intact; accepting a
+    directory keeps the cursor on the slash so the user can keep descending."""
+
+    async def test_tab_opens_closed_overlay_without_mutation(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            inp.value = "/"
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not overlay.is_visible
+            await pilot.press("tab")
+            await pilot.pause()
+            assert overlay.is_visible
+            assert inp.value == "/"
+
+    async def test_ctrl_n_opens_closed_overlay_without_mutation(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
+            inp.value = "/"
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not overlay.is_visible
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert overlay.is_visible
+            assert inp.value == "/"
+
+    async def test_directory_accept_omits_trailing_space(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp = screen.query_one("#chat-input")
             inp.value = "/add "
             await pilot.pause()
+            # Pin a directory option so the assertion doesn't depend on cwd.
+            overlay.show_completions(["mydir/"])
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            # No trailing space after a directory so the user can keep typing
+            # the next path segment.
+            assert inp.value == "/add mydir/"
             assert not overlay.is_visible
