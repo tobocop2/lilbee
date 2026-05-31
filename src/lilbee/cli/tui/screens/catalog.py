@@ -77,7 +77,7 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager import RemoteModel, classify_remote_models
+from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
 from lilbee.providers.sdk_backend import get_provider_api_key
 from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
@@ -708,7 +708,7 @@ class CatalogScreen(Screen[None]):
 
     @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
-        return classify_remote_models(cfg.remote_base_url)
+        return classify_all_remote_models()
 
     @work(thread=True, name=_WORKER_FETCH_FRONTIER, exit_on_error=False)
     def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:

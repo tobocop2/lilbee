@@ -274,7 +274,7 @@ def list_installed_models() -> list[str]:
     refs that fail pydantic task validation at assignment time.
     """
     # circular: modelhub.model_manager.discovery imports modelhub.models at top
-    from lilbee.modelhub.model_manager import classify_remote_models
+    from lilbee.modelhub.model_manager import classify_all_remote_models
     from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
     try:
@@ -283,7 +283,7 @@ def list_installed_models() -> list[str]:
         for manifest in registry.list_installed():
             if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
                 names.append(manifest.ref)
-        for remote in classify_remote_models(cfg.remote_base_url):
+        for remote in classify_all_remote_models():
             if remote.task == ModelTask.CHAT:
                 names.append(remote.name)
         return sorted(set(names))

@@ -850,7 +850,7 @@ class TestListInstalledModels:
     def test_returns_only_chat_task_models(self):
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
             mock_remote.return_value = []
@@ -866,7 +866,7 @@ class TestListInstalledModels:
     def test_excludes_non_chat_registry_tasks(self):
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [
                 self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat"),
@@ -885,7 +885,7 @@ class TestListInstalledModels:
 
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as mock_remote,
         ):
             mock_reg.return_value = []
             mock_remote.return_value = [
@@ -900,7 +900,7 @@ class TestListInstalledModels:
     def test_dedupes_native_and_remote_overlap(self):
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry.list_installed") as mock_reg,
-            mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as mock_remote,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as mock_remote,
         ):
             mock_reg.return_value = [self._manifest(self._CHAT_REPO, self._CHAT_FILE, "chat")]
             # Remote backend reports the same canonical ref string.
