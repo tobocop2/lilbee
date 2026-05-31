@@ -219,9 +219,7 @@ class LilbeeApp(App[None]):
             reason = canon.reason or msg.MODEL_REASON_DEFAULT
 
             if canon.original == canon.effective:
-                # Unusable with nothing installed to fall back to. Leave the
-                # ref alone; the chat screen's setup check opens the wizard.
-                # Surface why so the user understands before the wizard lands.
+                # Nothing to fall back to: keep the ref; the chat screen opens the wizard.
                 notice = msg.MODEL_UNUSABLE_OPENING_SETUP.format(
                     label=label, original=canon.original, reason=reason
                 )
@@ -229,9 +227,7 @@ class LilbeeApp(App[None]):
                 self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
                 continue
 
-            # Best-effort convenience: a rejected swap (task mismatch via
-            # ValueError, or an OSError persisting the file) must never be
-            # fatal. Log it and keep the user's original ref so the app boots.
+            # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
                 apply_settings_update({field: canon.effective})
             except (ValueError, OSError):

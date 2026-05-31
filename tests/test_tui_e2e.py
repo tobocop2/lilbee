@@ -3242,8 +3242,7 @@ class TestChatEmbeddingReadyCoverage:
         set_services(mock_svc)
         try:
             app = ChatTestApp()
-            # An unusable remote ref now routes to the setup wizard; this test
-            # exercises _embedding_ready, so keep the ChatScreen mounted.
+            # Keep the ChatScreen mounted; wizard routing is covered separately.
             with mock.patch(
                 "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
             ):
@@ -3270,8 +3269,7 @@ class TestChatEmbeddingReadyCoverage:
         set_services(mock_svc)
         try:
             app = ChatTestApp()
-            # An unusable remote ref now routes to the setup wizard; this test
-            # exercises _embedding_ready, so keep the ChatScreen mounted.
+            # Keep the ChatScreen mounted; wizard routing is covered separately.
             with mock.patch(
                 "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
             ):

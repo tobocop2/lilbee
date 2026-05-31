@@ -25,22 +25,21 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.litellm_sdk import litellm_available
 from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS
 from lilbee.providers.model_ref import ProviderModelRef, format_remote_ref, parse_model_ref
-from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, provider_has_key
 
 log = logging.getLogger(__name__)
 
-# Surface-neutral reasons explaining why a persisted ref is unusable, so
-# every surface (TUI toast, server log, CLI) can show the same wording.
+# User-facing reasons a persisted ref is unusable, shared across surfaces.
 REASON_LITELLM_MISSING = "the litellm extra isn't installed; run pip install 'lilbee[litellm]'"
 REASON_SERVER_UNREACHABLE = "the model server at {base_url} isn't reachable"
 REASON_NO_API_KEY = "no API key is configured for {provider}"
 REASON_NOT_INSTALLED = "it isn't installed"
 REASON_UNAVAILABLE = "it isn't available"
 
-# Local-server reachability probe budget. Short so a down server does not
-# stall startup; the probe only runs for ollama/lm_studio refs.
+# Reachability-probe timeout for ollama/lm_studio refs.
 _PROBE_TIMEOUT_S = 1.0
 
 
@@ -78,15 +77,13 @@ def _local_server_reachable(base_url: str) -> bool:
     """True if the local model server lists at least one model within the probe budget."""
     try:
         return bool(classify_remote_models(base_url, timeout=_PROBE_TIMEOUT_S))
-    except Exception:
+    except Exception:  # pragma: no cover - defensive; classify swallows its own errors
         log.debug("Local model server probe failed for %r", base_url, exc_info=True)
         return False
 
 
 def _classify_local_server_ref() -> tuple[ValidationResult, str | None]:
     """Classify an ollama/lm_studio ref: needs the litellm extra and a live server."""
-    from lilbee.providers.litellm_sdk import litellm_available
-
     if not litellm_available():
         return ValidationResult.UNKNOWN, REASON_LITELLM_MISSING
     if not _local_server_reachable(cfg.remote_base_url):
@@ -102,7 +99,7 @@ def _classify_uninstalled_ref(parsed: ProviderModelRef) -> tuple[ValidationResul
     if provider in LOCAL_SERVER_KEYS:
         return _classify_local_server_ref()
     if provider in PROVIDER_API_KEY_FIELD:
-        if get_provider_api_key(provider):
+        if provider_has_key(provider):
             return ValidationResult.OK, None
         return ValidationResult.NO_KEY, REASON_NO_API_KEY.format(provider=provider)
     if not parsed.is_remote:
@@ -151,10 +148,7 @@ def _first_available_api_chat_ref() -> str | None:
 def _first_installed_local_ref(want: ModelTask) -> str | None:
     """Return the first installed local ref whose task matches *want*.
 
-    The task is name-reclassified before comparison so the pick agrees
-    with the role validator that runs on the subsequent swap; falling
-    back to a wrong-task model (e.g. a chat model for the embedding
-    slot) would be rejected downstream and is never a valid candidate.
+    Tasks are name-reclassified so the pick matches the role validator.
     """
     try:
         registry = ModelRegistry(cfg.models_dir)
