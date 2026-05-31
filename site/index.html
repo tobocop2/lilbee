@@ -88,6 +88,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-palette"  aria-controls="tutorial-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
           <div class="tutorialtabs-break" aria-hidden="true"></div>
@@ -137,6 +139,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Browse models on Hugging Face Hub, pull one live, switch a role without leaving the terminal.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-ollama" aria-labelledby="tutorial-tab-ollama" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-ollama-document.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Already running Ollama? Point lilbee at it. The catalog labels the model "ollama"; index the Crown Victoria manual on camera, then get a cited answer.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-lmstudio" aria-labelledby="tutorial-tab-lmstudio" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-lmstudio-document.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Same flow with LM Studio: lms ls shows the model, the catalog labels it "lm studio", and lilbee answers from the manual with a citation.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-settings" aria-labelledby="tutorial-tab-settings" hidden>
