@@ -1,6 +1,9 @@
 """Project style-rule checker invoked by ``make lint``.
 
-Catches four classes of drift that ruff cannot express:
+Catches drift that ruff cannot express. The first four checks run across the
+whole tree (a pattern is forbidden everywhere); the fifth runs only on lines
+added relative to the base branch (it stops NEW smells without forcing a
+cleanup of pre-existing ones).
 
 1. Em dashes (``—``) in ``src/`` or ``tests/``. Project rule from AGENTS.md.
 2. Divider comments (``# ----`` / ``# ====``) used to group code in ``src/``.
@@ -13,9 +16,17 @@ Catches four classes of drift that ruff cannot express:
    ``commands.py``, ``handlers.py``, ``api.py``, ``clustering_embedding.py``,
    ``worker_process.py``, ``llama_cpp_provider.py``), and the phrase
    ``original X.py``. Project rule: docstrings name the current path.
+5. New occurrences of the AGENTS.md "Code-Smell Triggers" (getattr-by-name on
+   owned attributes, getattr-with-default on typed fields, owned-attribute
+   type-ignores, production host-narrowing, string-typed closed sets,
+   module-level mutable globals) on lines added in ``src/`` vs the base
+   branch. Resolving the base is best-effort: when git history is unavailable
+   (shallow CI checkout, no ``origin/main``) the check is skipped, not failed.
 
-Lines tagged with the inline opt-out comment ``# style-check: allow-history``
-are skipped for the historical-narrative check (only).
+Inline opt-out comments: ``# style-check: allow-history`` skips the
+historical-narrative check on that line; ``# style-check: allow-smell`` skips
+the code-smell check on that added line (use it with a written justification
+for genuinely dynamic reflection).
 
 Exits 0 when clean, 1 with one ``path:line:reason`` per finding when violations
 are found.
@@ -24,6 +35,7 @@ are found.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -141,6 +153,121 @@ def _check_stale_single_file_paths(paths: Iterable[Path]) -> Iterator[str]:
                 )
 
 
+ALLOW_SMELL_TAG = "# style-check: allow-smell"
+
+# getattr-with-default on an object field. Named so the dunder exclusion below
+# (a legitimate getattr on `__dunder__` attributes) can reference it directly.
+_GETATTR_DEFAULT_RE = re.compile(r'getattr\([^,]+, "[^"]+",')
+
+# Each entry mirrors one AGENTS.md "Code-Smell Triggers" grep. Patterns match
+# the added line's content (the leading ``+`` already stripped).
+SMELL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r'getattr\(self, "'),
+        "getattr-by-name on an owned attribute (declare it in __init__ with a type)",
+    ),
+    (
+        _GETATTR_DEFAULT_RE,
+        "getattr-with-default on an object field (tighten the type, don't paper over it)",
+    ),
+    (
+        re.compile(r"# type: ignore\[attr-defined\]"),
+        "type-ignore on an owned attribute (declare the attribute on the class)",
+    ),
+    (
+        re.compile(r"isinstance\(self\.app, LilbeeApp\)"),
+        "production host-narrowing for tests (declare `app: LilbeeApp`, use LilbeeAppHost)",
+    ),
+    (
+        re.compile(r"\b(?:task|kind|role|event_type|status|mode): str\b"),
+        "string-typed closed set (convert to a StrEnum at the boundary)",
+    ),
+    (
+        re.compile(r"^\s*global \w+"),
+        "module-level mutable global (encapsulate on a class)",
+    ),
+)
+
+_DIFF_FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
+_DIFF_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _smell_base_ref() -> str | None:
+    """Return the merge-base sha with the upstream default branch, or None.
+
+    Tries ``origin/main`` then ``main``; returns None when neither resolves so
+    the caller can skip the diff-scoped check instead of failing.
+    """
+    for branch in ("origin/main", "main"):
+        try:
+            out = subprocess.run(
+                ["git", "merge-base", "HEAD", branch],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        ref = out.stdout.strip()
+        if ref:
+            return ref
+    return None
+
+
+def _git_diff_src(base: str) -> str:
+    """Return ``git diff --unified=0`` of ``src/`` against the base sha."""
+    out = subprocess.run(
+        ["git", "diff", "--unified=0", base, "--", "src"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout
+
+
+def _parse_added_lines(diff_text: str) -> Iterator[tuple[str, int, str]]:
+    """Yield ``(path, new_line_number, content)`` for each added line.
+
+    Parses ``git diff --unified=0`` output: ``+`` lines (excluding the ``+++``
+    header) are additions, ``-`` lines never advance the new-file counter, and
+    ``+++ /dev/null`` deletions are skipped.
+    """
+    path: str | None = None
+    lineno = 0
+    for line in diff_text.splitlines():
+        file_match = _DIFF_FILE_RE.match(line)
+        if file_match is not None:
+            target = file_match.group(1)
+            path = None if target == "/dev/null" else target
+            continue
+        hunk_match = _DIFF_HUNK_RE.match(line)
+        if hunk_match is not None:
+            lineno = int(hunk_match.group(1))
+            continue
+        if path is None or not line.startswith("+"):
+            continue
+        yield path, lineno, line[1:]
+        lineno += 1
+
+
+def _check_code_smells(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
+    """Yield findings for AGENTS.md code-smell triggers on added Python lines."""
+    for path, lineno, content in added:
+        if not path.endswith(".py") or ALLOW_SMELL_TAG in content:
+            continue
+        for pattern, reason in SMELL_PATTERNS:
+            match = pattern.search(content)
+            if match is None:
+                continue
+            # getattr on a dunder attribute is legitimate dynamic reflection.
+            if pattern is _GETATTR_DEFAULT_RE and '"__' in match.group(0):
+                continue
+            yield f"{path}:{lineno}: code smell -- {reason}"
+            break
+
+
 def main() -> int:
     src_files = list(_iter_python_files(SRC_DIR))
     test_files = list(_iter_python_files(TESTS_DIR))
@@ -150,6 +277,10 @@ def main() -> int:
     findings.extend(_check_divider_comments(src_files))
     findings.extend(_check_historical_narrative(src_files))
     findings.extend(_check_stale_single_file_paths(src_files))
+
+    base = _smell_base_ref()
+    if base is not None:
+        findings.extend(_check_code_smells(_parse_added_lines(_git_diff_src(base))))
 
     for finding in findings:
         print(finding)
