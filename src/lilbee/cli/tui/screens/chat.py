@@ -243,8 +243,10 @@ class ChatScreen(Screen[None]):
             ChatWelcome(id="chat-welcome"),
             id="chat-log",
         )
-        yield CompletionOverlay(id="completion-overlay")
         with BottomBars():
+            # Sits directly above the prompt area so it never covers the line
+            # you're typing (the input stays pinned to the bottom edge).
+            yield CompletionOverlay(id="completion-overlay")
             with PromptArea(id="chat-prompt-area"):
                 yield ScopeChip(id="scope-chip")
                 yield ChatInput(
