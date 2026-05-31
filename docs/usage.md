@@ -838,7 +838,8 @@ adapter library name).
 
 ```bash
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
-export LILBEE_REMOTE_BASE_URL=http://localhost:11434  # local backend URL
+export LILBEE_OLLAMA_BASE_URL=http://localhost:11434  # Ollama URL (blank = default)
+export LILBEE_LM_STUDIO_BASE_URL=http://localhost:1234/v1  # LM Studio URL (blank = default)
 export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
