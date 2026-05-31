@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -123,14 +124,18 @@ class FakeBackend:
 
 @pytest.fixture(autouse=True)
 def _reset_chat_model() -> Iterator[None]:
-    """Preserve ``cfg.chat_model``, ``cfg.embedding_model``, and ``cfg.json_mode`` per test."""
+    """Preserve model, json-mode, and local-server URL config per test."""
     chat_snapshot = cfg.chat_model
     embed_snapshot = cfg.embedding_model
     json_snapshot = cfg.json_mode
+    ollama_snapshot = cfg.ollama_base_url
+    lm_studio_snapshot = cfg.lm_studio_base_url
     yield
     cfg.chat_model = chat_snapshot
     cfg.embedding_model = embed_snapshot
     cfg.json_mode = json_snapshot
+    cfg.ollama_base_url = ollama_snapshot
+    cfg.lm_studio_base_url = lm_studio_snapshot
 
 
 class TestInjectProviderKeys:
@@ -154,12 +159,12 @@ class TestInjectProviderKeys:
 class TestChatNonStream:
     def test_returns_content_string(self) -> None:
         backend = FakeBackend(complete_result=CompletionResult(content="hi"))
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
+        provider = SdkLLMProvider(backend)
         assert provider.chat([{"role": "user", "content": "hey"}]) == "hi"
 
     def test_builds_completion_request_with_parsed_ref(self) -> None:
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
+        provider = SdkLLMProvider(backend)
         ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
         provider.chat([{"role": "user", "content": "hey"}], model=ref)
         req = backend.complete_calls[-1]
@@ -168,11 +173,12 @@ class TestChatNonStream:
         assert req.ref.raw == ref
         assert req.ref.name == ref
         assert req.ref.provider == "local"
-        assert req.api_base == "http://localhost:11434"
+        # A local HF ref is not a local-server ref, so it carries no api_base.
+        assert req.api_base is None
 
     def test_api_model_omits_api_base(self) -> None:
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
+        provider = SdkLLMProvider(backend)
         provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         req = backend.complete_calls[-1]
         assert req.ref.provider == "openai"
@@ -181,13 +187,13 @@ class TestChatNonStream:
 
     def test_passes_api_key_when_configured(self) -> None:
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, base_url="https://api.openai.com", api_key="sk-x")
+        provider = SdkLLMProvider(backend, api_key="sk-x")
         provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert backend.complete_calls[-1].api_key == "sk-x"
 
     def test_options_are_translated_per_ref(self) -> None:
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, base_url="https://api.openai.com")
+        provider = SdkLLMProvider(backend)
         provider.chat(
             [{"role": "user", "content": "hi"}],
             model="openai/gpt-4o",
@@ -303,27 +309,29 @@ class TestEmbed:
     def test_request_includes_api_base_for_ollama(self) -> None:
         backend = FakeBackend()
         cfg.embedding_model = "ollama/nomic-embed-text:latest"
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
+        cfg.ollama_base_url = "http://localhost:11434"
+        provider = SdkLLMProvider(backend)
         provider.embed(["hello"])
         assert backend.embed_calls[-1].api_base == "http://localhost:11434"
 
     def test_request_omits_api_base_for_api_model(self) -> None:
         backend = FakeBackend()
         cfg.embedding_model = "openai/text-embedding-3-small"
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
+        provider = SdkLLMProvider(backend)
         provider.embed(["hello"])
         assert backend.embed_calls[-1].api_base is None
 
-    def test_local_embed_model_with_non_ollama_base_url(self) -> None:
+    def test_local_embed_model_omits_api_base(self) -> None:
         backend = FakeBackend()
         cfg.embedding_model = "org/Custom-Embed-GGUF/custom-Q4_K_M.gguf"
-        provider = SdkLLMProvider(backend, base_url="https://self-hosted:8000")
+        provider = SdkLLMProvider(backend)
         provider.embed(["hello"])
-        # Local HF refs keep their raw name and still pass api_base.
+        # Local HF refs keep their raw name; they are not local-server refs,
+        # so api_base is resolved from the ref and stays None.
         req = backend.embed_calls[-1]
         assert req.ref.name == "org/Custom-Embed-GGUF/custom-Q4_K_M.gguf"
         assert req.ref.provider == "local"
-        assert req.api_base == "https://self-hosted:8000"
+        assert req.api_base is None
 
     def test_wraps_backend_errors(self) -> None:
         backend = FakeBackend(raise_embed=RuntimeError("oops"))
@@ -354,9 +362,17 @@ class TestEmbed:
 
 class TestListModels:
     def test_returns_backend_models(self) -> None:
+        from lilbee.providers.local_servers import OLLAMA
+
         backend = FakeBackend(list_models_result=["a", "b"])
         provider = SdkLLMProvider(backend)
-        assert provider.list_models() == ["a", "b"]
+        # list_models merges across configured servers; pin one so the
+        # backend's result passes through unduplicated.
+        with mock.patch(
+            "lilbee.providers.sdk_llm_provider.configured_local_servers",
+            return_value=[(OLLAMA, "http://localhost:11434")],
+        ):
+            assert provider.list_models() == ["a", "b"]
 
     def test_returns_empty_when_backend_says_not_supported(self) -> None:
         backend = FakeBackend(list_not_supported=True)
@@ -425,15 +441,16 @@ class TestListChatModels:
 class TestPullModel:
     def test_forwards_to_backend(self) -> None:
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, base_url="http://localhost:11434")
-        provider.pull_model("m")
-        assert backend.pull_calls[-1] == ("m", "http://localhost:11434")
+        cfg.ollama_base_url = "http://localhost:11434"
+        provider = SdkLLMProvider(backend)
+        provider.pull_model("ollama/m")
+        assert backend.pull_calls[-1] == ("ollama/m", "http://localhost:11434")
 
     def test_not_supported_raises_provider_error(self) -> None:
         backend = FakeBackend(pull_not_supported=True)
         provider = SdkLLMProvider(backend)
         with pytest.raises(ProviderError, match="does not support pulling"):
-            provider.pull_model("m")
+            provider.pull_model("ollama/m")
 
     def test_wraps_unexpected_errors(self) -> None:
         class _FailingBackend(FakeBackend):
@@ -447,8 +464,8 @@ class TestPullModel:
                 raise RuntimeError("network boom")
 
         provider = SdkLLMProvider(_FailingBackend())
-        with pytest.raises(ProviderError, match="Cannot pull model 'm': network boom"):
-            provider.pull_model("m")
+        with pytest.raises(ProviderError, match="Cannot pull model 'ollama/m': network boom"):
+            provider.pull_model("ollama/m")
 
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
@@ -463,19 +480,19 @@ class TestPullModel:
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
-            provider.pull_model("m")
+            provider.pull_model("ollama/m")
 
 
 class TestShowModel:
     def test_forwards_result(self) -> None:
         backend = FakeBackend(show_model_result={"parameters": "t 0.1"})
         provider = SdkLLMProvider(backend)
-        assert provider.show_model("m") == {"parameters": "t 0.1"}
+        assert provider.show_model("ollama/m") == {"parameters": "t 0.1"}
 
     def test_not_supported_returns_none(self) -> None:
         backend = FakeBackend(show_not_supported=True)
         provider = SdkLLMProvider(backend)
-        assert provider.show_model("m") is None
+        assert provider.show_model("ollama/m") is None
 
     def test_wraps_unexpected_errors(self) -> None:
         class _FailingBackend(FakeBackend):
@@ -483,8 +500,8 @@ class TestShowModel:
                 raise RuntimeError("metadata boom")
 
         provider = SdkLLMProvider(_FailingBackend())
-        with pytest.raises(ProviderError, match="Showing model 'm' failed: metadata boom"):
-            provider.show_model("m")
+        with pytest.raises(ProviderError, match="Showing model 'ollama/m' failed: metadata boom"):
+            provider.show_model("ollama/m")
 
     def test_propagates_provider_error_unchanged(self) -> None:
         class _WrappedError(FakeBackend):
@@ -493,29 +510,29 @@ class TestShowModel:
 
         provider = SdkLLMProvider(_WrappedError())
         with pytest.raises(ProviderError, match="already-typed"):
-            provider.show_model("m")
+            provider.show_model("ollama/m")
 
 
 class TestGetCapabilities:
     def test_returns_backend_capabilities_list(self) -> None:
         backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision"]})
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("m") == ["completion", "vision"]
+        assert provider.get_capabilities("ollama/m") == ["completion", "vision"]
 
     def test_empty_when_show_model_returns_none(self) -> None:
         backend = FakeBackend(show_model_result=None)
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("m") == []
+        assert provider.get_capabilities("ollama/m") == []
 
     def test_empty_when_capabilities_not_a_list(self) -> None:
         backend = FakeBackend(show_model_result={"capabilities": "something"})
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("m") == []
+        assert provider.get_capabilities("ollama/m") == []
 
     def test_missing_capabilities_key_returns_empty(self) -> None:
         backend = FakeBackend(show_model_result={"parameters": "x"})
         provider = SdkLLMProvider(backend)
-        assert provider.get_capabilities("m") == []
+        assert provider.get_capabilities("ollama/m") == []
 
 
 class TestShutdown:

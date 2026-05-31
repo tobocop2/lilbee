@@ -133,7 +133,7 @@ class TestModelManagerListInstalled:
             models_dir, tmp_path, "mistral-7b.gguf", b"mistral-data", repo="org/mistral-7b-GGUF"
         )
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         result = mgr.list_installed(ModelSource.NATIVE)
 
         assert set(result) == {ref_a, ref_b}
@@ -142,13 +142,13 @@ class TestModelManagerListInstalled:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
     def test_native_missing_dir(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "nonexistent"
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
     def test_litellm_lists_models(self) -> None:
@@ -162,15 +162,17 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
-        mock_get.assert_called_once_with("http://localhost:11434/api/tags", timeout=30.0)
+        # REMOTE now spans every configured server; Ollama is probed via /api/tags.
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+        assert "http://localhost:11434/api/tags" in called_urls
         assert set(result) == {"llama3:latest", "nomic-embed-text:latest"}
 
     def test_litellm_connection_error(self) -> None:
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -181,7 +183,7 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -198,7 +200,7 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             result = mgr.list_installed(None)
 
         assert set(result) == {native_ref, "remote-model:latest"}
@@ -217,7 +219,7 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             result = mgr.list_installed(None)
 
         assert result.count(native_ref) == 1
@@ -229,11 +231,14 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             mgr.list_installed(ModelSource.REMOTE)
+            after_first = mock_get.call_count
             mgr.list_installed(ModelSource.REMOTE)
 
-        assert mock_get.call_count == 1
+        # The second call is served from cache: no additional network calls,
+        # regardless of how many servers the first fetch probed.
+        assert mock_get.call_count == after_first
 
     def test_cache_expires_after_ttl(self) -> None:
         """After the TTL window elapses, list_installed refetches."""
@@ -249,11 +254,13 @@ class TestModelManagerListInstalled:
         ):
             # One clock tick per list_installed call: second tick is past TTL.
             mock_clock.side_effect = [0.0, 100.0]
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             mgr.list_installed(ModelSource.REMOTE)
+            after_first = mock_get.call_count
             mgr.list_installed(ModelSource.REMOTE)
 
-        assert mock_get.call_count == 2
+        # Past the TTL the second call refetches, doubling the per-fetch calls.
+        assert mock_get.call_count == 2 * after_first
 
     def test_pull_invalidates_cache(self, tmp_path: Path) -> None:
         """After pull(), the next list_installed must refetch."""
@@ -268,7 +275,7 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             mgr.list_installed(ModelSource.NATIVE)  # populate cache
             assert mgr._installed_cache
 
@@ -291,7 +298,7 @@ class TestModelManagerListInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             mgr.list_installed(None)  # populate cache
             assert mgr._installed_cache
 
@@ -305,14 +312,14 @@ class TestModelManagerIsInstalled:
         models_dir.mkdir()
         (models_dir / "llama3-8b.gguf").touch()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is True
 
     def test_native_not_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr.is_installed("missing.gguf", ModelSource.NATIVE) is False
 
     def test_litellm_installed(self) -> None:
@@ -321,7 +328,7 @@ class TestModelManagerIsInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.is_installed("llama3:latest", ModelSource.REMOTE)
 
         assert result is True
@@ -332,7 +339,7 @@ class TestModelManagerIsInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.is_installed("missing:latest", ModelSource.REMOTE)
 
         assert result is False
@@ -347,7 +354,7 @@ class TestModelManagerIsInstalled:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             assert mgr.is_installed("native-model.gguf", None) is True
             assert mgr.is_installed("remote-model:latest", None) is False
 
@@ -358,24 +365,28 @@ class TestModelManagerGetSource:
         models_dir.mkdir()
         (models_dir / "my-model.gguf").touch()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr.get_source("my-model.gguf") == ModelSource.NATIVE
 
-    def test_bare_ollama_model_is_ollama_source(self) -> None:
-        """A bare name the Ollama backend reports installed classifies as OLLAMA."""
+    def test_bare_ollama_model_is_remote_source(self) -> None:
+        """A bare name a backend reports installed is generic REMOTE.
+
+        Granular source comes only from a provider prefix; a bare name names
+        no specific server, so it stays REMOTE.
+        """
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("llama3:latest")
 
-        assert result == ModelSource.OLLAMA
+        assert result == ModelSource.REMOTE
 
     def test_ollama_prefixed_ref_is_ollama_source_without_network(self) -> None:
         """An ``ollama/`` ref classifies on the prefix, no /api/tags call."""
-        mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+        mgr = ModelManager(Path("/tmp"))
         with mock.patch("httpx.get") as mock_get:
             result = mgr.get_source("ollama/llama3:latest")
         assert result == ModelSource.OLLAMA
@@ -383,7 +394,7 @@ class TestModelManagerGetSource:
 
     def test_api_prefixed_ref_is_frontier_source(self) -> None:
         """A hosted API ref classifies as FRONTIER without a network call."""
-        mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+        mgr = ModelManager(Path("/tmp"))
         with mock.patch("httpx.get") as mock_get:
             result = mgr.get_source("gemini/gemini-2.5-pro")
         assert result == ModelSource.FRONTIER
@@ -391,23 +402,26 @@ class TestModelManagerGetSource:
 
     def test_lm_studio_prefixed_ref_is_lm_studio_source_without_network(self) -> None:
         """An ``lm_studio/`` ref classifies on the prefix, no network call."""
-        mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+        mgr = ModelManager(Path("/tmp"))
         with mock.patch("httpx.get") as mock_get:
             result = mgr.get_source("lm_studio/qwen2.5-coder")
         assert result == ModelSource.LM_STUDIO
         mock_get.assert_not_called()
 
-    def test_bare_model_on_lm_studio_backend_is_lm_studio_source(self) -> None:
-        """A bare name an LM Studio backend reports installed classifies as LM_STUDIO."""
+    def test_bare_model_on_lm_studio_backend_is_remote_source(self) -> None:
+        """A bare name an LM Studio backend reports installed stays generic REMOTE.
+
+        Without a provider prefix the source is not specialized to a server.
+        """
         mock_response = mock.Mock()
         mock_response.json.return_value = {"data": [{"id": "qwen2.5-coder"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("qwen2.5-coder")
 
-        assert result == ModelSource.LM_STUDIO
+        assert result == ModelSource.REMOTE
 
     def test_bare_model_on_unknown_backend_is_remote_source(self) -> None:
         """A bare name a non-Ollama/LM-Studio backend reports stays generic REMOTE."""
@@ -416,7 +430,7 @@ class TestModelManagerGetSource:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.get_source("custom-model")
 
         assert result == ModelSource.REMOTE
@@ -432,7 +446,7 @@ class TestModelManagerGetSource:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             result = mgr.get_source("shared:latest.gguf")
 
         assert result == ModelSource.NATIVE
@@ -446,7 +460,7 @@ class TestModelManagerGetSource:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             result = mgr.get_source("nonexistent.gguf")
 
         assert result is None
@@ -467,7 +481,7 @@ class TestModelManagerPull:
             path.write_text("fake model")
             return path
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         with (
             mock.patch(
                 "lilbee.catalog.resolve_pull_target", return_value=fake_entry
@@ -500,7 +514,7 @@ class TestModelManagerPull:
             path.write_text("fake model")
             return path
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         with mock.patch("lilbee.catalog.download_model", side_effect=fake_download):
             mgr.pull("bartowski/gemma-2-2b-it-GGUF", ModelSource.NATIVE)
 
@@ -514,7 +528,7 @@ class TestModelManagerPull:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         with (
             mock.patch("lilbee.catalog.resolve_pull_target", return_value=None),
             pytest.raises(RuntimeError, match="HuggingFace repo id"),
@@ -526,21 +540,21 @@ class TestModelManagerPull:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         with (
             mock.patch("httpx.Client") as mock_client,
             pytest.raises(ValueError, match="Ollama"),
         ):
-            mgr.pull("llama3:latest", ModelSource.REMOTE)
+            mgr.pull("llama3:latest", ModelSource.OLLAMA)
         mock_client.assert_not_called()
 
     def test_remote_pull_refused_for_lm_studio(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:1234/v1")
+        mgr = ModelManager(models_dir)
         with pytest.raises(ValueError, match="LM Studio"):
-            mgr.pull("qwen2.5-7b-instruct", ModelSource.REMOTE)
+            mgr.pull("qwen2.5-7b-instruct", ModelSource.LM_STUDIO)
 
 
 class TestModelManagerRemove:
@@ -550,7 +564,7 @@ class TestModelManagerRemove:
         model_file = models_dir / "llama3-8b.gguf"
         model_file.write_text("fake model data")
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         removed = mgr.remove("llama3-8b.gguf", ModelSource.NATIVE)
         assert removed is True
         assert not model_file.exists()
@@ -559,7 +573,7 @@ class TestModelManagerRemove:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         removed = mgr.remove("missing.gguf", ModelSource.NATIVE)
         assert removed is False
 
@@ -567,14 +581,14 @@ class TestModelManagerRemove:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         removed = mgr.remove("../../etc/passwd", ModelSource.NATIVE)
         assert removed is False
 
     def test_remove_refuses_ollama_source(self) -> None:
         """Ollama is read-only: an explicit OLLAMA source is refused, never deleted."""
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="Ollama models but doesn't remove them"):
                 mgr.remove("ollama/llama3:latest", ModelSource.OLLAMA)
         mock_req.assert_not_called()
@@ -582,21 +596,21 @@ class TestModelManagerRemove:
     def test_remove_refuses_lm_studio_source(self) -> None:
         """LM Studio is read-only: an explicit LM_STUDIO source is refused."""
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(Path("/tmp"), "http://localhost:1234/v1")
+            mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="LM Studio models but doesn't remove them"):
                 mgr.remove("lm_studio/qwen2.5-coder", ModelSource.LM_STUDIO)
         mock_req.assert_not_called()
 
     def test_remove_refuses_generic_remote_source(self) -> None:
         """A generic REMOTE source on an undetected backend is refused too."""
-        mgr = ModelManager(Path("/tmp"), "http://my-host.internal:9000")
+        mgr = ModelManager(Path("/tmp"))
         with pytest.raises(ValueError, match="doesn't remove them"):
             mgr.remove("custom-model", ModelSource.REMOTE)
 
     def test_remove_refuses_ollama_prefixed_ref_without_network(self) -> None:
         """An ``ollama/`` ref with source=None resolves on the prefix, no network call."""
         with mock.patch("httpx.get") as mock_get, mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("ollama/llama3:latest")
         mock_get.assert_not_called()
@@ -609,7 +623,7 @@ class TestModelManagerRemove:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             with pytest.raises(ValueError, match="doesn't remove them"):
                 mgr.remove("llama3:latest")
 
@@ -621,7 +635,7 @@ class TestModelManagerRemove:
         model_file.write_text("fake")
 
         with mock.patch("httpx.request") as mock_req:
-            mgr = ModelManager(models_dir, "http://localhost:11434")
+            mgr = ModelManager(models_dir)
             result = mgr.remove("my-model.gguf", None)
 
         assert result is True
@@ -635,7 +649,7 @@ class TestModelManagerRemove:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
+            mgr = ModelManager(Path("/tmp"))
             result = mgr.remove("nonexistent.gguf")
 
         assert result is False
@@ -659,18 +673,15 @@ class TestServicesIntegration:
         from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.remote_base_url = "http://localhost:11434"
         mgr = get_services().model_manager
         assert isinstance(mgr, ModelManager)
         assert mgr._models_dir == tmp_path / "models"
-        assert mgr._remote_base_url == "http://localhost:11434"
 
     def test_services_returns_same_model_manager(self, tmp_path: Path) -> None:
         from lilbee.app.services import get_services
         from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.remote_base_url = "http://localhost:11434"
         mgr1 = get_services().model_manager
         mgr2 = get_services().model_manager
         assert mgr1 is mgr2
@@ -680,7 +691,6 @@ class TestServicesIntegration:
         from lilbee.core.config import cfg
 
         cfg.models_dir = tmp_path / "models"
-        cfg.remote_base_url = "http://localhost:11434"
         mgr1 = get_services().model_manager
         reset_services()
         mgr2 = get_services().model_manager
@@ -697,14 +707,14 @@ class TestLitellmEdgeCases:
         )
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir=tmp_path, remote_base_url="http://localhost:11434")
+            mgr = ModelManager(models_dir=tmp_path)
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
 
     def test_litellm_timeout(self, tmp_path: Path) -> None:
         with mock.patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            mgr = ModelManager(models_dir=tmp_path, remote_base_url="http://localhost:11434")
+            mgr = ModelManager(models_dir=tmp_path)
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
@@ -713,7 +723,7 @@ class TestLitellmEdgeCases:
 class TestIsNativePathTraversal:
     def test_path_traversal_returns_false(self, tmp_path: Path) -> None:
         """_is_native returns False for path traversal attempts."""
-        mgr = ModelManager(models_dir=tmp_path, remote_base_url="http://localhost:11434")
+        mgr = ModelManager(models_dir=tmp_path)
         assert not mgr._is_native("../../etc/passwd")
 
 
@@ -726,7 +736,7 @@ class TestIsNativeRegistry:
             models_dir, tmp_path, "my-reg.gguf", b"data", repo="org/my-reg-GGUF"
         )
 
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr._is_native(ref) is True
 
 
@@ -742,7 +752,7 @@ class TestRemoveNativeRegistry:
         )
 
         registry = ModelRegistry(models_dir)
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         assert mgr._remove_native(ref) is True
         assert not registry.is_installed(ref)
 
@@ -813,6 +823,7 @@ class TestClassifyRemoteTask:
 class TestRemoteModelProvider:
     def test_classify_remote_models_sets_provider(self) -> None:
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import OLLAMA
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
@@ -823,30 +834,32 @@ class TestRemoteModelProvider:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            result = classify_remote_models("http://localhost:11434")
+            result = classify_remote_models("http://localhost:11434", OLLAMA)
 
         assert len(result) == 1
         assert result[0].provider == "Ollama"
 
-    def test_classify_remote_models_openai_provider(self) -> None:
+    def test_classify_remote_models_openai_compatible_endpoint(self) -> None:
+        """An OpenAI-compatible ``/v1/models`` endpoint is parsed via the LM Studio spec."""
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
 
         mock_response = mock.Mock()
-        mock_response.json.return_value = {
-            "models": [{"name": "gpt-4", "details": {"family": "gpt", "parameter_size": ""}}]
-        }
+        mock_response.json.return_value = {"data": [{"id": "gpt-4"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            result = classify_remote_models("https://api.openai.com/v1")
+            result = classify_remote_models("https://api.openai.com/v1", LM_STUDIO)
 
         assert len(result) == 1
-        assert result[0].provider == "OpenAI"
+        assert result[0].name == "gpt-4"
+        assert result[0].provider == "LM Studio"
 
     def test_classify_lm_studio_models_via_openai_endpoint(self) -> None:
         """LM Studio is listed via ``/v1/models`` and labeled ``LM Studio``."""
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
@@ -859,7 +872,7 @@ class TestRemoteModelProvider:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
-            result = classify_remote_models("http://localhost:1234/v1")
+            result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         # Hit the OpenAI-compatible endpoint (no doubled /v1), not Ollama's /api/tags.
         assert mock_get.call_args.args[0] == "http://localhost:1234/v1/models"
@@ -878,6 +891,7 @@ class TestRemoteModelProvider:
     def test_classify_lm_studio_surfaces_remote_lm_link_models(self) -> None:
         """LM Link remote/cloud models appear in /v1/models and are not filtered out."""
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
 
         mock_response = mock.Mock()
         # A cloud/remote id LM Studio exposes via LM Link, alongside a local one.
@@ -887,20 +901,21 @@ class TestRemoteModelProvider:
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            result = classify_remote_models("http://localhost:1234/v1")
+            result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert {m.name for m in result} == {"local-qwen2.5-7b", "openai/gpt-oss-120b"}
 
     def test_classify_lm_studio_skips_entries_without_id(self) -> None:
         """``/v1/models`` rows lacking an ``id`` are skipped, not crashed on."""
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"data": [{"id": ""}, {}, {"id": "qwen2.5-7b-instruct"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
-            result = classify_remote_models("http://localhost:1234/v1")
+            result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert [m.name for m in result] == ["qwen2.5-7b-instruct"]
 
@@ -909,15 +924,45 @@ class TestRemoteModelProvider:
         import httpx
 
         from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
 
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-            result = classify_remote_models("http://localhost:1234/v1")
+            result = classify_remote_models("http://localhost:1234/v1", LM_STUDIO)
 
         assert result == []
 
     def test_remote_model_default_provider(self) -> None:
         model = RemoteModel(name="test", task="chat", family="llama", parameter_size="8B")
         assert model.provider == "Remote"
+
+    def test_classify_all_merges_configured_servers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both servers are probed and results are merged, source-labeled per server."""
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.model_manager import classify_all_remote_models
+
+        monkeypatch.setattr(cfg, "ollama_base_url", "")
+        monkeypatch.setattr(cfg, "lm_studio_base_url", "")
+
+        def fake_get(url: str, timeout: float) -> mock.Mock:
+            resp = mock.Mock()
+            resp.raise_for_status = mock.Mock()
+            if "/api/tags" in url:
+                resp.json.return_value = {
+                    "models": [
+                        {"name": "llama3:latest", "details": {"family": "llama"}},
+                    ]
+                }
+            else:
+                resp.json.return_value = {"data": [{"id": "qwen2.5-7b"}]}
+            return resp
+
+        with mock.patch("httpx.get", side_effect=fake_get):
+            result = classify_all_remote_models()
+
+        assert {m.name: m.provider for m in result} == {
+            "llama3:latest": "Ollama",
+            "qwen2.5-7b": "LM Studio",
+        }
 
 
 class TestHasProviderKey:

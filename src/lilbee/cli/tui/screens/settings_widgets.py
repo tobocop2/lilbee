@@ -192,6 +192,7 @@ def _wiki_enabled() -> bool:
 
 _FEATURE_GATED_GROUPS: dict[SettingGroup, Callable[[], bool]] = {
     SettingGroup.API_KEYS: _litellm_installed,
+    SettingGroup.LOCAL_SERVERS: _litellm_installed,
     SettingGroup.CRAWLING: _crawler_installed,
     SettingGroup.WIKI: _wiki_enabled,
 }

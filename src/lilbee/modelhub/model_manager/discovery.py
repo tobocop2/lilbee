@@ -14,10 +14,11 @@ from lilbee.providers.backend_names import BackendName
 from lilbee.providers.local_servers import (
     LM_STUDIO,
     OLLAMA,
-    detect_local_server,
+    LocalServerSpec,
     openai_models_url,
 )
-from lilbee.providers.sdk_backend import PROVIDER_KEYS, detect_backend_name
+from lilbee.providers.local_servers.config_urls import configured_local_servers
+from lilbee.providers.sdk_backend import PROVIDER_KEYS
 
 log = logging.getLogger(__name__)
 
@@ -69,21 +70,31 @@ def reclassify_by_name(ref: str, declared_task: str) -> str:
 
 
 def classify_remote_models(
-    base_url: str = "http://localhost:11434",
+    base_url: str,
+    spec: LocalServerSpec,
     *,
     timeout: float = _CLASSIFY_DEFAULT_TIMEOUT_S,
 ) -> list[RemoteModel]:
-    """Discover and classify all models from the local server by task.
+    """Discover and classify all models from one local server by task.
 
-    Dispatches by detected server (Ollama ``/api/tags`` vs LM Studio
-    ``/v1/models``; unknown URLs use the Ollama strategy). Returns ``[]`` on
-    any error so read-only callers stay responsive when the backend is down.
+    The strategy and provider label come from *spec* (Ollama ``/api/tags`` vs
+    LM Studio ``/v1/models``), so a server reached at a non-default host is
+    classified correctly. Returns ``[]`` on any error so read-only callers stay
+    responsive when the backend is down.
     """
-    spec = detect_local_server(base_url)
-    provider = detect_backend_name(base_url)
-    key = spec.key if spec is not None else OLLAMA.key
-    discover = _DISCOVERY_BY_KEY.get(key, _discover_via_ollama_tags)
-    return discover(base_url, provider, timeout)
+    discover = _DISCOVERY_BY_KEY[spec.key]
+    return discover(base_url, spec.display_name, timeout)
+
+
+def classify_all_remote_models(
+    *,
+    timeout: float = _CLASSIFY_DEFAULT_TIMEOUT_S,
+) -> list[RemoteModel]:
+    """Classify models across every configured local server, source-labeled."""
+    result: list[RemoteModel] = []
+    for spec, base_url in configured_local_servers():
+        result.extend(classify_remote_models(base_url, spec, timeout=timeout))
+    return result
 
 
 def _discover_via_ollama_tags(
@@ -202,6 +213,6 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     return result
 
 
-def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
-    """Return names of models classified as embedding from the SDK backend."""
-    return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
+def detect_remote_embedding_models() -> list[str]:
+    """Return embedding-model names across every configured local server."""
+    return [m.name for m in classify_all_remote_models() if m.task == ModelTask.EMBEDDING]

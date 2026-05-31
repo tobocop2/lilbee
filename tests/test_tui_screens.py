@@ -2482,7 +2482,7 @@ async def test_app_switch_to_catalog():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             app.switch_view("Catalog")
             await _pilot.pause()
@@ -2701,7 +2701,7 @@ async def test_chat_slash_model_no_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/model")
             await _pilot.pause()
@@ -3067,7 +3067,7 @@ async def test_chat_slash_models():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/models")
             await _pilot.pause()
@@ -3326,7 +3326,7 @@ async def test_chat_slash_m():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/m")
             await _pilot.pause()
@@ -3902,7 +3902,7 @@ def _patch_catalog():
     """Context manager to patch catalog screen's network calls."""
     return (
         patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-        patch("lilbee.cli.tui.screens.catalog.classify_remote_models", return_value=[]),
+        patch("lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]),
         patch(
             "lilbee.cli.tui.screens.catalog.get_services",
             return_value=MagicMock(
@@ -6032,7 +6032,7 @@ def test_check_embedding_model_remote_available():
         manager = get_services().model_manager
         assert not manager.is_installed(cfg.embedding_model)
 
-        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
+        remote_embeds = detect_remote_embedding_models()
         assert cfg.embedding_model in remote_embeds
 
 
@@ -6050,7 +6050,7 @@ def test_check_embedding_model_not_found():
         manager = get_services().model_manager
         assert not manager.is_installed(cfg.embedding_model)
 
-        remote_embeds = detect_remote_embedding_models(cfg.remote_base_url)
+        remote_embeds = detect_remote_embedding_models()
         assert cfg.embedding_model not in remote_embeds
 
 
@@ -6293,7 +6293,7 @@ async def test_catalog_delete_installed_model_confirmation():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
             mock_mgr.return_value.model_manager.is_installed.return_value = True
@@ -6329,7 +6329,7 @@ async def test_catalog_action_show_info_toasts_with_no_highlight():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -6354,7 +6354,7 @@ async def test_catalog_action_show_info_pushes_modal_for_local_row():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -6393,7 +6393,7 @@ async def test_catalog_delete_with_no_highlight_warns():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -6438,7 +6438,7 @@ async def test_catalog_grid_renders_hf_overflow_cta():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -6470,7 +6470,7 @@ async def test_catalog_delete_second_press_confirms():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
             mock_mgr.return_value.model_manager.is_installed.return_value = True
@@ -6534,7 +6534,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
                 downloaded_at=datetime.now(UTC).isoformat(),
             ),
         )
-        mgr = ModelManager(models_dir, "http://localhost:11434")
+        mgr = ModelManager(models_dir)
         services = MagicMock()
         services.model_manager = mgr
 
@@ -6543,7 +6543,7 @@ async def test_catalog_delete_accepts_bare_hf_repo_row():
             with (
                 patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
                 patch(
-                    "lilbee.modelhub.model_manager.classify_remote_models",
+                    "lilbee.modelhub.model_manager.classify_all_remote_models",
                     return_value=[],
                 ),
                 patch(
@@ -6577,7 +6577,7 @@ async def test_catalog_resolve_delete_ref_picks_one_quant():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -6605,7 +6605,7 @@ async def test_catalog_delete_not_installed():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_services") as mock_mgr,
         ):
             mock_mgr.return_value.model_manager.is_installed.return_value = False

@@ -177,7 +177,7 @@ def get_services() -> Services:
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(cfg.models_dir, cfg.remote_base_url)
+    model_manager = ModelManager(cfg.models_dir)
     crawler_semaphore = (
         asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
     )

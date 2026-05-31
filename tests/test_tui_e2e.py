@@ -442,9 +442,9 @@ def _mock_catalog_deps():
 
 
 def _mock_remote_models():
-    """Mock classify_remote_models to return empty list."""
+    """Mock classify_all_remote_models to return empty list."""
     return mock.patch(
-        "lilbee.cli.tui.screens.catalog.classify_remote_models",
+        "lilbee.cli.tui.screens.catalog.classify_all_remote_models",
         return_value=[],
     )
 
