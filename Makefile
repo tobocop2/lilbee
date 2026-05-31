@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish docs docs-api docs-site site site-serve site-tar dns-setup
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release release-promote docs docs-api docs-site site site-serve site-tar dns-setup
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/
@@ -56,6 +56,19 @@ build:
 
 publish: build  ## Build and upload to PyPI
 	uv publish
+
+release:  ## Bump the beta version, tag, and push; CI builds + publishes
+	bash scripts/release.sh
+
+release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
+	@tag="$(TAG)"; \
+	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 1 --json tagName -q '.[0].tagName'); \
+	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 2 --json tagName -q '.[1].tagName'); \
+	echo "release-promote: $$tag (notes diff from $$prev)"; \
+	notes=$$(mktemp); \
+	bash scripts/release_notes.sh tobocop2/lilbee "$$tag" "$$prev" > "$$notes"; \
+	gh release edit "$$tag" --repo tobocop2/lilbee --notes-file "$$notes" --prerelease=false --latest; \
+	rm -f "$$notes"
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\
