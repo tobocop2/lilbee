@@ -152,9 +152,10 @@ def test_get_provider_api_key_unknown_provider_returns_none():
     assert get_provider_api_key("nonexistent_provider") is None
 
 
-def test_validate_known_provider_no_key_returns_no_key():
-    """A recognized provider whose key is empty returns NO_KEY."""
+def test_validate_known_provider_no_key_returns_no_key(monkeypatch):
+    """A recognized provider with neither a config key nor an env key returns NO_KEY."""
     cfg.openai_api_key = ""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     fake_parsed = mock.MagicMock()
     fake_parsed.provider = "openai"
     with mock.patch(
@@ -162,6 +163,23 @@ def test_validate_known_provider_no_key_returns_no_key():
         return_value=fake_parsed,
     ):
         assert validate_persisted_model("openai/gpt-4") == ValidationResult.NO_KEY
+
+
+def test_validate_known_provider_with_env_key_returns_ok(monkeypatch):
+    """An API ref whose key lives in the standard env var (not lilbee config) is OK.
+
+    Regression guard: usability must honor ``OPENAI_API_KEY`` etc., not only
+    the ``LILBEE_``-prefixed config field, or env-key users get sent to setup.
+    """
+    cfg.openai_api_key = ""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    fake_parsed = mock.MagicMock()
+    fake_parsed.provider = "openai"
+    with mock.patch(
+        "lilbee.modelhub.model_manager.validation.parse_model_ref",
+        return_value=fake_parsed,
+    ):
+        assert validate_persisted_model("openai/gpt-4") == ValidationResult.OK
 
 
 def test_canonicalize_chat_falls_back_to_api_when_keyed():
@@ -274,7 +292,9 @@ def test_canonicalize_embedding_model_ok_passthrough():
 @pytest.fixture
 def _litellm_absent():
     """Pretend the litellm extra is not installed (the reported crash scenario)."""
-    with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
+    with mock.patch(
+        "lilbee.modelhub.model_manager.validation.litellm_available", return_value=False
+    ):
         yield
 
 
@@ -324,7 +344,7 @@ def test_ollama_ref_unusable_when_server_unreachable():
     """litellm present but the server is down: unusable, reason names the server."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[],
@@ -341,7 +361,7 @@ def test_ollama_ref_kept_when_server_live():
     """litellm present and the server lists models: keep the user's ollama ref."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
+        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[mock.MagicMock()],
