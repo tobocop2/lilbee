@@ -1934,7 +1934,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
             ),
         ):
@@ -1975,7 +1975,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[remote_mmproj],
             ),
         ):
@@ -2010,12 +2010,12 @@ class TestClassifyInstalledModels:
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        cfg.remote_base_url = "http://localhost:11434"
+        cfg.ollama_base_url = "http://localhost:11434"
 
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[remote_chat, remote_embed],
             ),
         ):
@@ -2054,12 +2054,12 @@ class TestClassifyInstalledModels:
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        cfg.remote_base_url = "http://localhost:11434"
+        cfg.ollama_base_url = "http://localhost:11434"
 
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[remote],
             ),
         ):
@@ -2076,7 +2076,7 @@ class TestClassifyInstalledModels:
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        cfg.remote_base_url = "http://localhost:11434"
+        cfg.ollama_base_url = "http://localhost:11434"
 
         blank = RemoteModel(
             name="",
@@ -2095,7 +2095,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[blank, good],
             ),
         ):
@@ -2132,7 +2132,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
             ),
         ):
@@ -2152,7 +2152,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
             ),
             mock.patch(
@@ -2189,7 +2189,7 @@ class TestClassifyInstalledModels:
         with (
             mock.patch("lilbee.modelhub.registry.ModelRegistry") as MockRegistry,
             mock.patch(
-                "lilbee.modelhub.model_manager.classify_remote_models",
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
             ),
             mock.patch(
@@ -4089,7 +4089,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.modelhub.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_all_remote_models",
             side_effect=RuntimeError("boom"),
         ):
             _collect_remote_models(buckets, seen)
@@ -4106,7 +4106,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.modelhub.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_all_remote_models",
             return_value=[
                 RemoteModel(
                     name="llama3:8b",
@@ -4135,7 +4135,7 @@ class TestCollectNativeModelsError:
         }
         seen: set[str] = set()
         with mock.patch(
-            "lilbee.modelhub.model_manager.classify_remote_models",
+            "lilbee.modelhub.model_manager.classify_all_remote_models",
             return_value=[
                 RemoteModel(
                     name="mystery:latest",
@@ -4188,7 +4188,7 @@ class TestCollectNativeModelsError:
         monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: False)
         buckets: dict[str, list[ModelOption]] = {"chat": [], "embedding": [], "vision": []}
         seen: set[str] = set()
-        with mock.patch("lilbee.modelhub.model_manager.classify_remote_models") as classify:
+        with mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models") as classify:
             _collect_remote_models(buckets, seen)
         classify.assert_not_called()
         assert buckets["chat"] == []
