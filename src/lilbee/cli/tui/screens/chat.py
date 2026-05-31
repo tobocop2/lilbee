@@ -299,17 +299,23 @@ class ChatScreen(Screen[None]):
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models.
 
-        Remote-prefixed refs skip the native probe since they resolve
-        through the SDK backend at call time.
+        Remote-prefixed refs (ollama/lm_studio/API) are validated against
+        current state instead of probed on disk: an ``ollama/`` ref whose
+        litellm extra is missing or whose server is down is unusable and
+        must route the user to setup, not be assumed live.
         """
         if not cfg.lancedb_dir.is_dir():
             log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
+        from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
         from lilbee.providers.base import ProviderError
         from lilbee.providers.llama_cpp.provider import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
             if parse_model_ref(model).is_remote:
+                if validate_persisted_model(model) != ValidationResult.OK:
+                    log.debug("_needs_setup: remote %s model %r not usable", label, model)
+                    return True
                 continue
             try:
                 resolve_model_path(model)

@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
+# Long enough that a model-fallback notice is readable before it fades.
+_FALLBACK_TOAST_TIMEOUT_S = 10.0
 
 
 def _view_screen_name(view_name: str) -> str:
@@ -212,15 +214,38 @@ class LilbeeApp(App[None]):
             (canonicalize_chat_model(), "chat_model", "Chat"),
             (canonicalize_embedding_model(), "embedding_model", "Embedding"),
         ):
-            if canon.status == ValidationResult.OK or canon.original == canon.effective:
+            if canon.status == ValidationResult.OK:
+                continue
+            reason = canon.reason or msg.MODEL_REASON_DEFAULT
+
+            if canon.original == canon.effective:
+                # Nothing to fall back to: keep the ref; the chat screen opens the wizard.
+                notice = msg.MODEL_UNUSABLE_OPENING_SETUP.format(
+                    label=label, original=canon.original, reason=reason
+                )
+                log.warning(notice)
+                self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
                 continue
 
-            apply_settings_update({field: canon.effective})
-            log.warning(
-                msg.MODEL_FALLBACK_NOTICE.format(
-                    label=label, original=canon.original, effective=canon.effective
+            # A rejected swap (validation or disk error) must not be fatal at startup.
+            try:
+                apply_settings_update({field: canon.effective})
+            except (ValueError, OSError):
+                log.warning(
+                    msg.MODEL_FALLBACK_FAILED.format(
+                        label=label,
+                        original=canon.original,
+                        effective=canon.effective,
+                        reason=reason,
+                    ),
+                    exc_info=True,
                 )
+                continue
+            notice = msg.MODEL_FALLBACK_NOTICE.format(
+                label=label, original=canon.original, effective=canon.effective, reason=reason
             )
+            log.warning(notice)
+            self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
         """Republish on provider_availability_changed_signal when an API key changes."""

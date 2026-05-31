@@ -11,6 +11,7 @@ lilbee provider imports beyond the shared base types).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -45,13 +46,18 @@ API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
 
 
+# Provider name -> the SDK's own env var (read at call time by the backend).
+PROVIDER_API_KEY_ENV: dict[str, str] = {prov: env for prov, _field, env, *_ in PROVIDER_KEYS}
+
+
 def get_provider_api_key(provider: str) -> str | None:
     """Return the configured API key for *provider*, or ``None`` if unknown / unset.
 
     *provider* is the lowercase routing key from a parsed model ref (e.g.
     ``"openai"``). Returns ``None`` for unknown providers AND for known
     providers whose key is unconfigured; callers can distinguish via
-    :data:`PROVIDER_API_KEY_FIELD`.
+    :data:`PROVIDER_API_KEY_FIELD`. Reads only the lilbee config field; use
+    :func:`provider_has_key` to also honor the SDK's own env var.
     """
     from lilbee.core.config import cfg
 
@@ -60,6 +66,14 @@ def get_provider_api_key(provider: str) -> str | None:
         return None
     value = getattr(cfg, field)
     return value or None
+
+
+def provider_has_key(provider: str) -> bool:
+    """True if *provider* has a key via its standard env var or the lilbee config field."""
+    env_var = PROVIDER_API_KEY_ENV.get(provider.lower())
+    if env_var and os.environ.get(env_var):
+        return True
+    return get_provider_api_key(provider) is not None
 
 
 # Hosted API providers identified by URL substring. Local OpenAI-compatible
