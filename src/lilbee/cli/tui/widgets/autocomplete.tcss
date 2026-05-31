@@ -1,9 +1,7 @@
 CompletionOverlay {
-    dock: bottom;
     height: auto;
     max-height: 10;
-    layer: overlay;
-    offset-y: -3;
+    width: 100%;
     background: $surface;
     border: tall $primary;
     display: none;

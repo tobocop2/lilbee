@@ -3365,7 +3365,8 @@ async def test_chat_action_complete_no_options_inserts_tab():
         assert inp.value == "hello\t"
 
 
-async def test_chat_action_complete_with_options():
+async def test_chat_action_complete_fills_prefix():
+    """Tab completes the longest shared prefix straight to a unique match."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -3378,7 +3379,7 @@ async def test_chat_action_complete_with_options():
             assert inp.value == "/help"
 
 
-async def test_chat_action_complete_with_space():
+async def test_chat_action_complete_with_space_fills_prefix():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -3391,30 +3392,41 @@ async def test_chat_action_complete_with_space():
             assert inp.value == "/model qwen:latest"
 
 
-async def test_chat_action_complete_cycle():
+async def test_chat_action_complete_previews_then_steps():
+    """With no further shared prefix, Tab previews the first match and Ctrl+N steps on."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
-
         inp = app.screen.query_one("#chat-input", ChatInput)
-        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/model "
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["qwen:8b", "mistral:7b"],
+        ):
+            app.screen.action_complete()
+            assert inp.value == "/model qwen:8b"
+            app.screen.action_complete_next()
+            assert inp.value == "/model mistral:7b"
 
+
+async def test_chat_preview_same_single_match_is_noop():
+    """Re-previewing the only match (Ctrl+N wrapping to it) leaves the input unchanged."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["/help"],
         ):
-            app.screen.action_complete()
-
-        if overlay.is_visible:
-            inp.value = "/model "
-            with patch.object(overlay, "cycle_next", return_value="qwen:latest"):
-                app.screen.action_complete()
-                assert "qwen:latest" in inp.value
+            app.screen.action_complete_next()
+            assert inp.value == "/help"
+            # Wrapping back onto the same single match is a no-op set.
+            app.screen.action_complete_next()
+            assert inp.value == "/help"
 
 
 async def test_chat_tab_completes_alias_prefix():
-    """Pressing Tab on '/cat' expands to the /catalog alias."""
+    """Pressing Tab on '/cat' completes the /catalog alias."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input", ChatInput)
@@ -3428,19 +3440,18 @@ async def test_chat_tab_completes_alias_prefix():
         assert inp.value == "/catalog"
 
 
-async def test_chat_action_complete_cycle_no_selection():
+async def test_chat_accept_on_enter_with_no_highlight_hides():
+    """Enter on a visible overlay whose highlight is None hides it and falls through to submit."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["a", "b"])
-
-        inp = app.screen.query_one("#chat-input", ChatInput)
-        original = inp.value
-        with patch.object(overlay, "cycle_next", return_value=None):
-            app.screen.action_complete()
-            assert inp.value == original
+        with patch.object(overlay, "get_current", return_value=None):
+            consumed = app.screen._accept_overlay_selection_on_enter()
+        assert consumed is False
+        assert not overlay.is_visible
 
 
 async def test_chat_send_message():
@@ -7371,16 +7382,20 @@ async def test_chat_sync_gating_rejects_sync():
 
 
 async def test_chat_action_complete_next():
-    """Ctrl+N (action_complete_next) delegates to action_complete."""
+    """Ctrl+N opens the dropdown and previews the first match into the input."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
         inp = app.screen.query_one("#chat-input", ChatInput)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["/help"],
         ):
             app.screen.action_complete_next()
+            assert overlay.is_visible
             assert inp.value == "/help"
 
 
@@ -7403,7 +7418,7 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
 
 
 async def test_chat_action_complete_prev_opens_overlay():
-    """Ctrl+P (action_complete_prev) opens overlay when not visible."""
+    """Ctrl+P opens the dropdown when closed and previews the last match."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -7444,17 +7459,21 @@ async def test_chat_action_complete_prev_cycles_backward():
 
 
 async def test_chat_action_complete_prev_with_space():
-    """Ctrl+P with argument completions sets cmd + selection."""
+    """Ctrl+P in arg mode opens the dropdown and previews the last match."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
         inp = app.screen.query_one("#chat-input", ChatInput)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/model q"
         with patch(
             "lilbee.cli.tui.screens.chat.get_completions",
             return_value=["qwen:latest", "qwen:8b"],
         ):
             app.screen.action_complete_prev()
-            assert "qwen" in inp.value
+            assert overlay.is_visible
+            assert inp.value == "/model qwen:8b"
 
 
 async def test_app_switch_to_tasks():
@@ -10114,21 +10133,22 @@ async def test_chat_enter_normal_mode_while_streaming_drops_to_normal():
         assert app.screen._insert_mode is False
 
 
-async def test_chat_on_chat_input_changed_completing():
-    """_on_chat_input_changed is no-op when _completing is True."""
+async def test_chat_on_chat_input_changed_suppressed():
+    """A suppressed Changed (programmatic edit) skips the live refresh and is consumed."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["/help"])
-        app.screen._completing = True
+        app.screen._suppress_refresh = 1
 
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/test"
         await pilot.pause()
-        # Overlay should still be visible since _completing skips hide
+        # The overlay stays as-is (refresh skipped) and the counter is consumed.
         assert overlay.is_visible
+        assert app.screen._suppress_refresh == 0
 
 
 # ---------------------------------------------------------------------------
