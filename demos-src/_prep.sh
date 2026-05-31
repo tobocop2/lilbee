@@ -77,6 +77,19 @@ seed_indexed_corpus() {
     "$LILBEE" rebuild --data-dir "$data"
 }
 
+reset_managed_demo() {
+    # tui-ollama-document / tui-lmstudio-document index the manual ON CAMERA
+    # (/add ~/Downloads/cv-manual.pdf) through the external manager, so they
+    # start from a clean slate: empty data dir + empty models dir (no native
+    # models, so the catalog shows only the manager-served model). The tapes
+    # set the remote endpoint + model refs. Requires the external manager
+    # running (Ollama on :11434 / LM Studio on :1234) and a lilbee built with
+    # the litellm extra (the remote provider routes there).
+    local name="$1"
+    rm -rf "$ROOT/$name" "$ROOT/$name-models"
+    mkdir -p "$ROOT/$name" "$ROOT/$name-models"
+}
+
 reset_clean_slate() {
     local tape="$1"
     local data="$ROOT/$tape"
@@ -354,6 +367,11 @@ main() {
     for tape in "${SEEDED_TAPES[@]}"; do
         seed_indexed_corpus "$tape"
     done
+
+    # tui-ollama-document / tui-lmstudio-document index the manual on camera
+    # through the external manager, so they just need a clean slate here.
+    reset_managed_demo tui-ollama-document
+    reset_managed_demo tui-lmstudio-document
 
     # Page-cache the chat model so each tape's `lilbee` launch mmaps fast.
     # Inference itself can only be warmed *inside* the tape recording.
