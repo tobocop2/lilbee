@@ -1,5 +1,28 @@
 # lilbee — Development Guide
 
+## Before You Write Code (read this every time)
+
+This file is long and the operational rules sit far down. These are the misses
+that have cost the most review cycles. Apply them BEFORE writing, not after:
+
+1. **Type external objects precisely.** Never `getattr(obj, "field", default)`
+   on a field the object's type guarantees. Annotate the parameter with the
+   real type and read the attribute directly. `getattr`-with-default is only
+   for attributes that genuinely may not exist (dynamic reflection).
+2. **Don't inherit the surrounding code's pattern without checking it against
+   these rules.** Nearby code may predate a rule. Copying an adjacent
+   `getattr` / `isinstance(self.app, ...)` / `: str` shape just propagates the
+   smell into your diff.
+3. **One-line docstrings by default.** Describe what the code IS, not how it
+   got there. No "previously", "now also", "some versions", "kept for".
+4. **The smell gate runs in `make lint`.** `scripts/check_style_rules.py` fails
+   on any NEW Code-Smell Trigger (see that section) on lines your diff adds vs
+   `main`. Run `make lint` before committing; a genuinely dynamic case opts out
+   inline with `# style-check: allow-smell` plus a written reason.
+
+The full rules follow; this block is the part that gets skipped under time
+pressure, so it leads.
+
 ## Project
 Local search engine you can talk to. Python 3.11+, pluggable LLM providers (llama-cpp default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
@@ -342,6 +365,13 @@ Each of these is a fast-grep that surfaces the patterns we've burned cycles
 on in past reviews. A reviewer (and the author, before requesting review)
 runs them. A non-empty result is either fixed or has a written justification
 in the PR body.
+
+A subset is enforced automatically: `scripts/check_style_rules.py` (run by
+`make lint`) fails when a line ADDED in `src/` vs `main` introduces a
+getattr-by-name, getattr-with-default, owned-attribute `type: ignore`,
+`isinstance(self.app, LilbeeApp)`, string-typed closed set, or module-level
+`global`. It scopes to added lines so pre-existing hits don't block unrelated
+work; the greps below remain the full set a reviewer still runs by eye.
 
 - `grep -rnE "isinstance\(self\.app, LilbeeApp\)" src/` — production host-narrowing for tests. Fix via `app: LilbeeApp` declaration + LilbeeAppHost in tests.
 - `grep -rn "getattr(self, \"" src/` — getattr-by-name for owned attributes. Declare in `__init__`.
