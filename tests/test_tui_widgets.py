@@ -2415,7 +2415,9 @@ class TestGetCompletions:
         d = P(str(tmp_path))
         (d / "alpha.txt").touch()
         (d / "subdir").mkdir()
+        # POSIX expanduser reads HOME; Windows reads USERPROFILE.
         monkeypatch.setenv("HOME", str(d))
+        monkeypatch.setenv("USERPROFILE", str(d))
         r = get_completions("/add ~/")
         assert any("alpha.txt" in x for x in r)
         assert any("subdir/" in x for x in r)
