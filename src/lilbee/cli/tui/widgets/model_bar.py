@@ -160,9 +160,9 @@ def _collect_remote_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
     if not litellm_available():
         return
     try:
-        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.modelhub.model_manager import classify_all_remote_models
 
-        for model in classify_remote_models(cfg.remote_base_url):
+        for model in classify_all_remote_models():
             # Skip backend rows with a blank model name so the picker
             # doesn't render an empty " (Ollama)" row.
             if not model.name.strip():

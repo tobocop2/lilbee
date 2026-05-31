@@ -42,7 +42,6 @@ def create_provider(config: Config) -> LLMProvider:
             )
         return SdkLLMProvider(
             backend,
-            base_url=config.remote_base_url,
             api_key=config.llm_api_key,
         )  # pragma: no cover
 

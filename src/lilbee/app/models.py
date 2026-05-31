@@ -214,15 +214,19 @@ def _collect_native_entries() -> list[ModelEntry]:
 def _collect_backend_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
     from lilbee.catalog.types import ModelSource
-    from lilbee.modelhub.model_manager import classify_remote_models
-    from lilbee.providers.local_servers import detect_local_server
+    from lilbee.modelhub.model_manager import classify_all_remote_models
+    from lilbee.providers.local_servers import local_server_for_label
 
-    server = detect_local_server(cfg.remote_base_url)
-    source = ModelSource(server.key) if server is not None else ModelSource.REMOTE
-    remote_list = classify_remote_models(cfg.remote_base_url, timeout=_BACKEND_LIST_TIMEOUT_S)
-    remote_by_name = {rm.name: rm for rm in remote_list}
+    def _source(remote: RemoteModel) -> ModelSource:
+        spec = local_server_for_label(remote.provider)
+        return ModelSource(spec.key) if spec is not None else ModelSource.REMOTE
+
+    remote_by_name = {
+        rm.name: rm for rm in classify_all_remote_models(timeout=_BACKEND_LIST_TIMEOUT_S)
+    }
     return [
-        ModelEntry.from_backend(ref, remote_by_name[ref], source) for ref in sorted(remote_by_name)
+        ModelEntry.from_backend(name, rm, _source(rm))
+        for name, rm in sorted(remote_by_name.items())
     ]
 
 

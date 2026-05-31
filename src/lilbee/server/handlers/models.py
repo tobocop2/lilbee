@@ -26,10 +26,10 @@ from lilbee.catalog import (
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager import classify_remote_models, discover_api_models
+from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
-from lilbee.providers.local_servers import canonical_local_ref, detect_local_server
+from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
 from lilbee.runtime.hardware import (
@@ -405,11 +405,10 @@ def _discover_hosted_sync() -> list[CatalogEntryResponse]:
     rows: list[CatalogEntryResponse] = []
     for models in discover_api_models().values():
         rows.extend(_hosted_entry(rm, ModelSource.FRONTIER) for rm in models)
-    server = detect_local_server(cfg.remote_base_url)
-    local_source = ModelSource(server.key) if server is not None else ModelSource.REMOTE
-    rows.extend(
-        _hosted_entry(rm, local_source) for rm in classify_remote_models(cfg.remote_base_url)
-    )
+    for rm in classify_all_remote_models():
+        spec = local_server_for_label(rm.provider)
+        source = ModelSource(spec.key) if spec is not None else ModelSource.REMOTE
+        rows.append(_hosted_entry(rm, source))
     return rows
 
 
@@ -421,7 +420,7 @@ def _hosted_cache_key() -> str:
     stale cache entry.
     """
     keys = ":".join(getattr(cfg, field) or "" for _, field, *_ in PROVIDER_KEYS)
-    return f"{cfg.remote_base_url}:{keys}"
+    return f"{cfg.ollama_base_url}:{cfg.lm_studio_base_url}:{keys}"
 
 
 async def _collect_hosted_entries(
@@ -611,7 +610,7 @@ _external_cache = _ExternalModelsCache()
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
-    key = f"{cfg.remote_base_url}:{cfg.llm_api_key or ''}"
+    key = f"{cfg.ollama_base_url}:{cfg.lm_studio_base_url}:{cfg.llm_api_key or ''}"
     cached = _external_cache.get(key)
     if cached:
         return cached
