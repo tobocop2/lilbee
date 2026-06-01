@@ -17,7 +17,7 @@ from lilbee.app.services import get_services, set_services
 from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
-from lilbee.server.chat_dispatch.concurrency import chat_lock
+from lilbee.server.chat_dispatch.concurrency import chat_gate
 
 _MOCK_MODEL_REF = "vendor/Model-GGUF/model-Q4.gguf"
 _HTTP_OK = 200
@@ -42,6 +42,7 @@ def services_with_chat_model():
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
     )
     provider.supports_tools.return_value = False
+    provider.max_concurrent_chats.return_value = 1
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=[_installed_chat_model()])
     services.known_models.refs = MagicMock(return_value={_MOCK_MODEL_REF})
@@ -63,11 +64,11 @@ def auth_token():
 
 
 @pytest.fixture(autouse=True)
-def reset_chat_lock():
-    """Drop the cached chat lock between tests so each starts clean."""
-    chat_lock.cache_clear()
+def reset_chat_gate():
+    """Drop the cached chat gate between tests so each starts clean."""
+    chat_gate.cache_clear()
     yield
-    chat_lock.cache_clear()
+    chat_gate.cache_clear()
 
 
 @pytest.fixture
