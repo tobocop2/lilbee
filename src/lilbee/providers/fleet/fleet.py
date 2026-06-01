@@ -152,6 +152,11 @@ class FleetServer:
         port = pick_free_port()
         argv = [*self._launch.argv, "--port", str(port)]
         env = {**os.environ, **self._launch.env_overrides}
+        # The data dir may not exist yet on the first spawn: fleet warm-up runs at
+        # startup, before indexing creates it. Without this, opening the stderr log
+        # (and writing the port file below) FileNotFoundErrors, which silently fails
+        # warm-up so the first search hits a cold embed engine and 503s (bb-1ldh).
+        self._stderr_log.parent.mkdir(parents=True, exist_ok=True)
         # Capture stderr to a per-instance file (truncated each spawn) so a failed
         # launch is diagnosable; a file (not a pipe) needs no parent drain and
         # cannot deadlock the child. The parent's handle is closed immediately --
