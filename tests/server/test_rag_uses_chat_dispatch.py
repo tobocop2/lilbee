@@ -49,6 +49,7 @@ def services_with_chat_dispatch():
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
     )
     provider.supports_tools.return_value = False
+    provider.max_concurrent_chats.return_value = 1
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=[_installed_manifest(cfg.chat_model)])
     services.searcher.build_rag_context = MagicMock(

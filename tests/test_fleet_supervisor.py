@@ -143,6 +143,27 @@ def test_spawn_claims_port_writes_pid_file_and_creates_client(
     assert server.is_alive()
 
 
+def test_spawn_creates_missing_port_file_parent_dir(tmp_path: Path, patched: dict) -> None:
+    """spawn() must create the port-file/stderr-log parent dir when it is missing.
+
+    The fleet warm-up can spawn the embed server at startup before the data dir
+    exists (indexing creates it later). Opening the stderr log in a missing dir
+    raised FileNotFoundError that silently failed warm-up, so the first search hit
+    a cold embed engine and 503'd instead of returning results (bb-1ldh).
+    """
+    missing = tmp_path / "data"  # parent dir does NOT exist yet
+    launch = InstanceLaunch(
+        role=WorkerRole.EMBED,
+        argv=["/bin/llama-server", "--model", "m.gguf"],
+        env_overrides={"CUDA_VISIBLE_DEVICES": "0"},
+        model="m.gguf",
+        port_file=missing / "llama-server-embed.port",
+    )
+    FleetServer(launch).spawn()
+    assert (missing / "llama-server-embed.port").exists()
+    assert (missing / "llama-server-embed.log").exists()
+
+
 def test_spawn_appends_port_to_argv(tmp_path: Path, patched: dict, monkeypatch) -> None:
     seen: dict[str, list] = {}
     monkeypatch.setattr(fleet_mod, "pick_free_port", lambda: 42999)
