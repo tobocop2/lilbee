@@ -1,0 +1,34 @@
+# Probe set for the opencode demo corpus (lilbee's own repo).
+#
+# Each probe is a natural question a coding agent would ask while learning how
+# lilbee turns a chat request into a model call and handles tool calls, paired
+# with the real module(s) that must surface for the answer to be grounded.
+#
+# Single source of truth for two consumers:
+#   - ingest_corpus.sh : verification gate (every probe's expected file must
+#     appear, or the index is not demo-ready and we abort before any GPU hours).
+#   - tune_run.py      : scoring oracle for the per-model retrieval sweep.
+#
+# `expect` entries are path substrings matched against a result's `source`
+# (which preserves the copied subtree, e.g. lilbee/server/chat_dispatch/...),
+# so they stay unambiguous even where basenames collide (two canonical.py).
+
+[[probe]]
+query = "how does lilbee dispatch an incoming chat request to the model"
+expect = ["server/chat_dispatch/dispatch.py"]
+
+[[probe]]
+query = "parsing and normalizing tool call arguments returned by the model"
+expect = ["server/chat_dispatch/tool_args.py"]
+
+[[probe]]
+query = "translate tool calls into the OpenAI chat completions wire format"
+expect = ["server/chat_completions_api/translate.py"]
+
+[[probe]]
+query = "the protocol-neutral canonical chat request and response types"
+expect = ["server/chat_dispatch/canonical.py"]
+
+[[probe]]
+query = "the fleet provider that routes a call to a llama-server for a role"
+expect = ["providers/fleet/provider.py"]

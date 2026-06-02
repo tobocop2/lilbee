@@ -1,0 +1,38 @@
+# VHS tape for a fine-tuning reel: lilbee tuning retrieval to one chat model on
+# the lilbee corpus. Mirrors the opencode reel look (rose-pine-moon, 1600x1000).
+#
+# The session token never appears on screen: tune_demo.sh writes the real command
+# (with the token) into a launcher script and the tape only types that launcher's
+# name, so the recorded frames carry no secret.
+#
+# Substituted per model: __OUT__ (output stem), __CMD__ (launcher invocation),
+# __WAIT__ (seconds to let the narrated tuning play out, from tune_demo.sh).
+
+Set Shell "bash"
+Set Width 1600
+Set Height 1000
+Set FontSize 18
+Set Padding 30
+Set TypingSpeed 22ms
+Set Framerate 60
+Set Theme "rose-pine-moon"
+Set WindowBar Colorful
+
+Output "__OUT__.gif"
+Output "__OUT__.webm"
+
+Hide
+Type "clear"
+Enter
+Show
+Sleep 800ms
+# Launch the tuner. tune_run paces its own narration, so we just let it play.
+Type "__CMD__"
+Enter
+Sleep __WAIT__
+PageUp
+Sleep 2500ms
+PageDown
+Sleep 1500ms
+Screenshot "__OUT__.png"
+Sleep 800ms

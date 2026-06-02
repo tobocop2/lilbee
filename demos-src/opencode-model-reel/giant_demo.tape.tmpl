@@ -1,0 +1,64 @@
+# VHS tape template for an opencode demo (full TUI), warm-first.
+#
+# The model is ALREADY loaded before this tape runs (giant_demo.sh polls the
+# llama-server /health until ready and records the cold-start time separately),
+# so there is NO dead blinking-cursor boot here: opencode connects to a warm
+# server and the first turn responds immediately. The cold start is shown as a
+# short labeled, time-compressed intro card prepended in post (build_reel.sh),
+# using the empirically measured load time -- never as real-time dead air.
+#
+# Substituted per model: __OUT__ (output stem), __PROMPT__, __SESSION__ (a clean
+# fixed session title so the header never shows opencode's random name),
+# __STREAMSLEEP__ (seconds to let the warm answer stream on screen).
+# Rose-pine + dimensions mirror the lilbee demo reel (_shared.tape).
+
+Set Shell "bash"
+Set Width 1600
+Set Height 1000
+Set FontSize 18
+Set Padding 30
+Set TypingSpeed 30ms
+Set Framerate 60
+Set Theme "rose-pine-moon"
+Set WindowBar Colorful
+
+Output "__OUT__.gif"
+Output "__OUT__.webm"
+
+# Launch opencode against the warm server. OPENCODE_SESSION_TITLE pins the header
+# name so it never renders opencode's random "Big Pickle"-style session label.
+Hide
+Type "cd /root/demo-proj && export OPENCODE_SESSION_TITLE='__SESSION__'"
+Enter
+Type "clear"
+Enter
+Type "opencode"
+Enter
+# Warm server -> the TUI is interactive in a couple of seconds, not 45s.
+Sleep 4s
+Show
+Sleep 1500ms
+
+# The agentic RAG turn. The model is warm, so generation streams on screen here:
+# we do NOT Hide it -- the tool call(s) and the answer render live, which is the
+# whole point of the demo. Pace gives the viewer time to read the prompt, watch
+# lilbee_search fire, then read the streamed answer.
+Type "__PROMPT__"
+Sleep 1200ms
+Enter
+# Let the tool call + streamed answer play out on screen (warm = seconds, not minutes).
+Sleep __STREAMSLEEP__
+# Scroll through the rendered answer so the full response is visible.
+PageUp
+Sleep 2500ms
+PageUp
+Sleep 2500ms
+PageDown
+Sleep 2000ms
+PageDown
+Sleep 2000ms
+
+Screenshot "__OUT__.png"
+Sleep 800ms
+Ctrl+C
+Sleep 800ms

@@ -1,0 +1,55 @@
+# VHS tape for a SELF-TUNE reel: the chat model tunes lilbee's retrieval itself.
+#
+# Drives the real product end to end: `lilbee launch opencode` (provider + MCP +
+# shipped skill + warm serve) in an EMPTY project dir, so opencode's file tools
+# find nothing and the only way to learn lilbee's code is lilbee_search. The
+# prompt invites SKILL.md workflow #5: when the first search is thin, the model
+# widens retrieval via lilbee_settings_set, searches again, then answers with
+# citations. No disabled tools, no hand-written opencode.json.
+#
+# Substituted per run: __OUT__ (output stem), __PROJ__ (empty cwd), __PROMPT__,
+# __BOOT__ (seconds for the warm TUI to come up), __THINK__ (seconds to let the
+# self-tune + answer play out). Rose-pine to match the rest of the reel.
+
+Set Shell "bash"
+Set Width 1600
+Set Height 1000
+Set FontSize 18
+Set Padding 30
+Set TypingSpeed 28ms
+Set Framerate 60
+Set Theme "rose-pine-moon"
+Set WindowBar Colorful
+
+Output "__OUT__.gif"
+Output "__OUT__.webm"
+
+Hide
+# Use the worktree venv's lilbee (the one with `launch`); the global PATH lilbee
+# is an older install without it. opencode stays resolvable via /opt/homebrew/bin.
+Type "export PATH=__LMBIN__:$PATH && cd __PROJ__ && clear"
+Enter
+Show
+Sleep 600ms
+Type "lilbee launch opencode --yes"
+Sleep 900ms
+Enter
+# Warm serve + pre-warmed model -> the TUI is interactive in a few seconds.
+Sleep __BOOT__
+Type "__PROMPT__"
+Sleep 1200ms
+Enter
+# Let the model search, self-tune, search again, and stream its cited answer.
+Sleep __THINK__
+PageUp
+Sleep 2500ms
+PageUp
+Sleep 2500ms
+PageDown
+Sleep 2000ms
+PageDown
+Sleep 2000ms
+Screenshot "__OUT__.png"
+Sleep 800ms
+Ctrl+C
+Sleep 600ms
