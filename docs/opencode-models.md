@@ -46,11 +46,54 @@ model itself or the bundled runtime, not the lilbee tool plumbing:
 | GLM-4-9B-chat | the bundled llama.cpp aborts (SIGABRT) loading this GGUF |
 | ERNIE-4.5 0.3B, LFM2 1.2B | too small to call tools reliably |
 
-## How this was measured
+## The QA harness
 
-The harness lives in `tools/qa/opencode/`. For each family it pulls the model,
-indexes a small fixture set, launches the real opencode binary against a
-lilbee server, and sends three prompts that require a `lilbee_search` call. A
-family passes only when opencode dispatches the tool (not when the model prints
-the call as text) and the lilbee server logs a clean chat completion with no
-worker errors.
+The harness lives in `tools/qa/opencode/` and drives the **real** opencode
+binary against a **real** `lilbee serve`, one model family at a time. It is a
+black-box integration test: nothing is mocked, so a pass means the whole path
+(serve -> `/v1/chat/completions` -> tool-call extraction -> MCP `lilbee_search`
+-> grounded answer) works for that model.
+
+### Layout
+
+| File | Role |
+|------|------|
+| `matrix.py` | The driver. Defines the model matrix (`models.toml`), runs each cell, writes `results/results.md`. |
+| `models.toml` | The matrix: one row per family with its GGUF ref and tier. |
+| `prevalidate.py` | Optional pre-flight: for every cell, assert the model answers the prompt well before any expensive run. |
+| `stress.py` | Concurrency probe: many agents hitting one served model at once. |
+| `results/` | Per-run output: `results.md` plus each cell's captured opencode pane. |
+
+### Per-cell lifecycle (`run_cell`)
+
+Each cell is one model, run in isolation:
+
+1. **Setup**: pull the GGUF, write a per-cell workspace (a small indexed corpus
+   plus an `AGENTS.md` that directs the agent to use `lilbee_search`), scope
+   opencode's built-in tools off so the model must use the MCP search, pin the
+   model as opencode's default, boot `lilbee serve`, and index the corpus.
+2. **Drive**: `lilbee launch opencode` inside a dedicated tmux session, type the
+   tier's scenario prompt, and poll the pane.
+3. **Judge**: apply the PASS gate (below) by reading the pane and the server log.
+4. **Capture**: save the full opencode pane to `results/<family>.pane.txt`.
+5. **Teardown**: kill the tmux session and the serve; scrape worker/dispatch
+   errors from `launcher-serve.log`; delete the GGUF unless `--keep-models`.
+
+### The PASS gate
+
+A cell passes only when **both** hold, so a model that narrates a tool call as
+plain text (or rides a stale glyph) cannot pass:
+
+- the `⚙ lilbee_search` dispatch glyph appears in the opencode pane, **and**
+- a fresh delta of **>= 2** `POST /v1/chat/completions 200` lines in the server
+  log (the tool turn plus its follow-up answer; 1 is prose-only).
+
+A clean run also requires no worker/dispatch errors in `launcher-serve.log`.
+
+### Memory and host notes
+
+The harness is tuned for an 80GB+ GPU pod. On a memory-constrained host (e.g. a
+32GB Apple Silicon laptop) a giant may not fit: the fleet now **refuses** to load
+a model that exceeds free system RAM rather than freezing the machine (see
+`providers/fleet/planning.py`), so an oversize cell surfaces a clean error.
+`LILBEE_QA_NUM_CTX` pins a smaller context for the cell when needed.

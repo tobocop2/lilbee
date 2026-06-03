@@ -51,6 +51,14 @@ _SERVER_ROLE_PARAMS: dict[WorkerRole, Callable[[Any], str]] = {
 # batching slots, leaving room for the weights and any co-located role.
 _VISION_VRAM_FRACTION = 0.5
 
+# Cap chat's footprint at this fraction of usable VRAM when sizing its batching
+# slots, reserving room for the co-located embed/rerank servers and the decode
+# compute buffers (which the flat overhead term only partly covers).
+_CHAT_VRAM_FRACTION = 0.8
+
+# RAM kept free for the OS when placing against system memory (no discrete GPU).
+_SYSTEM_MEMORY_FLOOR_BYTES = 4 * 1024**3
+
 
 def _slots_for(role: WorkerRole, weights: int, meta: dict[str, str] | None, ctx: int) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
@@ -61,31 +69,66 @@ def _slots_for(role: WorkerRole, weights: int, meta: dict[str, str] | None, ctx:
     GPU drops toward 1 instead of OOMing on the configured ceiling.
     """
     if role is WorkerRole.CHAT:
-        return _CHAT_SLOTS
+        return _resolve_chat_slots(weights, meta, ctx)
     if role is WorkerRole.VISION:
         return _resolve_vision_slots(weights, meta, ctx)
     return _AUX_SLOTS
 
 
-def _resolve_vision_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
-    """Largest OCR batching slot count (<= the configured ceiling) that fits VRAM.
-
-    ``cfg.vision_ocr_concurrency`` is the ceiling; the actual count is the most
-    slots whose estimated VRAM (weights + per-slot KV + overhead) stays within a
-    fraction of usable memory. On a big GPU this returns the ceiling; on a small
-    or shared one it steps down to as low as 1 rather than risk an OOM.
-    """
+def _resolve_chat_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+    """Largest chat slot count (<= ``_CHAT_SLOTS``) whose weights + per-slot KV fit
+    ``_CHAT_VRAM_FRACTION`` of usable memory; steps to 1 when none fit. KV is sized
+    at ``cfg.kv_cache_type`` to match the launch."""
     from lilbee.core.config import cfg
-    from lilbee.providers.fleet.placement import estimate_model_vram
-    from lilbee.providers.model_cache import get_available_memory
+
+    return _fit_slots(
+        _CHAT_SLOTS,
+        weights,
+        meta,
+        ctx,
+        kv_elem=KV_CACHE_TYPE_BYTES[cfg.kv_cache_type],
+        vram_fraction=_CHAT_VRAM_FRACTION,
+    )
+
+
+def _resolve_vision_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+    """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
+    VRAM; 1 when the ceiling is 1 or nothing larger fits. KV sized at f16."""
+    from lilbee.core.config import cfg
 
     ceiling = max(1, cfg.vision_ocr_concurrency)
     if ceiling == 1:
         return 1
-    budget = int(get_available_memory(cfg.gpu_memory_fraction) * _VISION_VRAM_FRACTION)
-    f16 = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
+    return _fit_slots(
+        ceiling,
+        weights,
+        meta,
+        ctx,
+        kv_elem=KV_CACHE_TYPE_BYTES[KvCacheType.F16],
+        vram_fraction=_VISION_VRAM_FRACTION,
+    )
+
+
+def _fit_slots(
+    ceiling: int,
+    weights: int,
+    meta: dict[str, str] | None,
+    ctx: int,
+    *,
+    kv_elem: int,
+    vram_fraction: float,
+) -> int:
+    """Largest slot count in ``1..ceiling`` whose weights + per-slot KV fit
+    *vram_fraction* of usable memory; 1 when none larger fit."""
+    from lilbee.core.config import cfg
+    from lilbee.providers.model_cache import get_available_memory
+
+    budget = int(get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
     for slots in range(ceiling, 1, -1):
-        if estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=f16) <= budget:
+        if (
+            estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_elem)
+            <= budget
+        ):
             return slots
     return 1
 
@@ -288,6 +331,17 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     return devices
 
 
+def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
+    """Shared-RAM placement budget (free RAM minus the OS floor) when there is no
+    discrete GPU, else ``None``. Discrete GPUs load into dedicated VRAM, so system
+    RAM is not the constraint there."""
+    if devices:
+        return None
+    from lilbee.providers.model_cache import free_system_memory
+
+    return max(0, free_system_memory() - _SYSTEM_MEMORY_FLOOR_BYTES)
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -298,7 +352,18 @@ def plan_launches(
     from lilbee.core.config import cfg
 
     inputs, model_refs = _server_model_inputs(roles)
-    placement = plan_placement(inputs, [(d.index, d.free_bytes) for d in devices])
+    placement = plan_placement(
+        inputs,
+        [(d.index, d.free_bytes) for d in devices],
+        unified_budget=_unified_memory_budget(devices),
+    )
+    for role in placement.unplaceable_roles:
+        log.warning(
+            "%s model %s does not fit available memory and will not be served; "
+            "free up memory or use a smaller model.",
+            role.value,
+            model_refs[role],
+        )
     return [
         _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir, by_index)
         for plan in placement.instances

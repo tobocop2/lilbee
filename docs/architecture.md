@@ -172,7 +172,15 @@ flowchart TD
   cache + overhead), first-fit-decreasing bin-pack with 90% headroom. A model that
   fits one GPU is a single pinned instance; small models co-locate; a model too big
   for one GPU is tensor-split **proportionally to each card's free VRAM** (so unequal
-  GPUs don't OOM the smaller one). On a single CPU/Metal box this is a fleet-of-one.
+  GPUs don't OOM the smaller one). The KV term uses the model's GQA dimension
+  (`kv_heads x head_dim`), not the full embedding width, so a grouped-query model
+  isn't over-estimated by its query/KV head ratio. On a single CPU/Metal box this is
+  a fleet-of-one, and placement gates against **free system RAM** rather than a GPU
+  budget: unified memory is shared with the OS, so a model that exceeds free RAM is
+  marked unplaceable (no server, clean error) instead of loaded. Loading past free
+  RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
+  hard-freezes the machine, so refusing is the safe outcome; chat slot count
+  (`--parallel`) steps down the same way before refusing.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and

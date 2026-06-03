@@ -105,7 +105,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 ### Opencode integration (coming)
 
-Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families.
+Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families. See [docs/opencode-models.md](docs/opencode-models.md) for the verified model list and how the QA harness measures it (architecture, per-cell lifecycle, and the tool-dispatch pass gate).
 
 The demo shows a small local model (Qwen) given a specific instruction: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 

@@ -79,11 +79,22 @@ def _estimate_kv_cache_bytes(
     if meta is None:
         return 0
     layers = _int_field(meta, "block_count")
-    kv_dim = _int_field(meta, "embedding_length")
+    kv_dim = _kv_dim(meta)
     if layers == 0 or kv_dim == 0:
         return 0
     per_token = 2 * layers * kv_dim * kv_elem_bytes
     return per_token * ctx * slots
+
+
+def _kv_dim(meta: dict[str, str]) -> int:
+    """Per-token KV width: GQA caches ``kv_heads x head_dim``, falling back to
+    ``embedding_length`` (full attention) when head metadata is absent."""
+    embedding_length = _int_field(meta, "embedding_length")
+    head_count = _int_field(meta, "head_count")
+    head_count_kv = _int_field(meta, "head_count_kv")
+    if head_count and head_count_kv:
+        return head_count_kv * (embedding_length // head_count)
+    return embedding_length
 
 
 def _int_field(meta: dict[str, str], key: str) -> int:
@@ -97,6 +108,8 @@ def _int_field(meta: dict[str, str], key: str) -> int:
 def plan_placement(
     models: list[ModelPlacementInput],
     devices: list[tuple[int, int]],
+    *,
+    unified_budget: int | None = None,
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
@@ -105,15 +118,19 @@ def plan_placement(
     tensor-split across the fewest GPUs whose combined headroom fits; a model that
     fits nowhere is returned as an unplaceable role (it gets no server).
 
-    No GPU devices is the CPU-only case (a GPU-less host, or a Metal/Vulkan box
-    where the probe found nothing): every role runs as a single un-pinned CPU
-    instance, so a fleet-of-one works without a GPU.
+    No GPU devices is the CPU/unified-memory case (a GPU-less host, or an Apple
+    Silicon box where the probe found nothing): roles run as single un-pinned
+    instances. ``unified_budget`` (free system RAM, bytes) gates them against one
+    shared pool so an oversize model is unplaceable instead of OOM-livelocking the
+    host; ``None`` keeps the legacy ungated behavior.
     """
     if not devices:
-        return Placement(
-            instances=tuple(InstancePlan(role=m.role, devices=()) for m in models),
-            unplaceable_roles=(),
-        )
+        if unified_budget is None:
+            return Placement(
+                instances=tuple(InstancePlan(role=m.role, devices=()) for m in models),
+                unplaceable_roles=(),
+            )
+        return _place_shared_memory(models, unified_budget)
     remaining: dict[int, float] = {idx: vram * _VRAM_USABLE_FRACTION for idx, vram in devices}
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
@@ -134,6 +151,21 @@ def plan_placement(
             continue
         unplaceable.append(model.role)
 
+    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+
+def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Placement:
+    """Fit un-pinned roles into one shared RAM *budget*, largest first; a role that
+    no longer fits is unplaceable (gets no server, its calls error)."""
+    remaining = budget
+    instances: list[InstancePlan] = []
+    unplaceable: list[WorkerRole] = []
+    for model in sorted(models, key=lambda m: m.est_vram_bytes, reverse=True):
+        if model.est_vram_bytes <= remaining:
+            remaining -= model.est_vram_bytes
+            instances.append(InstancePlan(role=model.role, devices=()))
+        else:
+            unplaceable.append(model.role)
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
 
 

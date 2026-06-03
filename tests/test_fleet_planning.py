@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
@@ -109,14 +110,64 @@ def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
     assert planning_mod._flash_attn_flag() == "off"
 
 
-def test_slots_for_chat_and_aux_are_fixed() -> None:
-    # Non-vision roles ignore the model args; chat batches, aux is single-slot.
-    assert planning_mod._slots_for(WorkerRole.CHAT, 0, None, 0) == 4
+def test_slots_for_aux_roles_are_single_slot() -> None:
+    # Embed/rerank batch request-side, so their server is always single-slot.
     assert planning_mod._slots_for(WorkerRole.EMBED, 0, None, 0) == 1
     assert planning_mod._slots_for(WorkerRole.RERANK, 0, None, 0) == 1
 
 
+def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
+    # Chat is no longer a fixed 4: a giant on a ~24GB Metal budget steps down.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 24 * 10**9)
+    assert planning_mod._slots_for(WorkerRole.CHAT, 17 * 10**9, _CHAT_META, 65536) == 1
+
+
 _VISION_META = {"block_count": "24", "embedding_length": "2048"}
+# A GQA giant: 17 GB weights, 8x fewer KV heads than query heads (Qwen3-Coder-30B).
+_CHAT_META = {
+    "block_count": "48",
+    "embedding_length": "2048",
+    "head_count": "32",
+    "head_count_kv": "4",
+}
+
+
+def test_resolve_chat_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
+    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 4
+
+
+def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None:
+    # 17 GB weights + per-slot KV at 4 slots overruns a ~24GB Metal budget -> 1.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 24 * 10**9)
+    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 1
+
+
+def test_unified_memory_budget_none_when_discrete_gpu_present() -> None:
+    # Discrete GPUs load into dedicated VRAM, so system RAM isn't the gate.
+    gpu = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
+    assert planning_mod._unified_memory_budget([gpu]) is None
+
+
+def test_unified_memory_budget_subtracts_os_floor_when_no_gpu(monkeypatch) -> None:
+    # No enumerated GPU (Apple Silicon / CPU): budget = free RAM minus the OS floor.
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 20 * 10**9)
+    assert (
+        planning_mod._unified_memory_budget([])
+        == 20 * 10**9 - planning_mod._SYSTEM_MEMORY_FLOOR_BYTES
+    )
+
+
+def test_unified_memory_budget_floors_at_zero_under_pressure(monkeypatch) -> None:
+    # Less free than the floor -> budget 0 -> every model unplaceable (no freeze).
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1 * 10**9)
+    assert planning_mod._unified_memory_budget([]) == 0
 
 
 def test_resolve_vision_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None:
@@ -421,7 +472,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod,
             "plan_placement",
-            lambda inputs, devices: Placement(
+            lambda inputs, devices, *, unified_budget=None: Placement(
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
@@ -456,8 +507,9 @@ class TestBuildFleetWiring:
             ),
         )
 
-        def _capture(inputs, devices):
+        def _capture(inputs, devices, *, unified_budget=None):
             seen["devices"] = devices
+            seen["unified_budget"] = unified_budget
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
