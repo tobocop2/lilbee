@@ -104,8 +104,10 @@ pre { font: inherit; white-space: pre; }
 }
 
 /* Reset h1 defaults so .tagline (now an h1) keeps its tagline styling without
-   browser-default margin / font-size leaking in. */
+   browser-default margin / font-size leaking in. Same for h2: section eyebrows
+   are .label headings and take their sizing/margin from .label. */
 h1 { font-size: inherit; font-weight: inherit; margin: 0; }
+h2.label { font-size: inherit; font-weight: inherit; }
 
 .layout {
   position: relative;
