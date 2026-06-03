@@ -2436,6 +2436,28 @@ class TestGetCompletions:
         assert any("beta.txt" in x for x in r)
 
 
+class TestPathCompletionPrefix:
+    def test_posix_path_keeps_directory(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import path_completion_prefix
+
+        assert path_completion_prefix("/var/tmp/docs/file.md") == "/var/tmp/docs/"
+
+    def test_windows_path_keeps_directory(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import path_completion_prefix
+
+        assert path_completion_prefix(r"C:\Users\me\docs\file.md") == "C:\\Users\\me\\docs\\"
+
+    def test_bare_basename_has_no_prefix(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import path_completion_prefix
+
+        assert path_completion_prefix("file.md") == ""
+
+    def test_mixed_separators_use_rightmost(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import path_completion_prefix
+
+        assert path_completion_prefix(r"C:/Users\me/docs\file.md") == "C:/Users\\me/docs\\"
+
+
 class TestLongestCommonPrefix:
     def test_empty_list(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import longest_common_prefix
