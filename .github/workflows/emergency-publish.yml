@@ -93,7 +93,7 @@ jobs:
     # misbehaves when called from a local composite action, so it runs here directly.
     steps:
       - name: Download wheel artifacts from the release-candidate run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-default-*
           path: dist/
@@ -101,7 +101,7 @@ jobs:
           run-id: ${{ needs.guard.outputs.rc_run_id }}
           github-token: ${{ github.token }}
       - name: Download sdist from the release-candidate run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist/

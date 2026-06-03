@@ -90,14 +90,14 @@ jobs:
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.lilbee-qa-models
           key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-default-*
           path: ./_wheels
@@ -127,7 +127,7 @@ jobs:
 
       - name: Download lilbee binary from sibling run (lane=binary, RC mode)
         if: matrix.lane == 'binary' && inputs.binary_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.asset }}
           path: ./_bin
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qa-${{ matrix.label }}-${{ matrix.lane }}
           path: |
@@ -235,14 +235,14 @@ jobs:
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.lilbee-qa-models
           key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-default-*
           path: ./_wheels
@@ -264,7 +264,7 @@ jobs:
 
       - name: Download lilbee binary from sibling run (lane=binary, RC mode)
         if: matrix.lane == 'binary' && inputs.binary_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lilbee-linux-x86_64
           path: ./_bin
@@ -312,7 +312,7 @@ jobs:
 
       - name: Upload artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qa-${{ matrix.label }}-${{ matrix.lane }}
           path: |
@@ -343,14 +343,14 @@ jobs:
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.lilbee-qa-models
           key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-default-*
           path: ./_wheels
@@ -393,7 +393,7 @@ jobs:
 
       - name: Upload artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qa-ollama-pypi
           path: |
@@ -423,14 +423,14 @@ jobs:
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
       - name: Restore QA models cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.lilbee-qa-models
           key: ${{ env.QA_MODELS_CACHE_KEY }}
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-default-*
           path: ./_wheels
@@ -470,7 +470,7 @@ jobs:
 
       - name: Upload artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qa-crawler-pypi
           path: |
