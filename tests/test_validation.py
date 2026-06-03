@@ -70,10 +70,13 @@ def test_canonicalize_chat_model_ok_passthrough():
 def test_canonicalize_chat_model_falls_back_to_local():
     """When the persisted ref is invalid and no API key is configured,
     the helper falls back to the first installed local model."""
+    from lilbee.catalog.types import ModelTask
+
     cfg.chat_model = "missing/model"
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/fallback-local"
     fake_entry.hf_repo = "test/fallback-local"
+    fake_entry.task = ModelTask.CHAT
     with (
         mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
         mock.patch(
@@ -107,14 +110,40 @@ def test_canonicalize_chat_model_returns_original_when_no_fallback():
 
 def test_canonicalize_embedding_model_local_only():
     """Embedding fallback chain is local-only (no API equivalent)."""
+    from lilbee.catalog.types import ModelTask
+
     cfg.embedding_model = "missing/embed"
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/fallback-embed"
     fake_entry.hf_repo = "test/fallback-embed"
+    fake_entry.task = ModelTask.EMBEDDING
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
         registry_cls.return_value.list_installed.return_value = [fake_entry]
         canon = canonicalize_embedding_model()
     assert canon.effective == "test/fallback-embed"
+
+
+def test_canonicalize_embedding_skips_installed_chat_model():
+    """A chat model installed first must not become the embedding fallback (#307).
+
+    The embedding slot is local-only, so the fallback walks the installed
+    registry. Picking the first entry of any task hands a chat model to the
+    embedding role; the role validator then rejects it. The fallback must be
+    task-filtered.
+    """
+    from lilbee.catalog.types import ModelTask
+
+    cfg.embedding_model = "missing/embed"
+    chat_entry = mock.MagicMock()
+    chat_entry.ref = "test/installed-chat"
+    chat_entry.task = ModelTask.CHAT
+    embed_entry = mock.MagicMock()
+    embed_entry.ref = "test/installed-embed"
+    embed_entry.task = ModelTask.EMBEDDING
+    with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
+        registry_cls.return_value.list_installed.return_value = [chat_entry, embed_entry]
+        canon = canonicalize_embedding_model()
+    assert canon.effective == "test/installed-embed"
 
 
 def test_validate_handles_parse_error():
@@ -210,10 +239,13 @@ def test_canonicalize_chat_prefixes_bare_provider_name():
 
 def test_canonicalize_chat_handles_discover_failure():
     """If discover_api_models throws, canonicalize falls back to local."""
+    from lilbee.catalog.types import ModelTask
+
     cfg.chat_model = "missing/model"
     fake_entry = mock.MagicMock()
     fake_entry.ref = "test/fallback-local"
     fake_entry.hf_repo = "test/fallback-local"
+    fake_entry.task = ModelTask.CHAT
     with (
         mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
         mock.patch(

@@ -16,8 +16,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager.discovery import discover_api_models
+from lilbee.modelhub.model_manager.discovery import discover_api_models, reclassify_by_name
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
@@ -96,23 +97,32 @@ def _first_available_api_chat_ref() -> str | None:
     return None
 
 
-def _first_installed_local_ref() -> str | None:
-    """Return the first installed local ref, or ``None`` if none."""
+def _first_installed_local_ref(want: ModelTask) -> str | None:
+    """Return the first installed local ref whose task matches *want*.
+
+    Tasks are name-reclassified so the pick matches what the role validator
+    expects: a chat slot never falls back to an installed embedding model, and
+    vice versa.
+    """
     try:
         registry = ModelRegistry(cfg.models_dir)
         installed = list(registry.list_installed())
     except Exception:
         log.debug("Local registry probe failed during canonicalization", exc_info=True)
         return None
-    return installed[0].ref if installed else None
+    for manifest in installed:
+        if reclassify_by_name(manifest.ref, manifest.task) == want:
+            return manifest.ref
+    return None
 
 
-def _canonicalize(original: str, *, allow_api: bool) -> CanonicalRef:
+def _canonicalize(original: str, *, allow_api: bool, want_task: ModelTask) -> CanonicalRef:
     """Resolve a persisted ref to its effective session value.
 
     ``allow_api`` controls the fallback chain: chat allows an API
     fallback first; embedding is local-only because most providers
-    have no embedding equivalent.
+    have no embedding equivalent. The local fallback is filtered to
+    ``want_task`` so the role validator does not reject the swap.
     """
     status = validate_persisted_model(original)
     if status == ValidationResult.OK:
@@ -120,16 +130,16 @@ def _canonicalize(original: str, *, allow_api: bool) -> CanonicalRef:
     candidates: list[str | None] = []
     if allow_api:
         candidates.append(_first_available_api_chat_ref())
-    candidates.append(_first_installed_local_ref())
+    candidates.append(_first_installed_local_ref(want_task))
     effective = next((c for c in candidates if c), original)
     return CanonicalRef(original=original, effective=effective, status=status)
 
 
 def canonicalize_chat_model() -> CanonicalRef:
     """Effective chat ref for this session, falling back API -> local -> original."""
-    return _canonicalize(cfg.chat_model, allow_api=True)
+    return _canonicalize(cfg.chat_model, allow_api=True, want_task=ModelTask.CHAT)
 
 
 def canonicalize_embedding_model() -> CanonicalRef:
     """Effective embedding ref for this session, falling back local -> original."""
-    return _canonicalize(cfg.embedding_model, allow_api=False)
+    return _canonicalize(cfg.embedding_model, allow_api=False, want_task=ModelTask.EMBEDDING)
