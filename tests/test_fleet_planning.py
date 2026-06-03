@@ -149,6 +149,19 @@ def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None
     assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 1
 
 
+def test_resolve_chat_slots_steps_down_to_fit_unified_budget(monkeypatch) -> None:
+    # Ample VRAM keeps 4 slots, but a tight free-RAM budget forces the count down
+    # so the model loads at fewer slots instead of being refused at placement.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 64 * 10**9)
+    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 4
+    assert (
+        planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536, unified_budget=13 * 10**9)
+        == 1
+    )
+
+
 def test_unified_memory_budget_none_when_discrete_gpu_present() -> None:
     # Discrete GPUs load into dedicated VRAM, so system RAM isn't the gate.
     gpu = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 24 * _GB)
@@ -464,7 +477,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
-            lambda *_roles: (
+            lambda *_roles, **_kw: (
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
             ),
@@ -476,7 +489,7 @@ class TestBuildFleetWiring:
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a: MagicMock())
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
         started: dict[str, object] = {}
         monkeypatch.setattr(
             planning_mod.Fleet,
@@ -501,7 +514,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
-            lambda *_roles: (
+            lambda *_roles, **_kw: (
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
             ),

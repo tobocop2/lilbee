@@ -60,25 +60,36 @@ _CHAT_VRAM_FRACTION = 0.8
 _SYSTEM_MEMORY_FLOOR_BYTES = 4 * 1024**3
 
 
-def _slots_for(role: WorkerRole, weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+def _slots_for(
+    role: WorkerRole,
+    weights: int,
+    meta: dict[str, str] | None,
+    ctx: int,
+    *,
+    unified_budget: int | None = None,
+) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
     Chat batches concurrent turns; vision batches concurrent OCR pages since a
     one-page decode underutilizes the GPU; embed/rerank are single-slot (their
-    batching is request-side). Vision's count is VRAM-aware, so a small or shared
-    GPU drops toward 1 instead of OOMing on the configured ceiling.
+    batching is request-side). Chat and vision are VRAM-aware, so a small or
+    shared GPU drops toward 1 instead of OOMing on the configured ceiling.
+    ``unified_budget`` (free system RAM on a host with no discrete GPU) caps the
+    sizing so a model steps down to fit free memory rather than being refused.
     """
     if role is WorkerRole.CHAT:
-        return _resolve_chat_slots(weights, meta, ctx)
+        return _resolve_chat_slots(weights, meta, ctx, unified_budget=unified_budget)
     if role is WorkerRole.VISION:
-        return _resolve_vision_slots(weights, meta, ctx)
+        return _resolve_vision_slots(weights, meta, ctx, unified_budget=unified_budget)
     return _AUX_SLOTS
 
 
-def _resolve_chat_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+def _resolve_chat_slots(
+    weights: int, meta: dict[str, str] | None, ctx: int, *, unified_budget: int | None = None
+) -> int:
     """Largest chat slot count (<= ``_CHAT_SLOTS``) whose weights + per-slot KV fit
-    ``_CHAT_VRAM_FRACTION`` of usable memory; steps to 1 when none fit. KV is sized
-    at ``cfg.kv_cache_type`` to match the launch."""
+    the memory budget; steps to 1 when none fit. KV is sized at ``cfg.kv_cache_type``
+    to match the launch."""
     from lilbee.core.config import cfg
 
     return _fit_slots(
@@ -87,13 +98,15 @@ def _resolve_chat_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> 
         meta,
         ctx,
         kv_elem=KV_CACHE_TYPE_BYTES[cfg.kv_cache_type],
-        vram_fraction=_CHAT_VRAM_FRACTION,
+        budget=_slot_budget(_CHAT_VRAM_FRACTION, unified_budget),
     )
 
 
-def _resolve_vision_slots(weights: int, meta: dict[str, str] | None, ctx: int) -> int:
+def _resolve_vision_slots(
+    weights: int, meta: dict[str, str] | None, ctx: int, *, unified_budget: int | None = None
+) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
-    VRAM; 1 when the ceiling is 1 or nothing larger fits. KV sized at f16."""
+    the memory budget; 1 when the ceiling is 1 or nothing larger fits. KV sized at f16."""
     from lilbee.core.config import cfg
 
     ceiling = max(1, cfg.vision_ocr_concurrency)
@@ -105,8 +118,21 @@ def _resolve_vision_slots(weights: int, meta: dict[str, str] | None, ctx: int) -
         meta,
         ctx,
         kv_elem=KV_CACHE_TYPE_BYTES[KvCacheType.F16],
-        vram_fraction=_VISION_VRAM_FRACTION,
+        budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget),
     )
+
+
+def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
+    """Memory budget for slot sizing: *vram_fraction* of usable VRAM, capped by
+    ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
+    steps down to fit free memory instead of overcommitting."""
+    from lilbee.core.config import cfg
+    from lilbee.providers.model_cache import get_available_memory
+
+    budget = int(get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
+    if unified_budget is not None:
+        budget = min(budget, unified_budget)
+    return budget
 
 
 def _fit_slots(
@@ -116,14 +142,10 @@ def _fit_slots(
     ctx: int,
     *,
     kv_elem: int,
-    vram_fraction: float,
+    budget: int,
 ) -> int:
-    """Largest slot count in ``1..ceiling`` whose weights + per-slot KV fit
-    *vram_fraction* of usable memory; 1 when none larger fit."""
-    from lilbee.core.config import cfg
-    from lilbee.providers.model_cache import get_available_memory
-
-    budget = int(get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
+    """Largest slot count in ``1..ceiling`` whose weights + per-slot KV fit *budget*;
+    1 when none larger fit."""
     for slots in range(ceiling, 1, -1):
         if (
             estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_elem)
@@ -195,12 +217,12 @@ def _vision_mmproj(model_ref: str) -> Path | None:
 
 
 def _estimate_role(
-    role: WorkerRole, model_ref: str, *, slots: int | None = None
+    role: WorkerRole, model_ref: str, *, slots: int | None = None, unified_budget: int | None = None
 ) -> ModelPlacementInput:
     """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision).
 
-    ``slots`` defaults to the role's resolved batching slots (vision is VRAM-aware);
-    callers/tests may pass an explicit count.
+    ``slots`` defaults to the role's resolved batching slots (chat and vision are
+    VRAM-aware); callers/tests may pass an explicit count.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import resolve_model_path
@@ -215,7 +237,7 @@ def _estimate_role(
     meta = read_gguf_metadata(path)
     ctx = _role_ctx(role, path, meta)
     if slots is None:
-        slots = _slots_for(role, weights, meta, ctx)
+        slots = _slots_for(role, weights, meta, ctx, unified_budget=unified_budget)
     # Chat passes --cache-type; embed/rerank/vision run f16 KV, so estimate their
     # KV at f16 to match the runtime rather than the chat-tuned cfg.kv_cache_type.
     kv_type = cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
@@ -227,6 +249,8 @@ def _estimate_role(
 
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
+    *,
+    unified_budget: int | None = None,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
@@ -248,7 +272,7 @@ def _server_model_inputs(
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             continue  # no projector -> vision can't run on a server
         try:
-            estimate = _estimate_role(role, ref)
+            estimate = _estimate_role(role, ref, unified_budget=unified_budget)
         except (ProviderError, OSError):
             # The configured model is not installed/resolvable. Skip this role
             # rather than failing the whole fleet build: search-only indexing
@@ -268,6 +292,8 @@ def _launch_for(
     binary: Path,
     data_dir: Path,
     by_index: dict[int, FleetDevice],
+    *,
+    unified_budget: int | None = None,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.engine_params import resolve_model_path
@@ -284,7 +310,9 @@ def _launch_for(
     # Size slots from the same weights the estimator used (vision counts mmproj) so
     # the launched --parallel matches the placement estimate.
     mmproj_bytes = mmproj.stat().st_size if mmproj is not None and mmproj.exists() else 0
-    slots = _slots_for(plan.role, weights_bytes + mmproj_bytes, meta, ctx)
+    slots = _slots_for(
+        plan.role, weights_bytes + mmproj_bytes, meta, ctx, unified_budget=unified_budget
+    )
     argv = build_server_argv(
         binary=binary,
         spec=ROLE_SPECS[plan.role],
@@ -351,11 +379,12 @@ def plan_launches(
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     from lilbee.core.config import cfg
 
-    inputs, model_refs = _server_model_inputs(roles)
+    unified_budget = _unified_memory_budget(devices)
+    inputs, model_refs = _server_model_inputs(roles, unified_budget=unified_budget)
     placement = plan_placement(
         inputs,
         [(d.index, d.free_bytes) for d in devices],
-        unified_budget=_unified_memory_budget(devices),
+        unified_budget=unified_budget,
     )
     for role in placement.unplaceable_roles:
         log.warning(
@@ -365,7 +394,14 @@ def plan_launches(
             model_refs[role],
         )
     return [
-        _launch_for(plan, model_refs[plan.role], binary, cfg.data_dir, by_index)
+        _launch_for(
+            plan,
+            model_refs[plan.role],
+            binary,
+            cfg.data_dir,
+            by_index,
+            unified_budget=unified_budget,
+        )
         for plan in placement.instances
     ]
 
