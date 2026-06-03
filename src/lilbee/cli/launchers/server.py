@@ -27,6 +27,10 @@ LOOPBACK = "127.0.0.1"
 
 _SERVER_BOOT_TIMEOUT_S = 60.0
 _SERVER_POLL_INTERVAL_S = 0.5
+# Upper bound on the cold model-load wait. A large chat model split across GPUs
+# can take minutes to load; this only bounds the visible warming wait, after
+# which the launcher hands off anyway (the model then warms on the first call).
+_WARM_TIMEOUT_S = 600.0
 _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
 _TERMINATE_GRACE_S = 10
@@ -79,6 +83,53 @@ def wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> boo
         if health_ok(port):
             return True
         time.sleep(_SERVER_POLL_INTERVAL_S)
+    return False
+
+
+def chat_ready(port: int) -> bool:
+    """Single-shot probe: True iff ``/api/health`` reports the chat engine warm."""
+    try:
+        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
+    except httpx.HTTPError:
+        return False
+    if resp.status_code != _HTTP_OK:
+        return False
+    return bool(resp.json().get("chat_ready", False))
+
+
+def served_chat_ctx(port: int) -> int | None:
+    """The chat window ``/api/health`` reports, or None if unknown/unreachable.
+
+    A launcher passes this to the client so it trims history to the model's
+    actual window instead of overflowing on a long agentic session.
+    """
+    try:
+        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != _HTTP_OK:
+        return None
+    ctx = resp.json().get("chat_ctx")
+    return ctx if isinstance(ctx, int) and ctx > 0 else None
+
+
+def wait_for_chat_warm(port: int, timeout_s: float = _WARM_TIMEOUT_S) -> bool:
+    """Block until the chat model is loaded, showing a warming indicator.
+
+    The server warms the chat role on a background thread at startup, so a client
+    launched the instant the HTTP port binds would otherwise hit an
+    apparently-dead stream during the cold model load. Returns True once the
+    chat engine reports ready, or False if *timeout_s* elapses first; the caller
+    proceeds either way, so a still-loading model just warms on the first call.
+    """
+    if chat_ready(port):
+        return True
+    deadline = time.monotonic() + timeout_s
+    with console.status("Warming the chat model..."):
+        while time.monotonic() < deadline:
+            if chat_ready(port):
+                return True
+            time.sleep(_SERVER_POLL_INTERVAL_S)
     return False
 
 

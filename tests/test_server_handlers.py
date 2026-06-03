@@ -96,11 +96,23 @@ class TestSseEvent:
 
 
 class TestHealth:
-    async def test_returns_status_and_version(self):
+    async def test_returns_status_and_version(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
         with patch("lilbee.server.handlers.get_version", return_value="1.2.3"):
             result = await handlers.health()
         assert result.status == "ok"
         assert result.version == "1.2.3"
+
+    async def test_chat_ready_reflects_role_readiness(self, mock_svc):
+        from lilbee.providers.roles import WorkerRole
+
+        mock_svc.provider.role_ready.return_value = False
+        result = await handlers.health()
+        assert result.chat_ready is False
+        mock_svc.provider.role_ready.assert_called_with(WorkerRole.CHAT)
+
+        mock_svc.provider.role_ready.return_value = True
+        assert (await handlers.health()).chat_ready is True
 
 
 class TestStatus:

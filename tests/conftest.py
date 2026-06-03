@@ -238,6 +238,13 @@ def _default_provider_mock():
     provider = MagicMock(spec=LLMProvider)
     provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
     provider.supports_tools.return_value = False
+    # role_ready feeds HealthResponse.chat_ready (a bool); default to warm so the
+    # mock validates. Cold-start tests override this explicitly.
+    provider.role_ready.return_value = True
+    # Chat admission + context advertising read these; default to single-flight
+    # with an unknown window so the gate and the /v1/models shape stay valid.
+    provider.max_concurrent_chats.return_value = 1
+    provider.served_chat_ctx.return_value = None
     return provider
 
 

@@ -201,6 +201,25 @@ class FleetProvider:
                 return False
             return bool(self._fleet.healthy_clients(role))
 
+    def max_concurrent_chats(self) -> int:
+        """The chat server's batching-slot capacity, so the gate admits that many.
+
+        Falls back to ``1`` before the fleet is up, so chat is serialized until
+        the slot count is known (the launcher warms the fleet before a client
+        connects, so the real capacity is in effect by the first chat).
+        """
+        with self._lock:
+            if self._fleet is None:
+                return 1
+            return self._fleet.chat_slot_capacity()
+
+    def served_chat_ctx(self) -> int | None:
+        """Per-slot context the ready chat server runs with, or None if not up."""
+        with self._lock:
+            if self._fleet is None:
+                return None
+            return self._fleet.chat_served_ctx()
+
     def _shutdown_fleet(self) -> None:
         with self._lock:
             if self._fleet is not None:

@@ -50,7 +50,7 @@ def test_role_ctx_chat_honors_configured_num_ctx(monkeypatch) -> None:
 
 def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", None)
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda _p, _m: 4096)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda _p, _m, *_a: 4096)
     assert planning_mod._role_ctx(WorkerRole.CHAT, Path("/m/c.gguf"), None) == 4096
 
 
@@ -293,7 +293,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 16)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref", slots=1)
         assert inp.est_vram_bytes >= 1500  # weights + mmproj counted
 
@@ -305,7 +305,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 16)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref")  # slots resolved internally
         assert inp.role is WorkerRole.VISION
         assert inp.est_vram_bytes >= 1000
@@ -322,7 +322,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "8", "embedding_length": "16"},
         )
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 512)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 512)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)  # would be wrong for embed
         inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
         f16 = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
@@ -338,7 +338,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 4096)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         launch = planning_mod._launch_for(
@@ -355,7 +355,7 @@ class TestBuildFleetWiring:
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             lambda _p: {"block_count": "4", "embedding_length": "8"},
         )
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 16)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
         inp = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=2)
         assert inp.role == WorkerRole.CHAT
         assert inp.est_vram_bytes > 1000  # weights + kv + overhead
@@ -368,7 +368,7 @@ class TestBuildFleetWiring:
             lambda ref: model,
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 4096)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(
@@ -424,7 +424,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
-        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: ctx)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
         return planning_mod._launch_for(

@@ -14,7 +14,7 @@ import typer
 
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import run_launcher
-from lilbee.cli.launchers.server import LOOPBACK
+from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
 from lilbee.core.config import cfg
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
@@ -235,6 +235,7 @@ class OpencodeLauncher:
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,
             model_refs=model_refs,
+            chat_ctx=served_chat_ctx(port),
         )
         provider_block = block["provider"][_OPENCODE_PROVIDER_ID]
         _merge_lilbee_provider_into_config(

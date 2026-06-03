@@ -111,6 +111,7 @@ markers = [
     "real_litellm_probe: opt out of the global litellm_available True override",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",
+    "no_warm_default: opt out of the launch tests' default chat-warm fixture",
 ]
 
 [tool.coverage.run]

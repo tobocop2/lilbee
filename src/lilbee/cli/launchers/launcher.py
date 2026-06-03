@@ -11,6 +11,7 @@ from lilbee.cli.launchers.server import (
     ensure_server_running,
     installed_chat_model_refs,
     stop_spawned_server,
+    wait_for_chat_warm,
 )
 
 
@@ -47,6 +48,11 @@ def run_launcher(launcher: Launcher) -> None:
         raise typer.Exit(1)
     (token, port), spawned = ensure_server_running()
     model_refs = installed_chat_model_refs()
+    # Wait out the cold model load before handing off, so the client opens onto a
+    # warm engine instead of an apparently-dead stream. Only meaningful when a
+    # chat model is configured to warm.
+    if model_refs:
+        wait_for_chat_warm(port)
     extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
     try:
         # binary resolved via the launcher's find_binary on PATH; no shell.

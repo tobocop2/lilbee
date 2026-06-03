@@ -10,8 +10,10 @@ API consumed by ``server/routes/*.py``.
 
 from __future__ import annotations
 
+from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
+from lilbee.providers.roles import WorkerRole
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
@@ -64,8 +66,14 @@ from lilbee.server.models import HealthResponse, StatusResponse
 
 
 async def health() -> HealthResponse:
-    """Return service health and version."""
-    return HealthResponse(status="ok", version=get_version())
+    """Return service health, version, and whether the chat engine is warm."""
+    provider = get_services().provider
+    return HealthResponse(
+        status="ok",
+        version=get_version(),
+        chat_ready=provider.role_ready(WorkerRole.CHAT),
+        chat_ctx=provider.served_chat_ctx(),
+    )
 
 
 async def status() -> StatusResponse:
