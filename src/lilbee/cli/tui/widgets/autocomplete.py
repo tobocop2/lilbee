@@ -144,6 +144,21 @@ def _path_options(partial: str = "") -> list[str]:
         return []
 
 
+_PATH_SEPARATORS = ("/", "\\")
+
+
+def path_completion_prefix(partial: str) -> str:
+    """Directory prefix of *partial* up to and including the last path separator.
+
+    Splits on both ``/`` and ``\\`` so accepting an /add path completion keeps
+    the directory the user typed instead of collapsing to the basename. On
+    Windows the typed path uses backslashes, so a ``/``-only split would drop
+    the whole directory and turn ``C:\\dir\\file.md`` into ``file.md``.
+    """
+    cut = max(partial.rfind(sep) for sep in _PATH_SEPARATORS)
+    return partial[: cut + 1]
+
+
 def longest_common_prefix(values: list[str]) -> str:
     """Return the longest string that prefixes every value (``""`` if none)."""
     if not values:
