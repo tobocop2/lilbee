@@ -3454,6 +3454,51 @@ async def test_chat_accept_on_enter_with_no_highlight_hides():
         assert not overlay.is_visible
 
 
+async def test_chat_completion_value_preserves_windows_directory():
+    """Accepting an /add path completion keeps the typed Windows directory.
+
+    Regression for the windows-latest integration failure: a backslash path
+    must rebuild to the same full path so Enter falls through to submit
+    instead of being consumed as a completion-accept.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._completion_origin = r"/add C:\Users\me\docs\quantum_test.md"
+        assert (
+            app.screen._completion_value("quantum_test.md")
+            == r"/add C:\Users\me\docs\quantum_test.md"
+        )
+
+
+async def test_chat_completion_value_preserves_posix_directory():
+    """Accepting an /add path completion keeps the typed POSIX directory."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._completion_origin = "/add /var/tmp/docs/quantum_test.md"
+        assert (
+            app.screen._completion_value("quantum_test.md") == "/add /var/tmp/docs/quantum_test.md"
+        )
+
+
+async def test_chat_accept_on_enter_falls_through_for_full_windows_path():
+    """A fully-typed backslash /add path must not be consumed by the overlay.
+
+    The highlighted completion (basename) rebuilds to the same full path, so
+    Enter falls through to submit the command rather than re-filling the input.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        full_path = r"/add C:\Users\me\docs\quantum_test.md"
+        app.screen._set_input(full_path)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        app.screen._completion_origin = full_path
+        overlay.show_completions(["quantum_test.md"])
+        consumed = app.screen._accept_overlay_selection_on_enter()
+        assert consumed is False
+
+
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
