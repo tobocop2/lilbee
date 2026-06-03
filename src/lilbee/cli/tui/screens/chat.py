@@ -47,6 +47,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     CompletionOverlay,
     get_completions,
     longest_common_prefix,
+    path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.help_hint import HelpHint
@@ -1468,7 +1469,7 @@ class ChatScreen(Screen[None]):
             return display
         cmd, _, partial = text.partition(" ")
         if cmd.lower() == "/add":
-            head = partial[: partial.rfind("/") + 1]
+            head = path_completion_prefix(partial)
             return f"{cmd} {head}{display}"
         return f"{cmd} {display}"
 
