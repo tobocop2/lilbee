@@ -45,6 +45,12 @@ _PROVIDER_NAME = "llama-server"
 # starts an upstream on its first request, so warming issues one cheap call).
 _WARM_PROMPT = "warm"
 _WARM_MAX_TOKENS = 1
+# Per-role client request budget. llama-swap loads an upstream lazily on the first
+# request and holds it open during the cold load (up to its own health timeout), so
+# unlike the old supervisor -- which waited for ready before routing -- the first
+# request here covers load + generation. Sized to cover both so a large model's
+# cold load doesn't time out the first call.
+_REQUEST_TIMEOUT_S = 900.0
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -202,8 +208,16 @@ class FleetProvider:
         """
         self._swap = swap
         endpoint = swap.endpoint()
+        # token_cap truncates oversize embed/rerank inputs to the per-slot context
+        # (the in-process backstop); the longer timeout covers a cold upstream load.
         self._clients = {
-            launch.role: LlamaServerClient(endpoint, launch.role.value) for launch in launches
+            launch.role: LlamaServerClient(
+                endpoint,
+                launch.role.value,
+                token_cap=launch.token_cap,
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            for launch in launches
         }
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1

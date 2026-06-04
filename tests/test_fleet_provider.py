@@ -63,7 +63,9 @@ def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = Non
     """Patch the swap, client, and planner so _ensure_swap builds controllable fakes."""
     swap = swap or _FakeSwap()
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir: swap)
-    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _endpoint, _model: _fake_client())
+    monkeypatch.setattr(
+        prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
+    )
     monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: launches)
     return swap
 
@@ -522,12 +524,32 @@ def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     assert p._clients == {}
 
 
+def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
+    # Each role's client carries the launch token_cap (embed/rerank input truncation,
+    # the in-process backstop) and a timeout long enough for a cold upstream load,
+    # matching the old supervisor's client construction.
+    launch = _fake_launch(WorkerRole.EMBED)
+    launch.token_cap = 2048
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: _FakeSwap())
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [launch])
+    captured: list[dict] = []
+
+    def _capture(_endpoint, _model, **kwargs):
+        captured.append(kwargs)
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    FleetProvider()._ensure_swap()
+    assert captured[0]["token_cap"] == 2048
+    assert captured[0]["timeout"] == prov_mod._REQUEST_TIMEOUT_S
+
+
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     from lilbee.providers.base import ChatResult, FinishReason
 
     captured: dict[str, MagicMock] = {}
 
-    def _make_client(_endpoint, model):
+    def _make_client(_endpoint, model, **_kw):
         client = _fake_client()
         client.chat_result.return_value = ChatResult(
             text="ok", tool_calls=(), finish_reason=FinishReason.STOP
@@ -556,7 +578,7 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     swap = _SlowSwap()
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: swap)
 
-    def _make_client(_endpoint, _model):
+    def _make_client(_endpoint, _model, **_kw):
         client = _fake_client()
         client.chat_result.return_value = "ok"
         return client
@@ -806,7 +828,7 @@ class TestLifecycleMethods:
     def test_reload_blocking_restarts_swap_and_readopts(self, monkeypatch) -> None:
         launches = [_fake_launch(WorkerRole.CHAT, slots=2, ctx=4096)]
         monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: launches)
-        monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m: _fake_client())
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
         p = FleetProvider()
         swap = _FakeSwap()
         p._swap = swap

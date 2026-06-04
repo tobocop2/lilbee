@@ -116,10 +116,11 @@ class LlamaServerClient:
         *,
         http: httpx.Client | None = None,
         token_cap: int | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_S,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
-        self._http = http or httpx.Client(base_url=self._base, timeout=_DEFAULT_TIMEOUT_S)
+        self._http = http or httpx.Client(base_url=self._base, timeout=timeout)
         self._owns_http = http is None
         # Per-slot context for embed/rerank servers: inputs longer than this are
         # token-truncated (via the server's tokenizer) before embedding, mirroring
