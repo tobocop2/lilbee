@@ -193,10 +193,11 @@ class TestEstimateInstanceFootprint:
         estimate_instance_footprint(model_file, **kwargs)
         assert len(calls) == 1  # second call served from the cache
         # Re-touch the file: a re-pull at the same path must invalidate the cache.
+        # Bump by a full second so Windows' coarse mtime resolution registers it.
         import os
 
         st = model_file.stat()
-        os.utime(model_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+        os.utime(model_file, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         estimate_instance_footprint(model_file, **kwargs)
         assert len(calls) == 2
 

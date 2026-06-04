@@ -183,9 +183,11 @@ class TestProcessTeardown:
 
     def test_terminate_group_posix_sigterm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sm.sys, "platform", "linux")
-        monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99)
+        monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99, raising=False)
         signals: list[int] = []
-        monkeypatch.setattr(sm.os, "killpg", lambda _pgid, signum: signals.append(signum))
+        monkeypatch.setattr(
+            sm.os, "killpg", lambda _pgid, signum: signals.append(signum), raising=False
+        )
         sm._terminate_group(_FakeProc(poll_result=None))
         assert signals == [sm.signal.SIGTERM]
 
@@ -193,9 +195,11 @@ class TestProcessTeardown:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sm.sys, "platform", "linux")
-        monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99)
+        monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99, raising=False)
         signals: list[int] = []
-        monkeypatch.setattr(sm.os, "killpg", lambda _pgid, signum: signals.append(signum))
+        monkeypatch.setattr(
+            sm.os, "killpg", lambda _pgid, signum: signals.append(signum), raising=False
+        )
 
         class _Stuck(_FakeProc):
             def wait(self, timeout: float | None = None) -> int:
