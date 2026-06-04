@@ -168,16 +168,26 @@ flowchart TD
 - **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
   CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, ROCm via
   `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
-- **Placement** (`placement.py`): estimate each model's VRAM (GGUF weights + KV
-  cache + overhead), first-fit-decreasing bin-pack with 90% headroom. A model that
-  fits one GPU is a single pinned instance; small models co-locate; a model too big
-  for one GPU is tensor-split **proportionally to each card's free VRAM** (so unequal
-  GPUs don't OOM the smaller one). The KV term uses the model's GQA dimension
-  (`kv_heads x head_dim`), not the full embedding width, so a grouped-query model
-  isn't over-estimated by its query/KV head ratio. On a single CPU/Metal box this is
-  a fleet-of-one, and placement gates against **free system RAM** rather than a GPU
-  budget: unified memory is shared with the OS, so a model that exceeds free RAM is
-  marked unplaceable (no server, clean error) instead of loaded. Loading past free
+- **VRAM estimation** (`vram.py`): each instance's footprint comes from
+  **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
+  subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
+  discrete-GPU footprint (`nonuma`, what lands in device VRAM) and a unified-memory
+  footprint (`uma`, total resident on an Apple Silicon / shared-RAM host); the
+  planner charges whichever matches the host. This replaced a hand-rolled
+  weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
+  ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
+  of the budget and 503-ing every search.
+- **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
+  A model that fits one GPU is a single pinned instance; small models co-locate; a
+  model too big for one GPU is tensor-split **proportionally to each card's free
+  VRAM** (so unequal GPUs don't OOM the smaller one). On a single CPU/Metal box this
+  is a fleet-of-one against one shared pool, where the **search-critical roles
+  (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
+  context are sized against the budget *minus* the search footprint, and the shared
+  pool places search first, so a large chat can never starve search (the proven
+  embed-starvation bug). Placement gates against **free system RAM** rather than a
+  GPU budget: unified memory is shared with the OS, so a model that exceeds free RAM
+  is marked unplaceable (no server, clean error) instead of loaded. Loading past free
   RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.

@@ -7,17 +7,13 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
 from lilbee.providers.fleet.fleet import Fleet, InstanceLaunch
-from lilbee.providers.fleet.placement import (
-    InstancePlan,
-    ModelPlacementInput,
-    estimate_model_vram,
-    plan_placement,
-)
+from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, plan_placement
+from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -35,6 +31,11 @@ _ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _DEFAULT_THREADS = 4
+# Nominal context for bootstrapping a tensor-split chat's slot count before its real
+# per-slot context is known; small enough that weights dominate the footprint.
+_SPLIT_BOOTSTRAP_CTX = 512
+# Roles to which flash attention applies; embed/rerank run without it.
+_FLASH_ROLES = (WorkerRole.CHAT, WorkerRole.VISION)
 
 # Server roles -> model-ref accessor. chat/embed are always configured;
 # reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
@@ -62,51 +63,68 @@ _SYSTEM_MEMORY_FLOOR_BYTES = 4 * 1024**3
 
 def _slots_for(
     role: WorkerRole,
-    weights: int,
-    meta: dict[str, str] | None,
+    model_path: Path,
     ctx: int,
     *,
+    mmproj_path: Path | None = None,
     unified_budget: int | None = None,
+    chat_reservation: int = 0,
 ) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
     Chat batches concurrent turns; vision batches concurrent OCR pages since a
     one-page decode underutilizes the GPU; embed/rerank are single-slot (their
-    batching is request-side). Chat and vision are VRAM-aware, so a small or
-    shared GPU drops toward 1 instead of OOMing on the configured ceiling.
-    ``unified_budget`` (free system RAM on a host with no discrete GPU) caps the
-    sizing so a model steps down to fit free memory rather than being refused.
+    batching is request-side). Chat and vision are memory-aware (gguf-parser
+    footprint), so a small or shared host drops toward 1 instead of overcommitting.
+    ``unified_budget`` caps sizing against free system RAM with no discrete GPU;
+    ``chat_reservation`` is the search-role footprint held back from chat.
     """
     if role is WorkerRole.CHAT:
-        return _resolve_chat_slots(weights, meta, ctx, unified_budget=unified_budget)
+        return _resolve_chat_slots(
+            model_path,
+            ctx,
+            mmproj_path=mmproj_path,
+            unified_budget=unified_budget,
+            chat_reservation=chat_reservation,
+        )
     if role is WorkerRole.VISION:
-        return _resolve_vision_slots(weights, meta, ctx, unified_budget=unified_budget)
+        return _resolve_vision_slots(
+            model_path, ctx, mmproj_path=mmproj_path, unified_budget=unified_budget
+        )
     return _AUX_SLOTS
 
 
 def _resolve_chat_slots(
-    weights: int, meta: dict[str, str] | None, ctx: int, *, unified_budget: int | None = None
+    model_path: Path,
+    ctx: int,
+    *,
+    mmproj_path: Path | None = None,
+    unified_budget: int | None = None,
+    chat_reservation: int = 0,
 ) -> int:
-    """Largest chat slot count (<= ``_CHAT_SLOTS``) whose weights + per-slot KV fit
-    the memory budget; steps to 1 when none fit. KV is sized at ``cfg.kv_cache_type``
-    to match the launch."""
-    from lilbee.core.config import cfg
-
+    """Largest chat slot count (<= ``_CHAT_SLOTS``) whose footprint fits the budget
+    after reserving the search roles; steps to 1 when none fit."""
+    budget = _slot_budget(_CHAT_VRAM_FRACTION, unified_budget) - chat_reservation
     return _fit_slots(
         _CHAT_SLOTS,
-        weights,
-        meta,
+        WorkerRole.CHAT,
+        model_path,
         ctx,
-        kv_elem=KV_CACHE_TYPE_BYTES[cfg.kv_cache_type],
-        budget=_slot_budget(_CHAT_VRAM_FRACTION, unified_budget),
+        mmproj_path=mmproj_path,
+        unified=unified_budget is not None,
+        budget=budget,
     )
 
 
 def _resolve_vision_slots(
-    weights: int, meta: dict[str, str] | None, ctx: int, *, unified_budget: int | None = None
+    model_path: Path,
+    ctx: int,
+    *,
+    mmproj_path: Path | None = None,
+    unified_budget: int | None = None,
 ) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
-    the memory budget; 1 when the ceiling is 1 or nothing larger fits. KV sized at f16."""
+    the memory budget; 1 when the ceiling is 1 or nothing larger fits."""
     from lilbee.core.config import cfg
 
     ceiling = max(1, cfg.vision_ocr_concurrency)
@@ -114,10 +132,11 @@ def _resolve_vision_slots(
         return 1
     return _fit_slots(
         ceiling,
-        weights,
-        meta,
+        WorkerRole.VISION,
+        model_path,
         ctx,
-        kv_elem=KV_CACHE_TYPE_BYTES[KvCacheType.F16],
+        mmproj_path=mmproj_path,
+        unified=unified_budget is not None,
         budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget),
     )
 
@@ -137,20 +156,27 @@ def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
 
 def _fit_slots(
     ceiling: int,
-    weights: int,
-    meta: dict[str, str] | None,
+    role: WorkerRole,
+    model_path: Path,
     ctx: int,
     *,
-    kv_elem: int,
+    mmproj_path: Path | None,
+    unified: bool,
     budget: int,
 ) -> int:
-    """Largest slot count in ``1..ceiling`` whose weights + per-slot KV fit *budget*;
+    """Largest slot count in ``1..ceiling`` whose instance footprint fits *budget*;
     1 when none larger fit."""
     for slots in range(ceiling, 1, -1):
-        if (
-            estimate_model_vram(weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_elem)
-            <= budget
-        ):
+        est = estimate_instance_footprint(
+            model_path,
+            ctx=ctx,
+            slots=slots,
+            gpu_layers=_role_gpu_layers(role),
+            flash_attn=_role_flash(role),
+            kv_cache_type=_role_kv_cache_type(role),
+            mmproj_path=mmproj_path,
+        )
+        if est.footprint(unified=unified) <= budget:
             return slots
     return 1
 
@@ -196,11 +222,28 @@ def _role_gpu_layers(role: WorkerRole) -> int:
     return resolve_n_gpu_layers(embedding=role in _ALL_LAYER_ROLES)
 
 
-def _flash_attn_flag() -> str:
-    """``--flash-attn`` for chat and vision: on unless ``cfg.flash_attention`` is ``False``."""
+def _flash_enabled() -> bool:
+    """Flash attention is on unless ``cfg.flash_attention`` is explicitly ``False``."""
     from lilbee.core.config import cfg
 
-    return _FLASH_OFF if cfg.flash_attention is False else _FLASH_ON
+    return cfg.flash_attention is not False
+
+
+def _flash_attn_flag() -> str:
+    """``--flash-attn`` argv value for chat and vision."""
+    return _FLASH_ON if _flash_enabled() else _FLASH_OFF
+
+
+def _role_flash(role: WorkerRole) -> bool:
+    """Flash attention applies to chat and vision; embed/rerank run without it."""
+    return role in _FLASH_ROLES and _flash_enabled()
+
+
+def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
+    """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV."""
+    from lilbee.core.config import cfg
+
+    return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
 
 def _cache_type_flag() -> str | None:
@@ -226,62 +269,85 @@ def _vision_mmproj(model_ref: str) -> Path | None:
 
 
 def _estimate_role(
-    role: WorkerRole, model_ref: str, *, slots: int | None = None, unified_budget: int | None = None
+    role: WorkerRole,
+    model_ref: str,
+    *,
+    slots: int | None = None,
+    unified_budget: int | None = None,
+    chat_reservation: int = 0,
 ) -> ModelPlacementInput:
-    """Estimate one role-model's VRAM from its GGUF on disk (+ mmproj for vision).
+    """Estimate one role-model's footprint via gguf-parser (+ mmproj for vision).
 
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
-    VRAM-aware); callers/tests may pass an explicit count.
+    memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
+    roles. Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
-    from lilbee.core.config import cfg
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     path = resolve_model_path(model_ref)
-    weights = path.stat().st_size
-    if role is WorkerRole.VISION:
-        mmproj = _vision_mmproj(model_ref)
-        if mmproj is not None:
-            weights += mmproj.stat().st_size
+    mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
     ctx = _role_ctx(role, path, meta)
     if slots is None:
-        slots = _slots_for(role, weights, meta, ctx, unified_budget=unified_budget)
-    # Chat passes --cache-type; embed/rerank/vision run f16 KV, so estimate their
-    # KV at f16 to match the runtime rather than the chat-tuned cfg.kv_cache_type.
-    kv_type = cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
-    est = estimate_model_vram(
-        weights, meta, ctx=ctx, slots=slots, kv_elem_bytes=KV_CACHE_TYPE_BYTES[kv_type]
+        slots = _slots_for(
+            role,
+            path,
+            ctx,
+            mmproj_path=mmproj,
+            unified_budget=unified_budget,
+            chat_reservation=chat_reservation,
+        )
+    est = estimate_instance_footprint(
+        path,
+        ctx=ctx,
+        slots=slots,
+        gpu_layers=_role_gpu_layers(role),
+        flash_attn=_role_flash(role),
+        kv_cache_type=_role_kv_cache_type(role),
+        mmproj_path=mmproj,
     )
-    return ModelPlacementInput(role=role, est_vram_bytes=est)
+    return ModelPlacementInput(
+        role=role, est_vram_bytes=est.footprint(unified=unified_budget is not None)
+    )
+
+
+def _search_reservation(inputs: dict[WorkerRole, ModelPlacementInput]) -> int:
+    """Total footprint of the placed search roles, held back ahead of chat."""
+    return sum(inputs[role].est_vram_bytes for role in _EMBED_ROLES if role in inputs)
 
 
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
     unified_budget: int | None = None,
-) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str]]:
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
     """Build placement inputs for the configured server roles.
 
-    When *roles* is given, only those roles are considered. Skips an unconfigured
-    optional role, a vision model with no resolvable mmproj projector, and a role
-    whose configured model is not installed on disk.
+    The search and vision roles are estimated first; chat is then sized against the
+    budget minus the search footprint (the ``reservation``) so a large chat cannot
+    starve embed/rerank on a shared-memory host. When *roles* is given, only those
+    are considered. Skips an unconfigured optional role, a vision model with no
+    resolvable mmproj projector, and a role whose model is not installed on disk.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError
 
-    inputs: list[ModelPlacementInput] = []
+    inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
-    for role, accessor in _SERVER_ROLE_PARAMS.items():
+
+    def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if roles is not None and role not in roles:
-            continue
-        ref = accessor(cfg)
+            return
+        ref = _SERVER_ROLE_PARAMS[role](cfg)
         if not ref:
-            continue  # unconfigured optional role -> no server
+            return  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
-            continue  # no projector -> vision can't run on a server
+            return  # no projector -> vision can't run on a server
         try:
-            estimate = _estimate_role(role, ref, unified_budget=unified_budget)
+            estimate = _estimate_role(
+                role, ref, unified_budget=unified_budget, chat_reservation=chat_reservation
+            )
         except (ProviderError, OSError):
             # The configured model is not installed/resolvable. Skip this role
             # rather than failing the whole fleet build: search-only indexing
@@ -289,10 +355,21 @@ def _server_model_inputs(
             # role surfaces a clear per-role error on first use instead of a
             # build-time traceback.
             log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
-            continue
-        inputs.append(estimate)
+            return
+        inputs[role] = estimate
         model_refs[role] = ref
-    return inputs, model_refs
+
+    # Estimate every non-chat role first so the search footprint is known, then size
+    # chat against the remainder. The reservation only applies on a shared-memory
+    # host; discrete GPUs pin each role to its own VRAM and pack independently.
+    for role in _SERVER_ROLE_PARAMS:
+        if role is not WorkerRole.CHAT:
+            consider(role)
+    reservation = _search_reservation(inputs) if unified_budget is not None else 0
+    consider(WorkerRole.CHAT, chat_reservation=reservation)
+
+    ordered = [inputs[role] for role in _SERVER_ROLE_PARAMS if role in inputs]
+    return ordered, model_refs, reservation
 
 
 def _launch_for(
@@ -303,6 +380,7 @@ def _launch_for(
     by_index: dict[int, FleetDevice],
     *,
     unified_budget: int | None = None,
+    chat_reservation: int = 0,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.engine_params import resolve_model_path
@@ -314,19 +392,29 @@ def _launch_for(
     chosen = tuple(by_index[i] for i in plan.devices)
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
+    mmproj = _vision_mmproj(model_ref) if is_vision else None
     # A tensor-split chat model's KV budget spans every device it occupies; sizing
     # its context against one GPU collapses it to the floor (see resolve_chat_ctx).
-    # The slots count divides the shared --ctx-size, so pass it too.
+    # The slots count divides the shared --ctx-size, so bootstrap it first.
     split_chat = is_chat and len(chosen) > 1
     chat_available = sum(d.free_bytes for d in chosen) if split_chat else None
-    chat_slots = _slots_for(WorkerRole.CHAT, weights_bytes, meta, 0) if split_chat else 1
+    chat_slots = (
+        _slots_for(
+            WorkerRole.CHAT, model_path, _SPLIT_BOOTSTRAP_CTX, chat_reservation=chat_reservation
+        )
+        if split_chat
+        else 1
+    )
     ctx = _role_ctx(plan.role, model_path, meta, chat_available, chat_slots)
-    mmproj = _vision_mmproj(model_ref) if is_vision else None
-    # Size slots from the same weights the estimator used (vision counts mmproj) so
-    # the launched --parallel matches the placement estimate.
-    mmproj_bytes = mmproj.stat().st_size if mmproj is not None and mmproj.exists() else 0
+    # Size slots the same way the estimator did so the launched --parallel matches
+    # the placement estimate (chat honors the search reservation; mmproj via gguf-parser).
     slots = _slots_for(
-        plan.role, weights_bytes + mmproj_bytes, meta, ctx, unified_budget=unified_budget
+        plan.role,
+        model_path,
+        ctx,
+        mmproj_path=mmproj,
+        unified_budget=unified_budget,
+        chat_reservation=chat_reservation,
     )
     argv = build_server_argv(
         binary=binary,
@@ -398,7 +486,7 @@ def plan_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs = _server_model_inputs(roles, unified_budget=unified_budget)
+    inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
     placement = plan_placement(
         inputs,
         [(d.index, d.free_bytes) for d in devices],
@@ -419,6 +507,7 @@ def plan_launches(
             cfg.data_dir,
             by_index,
             unified_budget=unified_budget,
+            chat_reservation=reservation,
         )
         for plan in placement.instances
     ]

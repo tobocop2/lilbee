@@ -13,9 +13,38 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
+from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
+
+
+def _fixed_estimator(*, vram: int = 1024, unified: int | None = None):
+    """A gguf-parser stand-in returning a constant footprint (no subprocess)."""
+    total_unified = vram if unified is None else unified
+
+    def _est(model_path, **_kwargs) -> GgufVramEstimate:
+        return GgufVramEstimate(vram_bytes=vram, ram_bytes=0, unified_bytes=total_unified)
+
+    return _est
+
+
+def _slotted_estimator(*, base: int, per_slot: int):
+    """A gguf-parser stand-in whose footprint grows with the slot count, so the
+    slot-fit loop steps down deterministically under a fixed budget."""
+
+    def _est(model_path, *, slots: int, **_kwargs) -> GgufVramEstimate:
+        total = base + per_slot * slots
+        return GgufVramEstimate(vram_bytes=total, ram_bytes=0, unified_bytes=total)
+
+    return _est
+
+
+@pytest.fixture(autouse=True)
+def _stub_estimator(monkeypatch) -> None:
+    """Default: a cheap fixed footprint so tests never shell out to gguf-parser.
+    Tests that exercise sizing override this with their own estimator."""
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator())
 
 
 def test_vision_mmproj_returns_path_when_found(monkeypatch) -> None:
@@ -111,54 +140,79 @@ def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
 
 
 def test_slots_for_aux_roles_are_single_slot() -> None:
-    # Embed/rerank batch request-side, so their server is always single-slot.
-    assert planning_mod._slots_for(WorkerRole.EMBED, 0, None, 0) == 1
-    assert planning_mod._slots_for(WorkerRole.RERANK, 0, None, 0) == 1
+    # Embed/rerank batch request-side, so their server is always single-slot
+    # (and never invoke the estimator).
+    assert planning_mod._slots_for(WorkerRole.EMBED, Path("/m/e.gguf"), 0) == 1
+    assert planning_mod._slots_for(WorkerRole.RERANK, Path("/m/r.gguf"), 0) == 1
 
 
 def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
     # Chat is no longer a fixed 4: a giant on a ~24GB Metal budget steps down.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 24 * 10**9)
-    assert planning_mod._slots_for(WorkerRole.CHAT, 17 * 10**9, _CHAT_META, 65536) == 1
-
-
-_VISION_META = {"block_count": "24", "embedding_length": "2048"}
-# A GQA giant: 17 GB weights, 8x fewer KV heads than query heads (Qwen3-Coder-30B).
-_CHAT_META = {
-    "block_count": "48",
-    "embedding_length": "2048",
-    "head_count": "32",
-    "head_count_kv": "4",
-}
+    # budget = 24e9 * _CHAT_VRAM_FRACTION(0.8) = 19.2e9; 17e9 + 2e9/slot never fits >1.
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=2 * 10**9),
+    )
+    assert planning_mod._slots_for(WorkerRole.CHAT, Path("/m/c.gguf"), 65536) == 1
 
 
 def test_resolve_chat_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
-    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 4
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=10**9),
+    )
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536) == 4
 
 
 def test_resolve_chat_slots_drops_to_one_on_constrained_gpu(monkeypatch) -> None:
-    # 17 GB weights + per-slot KV at 4 slots overruns a ~24GB Metal budget -> 1.
+    # 17 GB base footprint at >1 slots overruns a ~24GB Metal budget (19.2e9) -> 1.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 24 * 10**9)
-    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 1
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=2 * 10**9),
+    )
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536) == 1
 
 
 def test_resolve_chat_slots_steps_down_to_fit_unified_budget(monkeypatch) -> None:
     # Ample VRAM keeps 4 slots, but a tight free-RAM budget forces the count down
     # so the model loads at fewer slots instead of being refused at placement.
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 64 * 10**9)
-    assert planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536) == 4
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=17 * 10**9, per_slot=10**9),
+    )
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536) == 4
     assert (
-        planning_mod._resolve_chat_slots(17 * 10**9, _CHAT_META, 65536, unified_budget=13 * 10**9)
-        == 1
+        planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, unified_budget=13 * 10**9) == 1
+    )
+
+
+def test_resolve_chat_slots_reservation_shrinks_budget(monkeypatch) -> None:
+    # The search reservation is subtracted from the chat budget, so a chat that
+    # fits 4 slots with no reservation steps down once embed/rerank are held back.
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 50 * 10**9)
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=30 * 10**9, per_slot=2 * 10**9),
+    )
+    # Budget = 50e9 * 0.8 = 40e9. No reservation: 4 slots (38e9) fits.
+    assert planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536) == 4
+    # Reserve 9e9 for search -> budget 31e9; even 2 slots (34e9) overruns -> 1.
+    assert (
+        planning_mod._resolve_chat_slots(Path("/m/c.gguf"), 65536, chat_reservation=9 * 10**9) == 1
     )
 
 
@@ -187,22 +241,32 @@ def test_resolve_vision_slots_uses_ceiling_when_vram_is_ample(monkeypatch) -> No
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
-    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 4
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=2 * 10**9, per_slot=10**9),
+    )
+    assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384) == 4
 
 
 def test_resolve_vision_slots_drops_to_one_on_small_gpu(monkeypatch) -> None:
-    # A tiny VRAM budget can't fit multiple slots of vision KV -> falls back to 1.
+    # A tiny VRAM budget can't fit multiple slots of vision footprint -> falls back to 1.
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.9)
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 3 * 10**9)
-    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 1
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=2 * 10**9, per_slot=10**9),
+    )
+    assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384) == 1
 
 
 def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
     # Even with huge VRAM, a ceiling of 1 means strictly sequential OCR.
     monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
-    assert planning_mod._resolve_vision_slots(2 * 10**9, _VISION_META, 16384) == 1
+    assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384) == 1
 
 
 def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
@@ -226,8 +290,49 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
     monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
     # Only EMBED requested -> chat is filtered out even though it is configured.
-    _inputs, refs = planning_mod._server_model_inputs((WorkerRole.EMBED,))
+    _inputs, refs, _res = planning_mod._server_model_inputs((WorkerRole.EMBED,))
     assert set(refs) == {WorkerRole.EMBED}
+
+
+def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypatch) -> None:
+    # The blocker fix: on a shared-memory host, chat is sized against the budget
+    # minus the embed+rerank footprint so a large chat can never starve search.
+    monkeypatch.setattr(cfg, "chat_model", "org/chat.gguf")
+    monkeypatch.setattr(cfg, "embedding_model", "org/embed.gguf")
+    monkeypatch.setattr(cfg, "reranker_model", "org/rerank.gguf")
+    monkeypatch.setattr(cfg, "vision_model", "")
+    seen: dict[str, int] = {}
+    sizes = {WorkerRole.EMBED: 2 * _GB, WorkerRole.RERANK: 3 * _GB}
+
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+        if role is WorkerRole.CHAT:
+            seen["chat_reservation"] = chat_reservation
+        return ModelPlacementInput(role, sizes.get(role, 10 * _GB))
+
+    monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
+    _inputs, _refs, reservation = planning_mod._server_model_inputs(unified_budget=20 * _GB)
+    assert reservation == 5 * _GB  # embed (2) + rerank (3)
+    assert seen["chat_reservation"] == 5 * _GB
+
+
+def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None:
+    # Discrete GPUs pin each role to its own VRAM and pack independently, so chat
+    # is sized with no search reservation (the FFD bin-pack handles co-location).
+    monkeypatch.setattr(cfg, "chat_model", "org/chat.gguf")
+    monkeypatch.setattr(cfg, "embedding_model", "org/embed.gguf")
+    monkeypatch.setattr(cfg, "reranker_model", "")
+    monkeypatch.setattr(cfg, "vision_model", "")
+    seen: dict[str, int] = {}
+
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+        if role is WorkerRole.CHAT:
+            seen["chat_reservation"] = chat_reservation
+        return ModelPlacementInput(role, 2 * _GB)
+
+    monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
+    _inputs, _refs, reservation = planning_mod._server_model_inputs(unified_budget=None)
+    assert reservation == 0
+    assert seen["chat_reservation"] == 0
 
 
 class TestBuildFleetWiring:
@@ -239,7 +344,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(cfg, "reranker_model", "")  # unconfigured -> skipped
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs = planning_mod._server_model_inputs()
+        inputs, refs, _res = planning_mod._server_model_inputs()
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
@@ -259,7 +364,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs = planning_mod._server_model_inputs()
+        inputs, refs, _res = planning_mod._server_model_inputs()
         assert WorkerRole.CHAT not in refs
         assert {i.role for i in inputs} == {WorkerRole.EMBED}
 
@@ -269,7 +374,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(cfg, "reranker_model", "some/reranker.gguf")
         monkeypatch.setattr(cfg, "vision_model", "")
-        _inputs, refs = planning_mod._server_model_inputs()
+        _inputs, refs, _res = planning_mod._server_model_inputs()
         assert WorkerRole.RERANK in refs
 
     def test_server_model_inputs_includes_vision_only_with_mmproj(self, monkeypatch) -> None:
@@ -285,7 +390,8 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         assert WorkerRole.VISION in planning_mod._server_model_inputs()[1]
 
-    def test_estimate_role_vision_adds_mmproj_size(self, tmp_path, monkeypatch) -> None:
+    def test_estimate_role_vision_forwards_mmproj(self, tmp_path, monkeypatch) -> None:
+        # gguf-parser counts the projector, so the estimator must receive its path.
         model = tmp_path / "v.gguf"
         model.write_bytes(b"x" * 1000)
         mmproj = tmp_path / "mmproj.gguf"
@@ -294,40 +400,70 @@ class TestBuildFleetWiring:
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        seen: dict[str, object] = {}
+
+        def _est(model_path, *, mmproj_path=None, **_k):
+            seen["mmproj"] = mmproj_path
+            return GgufVramEstimate(vram_bytes=1500, ram_bytes=0, unified_bytes=1500)
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref", slots=1)
-        assert inp.est_vram_bytes >= 1500  # weights + mmproj counted
+        assert seen["mmproj"] == mmproj
+        assert inp.est_vram_bytes == 1500
 
     def test_estimate_role_resolves_slots_when_unspecified(self, tmp_path, monkeypatch) -> None:
         # With no explicit slots, the estimate sizes them via _slots_for (vision
-        # is VRAM-aware), so placement and the launched --parallel stay consistent.
+        # is memory-aware), so placement and the launched --parallel stay consistent.
         model = tmp_path / "v.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: None)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        monkeypatch.setattr(
+            planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=4242)
+        )
         inp = planning_mod._estimate_role(WorkerRole.VISION, "ref")  # slots resolved internally
         assert inp.role is WorkerRole.VISION
-        assert inp.est_vram_bytes >= 1000
+        assert inp.est_vram_bytes == 4242
 
-    def test_estimate_role_aux_kv_uses_f16_not_configured_type(self, tmp_path, monkeypatch) -> None:
-        # Aux roles run f16 KV regardless of cfg.kv_cache_type, so the estimate
-        # must use f16 to match runtime (only chat passes --cache-type).
-        from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
-
+    def test_estimate_role_aux_uses_f16_kv_and_no_flash(self, tmp_path, monkeypatch) -> None:
+        # Aux roles run f16 KV regardless of cfg.kv_cache_type and apply no flash
+        # attention, so the estimator must be told so (only chat passes --cache-type).
         model = tmp_path / "e.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata",
-            lambda _p: {"block_count": "8", "embedding_length": "16"},
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 512)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)  # would be wrong for embed
-        inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
-        f16 = KV_CACHE_TYPE_BYTES[KvCacheType.F16]
-        expected_kv = 2 * 8 * 16 * 512 * 1 * f16
-        assert inp.est_vram_bytes == 1000 + expected_kv + 1024**3  # weights + f16 KV + overhead
+        seen: dict[str, object] = {}
+
+        def _est(model_path, *, kv_cache_type, flash_attn, **_k):
+            seen["kv"] = kv_cache_type
+            seen["flash"] = flash_attn
+            return GgufVramEstimate(vram_bytes=10, ram_bytes=0, unified_bytes=10)
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+        planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
+        assert seen["kv"] is KvCacheType.F16
+        assert seen["flash"] is False
+
+    def test_estimate_role_charges_unified_footprint_on_shared_host(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A shared-memory host charges the unified footprint; a discrete GPU the VRAM one.
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        monkeypatch.setattr(
+            planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=9000, unified=900)
+        )
+        shared = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, unified_budget=10**9)
+        discrete = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)
+        assert shared.est_vram_bytes == 900
+        assert discrete.est_vram_bytes == 9000
 
     def test_launch_for_vision_passes_mmproj(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "v.gguf"
@@ -347,18 +483,18 @@ class TestBuildFleetWiring:
         assert "--mmproj" in launch.argv
         assert str(Path("/m/mmproj.gguf")) in launch.argv
 
-    def test_estimate_role_reads_weights_and_meta(self, tmp_path, monkeypatch) -> None:
+    def test_estimate_role_uses_gguf_parser_footprint(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: model)
-        monkeypatch.setattr(
-            "lilbee.providers.gguf_meta.read_gguf_metadata",
-            lambda _p: {"block_count": "4", "embedding_length": "8"},
-        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        monkeypatch.setattr(
+            planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777)
+        )
         inp = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=2)
         assert inp.role == WorkerRole.CHAT
-        assert inp.est_vram_bytes > 1000  # weights + kv + overhead
+        assert inp.est_vram_bytes == 7777
 
     def test_launch_for_builds_instance_with_pinning(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "chat.gguf"
@@ -470,9 +606,7 @@ class TestBuildFleetWiring:
 
     def test_build_fleet_resolves_devices_plans_and_starts(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(
-            planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
-        )
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
         monkeypatch.setattr(
             planning_mod,
@@ -480,6 +614,7 @@ class TestBuildFleetWiring:
             lambda *_roles, **_kw: (
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
+                0,
             ),
         )
         monkeypatch.setattr(
@@ -502,9 +637,7 @@ class TestBuildFleetWiring:
         assert started["eager"] == frozenset()
 
     def test_build_fleet_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
-        )
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select.enumerate_gpu_vram",
@@ -517,6 +650,7 @@ class TestBuildFleetWiring:
             lambda *_roles, **_kw: (
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
+                0,
             ),
         )
 

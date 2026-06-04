@@ -15,8 +15,12 @@ from lilbee.providers.roles import WorkerRole
 
 # Mirrors vLLM's gpu_memory_utilization default: never pack a GPU past 90%.
 _VRAM_USABLE_FRACTION = 0.9
-# Flat per-instance overhead (CUDA context, compute buffers) beyond weights + KV.
+# Flat per-instance overhead (CUDA context, compute buffers) reserved on top of
+# weights when sizing a tensor-split chat's per-slot context (see split_chat_ctx).
 _MODEL_OVERHEAD_BYTES = 1024**3
+# Search-critical roles reserved ahead of the elastic chat model in a shared pool,
+# so a large chat can never crowd embed/rerank out (which would 503 every search).
+_SEARCH_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 
 
 @dataclass(frozen=True)
@@ -51,67 +55,6 @@ class Placement:
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
-
-
-def estimate_model_vram(
-    weights_bytes: int,
-    meta: dict[str, str] | None,
-    *,
-    ctx: int,
-    slots: int,
-    kv_elem_bytes: int,
-) -> int:
-    """Estimate an instance's VRAM: weights + KV cache + flat overhead.
-
-    Weights use the GGUF file size (the quantized weights map ~1:1 into VRAM). The
-    KV cache scales with ``ctx x slots``; missing metadata yields a 0 KV term
-    (weights + overhead still counted), which only under-estimates the aux roles
-    that barely use KV.
-    """
-    kv = _estimate_kv_cache_bytes(meta, ctx=ctx, slots=slots, kv_elem_bytes=kv_elem_bytes)
-    return weights_bytes + kv + _MODEL_OVERHEAD_BYTES
-
-
-def _estimate_kv_cache_bytes(
-    meta: dict[str, str] | None, *, ctx: int, slots: int, kv_elem_bytes: int
-) -> int:
-    """KV-cache size for *ctx* x *slots*: ``layers x kv_width x ctx x slots x elem``."""
-    if meta is None:
-        return 0
-    layers = _int_field(meta, "block_count")
-    kv_width = _kv_cache_width(meta)
-    if layers == 0 or kv_width == 0:
-        return 0
-    return layers * kv_width * kv_elem_bytes * ctx * slots
-
-
-def _kv_cache_width(meta: dict[str, str]) -> int:
-    """Per-layer per-token KV width (K + V), grouped-query aware.
-
-    A grouped-query model stores ``n_kv_heads x head_dim`` for each of K and V,
-    which is smaller than ``embedding_length`` when ``head_count_kv < head_count``.
-    Using ``embedding_length`` (the multi-head assumption) overestimates a GQA
-    giant's KV several-fold and can mark a usable context unplaceable. Falls back
-    to the multi-head width (``2 x embedding_length``) when head metadata is
-    absent, matching the prior estimate for those models; ``0`` when no shape is
-    derivable.
-    """
-    embed = _int_field(meta, "embedding_length")
-    n_heads = _int_field(meta, "head_count")
-    n_kv = _int_field(meta, "head_count_kv") or n_heads
-    if n_kv and n_heads:
-        head_dim = _int_field(meta, "key_length") or (embed // n_heads if n_heads else 0)
-        if head_dim:
-            return 2 * n_kv * head_dim
-    return 2 * embed
-
-
-def _int_field(meta: dict[str, str], key: str) -> int:
-    """Parse an int GGUF metadata field, ``0`` when absent or unparseable."""
-    try:
-        return int(meta.get(key, "0") or "0")
-    except ValueError:
-        return 0
 
 
 def plan_placement(
@@ -164,18 +107,28 @@ def plan_placement(
 
 
 def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Placement:
-    """Fit un-pinned roles into one shared RAM *budget*, largest first; a role that
-    no longer fits is unplaceable (gets no server, its calls error)."""
+    """Fit un-pinned roles into one shared RAM *budget*.
+
+    Search-critical roles (embed/rerank) are reserved first so the elastic chat
+    model can never crowd them out; the rest pack largest-first. A role that no
+    longer fits is unplaceable (gets no server, its calls error).
+    """
     remaining = budget
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
-    for model in sorted(models, key=lambda m: m.est_vram_bytes, reverse=True):
+    for model in sorted(models, key=_shared_pool_order):
         if model.est_vram_bytes <= remaining:
             remaining -= model.est_vram_bytes
             instances.append(InstancePlan(role=model.role, devices=()))
         else:
             unplaceable.append(model.role)
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+
+def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int]:
+    """Sort key: search roles first, then everything else largest-first."""
+    is_search = 0 if model.role in _SEARCH_ROLES else 1
+    return (is_search, -model.est_vram_bytes)
 
 
 def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:
