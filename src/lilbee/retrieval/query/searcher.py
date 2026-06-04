@@ -13,7 +13,10 @@ from typing_extensions import TypedDict
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.store import (
+    LOCAL_OWNER,
     ChunkType,
+    MemoryKind,
+    MemoryRow,
     SearchChunk,
     Store,
     cosine_sim,
@@ -34,6 +37,7 @@ from lilbee.retrieval.query.formatting import (
     build_context,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     StreamToken,
@@ -410,19 +414,56 @@ class Searcher:
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [
-            {"role": "system", "content": self._config.rag_system_prompt}
+            {
+                "role": "system",
+                "content": self._system_with_memory(self._config.rag_system_prompt, question),
+            }
         ]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         return results, messages
 
+    def _system_with_memory(self, base_prompt: str, question: str) -> str:
+        """Append the local-owner memory block to *base_prompt* when memory is enabled."""
+        block = self._memory_block(question)
+        return f"{base_prompt}\n\n{block}" if block else base_prompt
+
+    def _memory_block(self, question: str) -> str:
+        """Recall the local human's preferences and relevant facts as a system block.
+
+        Preferences are always included; facts are recalled by similarity. Empty
+        when memory is disabled or nothing matches. MCP agents never reach this path
+        (their tools recall explicitly under their own owner).
+        """
+        if not self._config.memory_enabled:
+            return ""
+        owner_predicate = f"owner = '{LOCAL_OWNER}'"
+        preferences = self._store.get_memories(
+            owner_predicate=owner_predicate,
+            kind=MemoryKind.PREFERENCE,
+            confirmed_only=True,
+        )
+        facts: list[MemoryRow] = []
+        if self._config.memory_top_k > 0 and self._embedder.embedding_available():
+            vector = self._embedder.embed(question)
+            facts = self._store.search_memories(
+                vector,
+                owner_predicate=owner_predicate,
+                top_k=self._config.memory_top_k,
+                max_distance=self._config.memory_max_distance,
+            )
+        return format_memory_block(preferences, facts, self._config.memory_token_budget)
+
     def _direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
     ) -> list[ChatMessage]:
         """Build messages for direct LLM chat (no RAG context)."""
         messages: list[ChatMessage] = [
-            {"role": "system", "content": self._config.general_system_prompt}
+            {
+                "role": "system",
+                "content": self._system_with_memory(self._config.general_system_prompt, question),
+            }
         ]
         if history:
             messages.extend(history)
