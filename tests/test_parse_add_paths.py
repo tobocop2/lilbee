@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import lilbee.cli.tui.screens.chat as chat_mod
 from lilbee.cli.tui.screens.chat import _parse_add_paths
+
+
+class _WindowsOS:
+    """Stand-in for ``os`` that reports ``name == "nt"`` and proxies the rest.
+
+    The parser must take its Windows branch without mutating the real
+    ``os.name`` process-wide: pathlib reads ``os.name`` to choose its concrete
+    path flavour, and instantiating a ``WindowsPath`` on POSIX raises
+    ``NotImplementedError`` under Python 3.11. Replacing only the ``os``
+    reference the parser sees keeps pathlib on its real flavour.
+    """
+
+    name = "nt"
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(os, attr)
 
 
 def test_single_path_with_spaces_and_apostrophe(tmp_path: Path) -> None:
@@ -45,7 +62,8 @@ def test_shlex_failure_falls_back_to_single_literal_path() -> None:
 
 def test_windows_strips_quotes_from_split_tokens(monkeypatch) -> None:
     # On Windows shlex runs with posix=False, which keeps quotes on tokens; the
-    # parser strips them so each token is a clean path. Force the nt branch.
-    monkeypatch.setattr(chat_mod.os, "name", "nt")
+    # parser strips them so each token is a clean path. Force the nt branch
+    # without mutating the real os.name (see _WindowsOS).
+    monkeypatch.setattr(chat_mod, "os", _WindowsOS())
     result = _parse_add_paths('"C:/a.txt" "C:/b.txt"')
     assert result == [Path("C:/a.txt").expanduser(), Path("C:/b.txt").expanduser()]
