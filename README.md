@@ -337,9 +337,9 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 lilbee stands on a stack of established open-source projects, all bundled into one install:
 
-- [llama.cpp] is the local model runtime. lilbee bundles its `llama-server` and starts it for you; every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
-- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [llama.cpp] is the local model runtime: lilbee bundles its `llama-server` and starts it for you, so every chat, embedding, vision, and reranker call goes through it. [llama-swap] keeps a server per role resident together behind one endpoint, and [gguf-parser] estimates each model's memory footprint so lilbee loads what fits. Without llama.cpp there is no lilbee.
+- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
@@ -354,6 +354,8 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
 [llama.cpp]: https://github.com/ggml-org/llama.cpp
+[llama-swap]: https://github.com/mostlygeek/llama-swap
+[gguf-parser]: https://github.com/gpustack/gguf-parser-go
 [Hugging Face Hub]: https://huggingface.co
 [huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawl4ai]: https://github.com/unclecode/crawl4ai
