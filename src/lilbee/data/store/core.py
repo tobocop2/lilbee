@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ import pyarrow.compute as pc
 from lilbee.core.config import (
     CHUNKS_TABLE,
     CITATIONS_TABLE,
+    MEMORIES_TABLE,
     META_TABLE,
     SOURCES_TABLE,
     Config,
@@ -40,6 +42,8 @@ from .types import (
     ChunkType,
     CitationRecord,
     EmbeddingModelMismatchError,
+    MemoryKind,
+    MemoryRow,
     RemoveResult,
     SearchChunk,
     SourceRecord,
@@ -682,16 +686,187 @@ class Store:
             f"wiki_source = '{escape_sql_string(wiki_source)}'",
         )
 
+    def _memories_schema(self) -> pa.Schema:
+        return pa.schema(
+            [
+                pa.field("id", pa.utf8()),
+                pa.field("owner", pa.utf8()),
+                pa.field("shared", pa.bool_()),
+                pa.field("kind", pa.utf8()),
+                pa.field("source", pa.utf8()),
+                pa.field("confirmed", pa.bool_()),
+                pa.field("text", pa.utf8()),
+                pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
+                pa.field("created_at", pa.utf8()),
+                pa.field("updated_at", pa.utf8()),
+            ]
+        )
+
+    def _duplicate_memory_id_unlocked(
+        self, table: lancedb.table.Table, record: MemoryRow
+    ) -> str | None:
+        """Return the id of a near-duplicate same-owner, same-kind memory, if any."""
+        if table.count_rows() == 0:
+            return None
+        predicate = (
+            f"owner = '{escape_sql_string(record.owner)}' "
+            f"AND kind = '{escape_sql_string(record.kind)}'"
+        )
+        rows = table.search(record.vector).metric("cosine").where(predicate).limit(1).to_list()
+        if rows and rows[0].get("_distance", 1.0) <= self._config.memory_dedup_distance:
+            return str(rows[0]["id"])
+        return None
+
+    def _evict_overflow_unlocked(self, table: lancedb.table.Table, owner: str) -> None:
+        """Delete oldest memories for *owner* so an incoming insert stays within the cap."""
+        cap = self._config.memory_max_per_owner
+        predicate = f"owner = '{escape_sql_string(owner)}'"
+        rows = table.search().where(predicate).limit(None).to_list()
+        if len(rows) < cap:
+            return
+        rows.sort(key=lambda r: r.get("created_at", ""))
+        for row in rows[: len(rows) - (cap - 1)]:
+            _safe_delete_unlocked(table, f"id = '{escape_sql_string(str(row['id']))}'")
+
+    def add_memory(self, record: MemoryRow) -> str:
+        """Insert *record*, or update the nearest same-owner duplicate in place.
+
+        Returns the stored id. Raises ``EmbeddingModelMismatchError`` when the store
+        was built under a different embedding model, and ``ValueError`` on a vector
+        dimension mismatch.
+        """
+        if len(record.vector) != self._config.embedding_dim:
+            raise ValueError(
+                f"Memory vector dimension mismatch: expected "
+                f"{self._config.embedding_dim}, got {len(record.vector)}"
+            )
+        with write_lock():
+            embedding_model = self._config.embedding_model
+            embedding_dim = self._config.embedding_dim
+            self._ensure_embedding_compat()
+            db = self.get_db()
+            table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
+            duplicate_id = self._duplicate_memory_id_unlocked(table, record)
+            if duplicate_id is not None:
+                _safe_delete_unlocked(table, f"id = '{escape_sql_string(duplicate_id)}'")
+                record.id = duplicate_id
+            self._evict_overflow_unlocked(table, record.owner)
+            table.add([record.model_dump(mode="json")])
+            if self.get_meta() is None:
+                self._write_meta_unlocked(
+                    embedding_model=embedding_model, embedding_dim=embedding_dim
+                )
+            return record.id
+
+    def get_memories(
+        self,
+        *,
+        owner_predicate: str,
+        kind: MemoryKind | None = None,
+        confirmed_only: bool = False,
+    ) -> list[MemoryRow]:
+        """Return memories matching *owner_predicate* and optional *kind*, newest first."""
+        table = self.open_table(MEMORIES_TABLE)
+        if table is None:
+            return []
+        clauses = [f"({owner_predicate})"]
+        if kind is not None:
+            clauses.append(f"kind = '{escape_sql_string(kind)}'")
+        if confirmed_only:
+            clauses.append("confirmed = true")
+        rows = table.search().where(" AND ".join(clauses)).limit(None).to_list()
+        memories = [MemoryRow(**r) for r in rows]
+        memories.sort(key=lambda m: m.created_at, reverse=True)
+        return memories
+
+    def search_memories(
+        self,
+        query_vector: list[float],
+        *,
+        owner_predicate: str,
+        top_k: int,
+        max_distance: float,
+    ) -> list[MemoryRow]:
+        """Vector-recall confirmed FACT memories within *max_distance*, best first."""
+        table = self.open_table(MEMORIES_TABLE)
+        if table is None or top_k <= 0:
+            return []
+        self._ensure_embedding_compat()
+        predicate = f"({owner_predicate}) AND kind = '{MemoryKind.FACT}' AND confirmed = true"
+        rows = table.search(query_vector).metric("cosine").where(predicate).limit(top_k).to_list()
+        return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        shared: bool | None = None,
+        confirmed: bool | None = None,
+    ) -> bool:
+        """Toggle *shared* and/or *confirmed* on a memory by id. Returns True when found."""
+        with write_lock():
+            table = self.open_table(MEMORIES_TABLE)
+            if table is None:
+                return False
+            escaped = escape_sql_string(memory_id)
+            rows = table.search().where(f"id = '{escaped}'").limit(1).to_list()
+            if not rows:
+                return False
+            record = MemoryRow(**rows[0])
+            if shared is not None:
+                record.shared = shared
+            if confirmed is not None:
+                record.confirmed = confirmed
+            record.updated_at = datetime.now(UTC).isoformat()
+            _safe_delete_unlocked(table, f"id = '{escaped}'")
+            table.add([record.model_dump(mode="json")])
+            return True
+
+    def delete_memory(self, memory_id: str) -> None:
+        """Delete a memory by id."""
+        self.clear_table(MEMORIES_TABLE, f"id = '{escape_sql_string(memory_id)}'")
+
+    def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[list[float]]]) -> int:
+        """Re-embed every memory under the current model, recreating the table.
+
+        The vector column dimension is immutable, so a different-dim model needs a
+        fresh table; recreating unconditionally also covers the same-dim case. Memory
+        text is human-authored and re-embeddable, so no data is lost. Returns the count.
+        """
+        table = self.open_table(MEMORIES_TABLE)
+        if table is None:
+            return 0
+        rows = table.search().limit(None).to_list()
+        if not rows:
+            return 0
+        memories = [MemoryRow(**r) for r in rows]
+        vectors = embed([m.text for m in memories])
+        for memory, vector in zip(memories, vectors, strict=True):
+            memory.vector = vector
+        with write_lock():
+            db = self.get_db()
+            db.drop_table(MEMORIES_TABLE)
+            new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
+            new_table.add([m.model_dump(mode="json") for m in memories])
+        return len(memories)
+
     def close(self) -> None:
         """Release the database connection and reset state."""
         self._db = None
         self._fts_ready = False
 
     def drop_all(self) -> None:
-        """Drop all tables -- used by rebuild."""
+        """Drop every table except ``_memories`` -- used by rebuild.
+
+        Memory is user-authored data with no on-disk source, not derived from
+        documents, so a rebuild preserves it. Only a factory reset (which deletes
+        the data directory) clears it.
+        """
         with write_lock():
             self._fts_ready = False
             db = self.get_db()
             for name in _table_names(db):
+                if name == MEMORIES_TABLE:
+                    continue
                 db.drop_table(name)
         self._invalidate_source_cache()

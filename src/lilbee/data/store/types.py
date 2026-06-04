@@ -119,6 +119,59 @@ class CitationRecord(TypedDict):
     created_at: str
 
 
+class MemoryKind(StrEnum):
+    """Whether a memory is an always-injected preference or a similarity-recalled fact."""
+
+    PREFERENCE = "preference"
+    FACT = "fact"
+
+
+class MemorySource(StrEnum):
+    """Provenance of a memory: user-typed, LLM-extracted, or agent-written."""
+
+    MANUAL = "manual"
+    EXTRACTED = "extracted"
+    AGENT = "agent"
+
+
+# Memory owner namespaces. ``"local"`` is the single human (TUI/CLI/REST); agents own
+# ``"agent:<id>"`` namespaces. The prefix lives only here so it is never hand-spliced.
+LOCAL_OWNER = "local"
+AGENT_OWNER_PREFIX = "agent:"
+
+
+def agent_owner(agent_id: str) -> str:
+    """Owner string for an agent identity (``"opencode"`` -> ``"agent:opencode"``)."""
+    return f"{AGENT_OWNER_PREFIX}{agent_id}"
+
+
+def is_agent_owner(owner: str) -> bool:
+    """True when *owner* is an agent namespace rather than the local human."""
+    return owner.startswith(AGENT_OWNER_PREFIX)
+
+
+class MemoryRow(BaseModel):
+    """A long-term memory entry in the per-library ``_memories`` table.
+
+    Built from a LanceDB row via ``MemoryRow(**row)`` (which coerces the ``kind``
+    and ``source`` strings to enums) and written back via ``model_dump(mode="json")``.
+    Extra keys like a search ``_distance`` are ignored on construction.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    owner: str
+    shared: bool
+    kind: MemoryKind
+    source: MemorySource
+    confirmed: bool
+    text: str
+    vector: list[float] = Field(repr=False)
+    created_at: str
+    updated_at: str
+
+
 class StoreMeta(TypedDict):
     """Single-row store metadata recording the embedding model used to build the store.
 

@@ -202,6 +202,31 @@ class Config(BaseSettings):
     # need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
 
+    # Long-term chat memory. Off by default (opt-in): when disabled the whole
+    # subsystem is dormant and the write surfaces respond with an enable hint.
+    memory_enabled: bool = ConfigField(default=False, writable=True)
+
+    # Facts recalled by similarity per turn (preferences are always injected).
+    memory_top_k: int = ConfigField(default=5, ge=0, writable=True)
+
+    # Cosine-distance ceiling for fact recall; stricter than the document default
+    # because a tiny memory corpus floods at the wider document threshold.
+    memory_max_distance: float = ConfigField(default=0.6, ge=0.0, le=1.0, writable=True)
+
+    # Char/4 token budget for the injected memory block.
+    memory_token_budget: int = ConfigField(default=512, ge=0, writable=True)
+
+    # Per-owner soft cap; oldest memories evicted past it (runaway-write guard).
+    memory_max_per_owner: int = ConfigField(default=200, ge=1, writable=True)
+
+    # Cosine distance below which a new memory is treated as a duplicate of an
+    # existing same-owner memory and updates it in place instead of inserting.
+    memory_dedup_distance: float = ConfigField(default=0.05, ge=0.0, le=1.0, writable=True)
+
+    # LLM pass that proposes memories from the chat loop. Off by default; extracted
+    # memories are unconfirmed and never injected until the user confirms them.
+    memory_auto_extract: bool = ConfigField(default=False, writable=True)
+
     # Candidate count sent to the reranker.
     rerank_candidates: int = ConfigField(default=60, ge=1, writable=True, public=True)
 
