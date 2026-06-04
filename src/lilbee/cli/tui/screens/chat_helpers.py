@@ -7,6 +7,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from lilbee.cli.tui import messages as msg
@@ -60,6 +61,47 @@ def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) ->
     if in_flight:
         return msg.ADD_SYNCING_FILE.format(file=in_flight[0])
     return msg.ADD_FILE_DONE.format(file=data.file)
+
+
+_PREFERENCE_PREFIX = "pref:"
+
+
+@dataclass(frozen=True)
+class RememberOutcome:
+    """A /remember result: the toast message plus the notify severity to use."""
+
+    message: str
+    severity: str = "information"
+
+
+def remember_from_input(raw: str) -> RememberOutcome:
+    """Parse, gate, and store a ``/remember`` command; return the toast outcome.
+
+    Pure orchestration so the ``@work`` worker body stays a single call and the
+    parse/gate/store path is testable without a running TUI. A leading
+    ``pref:`` marks the text as an always-recalled preference; anything else is
+    stored as a fact.
+    """
+    from lilbee.app.memory import MEMORY_DISABLED_HINT, memory_enabled, remember
+    from lilbee.app.services import get_services
+    from lilbee.data.store import MemoryKind
+
+    if not memory_enabled():
+        return RememberOutcome(MEMORY_DISABLED_HINT, "warning")
+
+    text = raw.strip()
+    kind = MemoryKind.FACT
+    if text[: len(_PREFERENCE_PREFIX)].lower() == _PREFERENCE_PREFIX:
+        kind = MemoryKind.PREFERENCE
+        text = text[len(_PREFERENCE_PREFIX) :].strip()
+    if not text:
+        return RememberOutcome(msg.CMD_REMEMBER_USAGE, "warning")
+
+    if not get_services().embedder.embedding_available():
+        return RememberOutcome(msg.CMD_REMEMBER_NO_EMBED, "warning")
+
+    remember(text, kind=kind)
+    return RememberOutcome(msg.CMD_REMEMBER_SUCCESS.format(kind=kind.value))
 
 
 def remove_copied_files(names: list[str]) -> None:

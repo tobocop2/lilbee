@@ -1,0 +1,11 @@
+#memories-layout {
+    height: 1fr;
+}
+
+#memories-search {
+    margin: 0 1;
+}
+
+#memories-table {
+    height: 1fr;
+}

@@ -39,6 +39,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
     build_sync_progress_callback,
     close_stream,
+    remember_from_input,
     remove_copied_files,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -1030,6 +1031,21 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
+
+    def _cmd_remember(self, args: str) -> None:
+        """Run /remember in a worker so embedding the text never blocks the UI."""
+        self._cmd_remember_worker(args)
+
+    @work(thread=True, name="chat_cmd_remember", exit_on_error=False)
+    def _cmd_remember_worker(self, raw: str) -> None:
+        """Store the memory off the UI thread; notify the outcome back on it."""
+        outcome = remember_from_input(raw)
+        call_from_thread(self, self.notify, outcome.message, severity=outcome.severity)
+
+    def _cmd_memories(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.memories import MemoriesScreen
+
+        self.app.push_screen(MemoriesScreen())
 
     def _cmd_status(self, _args: str) -> None:
         self.app.switch_view("Status")
