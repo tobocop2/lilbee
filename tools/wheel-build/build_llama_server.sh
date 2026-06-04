@@ -20,11 +20,17 @@ set -euxo pipefail
 # is only a BUILD-TIME source here -- lilbee no longer depends on it at runtime.
 _DEFAULT_LLAMA_CPP_VERSION="0.3.23"
 
+# Pinned source tags for the two Go engine helpers bundled alongside llama-server.
+# Built from source (deterministic, no release-asset-name guessing); the wheel-build
+# job provides the Go toolchain. Bump deliberately.
+_LLAMA_SWAP_VERSION="v223"
+_GGUF_PARSER_REF="main"
+
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target_arch="${TARGET_ARCH:-}"
-pkg_bin_dir="${script_dir}/../../packaging/llama-server-wheel/lilbee_llama_server/bin"
+pkg_bin_dir="${script_dir}/../../packaging/engine-wheel/lilbee_engine/bin"
 version="${LLAMA_CPP_VERSION:-${_DEFAULT_LLAMA_CPP_VERSION}}"
 
 # rpath so the binary and libs find each other from the same dir at runtime.
@@ -90,5 +96,22 @@ for lib in "${bindir}"/*.so "${bindir}"/*.so.* "${bindir}"/*.dylib "${bindir}"/*
 done
 shopt -u nullglob
 
-echo "Built self-contained llama-server (${backend}) -> ${pkg_bin_dir}/"
+# Build the two Go engine helpers into the same wheel bin/. llama-swap is the
+# process supervisor + OpenAI proxy; gguf-parser is the UMA-aware VRAM estimator.
+# Both are single static binaries with no shared libs (unlike llama-server).
+command -v go >/dev/null || { echo "go toolchain required to build llama-swap/gguf-parser" >&2; exit 1; }
+go_build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}/go-engine"
+exe_suffix=""
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe_suffix=".exe" ;; esac
+
+rm -rf "${go_build_dir}"
+mkdir -p "${go_build_dir}"
+git clone -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
+( cd "${go_build_dir}/llama-swap" && go build -trimpath -o "${pkg_bin_dir}/llama-swap${exe_suffix}" . )
+
+# gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
+git clone -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
+( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
+
+echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"
 ls -lh "${pkg_bin_dir}/"

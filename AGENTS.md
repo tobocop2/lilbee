@@ -189,7 +189,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 | `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[remote]` | SDK provider, settings TUI |
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
-| `lilbee_llama_server` | resolved in `lilbee.providers.fleet.binary.resolve_llama_server_binary()` | bundled wheel | The local inference engine (managed `llama-server` fleet, all roles) |
+| `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |
 
 Any other `try: import X` should be either added to this table or refactored. CLI command bodies that branch on extras dispatch through these `*_available()` helpers, not via `importlib.import_module(name)`.
 

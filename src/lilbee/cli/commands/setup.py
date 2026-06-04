@@ -121,7 +121,7 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
     from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
     from lilbee.providers.fleet.binary import (
         llama_server_runtime_env,
-        resolve_llama_server_binary,
+        resolve_llama_server,
     )
     from lilbee.providers.fleet.fleet import FleetServer, InstanceLaunch
     from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
@@ -133,7 +133,7 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
     else:
         ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
     argv = build_server_argv(
-        binary=resolve_llama_server_binary(),
+        binary=resolve_llama_server(),
         spec=ROLE_SPECS[role],
         model_path=model_path,
         devices=(),

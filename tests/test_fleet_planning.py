@@ -471,7 +471,7 @@ class TestBuildFleetWiring:
     def test_build_fleet_resolves_devices_plans_and_starts(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(
-            planning_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+            planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
         )
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
         monkeypatch.setattr(
@@ -503,7 +503,7 @@ class TestBuildFleetWiring:
 
     def test_build_fleet_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            planning_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+            planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
         )
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate
         monkeypatch.setattr(

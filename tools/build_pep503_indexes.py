@@ -40,13 +40,13 @@ import re
 import sys
 from pathlib import Path
 
-# The per-backend index serves the engine wheel, lilbee-llama-server. Its
-# artifacts are wheel-multigpu-<os>-<backend> (no per-CPython axis: the binary
-# is Python-version-independent). The pure lilbee wheel is backend-agnostic and
+# The per-backend index serves the engine wheel, lilbee-engine. Its
+# artifacts are wheel-multigpu-<os>-<backend> (no per-CPython axis: the binaries
+# are Python-version-independent). The pure lilbee wheel is backend-agnostic and
 # ships only to PyPI, so it has no per-backend index.
 ARTIFACT_DIR_RE = re.compile(r"^wheel-multigpu-(?P<rest>.+)$")
-WHEEL_FILENAME_RE = re.compile(r"^lilbee_llama_server-(?P<version>[^-]+)-")
-_PROJECT = "lilbee-llama-server"
+WHEEL_FILENAME_RE = re.compile(r"^lilbee_engine-(?P<version>[^-]+)-")
+_PROJECT = "lilbee-engine"
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
 # Backends whose wheels ship under the default filename (also on PyPI; renaming
@@ -111,7 +111,7 @@ def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
         backend = backend_from_artifact_dir(child.name)
         if backend is None:
             continue
-        wheels = sorted(child.glob("lilbee_llama_server-*.whl"))
+        wheels = sorted(child.glob("lilbee_engine-*.whl"))
         if not wheels:
             continue
         by_backend.setdefault(backend, []).extend(wheels)

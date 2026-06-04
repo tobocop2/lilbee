@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import resolve_llama_server_binary
+from lilbee.providers.fleet.binary import resolve_llama_server
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.fleet import Fleet
 from lilbee.providers.roles import WorkerRole
@@ -567,7 +567,7 @@ class FleetProvider:
 
     def _reload_role_blocking(self, role: WorkerRole) -> None:
         """Re-plan and respawn one role's server(s); runs off the caller's thread."""
-        binary = resolve_llama_server_binary()
+        binary = resolve_llama_server()
         devices = planning.resolve_devices(binary)
         by_index = {d.index: d for d in devices}
         launches = planning.plan_launches((role,), binary, by_index, devices)

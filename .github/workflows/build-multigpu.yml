@@ -60,7 +60,7 @@ jobs:
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
-      PKG_DIR: packaging/llama-server-wheel
+      PKG_DIR: packaging/engine-wheel
 
     steps:
       - uses: actions/checkout@v6
@@ -106,7 +106,12 @@ jobs:
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
-      - name: Build llama-server from source
+      - name: Set up Go (for llama-swap + gguf-parser)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Build the engine binaries from source
         shell: bash
         run: bash tools/wheel-build/build_llama_server.sh
 
@@ -117,12 +122,12 @@ jobs:
           python - "$VERSION" <<'PY'
           import pathlib, re, sys
           version = sys.argv[1]
-          path = pathlib.Path("packaging/llama-server-wheel/pyproject.toml")
+          path = pathlib.Path("packaging/engine-wheel/pyproject.toml")
           text = re.sub(r'(?m)^version = ".*"$', f'version = "{version}"', path.read_text(), count=1)
           path.write_text(text)
           PY
 
-      - name: Build the lilbee-llama-server wheel
+      - name: Build the lilbee-engine wheel
         shell: bash
         working-directory: ${{ env.PKG_DIR }}
         run: |
@@ -134,7 +139,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          bin_dir="${PKG_DIR}/lilbee_llama_server/bin"
+          bin_dir="${PKG_DIR}/lilbee_engine/bin"
           exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
           [ -n "${exe}" ] || { echo "no bundled binary found"; exit 1; }
           "${exe}" --help
@@ -144,7 +149,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p multigpu-exe
-          bin_dir="${PKG_DIR}/lilbee_llama_server/bin"
+          bin_dir="${PKG_DIR}/lilbee_engine/bin"
           exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
           [ -n "${exe}" ] && cp "${exe}" "multigpu-exe/${{ matrix.exe-name }}"
 

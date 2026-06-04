@@ -3758,7 +3758,7 @@ class TestSelfCheckHelpers:
         from pathlib import Path
 
         monkeypatch.setattr(
-            "lilbee.providers.fleet.binary.resolve_llama_server_binary",
+            "lilbee.providers.fleet.binary.resolve_llama_server",
             lambda: Path("/bin/llama-server"),
         )
         monkeypatch.setattr("lilbee.providers.fleet.binary.llama_server_runtime_env", lambda: {})

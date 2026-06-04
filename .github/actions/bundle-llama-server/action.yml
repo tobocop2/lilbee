@@ -1,9 +1,9 @@
-name: Bundle llama-server
+name: Bundle engine
 description: >-
-  Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
-  baked rpath) and install the lilbee_llama_server package so the Nuitka build
-  bundles the whole local engine into the onefile. Run before the executable is
-  built.
+  Build the self-contained engine (llama-server + its ggml/llama/mtmd libs with a
+  baked rpath, plus the llama-swap and gguf-parser Go helpers) and install the
+  lilbee_engine package so the Nuitka build bundles the whole local engine into
+  the onefile. Run before the executable is built.
 inputs:
   backend:
     description: "Backend matching the executable (cpu|vulkan|metal|cu121..cu125|rocm|sycl)."
@@ -17,16 +17,21 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Build the self-contained llama-server
+    - name: Set up Go (for llama-swap + gguf-parser)
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.23"
+    - name: Build the self-contained engine
       shell: bash
       env:
         BACKEND: ${{ inputs.backend }}
         LLAMA_CPP_VERSION: ${{ inputs.llama-cpp-version }}
         LLAMA_BUILD_DIR: /tmp/llama-server-build
       run: bash tools/wheel-build/build_llama_server.sh
-    - name: Install lilbee_llama_server into the build venv
+    - name: Install lilbee_engine into the build venv
       shell: bash
-      # The wheel now carries the binary AND its backend libs (self-contained,
-      # rpath-baked); Nuitka bundles both via --include-package-data and the
-      # runtime resolver finds the binary via lilbee_llama_server.get_binary_path().
-      run: uv pip install --no-deps ./packaging/llama-server-wheel
+      # The wheel carries all three binaries (llama-server self-contained with its
+      # backend libs, plus the static Go helpers); Nuitka bundles them via
+      # --include-package-data and the runtime resolver finds each via
+      # lilbee_engine.get_llama_server_path() / get_llama_swap_path() / get_gguf_parser_path().
+      run: uv pip install --no-deps ./packaging/engine-wheel

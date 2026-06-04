@@ -1596,7 +1596,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "kreuzberg" },
     { name = "lancedb" },
-    { name = "lilbee-llama-server" },
+    { name = "lilbee-engine" },
     { name = "litestar" },
     { name = "mcp" },
     { name = "numpy" },
@@ -1658,7 +1658,7 @@ requires-dist = [
     { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "remote", "graph"], marker = "extra == 'release'" },
-    { name = "lilbee-llama-server", directory = "packaging/llama-server-wheel" },
+    { name = "lilbee-engine", directory = "packaging/engine-wheel" },
     { name = "litellm", marker = "extra == 'remote'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "mcp", specifier = ">=1.26.0" },
@@ -1693,9 +1693,9 @@ dev = [
 ]
 
 [[package]]
-name = "lilbee-llama-server"
+name = "lilbee-engine"
 version = "0.0.0"
-source = { directory = "packaging/llama-server-wheel" }
+source = { directory = "packaging/engine-wheel" }
 
 [[package]]
 name = "linkify-it-py"

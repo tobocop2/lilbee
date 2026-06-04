@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
-from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server_binary
+from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
 from lilbee.providers.fleet.fleet import Fleet, InstanceLaunch
 from lilbee.providers.fleet.placement import (
@@ -435,7 +435,7 @@ def build_fleet(
     # Disable crash-prone Vulkan layers / dual-vendor ICDs and apply any
     # cfg.gpu_devices pin before the device probe and spawn (both inherit env).
     apply_fleet_gpu_env()
-    binary = resolve_llama_server_binary()
+    binary = resolve_llama_server()
     devices = resolve_devices(binary)
     by_index = {d.index: d for d in devices}
     launches = plan_launches(None, binary, by_index, devices)

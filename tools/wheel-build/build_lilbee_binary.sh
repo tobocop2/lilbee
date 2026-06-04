@@ -43,15 +43,16 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
 done
 
 # Bundle the local inference engine when its package is installed. The release
-# build installs packaging/llama-server-wheel after build_llama_server.sh fills
-# its bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs
-# with a baked rpath), so --include-package-data ships the whole engine inside
-# the onefile and the runtime resolver finds it via get_binary_path(). Optional
-# so a build without the engine wheel still succeeds (resolver falls back to PATH).
+# build installs packaging/engine-wheel after build_llama_server.sh fills its
+# bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs with a
+# baked rpath) plus the llama-swap and gguf-parser helpers, so
+# --include-package-data ships the whole engine inside the onefile and the runtime
+# resolver finds each via lilbee_engine.get_*_path(). Optional so a build without
+# the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
-if uv run --no-sync python -c "import lilbee_llama_server" >/dev/null 2>&1; then
-    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_llama_server)
-    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_llama_server)
+if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
+    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
 fi
 
 uv run --no-sync python -m nuitka \

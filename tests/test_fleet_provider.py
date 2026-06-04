@@ -714,7 +714,7 @@ class TestLifecycleMethods:
     def test_reload_role_blocking_restarts_only_that_role(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(
-            prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+            prov_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
         )
         monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b: [device])
         launch = MagicMock()
@@ -727,7 +727,7 @@ class TestLifecycleMethods:
 
     def test_reload_role_blocking_noop_when_fleet_cleared(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            prov_mod, "resolve_llama_server_binary", lambda: Path("/bin/llama-server")
+            prov_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
         )
         monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b: [])
         monkeypatch.setattr(planning_mod, "plan_launches", lambda *_a: [])

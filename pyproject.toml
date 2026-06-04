@@ -44,7 +44,7 @@ dependencies = [
     "litestar>=2.0",
     "uvicorn>=0.30",
     "httpx",
-    "lilbee-llama-server",
+    "lilbee-engine",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
@@ -77,11 +77,11 @@ build-backend = "hatchling.build"
 packages = ["src/lilbee"]
 
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
-# bin/ with the compiled, self-contained llama-server before building. Release
-# installs (`pip install lilbee`) resolve `lilbee-llama-server` from the index
-# instead -- this source override is workspace metadata, not published deps.
+# bin/ with the self-contained llama-server + llama-swap + gguf-parser before
+# building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
+# the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
-lilbee-llama-server = { path = "packaging/llama-server-wheel" }
+lilbee-engine = { path = "packaging/engine-wheel" }
 
 [dependency-groups]
 dev = [

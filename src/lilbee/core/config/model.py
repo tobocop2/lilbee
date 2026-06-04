@@ -141,7 +141,7 @@ class Config(BaseSettings):
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
-    # Path to a llama-server binary. Empty = use the bundled lilbee-llama-server
+    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
     # wheel binary, else a llama-server on PATH.
     llama_server_path: str = ConfigField(default="", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)

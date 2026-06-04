@@ -77,7 +77,7 @@ def test_fleet_provider_routes_chat_to_a_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-    monkeypatch.setattr(prov_mod, "resolve_llama_server_binary", lambda: Path(sys.executable))
+    monkeypatch.setattr(prov_mod, "resolve_llama_server", lambda: Path(sys.executable))
     monkeypatch.setattr(prov_mod, "probe_devices", lambda _binary: [device])
     monkeypatch.setattr(
         prov_mod,

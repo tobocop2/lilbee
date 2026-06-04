@@ -54,10 +54,10 @@ def nvidia_smi_free_mib() -> dict[int, int]:
 
 
 def _check_enumeration() -> None:
-    from lilbee.providers.fleet.binary import resolve_llama_server_binary
+    from lilbee.providers.fleet.binary import resolve_llama_server
     from lilbee.providers.fleet.devices import probe_devices
 
-    binary = resolve_llama_server_binary()
+    binary = resolve_llama_server()
     print(f"[1] binary: {binary}")
     devices = probe_devices(binary)
     print(f"[1] llama-server --list-devices: {len(devices)} device(s)")
