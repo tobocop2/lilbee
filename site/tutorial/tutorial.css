@@ -1,13 +1,31 @@
 .tutorial-intro { color: var(--mute); font-size: 0.95rem; margin: 0.5rem 0 2rem; }
-.tutorial-toc { margin: 0 0 2.5rem; padding: 1rem 1.25rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }
-.tutorial-toc ol { margin: 0; padding-left: 1.4rem; }
+
+.tutorial-tracks { display: flex; flex-wrap: wrap; gap: 1rem; margin: 0 0 2.5rem; }
+.tutorial-tracks .tutorial-toc { flex: 1 1 280px; margin: 0; }
+.tutorial-toc { padding: 1rem 1.25rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }
+.tutorial-toc-title { display: block; font-size: 1rem; font-weight: 600; margin: 0 0 0.6rem; color: var(--fg); text-decoration: none; }
+.tutorial-toc-title span { color: var(--mute); font-weight: 400; }
+.tutorial-toc-title:hover { text-decoration: underline; }
+.tutorial-toc ul { list-style: none; margin: 0; padding: 0; }
 .tutorial-toc li { margin: 0.2rem 0; }
-.tutorial-section { margin: 2.5rem 0 3rem; }
-.tutorial-section h2 { font-size: 1.15rem; margin: 0 0 0.5rem; }
-.tutorial-section .extras-label { font-size: 0.8rem; color: var(--mute); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.4rem; }
+.tutorial-toc .toc-group { margin: 0.7rem 0 0.15rem; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.tutorial-toc .toc-group:first-child { margin-top: 0; }
+.tutorial-toc .toc-group a { color: var(--mute); text-decoration: none; }
+
+.tutorial-track { margin: 0 0 3rem; }
+.tutorial-track-head { font-size: 1.5rem; margin: 2.5rem 0 0.5rem; padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,0.1); scroll-margin-top: 1rem; }
+.tutorial-track:first-of-type .tutorial-track-head { margin-top: 0.5rem; padding-top: 0; border-top: 0; }
+.tutorial-track-head .track-sub { color: var(--mute); font-weight: 400; font-size: 1rem; }
+.tutorial-group { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mute); margin: 2rem 0 0.5rem; scroll-margin-top: 1rem; }
+
+.tutorial-section { margin: 1.5rem 0 2.5rem; scroll-margin-top: 1rem; }
+.tutorial-section h4 { font-size: 1.15rem; margin: 0 0 0.5rem; }
 .tutorial-section p { margin: 0.4rem 0 1rem; line-height: 1.55; }
+.tutorial-track-head a, .tutorial-group a, .tutorial-section h4 a { color: inherit; text-decoration: none; }
+.tutorial-track-head a:hover, .tutorial-group a:hover, .tutorial-section h4 a:hover { text-decoration: underline; }
+
 .tutorial-clip { background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 1400 / 900; margin: 0.75rem 0; }
 .tutorial-clip video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-.extras-divider { border: 0; border-top: 1px dashed rgba(255,255,255,0.1); margin: 3rem 0; }
+
 .tutorial-backlink { display: inline-block; margin: 0.5rem 0 1.5rem; color: var(--mute); font-size: 0.9rem; }
 .tutorial-backlink:hover { color: var(--fg); }
