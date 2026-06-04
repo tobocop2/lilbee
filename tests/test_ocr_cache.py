@@ -53,6 +53,23 @@ def test_empty_pages_are_not_cached(cache_dir: Path) -> None:
     assert ocr_cache.load_ocr_pages(key) is None
 
 
+def test_load_returns_none_when_json_is_not_a_list(cache_dir: Path) -> None:
+    # Valid JSON of the wrong shape (a dict, not a list of pairs) is still a miss.
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "wrong.json").write_text('{"page": 1}', encoding="utf-8")
+    assert ocr_cache.load_ocr_pages("wrong") is None
+
+
+def test_store_swallows_write_error(tmp_path: Path, monkeypatch) -> None:
+    # data_dir points at a regular file, so creating the cache dir under it raises
+    # OSError; store must log and swallow rather than break ingestion.
+    data_file = tmp_path / "data"
+    data_file.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(cfg, "data_dir", data_file)
+    key = ocr_cache.ocr_cache_key("h", backend="vision", model="m")
+    ocr_cache.store_ocr_pages(key, [(1, "page")])  # must not raise
+
+
 @pytest.mark.asyncio
 async def test_vision_fallback_uses_cache_and_skips_ocr(tmp_path: Path, monkeypatch) -> None:
     # A cache hit must short-circuit the expensive pdf_ocr call and feed the

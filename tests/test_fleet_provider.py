@@ -840,3 +840,25 @@ class TestLazyRoleSpawn:
         p._warm_up_blocking()  # the warm_up_pool thread target, run synchronously
 
         fleet.ensure_all.assert_called_once()
+
+
+class TestChatCapacityAndCtxGetters:
+    """max_concurrent_chats / served_chat_ctx defer to the fleet once it is up."""
+
+    def test_max_concurrent_chats_defaults_to_one_before_fleet(self) -> None:
+        assert FleetProvider().max_concurrent_chats() == 1
+
+    def test_max_concurrent_chats_reads_slot_capacity_when_up(self) -> None:
+        p = FleetProvider()
+        p._fleet = MagicMock()
+        p._fleet.chat_slot_capacity.return_value = 4
+        assert p.max_concurrent_chats() == 4
+
+    def test_served_chat_ctx_is_none_before_fleet(self) -> None:
+        assert FleetProvider().served_chat_ctx() is None
+
+    def test_served_chat_ctx_reads_served_ctx_when_up(self) -> None:
+        p = FleetProvider()
+        p._fleet = MagicMock()
+        p._fleet.chat_served_ctx.return_value = 32768
+        assert p.served_chat_ctx() == 32768

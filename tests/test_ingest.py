@@ -277,6 +277,49 @@ class TestSync:
         items = mock_svc.store.write_chunks_batch.call_args.args[0]
         assert sorted(it.source for it in items) == [f"f{i}.txt" for i in range(5)]
 
+    async def test_midstream_flush_when_chunk_threshold_crossed(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        # A long ingest must not hold every chunk in memory until the end: once the
+        # buffer crosses the flush threshold it writes mid-stream, so a low threshold
+        # forces more than the single final write.
+        from lilbee.data.ingest import pipeline, sync
+
+        monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", 1)
+        for i in range(3):
+            (isolated_env / f"f{i}.txt").write_text(f"content {i}")
+
+        result = await sync(quiet=True)
+        assert len(result.added) == 3
+        assert mock_svc.store.write_chunks_batch.call_count >= 2
+
+    def test_flush_writes_marks_files_failed_on_write_error(self, _mock_extract_file):
+        # A failed batch write moves every buffered file to ``failed`` and out of
+        # added/updated, since none of its chunks persisted; the buffer still clears.
+        # ``_mock_extract_file`` is the class-level kreuzberg patch, unused here.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        get_services().store.write_chunks_batch.side_effect = RuntimeError("disk full")
+        result = _IngestResult(
+            name="a.txt",
+            path=Path("a.txt"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[{"text": "x"}],
+            needs_cleanup=True,
+        )
+
+        buffer = [result]
+        added, updated, failed = ["a.txt"], [], []
+        pipeline._flush_writes(buffer, added, updated, failed)
+
+        assert added == []
+        assert failed == ["a.txt"]
+        assert buffer == []
+
     async def test_ingest_pdf(self, mock_extract_file, isolated_env):
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas

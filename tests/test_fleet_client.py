@@ -287,6 +287,20 @@ def test_embed_surfaces_server_error_body() -> None:
         _client(handler).embed(["a"])
 
 
+def test_raise_for_status_tags_context_overflow_400() -> None:
+    # llama-server reports an oversize prompt as a 400 carrying the
+    # exceed_context_size_error type. It must surface as CONTEXT_OVERFLOW with a
+    # user-facing message, not a generic internal error.
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    resp = httpx.Response(400, text='{"error":{"type":"exceed_context_size_error"}}')
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(resp)
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert "context window" in str(excinfo.value).lower()
+
+
 def test_chat_stream_surfaces_server_error_body() -> None:
     # On a streaming request the response body isn't read yet, so the error path
     # must read it before extracting the message (the ResponseNotRead branch).

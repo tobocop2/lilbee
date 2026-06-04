@@ -774,3 +774,45 @@ def test_bring_up_logs_starting_and_ready(tmp_path: Path, patched: dict, caplog)
 
 def test_fleet_server_exposes_model(tmp_path: Path) -> None:
     assert FleetServer(_launch(tmp_path)).model == "m.gguf"
+
+
+def test_bring_up_role_breaks_before_spawning_when_stop_requested(tmp_path, monkeypatch) -> None:
+    # A shutdown signalled before bring-up starts must abort the launch loop so no
+    # new server is spawned during teardown.
+    fleet = Fleet(data_dir=tmp_path)
+    fleet._pending[WorkerRole.CHAT] = [_launch(tmp_path)]
+    fleet._stop_monitor.set()
+    brought: list[object] = []
+    monkeypatch.setattr(fleet, "_bring_up", lambda server: brought.append(server))
+
+    fleet._bring_up_role(WorkerRole.CHAT)
+
+    assert brought == []  # loop broke before bringing anything up
+    assert fleet._servers == []
+
+
+def test_bring_up_role_stops_fresh_servers_when_stop_races_bringup(tmp_path, monkeypatch) -> None:
+    # Shutdown signalled after a server is up but before it is registered: the
+    # fresh server is stopped and never added to the live set.
+    fleet = Fleet(data_dir=tmp_path)
+    fleet._pending[WorkerRole.CHAT] = [_launch(tmp_path)]
+    monkeypatch.setattr(fleet, "_bring_up", lambda server: None)
+
+    class _RaceStop:
+        """is_set() is False during the launch loop, True at the post-loop check."""
+
+        def __init__(self) -> None:
+            self._calls = 0
+
+        def is_set(self) -> bool:
+            self._calls += 1
+            return self._calls > 1
+
+    fleet._stop_monitor = _RaceStop()
+    stopped: list[object] = []
+    monkeypatch.setattr(FleetServer, "stop", lambda self: stopped.append(self))
+
+    fleet._bring_up_role(WorkerRole.CHAT)
+
+    assert len(stopped) == 1  # the fresh server was stopped, not registered
+    assert fleet._servers == []

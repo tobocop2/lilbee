@@ -59,3 +59,31 @@ def test_scope_hint_absent_when_wiki_enabled(monkeypatch) -> None:
         assert "No wiki layer here" not in (info.description or "")
     finally:
         info.description = original
+
+
+def test_scope_hint_is_stripped_when_wiki_turns_on(monkeypatch) -> None:
+    # A config reload that enables wiki must remove a previously-added hint so
+    # the model is told the wiki scope is now available (the reversible branch).
+    info = mcp._tool_manager._tools["search"]
+    original = info.description
+    try:
+        monkeypatch.setattr(mcp_server.cfg, "wiki", False)
+        _tune_search_scope_for_corpus()
+        assert "No wiki layer here" in info.description
+
+        monkeypatch.setattr(mcp_server.cfg, "wiki", True)
+        _tune_search_scope_for_corpus()
+        assert "No wiki layer here" not in info.description
+    finally:
+        info.description = original
+
+
+def test_tune_is_noop_when_search_tool_absent() -> None:
+    # If the search tool isn't registered, tuning returns early instead of
+    # dereferencing a missing tool.
+    tools = mcp._tool_manager._tools
+    saved = tools.pop("search")
+    try:
+        _tune_search_scope_for_corpus()  # must not raise; returns early
+    finally:
+        tools["search"] = saved

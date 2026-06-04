@@ -3379,6 +3379,32 @@ class TestRoutingLifecycleForwarding:
 
         RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
 
+    def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().max_concurrent_chats() == 1  # _local is None
+
+    def test_max_concurrent_chats_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.max_concurrent_chats.return_value = 3
+        assert rp.max_concurrent_chats() == 3
+
+    def test_served_chat_ctx_is_none_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().served_chat_ctx() is None  # _local is None
+
+    def test_served_chat_ctx_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.served_chat_ctx.return_value = 16384
+        assert rp.served_chat_ctx() == 16384
+
     def test_role_ready_forwards_to_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider

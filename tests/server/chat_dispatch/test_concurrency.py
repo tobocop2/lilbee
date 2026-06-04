@@ -70,6 +70,16 @@ async def test_raises_after_timeout_when_full() -> None:
     await release_chat_slot()
 
 
+async def test_raises_immediately_with_zero_timeout_when_full() -> None:
+    """A zero timeout is already expired on entry, so a full gate raises without
+    ever waiting (the deadline-already-passed branch, not the wait_for timeout)."""
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    with pytest.raises(ChatBusyError):
+        await acquire_chat_slot_or_busy(1, timeout=0.0)
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()
+
+
 async def test_capacity_floor_is_one() -> None:
     """A bogus capacity of 0 is clamped to 1, never 'no slots at all'."""
     await acquire_chat_slot_or_busy(0, timeout=0.5)
