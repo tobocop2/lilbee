@@ -1,6 +1,6 @@
 name: Build multi-GPU server wheels and executables
 
-# Opt-in lilbee[multi-gpu] artifacts: the lilbee-llama-server wheel (bundles the
+# Opt-in lilbee[multi-gpu] artifacts: the lilbee-engine wheel (bundles the
 # compiled llama.cpp llama-server) AND the standalone server binary (for BYO /
 # frozen-exe / Docker channels that cannot pip-install the extra). Built across
 # the multi-GPU backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.

@@ -1,7 +1,7 @@
 name: Build default wheels
 
 # The lilbee wheel is pure Python: the inference engine ships separately as the
-# per-platform `lilbee-llama-server` wheel (build-multigpu.yml), pulled as a
+# per-platform `lilbee-engine` wheel (build-multigpu.yml), pulled as a
 # dependency. So there is one platform-independent wheel + an sdist, with no
 # per-OS / per-CPython axis. Reusable; the caller (release-candidate.yml) keeps
 # the artifacts.

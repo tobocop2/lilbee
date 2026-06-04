@@ -63,7 +63,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
           # The lilbee wheel is pure Python (one artifact) + sdist; the engine
-          # ships as the default-backend lilbee-llama-server wheels (vulkan on
+          # ships as the default-backend lilbee-engine wheels (vulkan on
           # linux/win, metal on mac) so `pip install lilbee` resolves it.
           EXPECTED_ENGINE_WHEELS: "3"
         run: |
@@ -109,7 +109,7 @@ jobs:
           run-id: ${{ needs.guard.outputs.rc_run_id }}
           github-token: ${{ github.token }}
       # The default-backend engine wheels (vulkan linux/win, metal mac) so a plain
-      # `pip install lilbee` resolves lilbee-llama-server from PyPI. cpu/cuda/rocm
+      # `pip install lilbee` resolves lilbee-engine from PyPI. cpu/cuda/rocm
       # variants are not published here; they live on the per-backend PEP 503 index.
       - name: Download the default engine wheels from the release-candidate run
         uses: actions/download-artifact@v4

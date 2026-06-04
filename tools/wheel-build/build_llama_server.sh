@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a SELF-CONTAINED llama.cpp `llama-server` binary for lilbee's local
 # engine fleet. The binary plus its ggml/llama/mtmd shared libraries are copied
-# into packaging/llama-server-wheel/ with a baked rpath (`$ORIGIN` on Linux,
+# into packaging/engine-wheel/ with a baked rpath (`$ORIGIN` on Linux,
 # `@loader_path` on macOS), so the wheel carries everything it needs and lilbee
 # depends on no separate inference library.
 #

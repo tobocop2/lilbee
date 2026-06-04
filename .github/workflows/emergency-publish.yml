@@ -100,7 +100,7 @@ jobs:
           run-id: ${{ needs.guard.outputs.rc_run_id }}
           github-token: ${{ github.token }}
       # Default-backend engine wheels (vulkan linux/win, metal mac) so
-      # `pip install lilbee` resolves lilbee-llama-server from PyPI.
+      # `pip install lilbee` resolves lilbee-engine from PyPI.
       - name: Download the default engine wheels from the release-candidate run
         uses: actions/download-artifact@v4
         with:

@@ -503,6 +503,24 @@ def test_ensure_swap_defaults_chat_slots_without_chat_launch(monkeypatch) -> Non
     assert p._chat_ctx is None
 
 
+def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
+    # No configured/installed model -> no launches -> no swap process at all
+    # (matches the old supervisor, which spawned nothing for an empty launch set).
+    started = {"swaps": 0}
+
+    class _CountingSwap(_FakeSwap):
+        def start(self, launches: list) -> None:
+            started["swaps"] += 1
+            super().start(launches)
+
+    _install_engine(monkeypatch, launches=[], swap=_CountingSwap())
+    p = FleetProvider()
+    assert p._ensure_swap() is None
+    assert started["swaps"] == 0  # never started
+    assert p._swap is None
+    assert p._clients == {}
+
+
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     from lilbee.providers.base import ChatResult, FinishReason
 
@@ -599,7 +617,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[], swap=_SlowSwap())
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_SlowSwap())
     p = FleetProvider()
     p.warm_up_pool()
     assert started.wait(timeout=5.0)  # start runs on a background thread
@@ -620,7 +638,7 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[], swap=_GatedSwap())
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_GatedSwap())
     p = FleetProvider()
     p.warm_up_pool()
     assert in_start.wait(timeout=5.0)  # first start genuinely in flight

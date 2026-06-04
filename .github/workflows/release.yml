@@ -196,7 +196,7 @@ jobs:
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
-      # baked rpath) and install lilbee_llama_server so Nuitka bundles the whole
+      # baked rpath) and install lilbee_engine so Nuitka bundles the whole
       # engine into this executable.
       - name: Bundle llama-server
         uses: ./.github/actions/bundle-llama-server

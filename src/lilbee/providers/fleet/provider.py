@@ -166,13 +166,15 @@ class FleetProvider:
         # never starts a second swap and double-allocates GPU memory.
         self._warming = False
 
-    def _ensure_swap(self) -> SwapManager:
+    def _ensure_swap(self) -> SwapManager | None:
         """Start the llama-swap process exactly once across concurrent callers.
 
-        The startup runs under ``_build_lock`` (not the routing lock), so the
-        off-thread warm-up and an on-demand call can't start two swaps -- which
-        would double-allocate GPU and parse the same GGUF twice. A second caller
-        blocks on the build lock and reuses the swap the first one started.
+        Returns ``None`` when no role is configured and installed (nothing to
+        serve), leaving no process spawned. The startup runs under ``_build_lock``
+        (not the routing lock), so the off-thread warm-up and an on-demand call
+        can't start two swaps -- which would double-allocate GPU and parse the same
+        GGUF twice. A second caller blocks on the build lock and reuses the swap the
+        first one started.
         """
         with self._lock:
             if self._swap is not None:
@@ -184,6 +186,8 @@ class FleetProvider:
             from lilbee.core.config import cfg
 
             launches = planning.plan_all_launches()
+            if not launches:
+                return None  # no installed/configured model -> serve nothing, spawn nothing
             swap = SwapManager(cfg.data_dir)
             swap.start(launches)
             with self._lock:

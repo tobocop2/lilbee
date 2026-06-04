@@ -15,7 +15,7 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `install_gpu_runtime.sh` — installs only the runtime loader needed by the GPU
   backends (Vulkan loader, CUDA driver shim).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
-  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-llama-server` wheel
+  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
   package's `bin/` for the requested backend.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
   executable, bundling the engine wheel built above.
