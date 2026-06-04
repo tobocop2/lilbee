@@ -22,6 +22,11 @@ from lilbee.data.store import (
     local_owner_predicate,
 )
 
+MEMORY_DISABLED_HINT = (
+    "Memory is off. Enable it in Settings or set memory_enabled=true "
+    "(/set memory_enabled true, lilbee set memory_enabled true, or settings_set)."
+)
+
 
 def memory_enabled() -> bool:
     """True when the memory subsystem is switched on (off by default)."""
