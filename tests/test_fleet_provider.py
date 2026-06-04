@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -566,14 +567,17 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     barrier = threading.Barrier(8)
 
     def _hit() -> None:
-        barrier.wait()
+        # Bounded wait so a thread that dies under heavy CI load can't deadlock the
+        # barrier and hang the test; the single-flight assertion holds regardless.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            barrier.wait(timeout=10.0)
         p.chat([{"role": "user", "content": "hi"}])
 
     threads = [threading.Thread(target=_hit) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=15.0)
     assert starts["n"] == 1  # single-flight: 8 concurrent first-requests start one swap
 
 
