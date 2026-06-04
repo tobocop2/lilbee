@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
-from lilbee.providers.fleet.fleet import InstanceLaunch
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import WorkerRole
 

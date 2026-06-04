@@ -37,7 +37,7 @@ if TYPE_CHECKING:
         OcrBackend,
         PageText,
     )
-    from lilbee.providers.fleet.fleet import InstanceLaunch
+    from lilbee.providers.fleet.launch import InstanceLaunch
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"

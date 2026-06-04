@@ -10,7 +10,7 @@ import shlex
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.fleet import InstanceLaunch
+    from lilbee.providers.fleet.launch import InstanceLaunch
 
 # One group holds every role with swap disabled, so llama-swap brings them all up
 # and never evicts one to load another (the co-residency the fleet needs).

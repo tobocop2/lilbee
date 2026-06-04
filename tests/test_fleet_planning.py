@@ -604,7 +604,7 @@ class TestBuildFleetWiring:
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--threads") + 1] == str(planning_mod._DEFAULT_THREADS)
 
-    def test_build_fleet_resolves_devices_plans_and_starts(self, monkeypatch) -> None:
+    def test_plan_all_launches_resolves_devices_and_plans(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
@@ -624,19 +624,11 @@ class TestBuildFleetWiring:
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
-        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
-        started: dict[str, object] = {}
-        monkeypatch.setattr(
-            planning_mod.Fleet,
-            "start",
-            lambda self, launches, *, eager_roles=None: started.update(eager=eager_roles),
-        )
-        fleet = planning_mod.build_fleet()
-        assert isinstance(fleet, planning_mod.Fleet)
-        # Build plans joint placement but defers all spawns to the provider.
-        assert started["eager"] == frozenset()
+        sentinel = MagicMock()
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
+        assert planning_mod.plan_all_launches() == [sentinel]
 
-    def test_build_fleet_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
+    def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate
         monkeypatch.setattr(
@@ -656,12 +648,8 @@ class TestBuildFleetWiring:
 
         def _capture(inputs, devices, *, unified_budget=None):
             seen["devices"] = devices
-            seen["unified_budget"] = unified_budget
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
-        monkeypatch.setattr(
-            planning_mod.Fleet, "start", lambda self, launches, *, eager_roles=None: None
-        )
-        planning_mod.build_fleet()
+        planning_mod.plan_all_launches()
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback

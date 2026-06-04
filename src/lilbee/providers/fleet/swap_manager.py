@@ -24,7 +24,7 @@ from lilbee.providers.fleet.swap_config import build_swap_config
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from lilbee.providers.fleet.fleet import InstanceLaunch
+    from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.roles import WorkerRole
 
 _HOST = "127.0.0.1"

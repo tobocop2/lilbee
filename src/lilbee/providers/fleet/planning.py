@@ -11,7 +11,7 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
-from lilbee.providers.fleet.fleet import Fleet, InstanceLaunch
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import WorkerRole
@@ -526,18 +526,3 @@ def plan_all_launches() -> list[InstanceLaunch]:
     devices = resolve_devices(binary)
     by_index = {d.index: d for d in devices}
     return plan_launches(None, binary, by_index, devices)
-
-
-def build_fleet(
-    on_spawning: Callable[[WorkerRole], None] | None = None,
-    on_spawned: Callable[[WorkerRole], None] | None = None,
-) -> Fleet:
-    """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
-    from lilbee.core.config import cfg
-
-    launches = plan_all_launches()
-    fleet = Fleet(data_dir=cfg.data_dir, on_spawning=on_spawning, on_spawned=on_spawned)
-    # Plan joint placement for every role, but spawn none: the provider brings up
-    # each role on first use (warm_up_pool brings up all).
-    fleet.start(launches, eager_roles=frozenset())
-    return fleet

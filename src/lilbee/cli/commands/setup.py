@@ -26,7 +26,8 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.fleet import FleetServer
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.swap_manager import SwapManager
 
 _SELF_CHECK_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _SELF_CHECK_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -105,12 +106,14 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     }
 
 
-def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
-    """Spawn one llama-server for *model_path* in *role* and wait until ready.
+def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager, LlamaServerClient]:
+    """Start a one-model llama-swap for *model_path* in *role* and return its
+    manager plus an OpenAI client.
 
     Builds the launch with the fleet's per-role argv builder (ctx, gpu-layers,
     and -- for chat -- the flash-attn / KV-cache flags) so the check exercises the
-    same binary and flags a real request drives. The caller stops the server.
+    same binary and flags a real request drives. The upstream loads on the first
+    request; the caller shuts the manager down.
     """
     from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.engine_params import (
@@ -123,7 +126,9 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
         llama_server_runtime_env,
         resolve_llama_server,
     )
-    from lilbee.providers.fleet.fleet import FleetServer, InstanceLaunch
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 
     meta = read_gguf_metadata(model_path)
@@ -147,50 +152,42 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> FleetServer:
         ),
         batch_size=ctx if is_embed else None,
     )
-    port_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
-    server = FleetServer(
-        InstanceLaunch(
-            role=role,
-            argv=argv,
-            env_overrides=llama_server_runtime_env(),
-            model=str(model_path),
-            port_file=port_dir / f"{role.value}.port",
-            token_cap=ctx if is_embed else None,
-        )
+    work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
+    launch = InstanceLaunch(
+        role=role,
+        argv=argv,
+        env_overrides=llama_server_runtime_env(),
+        model=str(model_path),
+        port_file=work_dir / f"{role.value}.port",
+        token_cap=ctx if is_embed else None,
     )
-    server.spawn()
-    if not server.wait_ready():
-        detail = server.failed_start_detail()
-        server.stop()
-        raise RuntimeError(f"llama-server did not become ready: {detail}")
-    if server.client is None:  # wait_ready True implies a live client; guard for the type
-        server.stop()
-        raise RuntimeError("llama-server became ready without a client")
-    return server
+    swap = SwapManager(work_dir)
+    swap.start([launch])
+    return swap, LlamaServerClient(swap.endpoint(), role.value)
 
 
 def _self_check_chat(model_path: Path, max_tokens: int) -> str:
-    """Spawn a chat server, request a tiny completion, and tear the server down."""
-    server = _self_check_server(WorkerRole.CHAT, model_path)
+    """Run a chat model through a one-off llama-swap, request a tiny completion, tear down."""
+    swap, client = _self_check_server(WorkerRole.CHAT, model_path)
     try:
-        result = server.client.chat(  # type: ignore[union-attr]  # guarded in _self_check_server
+        result = client.chat(
             [{"role": "user", "content": "2+2="}],
             options={"max_tokens": max_tokens},
             stream=False,
         )
         return str(result)
     finally:
-        server.stop()
+        swap.shutdown()
 
 
 def _self_check_embed(model_path: Path) -> int:
-    """Spawn an embedding server, request one vector, return its dimensionality."""
-    server = _self_check_server(WorkerRole.EMBED, model_path)
+    """Run an embedding model through a one-off llama-swap, return one vector's dim."""
+    swap, client = _self_check_server(WorkerRole.EMBED, model_path)
     try:
-        vectors = server.client.embed(["test"])  # type: ignore[union-attr]  # guarded
+        vectors = client.embed(["test"])
         return len(vectors[0]) if vectors else 0
     finally:
-        server.stop()
+        swap.shutdown()
 
 
 def self_check_cmd(

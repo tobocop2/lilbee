@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from lilbee.providers.fleet.fleet import InstanceLaunch
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 
