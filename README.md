@@ -22,7 +22,6 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-blue.svg" alt="License: Elastic License 2.0"></a>
   <a href="https://pepy.tech/project/lilbee"><img src="https://static.pepy.tech/badge/lilbee/month" alt="PyPI downloads / month"></a>
-  <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total" alt="GitHub release downloads"></a>
 </p>
 
 A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
@@ -64,7 +63,7 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
-- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also *fine-tune lilbee on the fly* via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
+- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
 
 Defaults are sane for chatting with code, documentation, crawled sites, and long PDFs. Every retrieval setting is writable from the TUI Settings screen, the `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When answers feel thin or noisy, the usual knobs are `top_k`, `max_distance`, or `diversity_max_per_source`.
 
@@ -188,18 +187,18 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 <details>
 <summary>Full platform and resource breakdown</summary>
 
-| Platform | Minimum | Recommended |
-| --- | --- | --- |
-| **macOS arm64** | Apple Silicon (M1 or newer), macOS 11+ | M-series Pro / Max / Ultra |
-| **Linux x86_64** | 64-bit Intel/AMD from 2013+ ([`x86-64-v3`](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels)) | Modern Intel/AMD CPU + an NVIDIA, AMD, or Intel Arc GPU |
-| **Windows x86_64** | 64-bit Intel/AMD from 2013+ (`x86-64-v3`), Windows 10/11 | Modern desktop / workstation CPU + GPU |
-| **Linux ARM64** | ARMv8 NEON-capable (Raspberry Pi 4+, AWS Graviton, Ampere Altra) | Modern ARM server with 16+ GB RAM |
+| Platform           | Minimum                                                                                                    | Recommended                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **macOS arm64**    | Apple Silicon (M1 or newer), macOS 11+                                                                     | M-series Pro / Max / Ultra                              |
+| **Linux x86_64**   | 64-bit Intel/AMD from 2013+ ([`x86-64-v3`](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels)) | Modern Intel/AMD CPU + an NVIDIA, AMD, or Intel Arc GPU |
+| **Windows x86_64** | 64-bit Intel/AMD from 2013+ (`x86-64-v3`), Windows 10/11                                                   | Modern desktop / workstation CPU + GPU                  |
+| **Linux ARM64**    | ARMv8 NEON-capable (Raspberry Pi 4+, AWS Graviton, Ampere Altra)                                           | Modern ARM server with 16+ GB RAM                       |
 
-| Resource | Minimum | Recommended |
-| --- | --- | --- |
-| **RAM** | 8 GB | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
-| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA + CUDA toolkit (opt-in CUDA wheels, see [Install](#install)) |
-| **Disk** | 2 GB | 10+ GB for multiple models |
+| Resource              | Minimum                        | Recommended                                                                                                                                               |
+| --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RAM**               | 8 GB                           | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
+| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA + CUDA toolkit (opt-in CUDA wheels, see [Install](#install))                           |
+| **Disk**              | 2 GB                           | 10+ GB for multiple models                                                                                                                                |
 
 </details>
 
@@ -214,28 +213,28 @@ Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default
 
 No external services either way; lilbee downloads and runs models locally. Optional, for scanned-PDF / image OCR: [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a [GGUF vision model](docs/usage.md#vision-models).
 
-| How | Command | Notes |
-| --- | --- | --- |
-| **pip** | `pip install --pre lilbee` | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/` ([browse wheels](https://lilbee.sh/cpu/lilbee/)). |
-| **uv** | `uv tool install --prerelease=allow lilbee` | Same wheel as pip; fetches a Python for you if you need one. |
-| **Homebrew** | `brew tap tobocop2/lilbee && brew install lilbee` | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you. |
-| **AUR** | `paru -S lilbee` | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper. |
-| **Docker** | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there. |
-| **Nix** | `nix run github:tobocop2/lilbee` | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS. |
-| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest) | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it). |
-| **From source** | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee` | For hacking on it. Needs `git` and `uv`. |
+| How                   | Command                                                                                  | Notes                                                                                                                                                                                                                 |
+| --------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **pip**               | `pip install --pre lilbee`                                                               | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/` ([browse wheels](https://lilbee.sh/cpu/lilbee/)). |
+| **uv**                | `uv tool install --prerelease=allow lilbee`                                              | Same wheel as pip; fetches a Python for you if you need one.                                                                                                                                                          |
+| **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you.                                                                                                                                  |
+| **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
+| **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there.                                                                                                                  |
+| **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS.                                                                                 |
+| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it).                       |
+| **From source**       | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`  | For hacking on it. Needs `git` and `uv`.                                                                                                                                                                              |
 
 ### On NVIDIA hardware
 
 The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA build that's faster on NVIDIA hardware and sidesteps the iGPU + dGPU Vulkan-loader crash on Windows.
 
-| | Command |
-| --- | --- |
-| **pip** | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/` |
-| **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda` |
-| **AUR** | `paru -S lilbee-cuda` |
-| **Nix** | `nix run github:tobocop2/lilbee#lilbee-cuda` |
-| **Binary** | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
+|              | Command                                                                                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **pip**      | `pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/`                                                                                                        |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-cuda`                                                                                                                                   |
+| **AUR**      | `paru -S lilbee-cuda`                                                                                                                                                        |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-cuda`                                                                                                                                 |
+| **Binary**   | [`lilbee-linux-x86_64-cu125`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-windows-x86_64-cu125.exe`](https://github.com/tobocop2/lilbee/releases/latest) |
 
 Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
 
@@ -250,17 +249,17 @@ The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, C
 
 ### Linux runtime requirements
 
-The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most desktop distros (Ubuntu 22.04+, Pop!_OS, Mint) ship `libvulkan1`; bare Arch / Fedora / Alpine images don't, and `lilbee self-check` fails with `cannot open shared object file: libvulkan.so.1`. Install it once: `sudo pacman -S vulkan-icd-loader` (Arch / Manjaro), `sudo dnf install vulkan-loader` (Fedora, RHEL), or `sudo apt-get install libvulkan1` (Debian, Ubuntu).
+The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most desktop distros (Ubuntu 22.04+, Pop!\_OS, Mint) ship `libvulkan1`; bare Arch / Fedora / Alpine images don't, and `lilbee self-check` fails with `cannot open shared object file: libvulkan.so.1`. Install it once: `sudo pacman -S vulkan-icd-loader` (Arch / Manjaro), `sudo dnf install vulkan-loader` (Fedora, RHEL), or `sudo apt-get install libvulkan1` (Debian, Ubuntu).
 
 ### Optional extras
 
 These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker builds already include all three. lilbee works without them either way.
 
-| Extra | What it adds |
-| --- | --- |
-| `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline. |
-| `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active. |
-| `[graph]` | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
+| Extra       | What it adds                                                                                                                                              |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[crawler]` | Index websites alongside your files: crawl a docs site or wiki to markdown, then search it offline.                                                       |
+| `[litellm]` | Bridge to hosted model providers for chat, vision, or embeddings while other roles stay local. The TUI flags when a hosted role is active.                |
+| `[graph]`   | Concept-graph search: extracts the ideas in your documents and uses how they relate to surface matches plain keyword search misses. No extra model calls. |
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
 
@@ -278,7 +277,7 @@ Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.open
 
 **The demos below use opencode driving a cloud model. lilbee stays local; only the queries and the returned chunks cross the wire to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
 
-Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your *local* files.
+Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
 ![an MCP-driven coding agent indexes a small local godot subset and answers with cited methods](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot-search.gif)
 
@@ -300,11 +299,11 @@ This is the only lilbee surface that benefits from a system daemon. The TUI, `li
 
 Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:42697`.
 
-| Platform | Command |
-| --- | --- |
-| **macOS (Homebrew)** | `brew services start lilbee` |
+| Platform               | Command                                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| **macOS (Homebrew)**   | `brew services start lilbee`                                                                    |
 | **Linux (Arch / AUR)** | `systemctl --user enable --now lilbee` (add `loginctl enable-linger $USER` on headless servers) |
-| **NixOS** | Import `lilbee.nixosModules.lilbee`, set `services.lilbee.enable = true;` |
+| **NixOS**              | Import `lilbee.nixosModules.lilbee`, set `services.lilbee.enable = true;`                       |
 
 ## Supported formats
 
