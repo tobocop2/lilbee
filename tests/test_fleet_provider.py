@@ -1,4 +1,4 @@
-"""Tests for FleetProvider and the fleet factory branch."""
+"""Tests for FleetProvider routing and llama-swap lifecycle."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
-from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.roles import WorkerRole
 
@@ -26,15 +25,53 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     return client
 
 
-def _fake_fleet(clients: dict[WorkerRole, list[MagicMock]]) -> MagicMock:
-    fleet = MagicMock()
-    fleet.healthy_clients.side_effect = lambda role: clients.get(role, [])
-    return fleet
+def _fake_launch(role: WorkerRole, *, slots: int = 1, ctx: int = 0) -> MagicMock:
+    launch = MagicMock()
+    launch.role = role
+    launch.slots = slots
+    launch.ctx = ctx
+    return launch
+
+
+class _FakeSwap:
+    """A stand-in SwapManager recording lifecycle calls; ready roles are settable."""
+
+    def __init__(self) -> None:
+        self.started: list[list] = []
+        self.reloads = 0
+        self.shutdowns = 0
+        self.ready: set[WorkerRole] = set()
+
+    def start(self, launches: list) -> None:
+        self.started.append(launches)
+
+    def endpoint(self) -> str:
+        return "http://fake-endpoint"
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        return role in self.ready
+
+    def reload(self, launches: list) -> None:
+        self.reloads += 1
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+
+
+def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
+    """Patch the swap, client, and planner so _ensure_swap builds controllable fakes."""
+    swap = swap or _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir: swap)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _endpoint, _model: _fake_client())
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: launches)
+    return swap
 
 
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
+    """A provider with a fake swap already up and one client per role (no real start)."""
     p = FleetProvider()
-    p._fleet = _fake_fleet(clients)  # non-None: _server_clients won't try to build
+    p._swap = _FakeSwap()  # non-None so _ensure_swap short-circuits
+    p._clients = {role: cs[0] for role, cs in clients.items() if cs}
     return p
 
 
@@ -43,28 +80,27 @@ def test_least_in_flight_picks_minimum() -> None:
     assert _least_in_flight([busy, idle]) is idle
 
 
-def test_chat_routes_to_least_busy_server() -> None:
+def test_chat_routes_to_chat_server() -> None:
     from lilbee.providers.base import ChatResult, FinishReason
 
-    busy, idle = _fake_client(5), _fake_client(1)
+    client = _fake_client()
     result = ChatResult(text="from-server", tool_calls=(), finish_reason=FinishReason.STOP)
-    idle.chat_result.return_value = result
-    p = _provider_with_clients({WorkerRole.CHAT: [busy, idle]})
+    client.chat_result.return_value = result
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert p.chat([{"role": "user", "content": "hi"}]) == result
-    idle.chat_result.assert_called_once()
-    busy.chat_result.assert_not_called()
+    client.chat_result.assert_called_once()
 
 
 def test_chat_without_server_raises() -> None:
     from lilbee.providers.base import ProviderError
 
-    p = _provider_with_clients({})  # no healthy chat server, no in-process fallback
+    p = _provider_with_clients({})  # no chat client, no in-process fallback
     with pytest.raises(ProviderError, match="No chat model server is running"):
         p.chat([{"role": "user", "content": "hi"}])
 
 
 def test_chat_translates_options_before_routing_to_server() -> None:
-    # The fleet must apply the same option translation as in-process: num_predict
+    # The engine must apply the same option translation as in-process: num_predict
     # -> max_tokens (the server doesn't read num_predict) and drop the load-only
     # num_ctx. A raw passthrough would silently ignore the generation length.
     from lilbee.providers.base import ChatResult, FinishReason
@@ -100,65 +136,7 @@ def test_embed_without_server_raises() -> None:
         p.embed(["a"])
 
 
-def test_concurrent_first_requests_build_fleet_once(monkeypatch) -> None:
-    calls = {"n": 0}
-    client = _fake_client()
-    client.chat.return_value = "ok"
-
-    def _slow_build(*_listeners) -> object:
-        calls["n"] += 1
-        time.sleep(0.05)  # widen the race window between concurrent first calls
-        return _fake_fleet({WorkerRole.CHAT: [client]})
-
-    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
-    p = FleetProvider()
-    barrier = threading.Barrier(8)
-
-    def _hit() -> None:
-        barrier.wait()  # release all threads at once
-        p.chat([{"role": "user", "content": "hi"}])
-
-    threads = [threading.Thread(target=_hit) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert calls["n"] == 1  # single-flight: 8 concurrent first-requests build one fleet
-
-
-def test_warm_up_and_on_demand_build_fleet_once(monkeypatch) -> None:
-    # Regression: the off-thread warm-up built off-lock while an on-demand call
-    # built under the routing lock, so two build_fleet ran at once -- double GPU
-    # alloc plus two threads parsing the same GGUF metadata, which hung. Both
-    # paths must now serialize through _build_fleet_once.
-    #
-    # Deterministic: warm-up stalls inside build_fleet (release Event) so the
-    # on-demand call definitely arrives at _build_lock while warm-up holds it.
-    calls = {"n": 0}
-    client = _fake_client()
-    client.chat.return_value = "ok"
-    in_build = threading.Event()
-    release = threading.Event()
-
-    def _gated_build(*_listeners) -> object:
-        calls["n"] += 1
-        in_build.set()
-        release.wait(timeout=15)
-        return _fake_fleet({WorkerRole.CHAT: [client]})
-
-    monkeypatch.setattr(planning_mod, "build_fleet", _gated_build)
-    p = FleetProvider()
-    p.warm_up_pool()
-    assert in_build.wait(10.0)  # warm-up is now stalled mid-build_fleet
-    on_demand = threading.Thread(target=lambda: p.chat([{"role": "user", "content": "hi"}]))
-    on_demand.start()
-    release.set()  # warm-up returns; the queued on-demand wakes and reuses the fleet
-    on_demand.join(timeout=10.0)
-    assert not on_demand.is_alive()
-    assert calls["n"] == 1  # one build_fleet across warm-up + on-demand
-
-
-def test_rerank_routes_to_fleet() -> None:
+def test_rerank_routes_to_engine() -> None:
     client = _fake_client()
     client.rerank.return_value = [0.9, 0.1]
     p = _provider_with_clients({WorkerRole.RERANK: [client]})
@@ -174,7 +152,7 @@ def test_rerank_without_server_raises() -> None:
         p.rerank("q", ["a"])
 
 
-def test_vision_ocr_routes_to_fleet_for_configured_model(monkeypatch) -> None:
+def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
     client.chat.return_value = "ocr text"
@@ -501,20 +479,102 @@ def test_pdf_ocr_without_server_raises() -> None:
         p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
 
 
-def test_shutdown_tears_down_fleet() -> None:
-    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    fleet = p._fleet
+# --- llama-swap lifecycle ----------------------------------------------------
+
+
+def test_ensure_swap_starts_once_and_builds_clients(monkeypatch) -> None:
+    launches = [_fake_launch(WorkerRole.CHAT, slots=4, ctx=32768), _fake_launch(WorkerRole.EMBED)]
+    swap = _install_engine(monkeypatch, launches=launches)
+    p = FleetProvider()
+    assert p._ensure_swap() is swap
+    assert len(swap.started) == 1  # the swap was started with the planned launches
+    assert set(p._clients) == {WorkerRole.CHAT, WorkerRole.EMBED}  # one client per placed role
+    assert p._chat_slots == 4  # chat capacity / ctx taken from the chat launch
+    assert p._chat_ctx == 32768
+    p._ensure_swap()  # second call reuses the running swap
+    assert len(swap.started) == 1
+
+
+def test_ensure_swap_defaults_chat_slots_without_chat_launch(monkeypatch) -> None:
+    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+    p = FleetProvider()
+    p._ensure_swap()
+    assert p._chat_slots == 1  # no chat launch -> default capacity
+    assert p._chat_ctx is None
+
+
+def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    captured: dict[str, MagicMock] = {}
+
+    def _make_client(_endpoint, model):
+        client = _fake_client()
+        client.chat_result.return_value = ChatResult(
+            text="ok", tool_calls=(), finish_reason=FinishReason.STOP
+        )
+        captured[model] = client
+        return client
+
+    swap = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: swap)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _make_client)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
+    assert len(swap.started) == 1  # routing the first chat started the swap
+
+
+def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
+    starts = {"n": 0}
+
+    class _SlowSwap(_FakeSwap):
+        def start(self, launches: list) -> None:
+            starts["n"] += 1
+            time.sleep(0.05)  # widen the race window
+            super().start(launches)
+
+    swap = _SlowSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: swap)
+
+    def _make_client(_endpoint, _model):
+        client = _fake_client()
+        client.chat_result.return_value = "ok"
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _make_client)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    barrier = threading.Barrier(8)
+
+    def _hit() -> None:
+        barrier.wait()
+        p.chat([{"role": "user", "content": "hi"}])
+
+    threads = [threading.Thread(target=_hit) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert starts["n"] == 1  # single-flight: 8 concurrent first-requests start one swap
+
+
+def test_shutdown_tears_down_swap_and_closes_clients() -> None:
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    swap = p._swap
     p.shutdown()
-    fleet.shutdown.assert_called_once()
-    assert p._fleet is None
+    assert swap.shutdowns == 1
+    client.close.assert_called_once()
+    assert p._swap is None
 
 
-def test_invalidate_load_cache_respawns_fleet() -> None:
+def test_invalidate_load_cache_drops_swap() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    fleet = p._fleet
+    swap = p._swap
     p.invalidate_load_cache()
-    fleet.shutdown.assert_called_once()
-    assert p._fleet is None
+    assert swap.shutdowns == 1
+    assert p._swap is None
 
 
 def _wait_until(predicate, timeout: float = 5.0) -> bool:
@@ -527,133 +587,132 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-def test_warm_up_pool_builds_fleet_off_thread(monkeypatch) -> None:
+def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
     # The eager warm-up at TUI mount must not block the caller; it dispatches a
-    # background build thread and returns immediately. The fleet appears once the
-    # thread finishes.
+    # background start thread and returns immediately.
     started = threading.Event()
     release = threading.Event()
-    fleet = _fake_fleet({})
 
-    def _slow_build(*_listeners) -> object:
-        started.set()
-        release.wait(timeout=5.0)  # hold the build so the call clearly returns first
-        return fleet
+    class _SlowSwap(_FakeSwap):
+        def start(self, launches: list) -> None:
+            started.set()
+            release.wait(timeout=5.0)
+            super().start(launches)
 
-    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    swap = _install_engine(monkeypatch, launches=[], swap=_SlowSwap())
     p = FleetProvider()
     p.warm_up_pool()
-    assert started.wait(timeout=5.0)  # build runs on a background thread
-    assert p._fleet is None  # warm_up_pool returned before the build completed
+    assert started.wait(timeout=5.0)  # start runs on a background thread
+    assert p._swap is None  # warm_up_pool returned before start completed
     release.set()
-    assert _wait_until(lambda: p._fleet is fleet)
+    assert _wait_until(lambda: p._swap is swap)
 
 
-def test_warm_up_pool_single_flight_does_not_double_build(monkeypatch) -> None:
-    calls = {"n": 0}
-    in_build = threading.Event()
+def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
+    starts = {"n": 0}
+    in_start = threading.Event()
     release = threading.Event()
-    fleet = _fake_fleet({})
 
-    def _slow_build(*_listeners) -> object:
-        calls["n"] += 1
-        in_build.set()
-        release.wait(timeout=5.0)
-        return fleet
+    class _GatedSwap(_FakeSwap):
+        def start(self, launches: list) -> None:
+            starts["n"] += 1
+            in_start.set()
+            release.wait(timeout=5.0)
+            super().start(launches)
 
-    monkeypatch.setattr(planning_mod, "build_fleet", _slow_build)
+    swap = _install_engine(monkeypatch, launches=[], swap=_GatedSwap())
     p = FleetProvider()
     p.warm_up_pool()
-    assert in_build.wait(timeout=5.0)  # first build is genuinely in flight
-    p.warm_up_pool()  # second call while warming: must not start a second build
+    assert in_start.wait(timeout=5.0)  # first start genuinely in flight
+    p.warm_up_pool()  # second call while warming: must not start a second swap
     release.set()
-    assert _wait_until(lambda: p._fleet is fleet)
-    assert calls["n"] == 1
+    assert _wait_until(lambda: p._swap is swap)
+    assert starts["n"] == 1
 
 
-def test_warm_up_pool_noop_when_fleet_already_up(monkeypatch) -> None:
-    calls = {"n": 0}
-
-    def _fake_build(*_listeners) -> object:
-        calls["n"] += 1
-        return _fake_fleet({})
-
-    monkeypatch.setattr(planning_mod, "build_fleet", _fake_build)
+def test_warm_up_pool_noop_when_swap_already_up(monkeypatch) -> None:
+    starts = {"n": 0}
+    swap = _install_engine(monkeypatch, launches=[])
+    monkeypatch.setattr(swap, "start", lambda launches: starts.__setitem__("n", starts["n"] + 1))
     p = FleetProvider()
-    p._fleet = _fake_fleet({})  # already built
+    p._swap = _FakeSwap()  # already up
     p.warm_up_pool()
-    assert calls["n"] == 0  # no build dispatched
+    assert starts["n"] == 0  # no start dispatched
 
 
 def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:
-    def _boom(*_listeners) -> object:
-        raise RuntimeError("spawn failed")
+    def _boom() -> list:
+        raise RuntimeError("plan failed")
 
-    monkeypatch.setattr(planning_mod, "build_fleet", _boom)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
     p = FleetProvider()
     with caplog.at_level("WARNING", logger="lilbee.providers.fleet.provider"):
         p._warm_up_blocking()  # runs the body synchronously for the assertion
-    assert p._fleet is None
+    assert p._swap is None
     assert p._warming is False  # guard cleared so a later warm-up can retry
     assert "warm-up failed" in caplog.text.lower()
 
 
-def test_warm_up_skips_build_when_fleet_already_exists(monkeypatch) -> None:
-    # If an on-demand call already built the fleet, the warm-up must not build a
-    # second one. The old design built a duplicate off-lock and shut it down;
-    # _build_fleet_once now serializes so no duplicate is ever created.
-    winner = _fake_fleet({})
-    built = {"n": 0}
-
-    def _build(*_a) -> object:
-        built["n"] += 1
-        return _fake_fleet({})
-
-    monkeypatch.setattr(planning_mod, "build_fleet", _build)
-    p = FleetProvider()
-    p._fleet = winner
-    p._warm_up_blocking()
-    assert p._fleet is winner
-    assert built["n"] == 0  # no second build, nothing to discard
+def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
+    chat, embed = _fake_client(), _fake_client()
+    embed.embed.return_value = [[0.1]]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    spawning: list[WorkerRole] = []
+    spawned: list[WorkerRole] = []
+    p.add_spawn_listener(on_spawning=spawning.append, on_spawned=spawned.append)
+    p._preload_roles()
+    chat.chat.assert_called_once()  # chat warmed with a minimal completion
+    embed.embed.assert_called_once()  # embed warmed
+    assert set(spawning) == {WorkerRole.CHAT, WorkerRole.EMBED}
+    assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
 
-def test_role_ready_false_without_fleet() -> None:
+def test_preload_roles_skips_failing_role(monkeypatch) -> None:
+    embed = _fake_client()
+    embed.embed.side_effect = RuntimeError("not loaded")
+    p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+    p._preload_roles()  # a per-role warm failure must not raise
+    embed.embed.assert_called_once()
+
+
+def test_warm_role_dispatches_per_role() -> None:
+    chat, embed, rerank, vision = (_fake_client() for _ in range(4))
+    prov_mod._warm_role(WorkerRole.CHAT, chat)
+    prov_mod._warm_role(WorkerRole.EMBED, embed)
+    prov_mod._warm_role(WorkerRole.RERANK, rerank)
+    prov_mod._warm_role(WorkerRole.VISION, vision)  # vision warms lazily -> no call
+    chat.chat.assert_called_once()
+    embed.embed.assert_called_once_with([prov_mod._WARM_PROMPT])
+    rerank.rerank.assert_called_once()
+    vision.chat.assert_not_called()
+    vision.embed.assert_not_called()
+
+
+def test_role_ready_false_without_swap() -> None:
     assert FleetProvider().role_ready(WorkerRole.CHAT) is False
 
 
-def test_role_ready_reflects_healthy_clients() -> None:
-    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+def test_role_ready_reflects_swap_running_state() -> None:
+    p = FleetProvider()
+    swap = _FakeSwap()
+    swap.ready = {WorkerRole.CHAT}
+    p._swap = swap
     assert p.role_ready(WorkerRole.CHAT) is True
     assert p.role_ready(WorkerRole.EMBED) is False
 
 
-def test_drop_loaded_models_async_tears_down_off_thread(monkeypatch) -> None:
+def test_drop_loaded_models_async_tears_down_off_thread() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    fleet = p._fleet
+    swap = p._swap
     p.drop_loaded_models_async()
-    assert _wait_until(lambda: p._fleet is None)
-    fleet.shutdown.assert_called_once()
+    assert _wait_until(lambda: p._swap is None)
+    assert swap.shutdowns == 1
 
 
-def test_drop_loaded_models_async_noop_without_fleet() -> None:
-    p = FleetProvider()  # _fleet is None
+def test_drop_loaded_models_async_noop_without_swap() -> None:
+    p = FleetProvider()  # _swap is None
     p.drop_loaded_models_async()  # must not raise or spawn a thread
-    assert p._fleet is None
-
-
-def test_server_clients_builds_fleet_once(monkeypatch) -> None:
-    calls = {"n": 0}
-    fleet = _fake_fleet({WorkerRole.CHAT: [_fake_client()]})
-
-    def _fake_build(*_listeners) -> object:
-        calls["n"] += 1
-        return fleet
-
-    monkeypatch.setattr(planning_mod, "build_fleet", _fake_build)
-    p = FleetProvider()
-    assert len(p._server_clients(WorkerRole.CHAT)) == 1
-    p._server_clients(WorkerRole.EMBED)  # second call must not rebuild
-    assert calls["n"] == 1
+    assert p._swap is None
 
 
 def test_apply_fleet_gpu_env_skips_autoselect(monkeypatch) -> None:
@@ -685,75 +744,10 @@ def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
 def test_routing_provider_local_engine_is_fleet() -> None:
     # The fleet is the sole local engine now: AUTO routes local refs through
     # RoutingProvider, whose local engine is a FleetProvider (a single machine
-    # is a fleet-of-one). Construction is side-effect-free; no fleet is spawned.
+    # is a fleet-of-one). Construction is side-effect-free; no swap is started.
     from lilbee.providers.routing_provider import RoutingProvider
 
     assert isinstance(RoutingProvider()._get_local(), FleetProvider)
-
-
-class TestLifecycleMethods:
-    def test_cancel_inference_is_noop(self) -> None:
-        # llama-server stops on client disconnect; cancel has nothing to flip.
-        assert _provider_with_clients({}).cancel_inference() is None
-
-    def test_reload_role_noop_when_fleet_not_built(self, monkeypatch) -> None:
-        spawned = {"thread": False}
-        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
-        p = FleetProvider()  # _fleet is None
-        p.reload_role(WorkerRole.EMBED)
-        assert spawned["thread"] is False  # no background restart dispatched
-
-    def test_reload_role_dispatches_background_restart(self) -> None:
-        done = threading.Event()
-        p = FleetProvider()
-        p._fleet = _fake_fleet({})  # non-None so reload dispatches
-        p._reload_role_blocking = lambda role: done.set()  # type: ignore[method-assign]
-        p.reload_role(WorkerRole.EMBED)
-        assert done.wait(timeout=2.0)  # the spawned thread ran the blocking restart
-
-    def test_reload_role_blocking_restarts_only_that_role(self, monkeypatch) -> None:
-        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(
-            prov_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
-        )
-        monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b: [device])
-        launch = MagicMock()
-        monkeypatch.setattr(planning_mod, "plan_launches", lambda roles, *_a: [launch])
-        fleet = MagicMock()
-        p = FleetProvider()
-        p._fleet = fleet
-        p._reload_role_blocking(WorkerRole.EMBED)
-        fleet.restart_role.assert_called_once_with(WorkerRole.EMBED, [launch])
-
-    def test_reload_role_blocking_noop_when_fleet_cleared(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            prov_mod, "resolve_llama_server", lambda: Path("/bin/llama-server")
-        )
-        monkeypatch.setattr(planning_mod, "resolve_devices", lambda _b: [])
-        monkeypatch.setattr(planning_mod, "plan_launches", lambda *_a: [])
-        p = FleetProvider()  # _fleet stays None
-        p._reload_role_blocking(WorkerRole.EMBED)  # must not raise
-
-    def test_add_spawn_listener_stores_callbacks(self) -> None:
-        p = FleetProvider()  # no fleet yet
-
-        def on_spawning(_r: WorkerRole) -> None: ...
-
-        def on_spawned(_r: WorkerRole) -> None: ...
-
-        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
-        assert p._on_spawning is on_spawning
-        assert p._on_spawned is on_spawned
-
-    def test_add_spawn_listener_attaches_to_running_fleet(self) -> None:
-        fleet = MagicMock()
-        p = FleetProvider()
-        p._fleet = fleet
-
-        def on_spawning(_r: WorkerRole) -> None: ...
-
-        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=None)
-        fleet.set_listener.assert_called_once_with(on_spawning=on_spawning, on_spawned=None)
 
 
 def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
@@ -767,8 +761,57 @@ def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> No
     assert FleetProvider().get_capabilities("missing/model.gguf") == ["completion"]
 
 
+class TestLifecycleMethods:
+    def test_cancel_inference_is_noop(self) -> None:
+        # llama-server stops on client disconnect; cancel has nothing to flip.
+        assert _provider_with_clients({}).cancel_inference() is None
+
+    def test_reload_role_noop_when_swap_not_up(self, monkeypatch) -> None:
+        spawned = {"thread": False}
+        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
+        p = FleetProvider()  # _swap is None
+        p.reload_role(WorkerRole.EMBED)
+        assert spawned["thread"] is False  # no background restart dispatched
+
+    def test_reload_role_dispatches_background_restart(self) -> None:
+        done = threading.Event()
+        p = FleetProvider()
+        p._swap = _FakeSwap()  # non-None so reload dispatches
+        p._reload_blocking = lambda: done.set()  # type: ignore[method-assign]
+        p.reload_role(WorkerRole.EMBED)
+        assert done.wait(timeout=2.0)  # the spawned thread ran the blocking restart
+
+    def test_reload_blocking_restarts_swap_and_readopts(self, monkeypatch) -> None:
+        launches = [_fake_launch(WorkerRole.CHAT, slots=2, ctx=4096)]
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: launches)
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m: _fake_client())
+        p = FleetProvider()
+        swap = _FakeSwap()
+        p._swap = swap
+        p._reload_blocking()
+        assert swap.reloads == 1
+        assert p._chat_slots == 2  # capacity re-adopted from the new launch set
+        assert set(p._clients) == {WorkerRole.CHAT}
+
+    def test_reload_blocking_noop_when_swap_cleared(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p = FleetProvider()  # _swap stays None
+        p._reload_blocking()  # must not raise
+
+    def test_add_spawn_listener_stores_callbacks(self) -> None:
+        p = FleetProvider()
+
+        def on_spawning(_r: WorkerRole) -> None: ...
+
+        def on_spawned(_r: WorkerRole) -> None: ...
+
+        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        assert p._on_spawning is on_spawning
+        assert p._on_spawned is on_spawned
+
+
 class TestChatWithTools:
-    def test_routes_to_least_busy_chat_server(self) -> None:
+    def test_routes_to_chat_server(self) -> None:
         from lilbee.providers.base import ChatToolResult, ToolCall
 
         client = _fake_client(0)
@@ -801,64 +844,23 @@ class TestChatWithTools:
             p.chat_with_tools([], tools=[], model="org/repo/other.gguf")
 
 
-class TestLazyRoleSpawn:
-    """The provider brings up a role only when it is first used; a warm role
-    skips the spawn path entirely, and warm-up brings up everything."""
-
-    def test_server_clients_spawns_only_the_requested_role(self) -> None:
-        up: dict[WorkerRole, list] = {}
-        client = _fake_client()
-        fleet = MagicMock()
-        fleet.healthy_clients.side_effect = lambda role: up.get(role, [])
-        fleet.ensure_role.side_effect = lambda role: up.setdefault(role, []).append(client)
-        p = FleetProvider()
-        p._fleet = fleet  # non-None so _server_clients won't try to build
-
-        clients = p._server_clients(WorkerRole.EMBED)
-
-        assert clients == [client]
-        fleet.ensure_role.assert_called_once_with(WorkerRole.EMBED)  # chat never brought up
-        assert WorkerRole.CHAT not in up
-
-    def test_server_clients_warm_role_skips_spawn(self) -> None:
-        client = _fake_client()
-        fleet = MagicMock()
-        fleet.healthy_clients.side_effect = lambda role: (
-            [client] if role is WorkerRole.EMBED else []
-        )
-        p = FleetProvider()
-        p._fleet = fleet
-
-        assert p._server_clients(WorkerRole.EMBED) == [client]
-        fleet.ensure_role.assert_not_called()  # already warm -> no spawn-lock path
-
-    def test_warm_up_brings_up_all_roles(self, monkeypatch) -> None:
-        fleet = MagicMock()
-        monkeypatch.setattr(planning_mod, "build_fleet", lambda *_a: fleet)
-        p = FleetProvider()
-
-        p._warm_up_blocking()  # the warm_up_pool thread target, run synchronously
-
-        fleet.ensure_all.assert_called_once()
-
-
 class TestChatCapacityAndCtxGetters:
-    """max_concurrent_chats / served_chat_ctx defer to the fleet once it is up."""
+    """max_concurrent_chats / served_chat_ctx read the chat launch once the swap is up."""
 
-    def test_max_concurrent_chats_defaults_to_one_before_fleet(self) -> None:
+    def test_max_concurrent_chats_defaults_to_one_before_swap(self) -> None:
         assert FleetProvider().max_concurrent_chats() == 1
 
-    def test_max_concurrent_chats_reads_slot_capacity_when_up(self) -> None:
+    def test_max_concurrent_chats_reads_chat_slots_when_up(self) -> None:
         p = FleetProvider()
-        p._fleet = MagicMock()
-        p._fleet.chat_slot_capacity.return_value = 4
+        p._swap = _FakeSwap()
+        p._chat_slots = 4
         assert p.max_concurrent_chats() == 4
 
-    def test_served_chat_ctx_is_none_before_fleet(self) -> None:
+    def test_served_chat_ctx_is_none_before_swap(self) -> None:
         assert FleetProvider().served_chat_ctx() is None
 
-    def test_served_chat_ctx_reads_served_ctx_when_up(self) -> None:
+    def test_served_chat_ctx_reads_chat_ctx_when_up(self) -> None:
         p = FleetProvider()
-        p._fleet = MagicMock()
-        p._fleet.chat_served_ctx.return_value = 32768
+        p._swap = _FakeSwap()
+        p._chat_ctx = 32768
         assert p.served_chat_ctx() == 32768

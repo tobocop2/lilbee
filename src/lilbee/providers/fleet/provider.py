@@ -1,11 +1,11 @@
 """FleetProvider: the local llama-server engine for every role.
 
-On first use it plans GPU placement and spawns one llama-server per configured
-role (chat/embed/rerank/vision), then routes each call to the least-busy healthy
-server for that role. A single machine is a fleet-of-one; there is no in-process
-fallback, so a missing or unhealthy server surfaces a user-facing
-``ProviderError``. Model management (list/show/capabilities) reads the registry
-and GGUF headers directly and needs no running server.
+On first use it plans GPU placement and starts one llama-swap process that fronts
+a llama-server per configured role (chat/embed/rerank/vision) co-resident behind a
+single OpenAI endpoint; each call routes to that endpoint by role id. There is no
+in-process fallback, so a missing role surfaces a user-facing ``ProviderError``.
+Model management (list/show/capabilities) reads the registry and GGUF headers
+directly and needs no running server.
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import resolve_llama_server
 from lilbee.providers.fleet.client import LlamaServerClient
-from lilbee.providers.fleet.fleet import Fleet
+from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -38,9 +37,14 @@ if TYPE_CHECKING:
         OcrBackend,
         PageText,
     )
+    from lilbee.providers.fleet.fleet import InstanceLaunch
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
+# Minimal input used to pre-load a role's upstream during warm-up (llama-swap
+# starts an upstream on its first request, so warming issues one cheap call).
+_WARM_PROMPT = "warm"
+_WARM_MAX_TOKENS = 1
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -51,6 +55,24 @@ _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     """Pick the healthy client with the fewest in-flight requests."""
     return min(clients, key=lambda c: c.in_flight)
+
+
+def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
+    """Send the cheapest request that loads *role*'s upstream behind llama-swap.
+
+    Vision is skipped (its load is heavy and it warms on the first OCR); chat,
+    embed, and rerank each issue a minimal call to trigger the upstream start.
+    """
+    if role is WorkerRole.CHAT:
+        client.chat(
+            [{"role": "user", "content": _WARM_PROMPT}],
+            options={"max_tokens": _WARM_MAX_TOKENS},
+            stream=False,
+        )
+    elif role is WorkerRole.EMBED:
+        client.embed([_WARM_PROMPT])
+    elif role is WorkerRole.RERANK:
+        client.rerank(_WARM_PROMPT, [_WARM_PROMPT])
 
 
 @functools.lru_cache(maxsize=32)
@@ -119,112 +141,131 @@ class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
     def __init__(self) -> None:
-        self._fleet: Fleet | None = None
+        self._swap: SwapManager | None = None
+        # One OpenAI client per placed role, all pointed at the llama-swap endpoint
+        # and routed by model id; rebuilt whenever the swap process (re)starts.
+        self._clients: dict[WorkerRole, LlamaServerClient] = {}
+        # Chat batching slots and per-slot context from the chat launch, surfaced to
+        # the concurrency gate and clients; defaults until the swap is up.
+        self._chat_slots = 1
+        self._chat_ctx: int | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
-        # first-requests must not each build a fleet (double GPU allocation) or
+        # first-requests must not each start a swap (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
         self._lock = threading.RLock()
-        # Serializes the slow fleet build (GPU probe + GGUF metadata + spawn) across
-        # concurrent callers -- the off-thread warm-up and an on-demand build must
-        # not run build_fleet at once (double GPU alloc + concurrent GGUF parsing
-        # thrash). Held only during the build, NOT while routing, so role_ready and
-        # existing-fleet routing stay responsive during a cold start.
+        # Serializes the slow startup (GPU probe + GGUF parse + llama-swap spawn)
+        # across concurrent callers, so the off-thread warm-up and an on-demand call
+        # can't start two swaps. Held only during startup, NOT while routing.
         self._build_lock = threading.Lock()
         # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
-        # so they survive a fleet rebuild and attach to every fleet we construct.
+        # so warm-up can report per-role progress as it pre-loads each upstream.
         self._on_spawning: Callable[[WorkerRole], None] | None = None
         self._on_spawned: Callable[[WorkerRole], None] | None = None
         # Single-flight guard for the off-thread warm-up: True from the moment a
-        # build thread is dispatched until it finishes, so a second warm_up_pool
-        # (re-entry, or a call landing during the spawn) never starts a second
-        # build and double-allocates GPU memory.
+        # warm thread is dispatched until it finishes, so a second warm_up_pool
+        # never starts a second swap and double-allocates GPU memory.
         self._warming = False
 
-    def _server_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
-        with self._lock:
-            fleet = self._fleet
-        if fleet is None:
-            fleet = self._build_fleet_once()
-        # Hot path: a warm role returns without touching the spawn lock. Only a
-        # role with no healthy server yet is brought up (lazily) on demand.
-        clients = fleet.healthy_clients(role)
-        if clients:
-            return clients
-        fleet.ensure_role(role)
-        return fleet.healthy_clients(role)
+    def _ensure_swap(self) -> SwapManager:
+        """Start the llama-swap process exactly once across concurrent callers.
 
-    def _build_fleet_once(self) -> Fleet:
-        """Build the fleet exactly once across concurrent callers; return it.
-
-        The build runs under ``_build_lock`` (not the routing lock), so the
-        off-thread warm-up and an on-demand call can't run ``build_fleet``
-        concurrently -- which would double-allocate GPU and make two threads
-        parse the same GGUF metadata at once. A second caller blocks on the
-        build lock and reuses the fleet the first one built.
+        The startup runs under ``_build_lock`` (not the routing lock), so the
+        off-thread warm-up and an on-demand call can't start two swaps -- which
+        would double-allocate GPU and parse the same GGUF twice. A second caller
+        blocks on the build lock and reuses the swap the first one started.
         """
+        with self._lock:
+            if self._swap is not None:
+                return self._swap
         with self._build_lock:
             with self._lock:
-                if self._fleet is not None:
-                    return self._fleet
-            fleet = planning.build_fleet(self._on_spawning, self._on_spawned)
+                if self._swap is not None:
+                    return self._swap
+            from lilbee.core.config import cfg
+
+            launches = planning.plan_all_launches()
+            swap = SwapManager(cfg.data_dir)
+            swap.start(launches)
             with self._lock:
-                self._fleet = fleet
-            return fleet
+                self._adopt_swap(swap, launches)
+            return swap
+
+    def _adopt_swap(self, swap: SwapManager, launches: list[InstanceLaunch]) -> None:
+        """Record a freshly started swap and build a client per placed role.
+
+        Caller holds ``self._lock``. ``launches`` carries each role's slots/ctx so
+        the chat capacity and served context come from the launch, not a probe.
+        """
+        self._swap = swap
+        endpoint = swap.endpoint()
+        self._clients = {
+            launch.role: LlamaServerClient(endpoint, launch.role.value) for launch in launches
+        }
+        chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
+        self._chat_slots = chat.slots if chat is not None else 1
+        self._chat_ctx = chat.ctx if chat is not None else None
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
-        """Healthy clients for *role*, or a user-facing error when none are up.
+        """The client for *role*, or a user-facing error when it has no server.
 
-        A configured role always gets a server; an empty result means the role
-        is unconfigured or its server failed to start. There is no in-process
-        fallback, so this is a hard error.
+        A configured, placeable role gets a client; its absence means the role is
+        unconfigured or did not fit memory. llama-swap loads the upstream on the
+        first request, so a returned client may still be cold. No in-process
+        fallback, so a missing client is a hard error.
         """
         from lilbee.providers.base import ProviderError
 
-        clients = self._server_clients(role)
-        if not clients:
+        self._ensure_swap()
+        with self._lock:
+            client = self._clients.get(role)
+        if client is None:
             raise ProviderError(
                 f"No {role.value} model server is running. Make sure a {role.value} "
                 "model is installed and configured, then try again.",
                 provider=_PROVIDER_NAME,
             )
-        return clients
+        return [client]
 
     def role_ready(self, role: WorkerRole) -> bool:
-        """Whether *role* has a healthy server right now, without building the fleet.
+        """Whether *role*'s upstream is loaded and ready, without starting the swap.
 
         A read-only probe for surfaces (HTTP status, SSE warming event) that want
-        to report cold-start state without triggering a spawn. False while the
-        fleet is still warming up or the role's server is mid-(re)start.
+        to report cold-start state without triggering a load. False before the swap
+        is up or while the role's upstream is still loading.
         """
         with self._lock:
-            if self._fleet is None:
-                return False
-            return bool(self._fleet.healthy_clients(role))
+            swap = self._swap
+        return swap is not None and swap.role_ready(role)
 
     def max_concurrent_chats(self) -> int:
         """The chat server's batching-slot capacity, so the gate admits that many.
 
-        Falls back to ``1`` before the fleet is up, so chat is serialized until
-        the slot count is known (the launcher warms the fleet before a client
+        Falls back to ``1`` before the swap is up, so chat is serialized until the
+        slot count is known (the launcher warms the engine before a client
         connects, so the real capacity is in effect by the first chat).
         """
         with self._lock:
-            if self._fleet is None:
+            if self._swap is None:
                 return 1
-            return self._fleet.chat_slot_capacity()
+            return self._chat_slots
 
     def served_chat_ctx(self) -> int | None:
-        """Per-slot context the ready chat server runs with, or None if not up."""
+        """Per-slot context the chat server runs with, or None if not up."""
         with self._lock:
-            if self._fleet is None:
-                return None
-            return self._fleet.chat_served_ctx()
+            return self._chat_ctx if self._swap is not None else None
 
-    def _shutdown_fleet(self) -> None:
+    def _shutdown_swap(self) -> None:
         with self._lock:
-            if self._fleet is not None:
-                self._fleet.shutdown()
-                self._fleet = None
+            swap = self._swap
+            clients = list(self._clients.values())
+            self._swap = None
+            self._clients = {}
+            self._chat_slots = 1
+            self._chat_ctx = None
+        for client in clients:
+            client.close()
+        if swap is not None:
+            swap.shutdown()
 
     def _require_configured_model(self, model: str | None, configured: str, role: str) -> None:
         """Reject a per-call model that differs from the server's configured one.
@@ -507,16 +548,16 @@ class FleetProvider:
         return _supports_tools_cached(str(path), mtime_ns)
 
     def warm_up_pool(self) -> None:
-        """Spawn every configured role server off the caller's thread (idempotent).
+        """Pre-load every configured role off the caller's thread (idempotent).
 
-        Loading every role's model (seconds on a cold large model) runs on a
-        background thread and this returns at once: the eager-start at TUI mount
-        must not freeze the UI. The spawn listeners still fire during the build,
-        so the UI shows per-role progress. A second call while a build is in
-        flight (or once the fleet is up) is a no-op.
+        Starting the swap and loading each role's model (seconds on a cold large
+        model) runs on a background thread and this returns at once: the eager-start
+        at TUI mount must not freeze the UI. The spawn listeners fire per role as it
+        loads, so the UI shows progress. A second call while warm-up is in flight
+        (or once the swap is up) is a no-op.
         """
         with self._lock:
-            if self._fleet is not None or self._warming:
+            if self._swap is not None or self._warming:
                 return
             self._warming = True
         threading.Thread(
@@ -526,19 +567,40 @@ class FleetProvider:
         ).start()
 
     def _warm_up_blocking(self) -> None:
-        """Build the fleet and bring up all roles on a background thread.
+        """Start the swap and pre-load every role on a background thread.
 
-        Runs on a daemon thread with no caller to catch failures, so a build
-        error is logged and swallowed: a role that can't spawn surfaces a
+        Runs on a daemon thread with no caller to catch failures, so a startup
+        error is logged and swallowed: a role that can't load surfaces a
         user-facing ProviderError on the next call, not a thread traceback.
         """
         try:
-            self._build_fleet_once().ensure_all()
+            self._ensure_swap()
+            self._preload_roles()
         except Exception:
-            log.warning("Fleet warm-up failed; roles will spawn on first use.", exc_info=True)
+            log.warning("Engine warm-up failed; roles will load on first use.", exc_info=True)
         finally:
             with self._lock:
                 self._warming = False
+
+    def _preload_roles(self) -> None:
+        """Issue one cheap request per role so llama-swap loads its upstream now.
+
+        llama-swap starts an upstream on its first request, so warming sends a
+        minimal call per role (firing the spawn listeners around each). A per-role
+        failure is logged and skipped; the role still loads on its first real use.
+        """
+        with self._lock:
+            clients = dict(self._clients)
+            on_spawning, on_spawned = self._on_spawning, self._on_spawned
+        for role, client in clients.items():
+            if on_spawning is not None:
+                on_spawning(role)
+            try:
+                _warm_role(role, client)
+            except Exception:
+                log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
+            if on_spawned is not None:
+                on_spawned(role)
 
     def cancel_inference(self) -> None:
         """No-op: a llama-server stops generating when its client disconnects.
@@ -549,32 +611,32 @@ class FleetProvider:
         return
 
     def reload_role(self, role: WorkerRole) -> None:
-        """Respawn just *role*'s server(s) with current cfg; other roles keep running.
+        """Apply a model/settings change for *role* with current cfg.
 
-        Dispatched to a background thread because the slow respawn (stop + spawn +
-        wait-ready) must not block the settings/model-picker callback that calls
-        this. If the fleet isn't built yet, the next use builds it with current cfg.
+        Dispatched to a background thread because the slow restart (rewrite config +
+        respawn + wait-ready) must not block the settings/model-picker callback.
+        llama-swap reloads the whole proxy, so every role is re-planned. If the swap
+        isn't up yet, the next use starts it with current cfg.
         """
         with self._lock:
-            if self._fleet is None:
+            if self._swap is None:
                 return
         threading.Thread(
-            target=self._reload_role_blocking,
-            args=(role,),
+            target=self._reload_blocking,
             name=f"fleet-reload-{role.value}",
             daemon=True,
         ).start()
 
-    def _reload_role_blocking(self, role: WorkerRole) -> None:
-        """Re-plan and respawn one role's server(s); runs off the caller's thread."""
-        binary = resolve_llama_server()
-        devices = planning.resolve_devices(binary)
-        by_index = {d.index: d for d in devices}
-        launches = planning.plan_launches((role,), binary, by_index, devices)
+    def _reload_blocking(self) -> None:
+        """Re-plan all roles and restart llama-swap; runs off the caller's thread."""
+        launches = planning.plan_all_launches()
         with self._lock:
-            fleet = self._fleet
-        if fleet is not None:
-            fleet.restart_role(role, launches)
+            swap = self._swap
+        if swap is None:
+            return
+        swap.reload(launches)
+        with self._lock:
+            self._adopt_swap(swap, launches)
 
     def add_spawn_listener(
         self,
@@ -582,33 +644,31 @@ class FleetProvider:
         on_spawning: Callable[[WorkerRole], None] | None = None,
         on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
-        """Store spawn-lifecycle callbacks and attach them to the running fleet."""
+        """Store spawn-lifecycle callbacks; warm-up fires them as each role loads."""
         with self._lock:
             self._on_spawning = on_spawning
             self._on_spawned = on_spawned
-            if self._fleet is not None:
-                self._fleet.set_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
-        """A model or settings change respawns the affected servers: drop the fleet."""
-        del model_path  # the whole fleet respawns on next use; no per-model scope.
-        self._shutdown_fleet()
+        """A model or settings change restarts the engine: drop the swap."""
+        del model_path  # the whole engine restarts on next use; no per-model scope.
+        self._shutdown_swap()
 
     def drop_loaded_models_async(self) -> None:
-        """Drop the whole fleet off the caller's thread; next use rebuilds with current cfg.
+        """Drop the swap off the caller's thread; next use restarts with current cfg.
 
-        ``_shutdown_fleet`` stops every server and waits on each process group,
-        so a role-agnostic load-key change (num_ctx, kv_cache_type) routes here
-        rather than blocking the settings callback. A no-op when no fleet is up.
+        ``_shutdown_swap`` stops llama-swap and waits on its process group, so a
+        role-agnostic load-key change (num_ctx, kv_cache_type) routes here rather
+        than blocking the settings callback. A no-op when no swap is up.
         """
         with self._lock:
-            if self._fleet is None:
+            if self._swap is None:
                 return
         threading.Thread(
-            target=self._shutdown_fleet,
+            target=self._shutdown_swap,
             name="fleet-drop",
             daemon=True,
         ).start()
 
     def shutdown(self) -> None:
-        self._shutdown_fleet()
+        self._shutdown_swap()

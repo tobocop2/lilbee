@@ -513,21 +513,29 @@ def plan_launches(
     ]
 
 
+def plan_all_launches() -> list[InstanceLaunch]:
+    """Apply GPU env, probe devices, and plan launches for every configured role.
+
+    Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any
+    ``cfg.gpu_devices`` pin before the probe and plan (both inherit the env).
+    """
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    apply_fleet_gpu_env()
+    binary = resolve_llama_server()
+    devices = resolve_devices(binary)
+    by_index = {d.index: d for d in devices}
+    return plan_launches(None, binary, by_index, devices)
+
+
 def build_fleet(
     on_spawning: Callable[[WorkerRole], None] | None = None,
     on_spawned: Callable[[WorkerRole], None] | None = None,
 ) -> Fleet:
     """Resolve devices via the binary, plan placement, spawn and monitor the fleet."""
     from lilbee.core.config import cfg
-    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
-    # Disable crash-prone Vulkan layers / dual-vendor ICDs and apply any
-    # cfg.gpu_devices pin before the device probe and spawn (both inherit env).
-    apply_fleet_gpu_env()
-    binary = resolve_llama_server()
-    devices = resolve_devices(binary)
-    by_index = {d.index: d for d in devices}
-    launches = plan_launches(None, binary, by_index, devices)
+    launches = plan_all_launches()
     fleet = Fleet(data_dir=cfg.data_dir, on_spawning=on_spawning, on_spawned=on_spawned)
     # Plan joint placement for every role, but spawn none: the provider brings up
     # each role on first use (warm_up_pool brings up all).
