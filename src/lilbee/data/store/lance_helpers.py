@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.runtime.lock import write_lock
 
-from .types import ChunkType
+from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
     import lancedb
@@ -72,6 +72,16 @@ def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
 def escape_sql_string(value: str) -> str:
     """Escape single quotes for SQL predicates."""
     return value.replace("\\", "\\\\").replace("'", "''")
+
+
+def local_owner_predicate() -> str:
+    """SQL predicate selecting the local human's memories."""
+    return f"owner = '{LOCAL_OWNER}'"
+
+
+def agent_recall_predicate(owner: str) -> str:
+    """SQL predicate for an agent: its own memories plus the human's shared ones."""
+    return f"owner = '{escape_sql_string(owner)}' OR (shared = true AND owner = '{LOCAL_OWNER}')"
 
 
 def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:

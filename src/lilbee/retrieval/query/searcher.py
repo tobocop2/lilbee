@@ -13,13 +13,13 @@ from typing_extensions import TypedDict
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.store import (
-    LOCAL_OWNER,
     ChunkType,
     MemoryKind,
     MemoryRow,
     SearchChunk,
     Store,
     cosine_sim,
+    local_owner_predicate,
 )
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.embedder import Embedder
@@ -438,7 +438,7 @@ class Searcher:
         """
         if not self._config.memory_enabled:
             return ""
-        owner_predicate = f"owner = '{LOCAL_OWNER}'"
+        owner_predicate = local_owner_predicate()
         preferences = self._store.get_memories(
             owner_predicate=owner_predicate,
             kind=MemoryKind.PREFERENCE,
