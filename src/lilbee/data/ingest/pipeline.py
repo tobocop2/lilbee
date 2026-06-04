@@ -232,6 +232,11 @@ async def sync(
 
     if force_rebuild:
         _store.drop_all()
+        # drop_all preserves the memories table, so refresh its vectors under the
+        # (possibly changed) embedding model. No-op when empty or no embedder.
+        _embedder = get_services().embedder
+        if _embedder.embedding_available():
+            _store.rebuild_memory_embeddings(lambda texts: _embedder.embed_batch(texts))
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
