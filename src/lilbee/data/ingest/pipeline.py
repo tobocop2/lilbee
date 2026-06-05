@@ -279,6 +279,7 @@ async def sync(
 
     if files_to_process or removed:
         _store.ensure_fts_index()
+        _store.ensure_vector_index()
         await _rebuild_concept_clusters()
         # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
         # post-ingest hook stays function-local at this boundary.
