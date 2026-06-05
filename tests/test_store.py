@@ -208,6 +208,16 @@ class TestEnsureVectorIndex:
         ):
             assert store.ensure_vector_index(force=True) is False
 
+    def test_has_vector_index_swallows_list_indices_errors(self, store):
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with mock.patch.object(
+            type(table), "list_indices", side_effect=RuntimeError("backend down")
+        ):
+            assert _has_vector_index(table) is False
+
 
 class TestHasFtsIndex:
     def test_returns_false_on_fresh_table(self, store):

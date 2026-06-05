@@ -394,6 +394,13 @@ class TestUseEmbedderCommand:
         assert result.exit_code == 1
         assert "no such model" in result.output
 
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_failure_json(self, mock_adopt, mock_svc):
+        mock_adopt.side_effect = RuntimeError("no such model")
+        result = runner.invoke(app, ["--json", "use-embedder", "bogus/ref.gguf"])
+        assert result.exit_code == 1
+        assert json.loads(result.output)["error"] == "no such model"
+
 
 class TestIndexCommand:
     def test_index_builds_search_indexes(self, mock_svc):
