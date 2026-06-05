@@ -210,6 +210,21 @@ EMBED_SWAP_CONFIRM_MESSAGE = (
 EMBED_SWAP_CANCELLED = "Embedding model swap cancelled"
 MODEL_ASSIGN_REJECTED = "Model not set: {error}"
 
+EMBED_ADOPT_CONFIRM_TITLE = "Use this index's embedder?"
+EMBED_ADOPT_CONFIRM_MESSAGE = (
+    "This index was built with embedding model '{model}'. Use it for this vault? "
+    "lilbee will download it if needed and switch to it. No rebuild is required."
+)
+EMBED_ADOPT_NOTICE = "This index was built with a different embedder ('{model}')."
+EMBED_ADOPT_REBUILD_NOTICE = (
+    "This index needs a {dim}-dim embedder. Rebuild it (press S to sync, or run "
+    "`lilbee rebuild`) to use your current model."
+)
+EMBED_ADOPTING = "Switching to embedder '{model}'..."
+EMBED_ADOPTED = "Now embedding with '{model}'."
+EMBED_ADOPT_FAILED = "Could not adopt embedder: {error}"
+EMBED_ADOPT_CANCELLED = "Kept the current embedder."
+
 SETTINGS_RESET_ALL_LABEL = "Reset all defaults"
 SETTINGS_RESET_ALL_CONFIRM_TITLE = "Reset all settings?"
 SETTINGS_RESET_ALL_CONFIRM_MESSAGE = (

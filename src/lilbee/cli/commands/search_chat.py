@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 from rich.table import Table
@@ -30,11 +31,39 @@ from lilbee.cli.helpers import (
     json_output,
 )
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchScope, scope_to_chunk_type
+from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
 _TOPIC_PREVIEW_LIMIT = 5
+
+_EMBED_MISMATCH_ADOPT_HINT = (
+    "Run `lilbee use-embedder {model}` to search this index with its embedder."
+)
+_EMBED_MISMATCH_REBUILD_HINT = (
+    "This index needs a {dim}-dim embedder; run `lilbee rebuild` to re-embed it "
+    "under your current model."
+)
+
+
+def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
+    """Print a surface-appropriate mismatch error and exit non-zero.
+
+    Headless: never switches embedder silently. Names the index's embedder and,
+    when adoptable (same dim), the one command that makes it searchable.
+    """
+    hint = (
+        _EMBED_MISMATCH_ADOPT_HINT.format(model=exc.persisted_model)
+        if exc.dims_match
+        else _EMBED_MISMATCH_REBUILD_HINT.format(dim=exc.persisted_dim)
+    )
+    if cfg.json_mode:
+        json_output({"error": str(exc), "hint": hint, "persisted_model": exc.persisted_model})
+        raise SystemExit(1)
+    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+    console.print(hint)
+    raise SystemExit(1)
+
 
 _scope_option = typer.Option(
     SearchScope.BOTH,
@@ -68,6 +97,8 @@ def search(
             top_k=top_k or cfg.top_k,
             chunk_type=scope_to_chunk_type(scope),
         )
+    except EmbeddingModelMismatchError as exc:
+        _exit_embedding_mismatch(exc)
     except Exception as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -159,12 +190,44 @@ def ask(
         for token in get_services().searcher.ask_stream(question, chunk_type=chunk_type):
             console.print(token.content, end="")
         console.print()
+    except EmbeddingModelMismatchError as exc:
+        _exit_embedding_mismatch(exc)
     except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
+
+
+def use_embedder(
+    ref: str = typer.Argument(
+        ..., help="Embedding model ref to adopt (copy it from a downloaded index's error)."
+    ),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Switch to embedder REF, downloading it if needed, without rebuilding the index."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+
+    from lilbee.app.models import adopt_embedder
+    from lilbee.catalog.compat import UnsupportedArchError
+
+    try:
+        result = adopt_embedder(ref)
+    except (RuntimeError, ValueError, OSError, UnsupportedArchError) as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        raise SystemExit(1) from None
+
+    if cfg.json_mode:
+        json_output(
+            {"command": "use-embedder", "model": result.model, "status": result.status.value}
+        )
+        return
+    console.print(f"Now embedding with [{theme.ACCENT}]{result.model}[/{theme.ACCENT}].")
 
 
 def chat(

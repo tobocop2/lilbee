@@ -60,7 +60,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.store import ChunkType, scope_to_chunk_type
+from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
@@ -1096,7 +1096,13 @@ class ChatScreen(Screen[None]):
     def _stream_response(
         self, question: str, widget: AssistantMessage, chunk_type: ChunkType | None
     ) -> None:
-        """Stream LLM response in a background thread, coalescing UI updates."""
+        """Schedule the response stream on a background thread."""
+        self._do_stream_response(question, widget, chunk_type)
+
+    def _do_stream_response(
+        self, question: str, widget: AssistantMessage, chunk_type: ChunkType | None
+    ) -> None:
+        """Stream LLM response, coalescing UI updates. Worker thread."""
         response_parts: list[str] = []
         sources: list[str] = []
         stream: Any = None
@@ -1107,6 +1113,9 @@ class ChatScreen(Screen[None]):
                 question, history=history_snapshot, chunk_type=chunk_type
             )
             self._consume_stream(stream, widget, response_parts)
+        except EmbeddingModelMismatchError as exc:
+            with contextlib.suppress(Exception):
+                call_from_thread(self, self._on_embedding_mismatch, exc, question, widget)
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
             with contextlib.suppress(Exception):
@@ -1114,6 +1123,52 @@ class ChatScreen(Screen[None]):
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
+
+    def _on_embedding_mismatch(
+        self, exc: EmbeddingModelMismatchError, question: str, widget: AssistantMessage
+    ) -> None:
+        """Offer to adopt the index's embedder (same dim) or explain the rebuild path."""
+        if not exc.dims_match:
+            widget.append_content(msg.EMBED_ADOPT_REBUILD_NOTICE.format(dim=exc.persisted_dim))
+            return
+        widget.append_content(msg.EMBED_ADOPT_NOTICE.format(model=exc.persisted_model))
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        self.app.push_screen(
+            ConfirmDialog(
+                msg.EMBED_ADOPT_CONFIRM_TITLE,
+                msg.EMBED_ADOPT_CONFIRM_MESSAGE.format(model=exc.persisted_model),
+            ),
+            lambda ok: self._on_adopt_confirm(ok, exc.persisted_model, question),
+        )
+
+    def _on_adopt_confirm(self, confirmed: bool | None, ref: str, question: str) -> None:
+        """Run the adopt+retry in a worker thread, or report the cancellation."""
+        if not confirmed:
+            self.notify(msg.EMBED_ADOPT_CANCELLED)
+            return
+        self.notify(msg.EMBED_ADOPTING.format(model=ref))
+        self._adopt_and_retry(ref, question)
+
+    @work(thread=True)
+    def _adopt_and_retry(self, ref: str, question: str) -> None:
+        """Schedule the adopt+retry on a worker thread (pull may be slow)."""
+        self._do_adopt_and_retry(ref, question)
+
+    def _do_adopt_and_retry(self, ref: str, question: str) -> None:
+        """Switch to embedder *ref* (downloading if needed), then re-ask. Worker thread."""
+        from lilbee.app.models import adopt_embedder
+
+        try:
+            adopt_embedder(ref)
+        except Exception as exc:  # surfaced to the user, never silently swallowed
+            log.debug("Embedder adopt failed", exc_info=True)
+            call_from_thread(
+                self, self.notify, msg.EMBED_ADOPT_FAILED.format(error=exc), severity="error"
+            )
+            return
+        call_from_thread(self, self.notify, msg.EMBED_ADOPTED.format(model=ref))
+        call_from_thread(self, self._send_message, question)
 
     def _consume_stream(
         self, stream: Any, widget: AssistantMessage, response_parts: list[str]

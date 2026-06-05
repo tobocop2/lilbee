@@ -319,6 +319,104 @@ class TestAsk:
         assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
 
 
+def _mismatch_error(*, dims_match=True):
+    from lilbee.data.store import EmbeddingModelMismatchError
+
+    return EmbeddingModelMismatchError(
+        persisted_model="orgA/repoA/built.gguf",
+        persisted_dim=768,
+        current_model="orgB/repoB/configured.gguf",
+        current_dim=768 if dims_match else 384,
+    )
+
+
+class TestEmbeddingMismatchCli:
+    """Headless commands never switch embedder silently; they name the index's
+    embedder and the one-command fix when the index is adoptable."""
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_mismatch_names_use_embedder_command(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.side_effect = _mismatch_error()
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 1
+        assert "use-embedder orgA/repoA/built.gguf" in result.output
+
+    def test_search_mismatch_adoptable_hint(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _mismatch_error()
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 1
+        assert "use-embedder orgA/repoA/built.gguf" in result.output
+
+    def test_search_mismatch_dim_incompatible_points_to_rebuild(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _mismatch_error(dims_match=False)
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 1
+        assert "rebuild" in result.output.lower()
+        assert "use-embedder" not in result.output
+
+    def test_search_mismatch_json_carries_persisted_model(self, mock_svc):
+        mock_svc.searcher.search.side_effect = _mismatch_error()
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["persisted_model"] == "orgA/repoA/built.gguf"
+
+
+class TestUseEmbedderCommand:
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_reports_active_model(self, mock_adopt, mock_svc):
+        from lilbee.app.models import AdoptResult, AdoptStatus
+
+        mock_adopt.return_value = AdoptResult(
+            model="orgA/repoA/built.gguf", status=AdoptStatus.ADOPTED
+        )
+        result = runner.invoke(app, ["use-embedder", "orgA/repoA/built.gguf"])
+        assert result.exit_code == 0
+        assert "orgA/repoA/built.gguf" in result.output
+        mock_adopt.assert_called_once_with("orgA/repoA/built.gguf")
+
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_json_output(self, mock_adopt, mock_svc):
+        from lilbee.app.models import AdoptResult, AdoptStatus
+
+        mock_adopt.return_value = AdoptResult(
+            model="orgA/repoA/built.gguf", status=AdoptStatus.ALREADY_ACTIVE
+        )
+        result = runner.invoke(app, ["--json", "use-embedder", "orgA/repoA/built.gguf"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "already_active"
+
+    @mock.patch("lilbee.app.models.adopt_embedder")
+    def test_use_embedder_failure_exits_nonzero(self, mock_adopt, mock_svc):
+        mock_adopt.side_effect = RuntimeError("no such model")
+        result = runner.invoke(app, ["use-embedder", "bogus/ref.gguf"])
+        assert result.exit_code == 1
+        assert "no such model" in result.output
+
+
+class TestIndexCommand:
+    def test_index_builds_search_indexes(self, mock_svc):
+        mock_svc.store.ensure_vector_index.return_value = True
+        result = runner.invoke(app, ["index"])
+        assert result.exit_code == 0
+        assert "built" in result.output.lower()
+        mock_svc.store.ensure_fts_index.assert_called_once()
+        mock_svc.store.ensure_vector_index.assert_called_once_with(force=True)
+
+    def test_index_reports_when_vector_index_skipped(self, mock_svc):
+        mock_svc.store.ensure_vector_index.return_value = False
+        result = runner.invoke(app, ["index"])
+        assert result.exit_code == 0
+        assert "more chunks" in result.output.lower()
+
+    def test_index_json_output(self, mock_svc):
+        mock_svc.store.ensure_vector_index.return_value = True
+        result = runner.invoke(app, ["--json", "index"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {"command": "index", "vector_index": True}
+
+
 class TestDataDirFlag:
     def test_status_with_data_dir_after_subcommand(self, tmp_path):
         custom = tmp_path / "custom"

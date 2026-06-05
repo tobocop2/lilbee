@@ -30,6 +30,25 @@ from lilbee.server.models import (
 _chat_inflight_lock = asyncio.Lock()
 
 
+def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
+    """Translate an embedder mismatch into a 409 carrying the facts to adopt.
+
+    The client renders its own confirm-to-adopt prompt from ``extra`` and, on
+    confirm, sets the embedder via ``PUT /api/models/embedding`` then retries.
+    The server never switches embedder unprompted.
+    """
+    return HTTPException(
+        status_code=409,
+        detail=str(exc),
+        extra={
+            "persisted_model": exc.persisted_model,
+            "persisted_dim": exc.persisted_dim,
+            "current_model": exc.current_model,
+            "adoptable": exc.dims_match,
+        },
+    )
+
+
 def _acquire_chat_lock_or_raise() -> None:
     """Non-blocking acquire on the running loop thread; raise 429 on contention.
 
@@ -73,7 +92,7 @@ async def search_route(
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
     except EmbeddingModelMismatchError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _embedding_mismatch_http(exc) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
@@ -91,7 +110,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
             chunk_type=data.chunk_type,
         )
     except EmbeddingModelMismatchError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _embedding_mismatch_http(exc) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
@@ -131,7 +150,7 @@ async def chat_route(data: ChatRequest) -> AskResponse:
             chunk_type=data.chunk_type,
         )
     except EmbeddingModelMismatchError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _embedding_mismatch_http(exc) from exc
 
 
 @post("/api/chat/stream")

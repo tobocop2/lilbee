@@ -5604,6 +5604,35 @@ async def test_chat_stream_response_error_worker(mock_svc):
         assert app.screen.streaming is False
 
 
+async def test_chat_stream_embedder_mismatch_adopt_worker(mock_svc):
+    """A downloaded-index mismatch routes to the adopt prompt; confirming runs
+    the real adopt+retry worker instead of failing the stream."""
+    from lilbee.data.store import EmbeddingModelMismatchError
+
+    exc = EmbeddingModelMismatchError(
+        persisted_model="orgA/repoA/built.gguf",
+        persisted_dim=768,
+        current_model="orgB/repoB/configured.gguf",
+        current_dim=768,
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        chat = app.screen  # the mismatch pushes a ConfirmDialog on top later
+        mock_svc.searcher.ask_stream = MagicMock(side_effect=exc)
+        inp = chat.query_one("#chat-input", ChatInput)
+        inp.value = "test"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        while chat.workers:
+            await _pilot.pause()
+        with patch("lilbee.app.models.adopt_embedder") as adopt:
+            chat._on_adopt_confirm(True, "orgA/repoA/built.gguf", "test")
+            await _pilot.pause()
+            while chat.workers:
+                await _pilot.pause()
+        adopt.assert_called_once_with("orgA/repoA/built.gguf")
+
+
 async def test_chat_stream_response_reasoning_worker(mock_svc):
     """Cover the reasoning token branch in _stream_response."""
     from dataclasses import dataclass

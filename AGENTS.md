@@ -72,6 +72,7 @@ All settings override via environment variables:
 - `LILBEE_CHUNK_SIZE` — tokens per chunk (default: `512`)
 - `LILBEE_CHUNK_OVERLAP` — overlap tokens (default: `100`)
 - `LILBEE_TOP_K` — retrieval result count (default: `5`)
+- `LILBEE_ANN_INDEX_THRESHOLD` — chunk count at/above which sync builds an approximate (ANN) vector index for fast search at scale (default: `50000`, `0` = always exact flat search)
 - `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
