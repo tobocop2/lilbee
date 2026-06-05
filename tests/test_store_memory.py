@@ -54,7 +54,6 @@ def _memory(
     text: str = "a memory",
     kind: MemoryKind = MemoryKind.FACT,
     owner: str = LOCAL_OWNER,
-    confirmed: bool = True,
     source: MemorySource = MemorySource.MANUAL,
     axis: int = 0,
     created_at: str | None = None,
@@ -67,7 +66,6 @@ def _memory(
         shared=False,
         kind=kind,
         source=source,
-        confirmed=confirmed,
         text=text,
         vector=_unit_vector(store._config.embedding_dim, axis),
         created_at=now,
@@ -88,12 +86,6 @@ class TestAddAndGet:
         store.add_memory(_memory(store, text="uses lancedb", kind=MemoryKind.FACT, axis=1))
         prefs = store.get_memories(owner_predicate=LOCAL_PREDICATE, kind=MemoryKind.PREFERENCE)
         assert [m.text for m in prefs] == ["be terse"]
-
-    def test_get_confirmed_only(self, store):
-        store.add_memory(_memory(store, text="confirmed", confirmed=True, axis=0))
-        store.add_memory(_memory(store, text="pending", confirmed=False, axis=1))
-        confirmed = store.get_memories(owner_predicate=LOCAL_PREDICATE, confirmed_only=True)
-        assert [m.text for m in confirmed] == ["confirmed"]
 
     def test_get_missing_table_returns_empty(self, store):
         assert store.get_memories(owner_predicate=LOCAL_PREDICATE) == []
@@ -156,8 +148,7 @@ class TestSearchMemories:
         )
         assert [m.text for m in hits] == ["near"]
 
-    def test_excludes_unconfirmed_and_preferences(self, store):
-        store.add_memory(_memory(store, text="unconfirmed", confirmed=False, axis=0))
+    def test_excludes_preferences(self, store):
         store.add_memory(_memory(store, text="pref", kind=MemoryKind.PREFERENCE, axis=0))
         query = _unit_vector(store._config.embedding_dim, 0)
         hits = store.search_memories(
@@ -191,19 +182,18 @@ class TestSearchMemories:
 
 
 class TestUpdateAndDelete:
-    def test_update_toggles_shared_and_confirmed(self, store):
-        store.add_memory(_memory(store, text="x", confirmed=False, memory_id="u1", axis=0))
-        assert store.update_memory("u1", shared=True, confirmed=True) is True
+    def test_update_toggles_shared(self, store):
+        store.add_memory(_memory(store, text="x", memory_id="u1", axis=0))
+        assert store.update_memory("u1", shared=True) is True
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.shared is True
-        assert got.confirmed is True
 
     def test_update_missing_returns_false(self, store):
         store.add_memory(_memory(store, text="x", axis=0))
-        assert store.update_memory("nope") is False
+        assert store.update_memory("nope", shared=True) is False
 
     def test_update_no_table_returns_false(self, store):
-        assert store.update_memory("nope") is False
+        assert store.update_memory("nope", shared=True) is False
 
     def test_delete_removes(self, store):
         store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))

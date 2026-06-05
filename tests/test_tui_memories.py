@@ -23,7 +23,6 @@ def _row(
     memory_id: str = "id0",
     kind: MemoryKind = MemoryKind.FACT,
     shared: bool = False,
-    confirmed: bool = True,
 ) -> MemoryRow:
     return MemoryRow(
         id=memory_id,
@@ -31,7 +30,6 @@ def _row(
         shared=shared,
         kind=kind,
         source=MemorySource.MANUAL,
-        confirmed=confirmed,
         text=text,
         vector=[0.1],
         created_at="t",
@@ -154,19 +152,8 @@ async def test_toggle_shared_flips_flag(store, notes):
         await pilot.pause()
         await pilot.press("s")
         await pilot.pause()
-        store.update_memory.assert_called_once_with("id0", shared=True, confirmed=None)
+        store.update_memory.assert_called_once_with("id0", shared=True)
         assert msg.MEMORIES_SHARED_ON in notes
-
-
-async def test_confirm_sets_confirmed(store, notes):
-    store.get_memories.return_value = [_row("draft fact", confirmed=False)]
-    app = MemoriesTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await pilot.press("c")
-        await pilot.pause()
-        store.update_memory.assert_called_once_with("id0", shared=None, confirmed=True)
-        assert msg.MEMORIES_CONFIRMED in notes
 
 
 async def test_filter_narrows_rows(store):
@@ -181,13 +168,12 @@ async def test_filter_narrows_rows(store):
 
 
 async def test_actions_noop_on_empty_table(store):
-    """Delete/toggle/confirm with no rows must not call the store."""
+    """Delete/toggle with no rows must not call the store."""
     app = MemoriesTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("d")
         await pilot.press("s")
-        await pilot.press("c")
         await pilot.pause()
         store.delete_memory.assert_not_called()
         store.update_memory.assert_not_called()
@@ -218,7 +204,7 @@ async def test_delete_failure_notifies(store, notes, monkeypatch):
         assert any("disk" in n for n in notes)
 
 
-async def test_flag_failure_notifies(store, notes, monkeypatch):
+async def test_shared_failure_notifies(store, notes, monkeypatch):
     from lilbee.cli.tui.screens import memories as memories_mod
 
     store.get_memories.return_value = [_row("uses rust")]
@@ -226,13 +212,11 @@ async def test_flag_failure_notifies(store, notes, monkeypatch):
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(
-            memories_mod, "set_memory_flags", MagicMock(side_effect=RuntimeError("boom"))
+            memories_mod, "set_memory_shared", MagicMock(side_effect=RuntimeError("boom"))
         )
         await pilot.press("s")
         await pilot.pause()
-        await pilot.press("c")
-        await pilot.pause()
-        assert sum("boom" in n for n in notes) == 2
+        assert any("boom" in n for n in notes)
 
 
 async def test_escape_clears_search_then_backs_out(store):

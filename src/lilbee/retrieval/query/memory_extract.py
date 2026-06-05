@@ -3,8 +3,8 @@
 A small LLM pass over the user's message and the assistant's answer that
 proposes durable facts/preferences worth remembering. The model is asked for
 a strict JSON array; parsing is defensive (a non-conforming reply yields no
-memories rather than an error). Callers store the results unconfirmed so the
-user reviews them before they are ever recalled.
+memories rather than an error). Callers store the results, which the user can
+review and remove in ``/memories``.
 """
 
 from __future__ import annotations

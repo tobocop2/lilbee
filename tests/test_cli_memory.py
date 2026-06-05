@@ -23,7 +23,6 @@ def _row(text: str, *, kind: MemoryKind = MemoryKind.FACT, shared: bool = False)
         shared=shared,
         kind=kind,
         source=MemorySource.MANUAL,
-        confirmed=True,
         text=text,
         vector=[0.1],
         created_at="t",

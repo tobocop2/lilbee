@@ -503,7 +503,6 @@ class MemoryItem(BaseModel):
     id: str
     kind: MemoryKind
     shared: bool
-    confirmed: bool
     text: str
 
 
@@ -513,11 +512,10 @@ class MemoryListResponse(BaseModel):
     memories: list[MemoryItem]
 
 
-class MemoryFlagsRequest(BaseModel):
+class MemorySharedRequest(BaseModel):
     """Request body for ``PATCH /api/memories/{memory_id}``."""
 
-    shared: bool | None = None
-    confirmed: bool | None = None
+    shared: bool
 
 
 class MemoryFlagsResponse(BaseModel):

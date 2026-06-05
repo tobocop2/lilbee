@@ -74,7 +74,6 @@ class TestRemember:
         assert record.kind is MemoryKind.PREFERENCE
         assert record.owner == LOCAL_OWNER
         assert record.shared is True
-        assert record.confirmed is True
         assert record.vector == [0.1, 0.2]
         assert len(record.id) == 32  # uuid4 hex
 
@@ -83,7 +82,6 @@ class TestRemember:
             "uses lancedb",
             owner=agent_owner("opencode"),
             source=MemorySource.AGENT,
-            confirmed=True,
         )
         record = svc.store.add_memory.call_args.args[0]
         assert record.owner == "agent:opencode"
@@ -124,9 +122,9 @@ class TestListForgetFlags:
         app_memory.forget("d1")
         svc.store.delete_memory.assert_called_once_with("d1")
 
-    def test_set_flags(self, svc):
-        assert app_memory.set_memory_flags("u1", shared=True, confirmed=True) is True
-        svc.store.update_memory.assert_called_once_with("u1", shared=True, confirmed=True)
+    def test_set_shared(self, svc):
+        assert app_memory.set_memory_shared("u1", shared=True) is True
+        svc.store.update_memory.assert_called_once_with("u1", shared=True)
 
 
 class TestAutoExtract:
@@ -151,7 +149,7 @@ class TestAutoExtract:
         assert app_memory.auto_extract("q", "a") == []
         svc.provider.chat.assert_not_called()
 
-    def test_stores_extracted_unconfirmed(self, svc):
+    def test_stores_extracted(self, svc):
         cfg.memory_enabled = True
         cfg.memory_auto_extract = True
         svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
@@ -159,7 +157,6 @@ class TestAutoExtract:
         assert stored == ["the user prefers rust"]
         record = svc.store.add_memory.call_args.args[0]
         assert record.source is MemorySource.EXTRACTED
-        assert record.confirmed is False
 
     def test_nothing_extracted_stores_nothing(self, svc):
         cfg.memory_enabled = True

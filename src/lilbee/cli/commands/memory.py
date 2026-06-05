@@ -80,7 +80,6 @@ def memory_list_cmd(
                         "id": m.id,
                         "kind": m.kind.value,
                         "shared": m.shared,
-                        "confirmed": m.confirmed,
                         "text": m.text,
                     }
                     for m in memories

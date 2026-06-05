@@ -41,7 +41,6 @@ async def test_force_rebuild_preserves_and_reembeds_memory(tmp_path):
                 shared=False,
                 kind=MemoryKind.FACT,
                 source=MemorySource.MANUAL,
-                confirmed=True,
                 text="kept",
                 vector=[0.1] * cfg.embedding_dim,
                 created_at="t",

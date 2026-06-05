@@ -13,14 +13,13 @@ from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, MemorySource
 from tests.conftest import make_mock_services
 
 
-def _row(text: str, *, shared: bool = False, confirmed: bool = True) -> MemoryRow:
+def _row(text: str, *, shared: bool = False) -> MemoryRow:
     return MemoryRow(
         id="abc123",
         owner=LOCAL_OWNER,
         shared=shared,
         kind=MemoryKind.FACT,
         source=MemorySource.MANUAL,
-        confirmed=confirmed,
         text=text,
         vector=[0.1],
         created_at="t",
@@ -105,16 +104,16 @@ class TestRemember:
         assert resp.status_code == 400
 
 
-class TestUpdateFlags:
-    def test_patch_toggles_flags(self, client, store):
+class TestUpdateShared:
+    def test_patch_sets_shared(self, client, store):
         resp = client.patch("/api/memories/abc123", json={"shared": True})
         assert resp.status_code == 200
         assert resp.json() == {"id": "abc123", "updated": True}
-        store.update_memory.assert_called_once_with("abc123", shared=True, confirmed=None)
+        store.update_memory.assert_called_once_with("abc123", shared=True)
 
     def test_patch_unknown_id_reports_not_updated(self, client, store):
         store.update_memory.return_value = False
-        resp = client.patch("/api/memories/missing", json={"confirmed": True})
+        resp = client.patch("/api/memories/missing", json={"shared": True})
         assert resp.json()["updated"] is False
 
 

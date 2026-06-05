@@ -19,7 +19,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Input
 
-from lilbee.app.memory import forget, list_memories, memory_enabled, set_memory_flags
+from lilbee.app.memory import forget, list_memories, memory_enabled, set_memory_shared
 from lilbee.cli.tui import messages as msg
 
 if TYPE_CHECKING:
@@ -38,14 +38,13 @@ class MemoriesScreen(Screen[None]):
 
     CSS_PATH = "memories.tcss"
     AUTO_FOCUS = "#memories-table"
-    HELP = "Manage memories. j/k navigate, d delete, s toggle shared, c confirm, / search, q back."
+    HELP = "Manage memories. j/k navigate, d delete, s toggle shared, / search, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "dismiss_or_back", "Back", show=False),
         Binding("d", "delete", "Delete", show=True),
         Binding("s", "toggle_shared", "Shared", show=True),
-        Binding("c", "confirm", "Confirm", show=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
@@ -84,7 +83,6 @@ class MemoriesScreen(Screen[None]):
         table.add_columns(
             msg.MEMORIES_COLUMN_KIND,
             msg.MEMORIES_COLUMN_SHARED,
-            msg.MEMORIES_COLUMN_CONFIRMED,
             msg.MEMORIES_COLUMN_TEXT,
         )
         self._load_memories()
@@ -113,7 +111,6 @@ class MemoriesScreen(Screen[None]):
             table.add_row(
                 m.kind.value,
                 _flag_label(m.shared),
-                _flag_label(m.confirmed),
                 m.text,
                 key=m.id,
             )
@@ -228,26 +225,12 @@ class MemoriesScreen(Screen[None]):
             return
         new_shared = not memory.shared
         try:
-            set_memory_flags(memory_id, shared=new_shared)
+            set_memory_shared(memory_id, shared=new_shared)
         except Exception as exc:
             log.debug("Toggle shared failed for %s", memory_id, exc_info=True)
             self.notify(msg.MEMORIES_FLAG_FAILED.format(error=exc), severity="error")
             return
         self.notify(msg.MEMORIES_SHARED_ON if new_shared else msg.MEMORIES_SHARED_OFF)
-        self._load_memories()
-
-    def action_confirm(self) -> None:
-        """Confirm the highlighted memory so it can be recalled."""
-        memory_id = self._highlighted_id()
-        if memory_id is None:
-            return
-        try:
-            set_memory_flags(memory_id, confirmed=True)
-        except Exception as exc:
-            log.debug("Confirm failed for %s", memory_id, exc_info=True)
-            self.notify(msg.MEMORIES_FLAG_FAILED.format(error=exc), severity="error")
-            return
-        self.notify(msg.MEMORIES_CONFIRMED)
         self._load_memories()
 
     def _memory_by_id(self, memory_id: str) -> MemoryRow | None:

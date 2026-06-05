@@ -442,7 +442,6 @@ class Searcher:
         preferences = self._store.get_memories(
             owner_predicate=owner_predicate,
             kind=MemoryKind.PREFERENCE,
-            confirmed_only=True,
         )
         facts: list[MemoryRow] = []
         if self._config.memory_top_k > 0 and self._embedder.embedding_available():

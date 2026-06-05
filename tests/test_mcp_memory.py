@@ -14,7 +14,6 @@ def _row(text: str, *, kind: MemoryKind = MemoryKind.FACT, shared: bool = False)
         shared=shared,
         kind=kind,
         source=MemorySource.AGENT,
-        confirmed=True,
         text=text,
         vector=[0.0],
         created_at="t",

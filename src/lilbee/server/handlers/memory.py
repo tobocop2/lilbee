@@ -15,7 +15,7 @@ from lilbee.app.memory import (
     list_memories,
     memory_enabled,
     remember,
-    set_memory_flags,
+    set_memory_shared,
 )
 from lilbee.data.store import MemoryKind
 from lilbee.server.models import (
@@ -49,7 +49,6 @@ async def list_local_memories() -> MemoryListResponse:
                 id=m.id,
                 kind=m.kind,
                 shared=m.shared,
-                confirmed=m.confirmed,
                 text=m.text,
             )
             for m in list_memories()
@@ -57,12 +56,10 @@ async def list_local_memories() -> MemoryListResponse:
     )
 
 
-async def update_memory_flags(
-    memory_id: str, shared: bool | None, confirmed: bool | None
-) -> MemoryFlagsResponse:
-    """Toggle a memory's shared/confirmed flags."""
+async def update_memory_shared(memory_id: str, shared: bool) -> MemoryFlagsResponse:
+    """Set a memory's shared-with-agents flag."""
     _require_memory()
-    updated = set_memory_flags(memory_id, shared=shared, confirmed=confirmed)
+    updated = set_memory_shared(memory_id, shared=shared)
     return MemoryFlagsResponse(id=memory_id, updated=updated)
 
 

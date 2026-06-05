@@ -13,13 +13,13 @@ from lilbee.server.handlers.memory import (
     list_local_memories,
     remember_memory,
     remove_memory,
-    update_memory_flags,
+    update_memory_shared,
 )
 from lilbee.server.models import (
-    MemoryFlagsRequest,
     MemoryFlagsResponse,
     MemoryListResponse,
     MemoryRemoveResponse,
+    MemorySharedRequest,
     RememberRequest,
     RememberResponse,
 )
@@ -39,9 +39,9 @@ async def memories_remember_route(data: RememberRequest) -> RememberResponse:
 
 
 @patch("/api/memories/{memory_id:str}")
-async def memories_update_route(memory_id: str, data: MemoryFlagsRequest) -> MemoryFlagsResponse:
-    """Toggle a memory's shared/confirmed flags."""
-    return await update_memory_flags(memory_id, data.shared, data.confirmed)
+async def memories_update_route(memory_id: str, data: MemorySharedRequest) -> MemoryFlagsResponse:
+    """Set a memory's shared-with-agents flag."""
+    return await update_memory_shared(memory_id, data.shared)
 
 
 @delete("/api/memories/{memory_id:str}", status_code=200)

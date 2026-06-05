@@ -694,7 +694,6 @@ class Store:
                 pa.field("shared", pa.bool_()),
                 pa.field("kind", pa.utf8()),
                 pa.field("source", pa.utf8()),
-                pa.field("confirmed", pa.bool_()),
                 pa.field("text", pa.utf8()),
                 pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
                 pa.field("created_at", pa.utf8()),
@@ -763,7 +762,6 @@ class Store:
         *,
         owner_predicate: str,
         kind: MemoryKind | None = None,
-        confirmed_only: bool = False,
     ) -> list[MemoryRow]:
         """Return memories matching *owner_predicate* and optional *kind*, newest first."""
         table = self.open_table(MEMORIES_TABLE)
@@ -772,8 +770,6 @@ class Store:
         clauses = [f"({owner_predicate})"]
         if kind is not None:
             clauses.append(f"kind = '{escape_sql_string(kind)}'")
-        if confirmed_only:
-            clauses.append("confirmed = true")
         rows = table.search().where(" AND ".join(clauses)).limit(None).to_list()
         memories = [MemoryRow(**r) for r in rows]
         memories.sort(key=lambda m: m.created_at, reverse=True)
@@ -787,23 +783,17 @@ class Store:
         top_k: int,
         max_distance: float,
     ) -> list[MemoryRow]:
-        """Vector-recall confirmed FACT memories within *max_distance*, best first."""
+        """Vector-recall FACT memories within *max_distance*, best first."""
         table = self.open_table(MEMORIES_TABLE)
         if table is None or top_k <= 0:
             return []
         self._ensure_embedding_compat()
-        predicate = f"({owner_predicate}) AND kind = '{MemoryKind.FACT}' AND confirmed = true"
+        predicate = f"({owner_predicate}) AND kind = '{MemoryKind.FACT}'"
         rows = table.search(query_vector).metric("cosine").where(predicate).limit(top_k).to_list()
         return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
 
-    def update_memory(
-        self,
-        memory_id: str,
-        *,
-        shared: bool | None = None,
-        confirmed: bool | None = None,
-    ) -> bool:
-        """Toggle *shared* and/or *confirmed* on a memory by id. Returns True when found."""
+    def update_memory(self, memory_id: str, *, shared: bool) -> bool:
+        """Set the *shared* flag on a memory by id. Returns True when found."""
         with write_lock():
             table = self.open_table(MEMORIES_TABLE)
             if table is None:
@@ -813,10 +803,7 @@ class Store:
             if not rows:
                 return False
             record = MemoryRow(**rows[0])
-            if shared is not None:
-                record.shared = shared
-            if confirmed is not None:
-                record.confirmed = confirmed
+            record.shared = shared
             record.updated_at = datetime.now(UTC).isoformat()
             _safe_delete_unlocked(table, f"id = '{escaped}'")
             table.add([record.model_dump(mode="json")])

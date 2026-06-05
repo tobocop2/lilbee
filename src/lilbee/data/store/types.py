@@ -165,7 +165,6 @@ class MemoryRow(BaseModel):
     shared: bool
     kind: MemoryKind
     source: MemorySource
-    confirmed: bool
     text: str
     vector: list[float] = Field(repr=False)
     created_at: str

@@ -20,7 +20,6 @@ def _mem(text: str, kind: MemoryKind = MemoryKind.FACT) -> MemoryRow:
         shared=False,
         kind=kind,
         source=MemorySource.MANUAL,
-        confirmed=True,
         text=text,
         vector=[0.0],
         created_at="t",

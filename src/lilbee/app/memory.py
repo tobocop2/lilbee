@@ -32,7 +32,6 @@ def make_memory_row(
     kind: MemoryKind = MemoryKind.FACT,
     source: MemorySource = MemorySource.MANUAL,
     shared: bool = False,
-    confirmed: bool = True,
 ) -> MemoryRow:
     """Build a fully populated ``MemoryRow`` with a fresh id, timestamps, and
     an embedded vector. The single id/timestamp/embedding assignment point, so
@@ -45,7 +44,6 @@ def make_memory_row(
         shared=shared,
         kind=kind,
         source=source,
-        confirmed=confirmed,
         text=text,
         vector=embed(text),
         created_at=now,
@@ -71,7 +69,6 @@ def remember(
     kind: MemoryKind = MemoryKind.FACT,
     source: MemorySource = MemorySource.MANUAL,
     shared: bool = False,
-    confirmed: bool = True,
 ) -> str:
     """Embed *text* and store it as a memory; returns the stored id."""
     services = get_services()
@@ -82,13 +79,12 @@ def remember(
         kind=kind,
         source=source,
         shared=shared,
-        confirmed=confirmed,
     )
     return services.store.add_memory(record)
 
 
 def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) -> list[MemoryRow]:
-    """Recall *owner*'s confirmed facts (plus human-shared facts for agents)."""
+    """Recall *owner*'s facts (plus human-shared facts for agents)."""
     services = get_services()
     predicate = local_owner_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
     return services.store.search_memories(
@@ -100,7 +96,7 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
 
 
 def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
-    """List all of *owner*'s memories (any kind, confirmed or not), newest first."""
+    """List all of *owner*'s memories (any kind), newest first."""
     predicate = (
         local_owner_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
     )
@@ -112,11 +108,9 @@ def forget(memory_id: str) -> None:
     get_services().store.delete_memory(memory_id)
 
 
-def set_memory_flags(
-    memory_id: str, *, shared: bool | None = None, confirmed: bool | None = None
-) -> bool:
-    """Toggle a memory's shared/confirmed flags; returns True when the id exists."""
-    return get_services().store.update_memory(memory_id, shared=shared, confirmed=confirmed)
+def set_memory_shared(memory_id: str, *, shared: bool) -> bool:
+    """Set a memory's shared-with-agents flag; returns True when the id exists."""
+    return get_services().store.update_memory(memory_id, shared=shared)
 
 
 def auto_extract_enabled() -> bool:
@@ -125,12 +119,12 @@ def auto_extract_enabled() -> bool:
 
 
 def auto_extract(question: str, answer: str) -> list[str]:
-    """Extract durable memories from a chat turn and store them unconfirmed.
+    """Extract durable memories from a chat turn and store them.
 
-    Returns the texts stored. Stored memories are ``source=EXTRACTED`` and
-    ``confirmed=False`` so they are never recalled until the user confirms them
-    in ``/memories``. A no-op (returns ``[]``) unless both the master gate and
-    ``memory_auto_extract`` are on.
+    Returns the texts stored. Stored memories are ``source=EXTRACTED`` and are
+    recalled like any other; the user manages them in ``/memories``. A no-op
+    (returns ``[]``) unless both the master gate and ``memory_auto_extract`` are
+    on.
     """
     from lilbee.retrieval.query.memory_extract import extract_memories
 
@@ -140,11 +134,6 @@ def auto_extract(question: str, answer: str) -> list[str]:
     extracted = extract_memories(question, answer, services.provider.chat)
     stored: list[str] = []
     for memory in extracted:
-        remember(
-            memory.text,
-            kind=memory.kind,
-            source=MemorySource.EXTRACTED,
-            confirmed=False,
-        )
+        remember(memory.text, kind=memory.kind, source=MemorySource.EXTRACTED)
         stored.append(memory.text)
     return stored

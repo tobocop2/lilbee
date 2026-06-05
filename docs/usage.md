@@ -162,7 +162,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/remove <name>` | | Remove an installed model |
 | `/wiki` | | Open the auto-generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
-| `/memories` | | Browse, delete, share, or confirm saved memories |
+| `/memories` | | Browse, delete, or share saved memories |
 | `/setup` | | Run the first-time setup wizard |
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
@@ -239,8 +239,7 @@ Then save things to remember. A leading `pref:` stores a standing preference
 Next time you ask a question, the relevant preference and facts are folded
 into the system prompt before the model answers. Memory is never mixed into
 the document citations: it shapes the answer but only your actual sources show
-up under `Sources:`. Open `/memories` to list, delete, share, or confirm
-entries.
+up under `Sources:`. Open `/memories` to list, delete, or share entries.
 
 Memory lives in the active library's data directory, so it follows
 [per-project libraries](#per-project-libraries) automatically. A factory
@@ -254,10 +253,10 @@ are never folded into your prompt. This asymmetry keeps an agent's notes out
 of your chat unless you opt in.
 
 **Auto-extraction (optional, off by default).** With `memory_auto_extract`
-on, the TUI runs a small background pass after each answer that proposes
-durable facts/preferences from the exchange. Proposed memories are saved
-unconfirmed and are **not** recalled until you confirm them in `/memories`
-(press `c`), so nothing reaches your prompt without your review.
+on, the TUI runs a small background pass after each answer that saves durable
+facts and preferences from the exchange, so memory builds up as you chat. The
+saved memories are recalled like any others; review and prune them anytime in
+`/memories`.
 
 ```
 /set memory_auto_extract true
