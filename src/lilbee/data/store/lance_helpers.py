@@ -98,6 +98,21 @@ def _has_fts_index(table: lancedb.table.Table) -> bool:
     return False
 
 
+def _has_vector_index(table: lancedb.table.Table) -> bool:
+    """Return True when an ANN index on the vector column already exists.
+
+    LanceDB reports IVF index types as ``IvfPq`` / ``IvfFlat`` etc., so the
+    family match is case-insensitive.
+    """
+    try:
+        for idx in table.list_indices():
+            if "IVF" in idx.index_type.upper() and "vector" in idx.columns:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _sources_search_filter(search: str | None) -> str | None:
     """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
     if not search:
@@ -132,18 +147,3 @@ def refs_compatible(
     if not current_ref.endswith(".gguf"):
         return False
     return hf_repo_from_ref(current_ref) == persisted_ref
-
-
-def _embedding_mismatch_message(
-    persisted_model: str,
-    persisted_dim: int,
-    current_model: str,
-    current_dim: int,
-) -> str:
-    return (
-        f"The vector store was built with embedding model '{persisted_model}' "
-        f"(dim {persisted_dim}), but lilbee is now configured to use "
-        f"'{current_model}' (dim {current_dim}). Search and ingest are disabled "
-        "until the store is rebuilt under the new model. "
-        'Run `lilbee rebuild` or POST /api/sync with `{"force_rebuild": true}`.'
-    )

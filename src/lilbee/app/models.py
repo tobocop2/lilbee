@@ -44,6 +44,11 @@ class PullStatus(StrEnum):
     ALREADY_INSTALLED = "already_installed"
 
 
+class AdoptStatus(StrEnum):
+    ADOPTED = "adopted"
+    ALREADY_ACTIVE = "already_active"
+
+
 class PullEvent(StrEnum):
     PROGRESS = "progress"
     DONE = "done"
@@ -181,6 +186,36 @@ class RemoveResult(BaseModel):
     model: str
     deleted: bool
     freed_gb: float = Field(default=0.0)
+
+
+class AdoptResult(BaseModel):
+    """Outcome of adopting a downloaded index's embedder."""
+
+    model: str
+    status: AdoptStatus
+    reindex_required: bool = False
+
+
+def adopt_embedder(ref: str) -> AdoptResult:
+    """Switch lilbee to embedder *ref*, downloading it first if missing.
+
+    Makes a downloaded index searchable under its own embedder without a
+    rebuild: the persisted vectors already match *ref*, so the switch routes
+    through the settings boundary and ``reindex_required`` stays false.
+    """
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.catalog.types import ModelSource
+
+    manager = get_services().model_manager
+    already_active = cfg.embedding_model == ref and manager.is_installed(ref, ModelSource.NATIVE)
+    if not manager.is_installed(ref, ModelSource.NATIVE):
+        pull_model_data(ref, ModelSource.NATIVE)
+    result = apply_settings_update({"embedding_model": ref})
+    return AdoptResult(
+        model=ref,
+        status=AdoptStatus.ALREADY_ACTIVE if already_active else AdoptStatus.ADOPTED,
+        reindex_required=result.reindex_required,
+    )
 
 
 def _native_manifest_index() -> dict[str, ModelManifest]:
