@@ -39,6 +39,7 @@ DEFAULT_NUM_CTX = 8192
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 CITATIONS_TABLE = "_citations"
+MEMORIES_TABLE = "_memories"
 META_TABLE = "_meta"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"

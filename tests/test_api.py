@@ -295,3 +295,37 @@ class TestPackageGetattr:
 
         with pytest.raises(AttributeError, match="has no attribute 'definitely_not_a_thing'"):
             getattr(lilbee, "definitely_not_a_thing")  # noqa: B009
+
+
+class TestMemory:
+    """Real round-trip tests against the ``_memories`` LanceDB table."""
+
+    def test_remember_and_list(self, tmp_path):
+        from lilbee import Lilbee
+        from lilbee.data.store import MemoryKind
+
+        bee = Lilbee(tmp_path / "mem")
+        fact_id = bee.remember("the project uses rust")
+        pref_id = bee.remember("answer tersely", kind=MemoryKind.PREFERENCE, shared=True)
+        assert fact_id != pref_id
+
+        stored = {m.text: m for m in bee.memories()}
+        assert set(stored) == {"the project uses rust", "answer tersely"}
+        assert stored["answer tersely"].kind is MemoryKind.PREFERENCE
+        assert stored["answer tersely"].shared is True
+
+    def test_recall_returns_facts(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "mem")
+        bee.remember("the Crown Vic brake bleed order is RR, LR, RF, LF")
+        results = bee.recall("how do I bleed the brakes", top_k=5)
+        assert any("brake bleed" in m.text for m in results)
+
+    def test_forget_removes_memory(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "mem")
+        memory_id = bee.remember("disposable note")
+        bee.forget(memory_id)
+        assert bee.memories() == []

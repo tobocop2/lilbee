@@ -52,6 +52,17 @@ You will spend most of your time on two things:
    `lilbee_list_documents` (the file list), `lilbee_model_list` / `lilbee_model_show`
    (model surface), `lilbee_crawl_status` (poll an in-flight crawl).
 
+## Remembering across sessions (optional)
+
+If memory is enabled (`lilbee_settings_set({"memory_enabled": true})`), use
+`lilbee_memory_remember` to keep durable notes about the project and
+`lilbee_memory_recall` to pull them back in a later session. Your memories are
+private to you; they never
+leak into the human's chat, and `lilbee_search` never mixes them into cited
+results. Pin a stable identity with `LILBEE_AGENT_ID` in this server's env (see
+`opencode.json`) so your memories survive across sessions. Both calls embed
+text, so they count as searches: don't call them while indexing.
+
 ## Setting the library up (delegate to lilbee-worker)
 
 Long-running operations block the chat thread, so they go to the `lilbee-worker` subagent

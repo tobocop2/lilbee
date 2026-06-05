@@ -89,6 +89,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("/setup", "_cmd_setup", help_text="Run the first-run setup wizard"),
     SlashCommand(
+        "/remember",
+        "_cmd_remember",
+        args_hint="<text>",
+        help_text="Save a memory (prefix with 'pref:' for a preference)",
+    ),
+    SlashCommand(
+        "/memories",
+        "_cmd_memories",
+        help_text="Browse and manage your saved memories",
+    ),
+    SlashCommand(
         "/wiki",
         "_cmd_wiki",
         help_text="Open the wiki view",
