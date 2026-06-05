@@ -8,7 +8,6 @@ from typing import NoReturn
 
 import typer
 
-from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
@@ -52,38 +51,19 @@ def export_cmd(
 ) -> None:
     """Write a per-page {source, page, text} dataset (drops vectors)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.data.export import build_page_dataset, resolve_format, write_dataset
+    from lilbee.app.dataset import DatasetError, export_to_path
 
     try:
-        dataset_format = resolve_format(fmt, output)
-    except ValueError as exc:
+        summary = export_to_path(output, fmt, source)
+    except DatasetError as exc:
         _fail(str(exc))
 
-    store = get_services().store
-    if source is not None and source not in {s["filename"] for s in store.get_sources()}:
-        _fail(f"Source not found: {source}")
-
-    rows = build_page_dataset(store, source)
-    if not rows:
-        _fail("Nothing to export: the store has no indexed pages.")
-
-    write_dataset(rows, output, dataset_format)
-    pages = len(rows)
-    sources = len({row["source"] for row in rows})
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "export",
-                "format": str(dataset_format),
-                "output": str(output),
-                "pages": pages,
-                "sources": sources,
-            }
-        )
+        json_output(summary.model_dump())
         return
     console.print(
-        f"Wrote [{theme.LABEL}]{pages}[/{theme.LABEL}] pages from "
-        f"[{theme.LABEL}]{sources}[/{theme.LABEL}] source(s) to "
+        f"Wrote [{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages from "
+        f"[{theme.LABEL}]{summary.sources}[/{theme.LABEL}] source(s) to "
         f"[{theme.ACCENT}]{output}[/{theme.ACCENT}]"
     )
 
@@ -96,35 +76,18 @@ def import_cmd(
 ) -> None:
     """Import a per-page text dataset, re-embedding it with the current model."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.data.export import import_dataset, load_page_dataset, resolve_format
-    from lilbee.data.store import EmbeddingModelMismatchError
+    from lilbee.app.dataset import DatasetError, import_from_path
 
     try:
-        dataset_format = resolve_format(fmt, dataset)
-        rows = load_page_dataset(dataset, dataset_format)
-    except ValueError as exc:
-        _fail(str(exc))
-    if not rows:
-        _fail("Dataset has no pages to import.")
-
-    store = get_services().store
-    try:
-        result = asyncio.run(import_dataset(store, rows))
-    except EmbeddingModelMismatchError as exc:
+        summary = asyncio.run(import_from_path(dataset, fmt))
+    except DatasetError as exc:
         _fail(str(exc))
 
     if cfg.json_mode:
-        json_output(
-            {
-                "command": "import",
-                "sources": result.sources,
-                "pages": result.pages,
-                "chunks": result.chunks,
-            }
-        )
+        json_output(summary.model_dump())
         return
     console.print(
-        f"Imported [{theme.LABEL}]{len(result.sources)}[/{theme.LABEL}] source(s) "
-        f"([{theme.LABEL}]{result.pages}[/{theme.LABEL}] pages, "
-        f"[{theme.LABEL}]{result.chunks}[/{theme.LABEL}] chunks)"
+        f"Imported [{theme.LABEL}]{len(summary.sources)}[/{theme.LABEL}] source(s) "
+        f"([{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages, "
+        f"[{theme.LABEL}]{summary.chunks}[/{theme.LABEL}] chunks)"
     )

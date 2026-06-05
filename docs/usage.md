@@ -507,6 +507,8 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
+| `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
+| `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
 | `lilbee reset` | Factory reset. Deletes all documents and data |
 
 ### Wiki

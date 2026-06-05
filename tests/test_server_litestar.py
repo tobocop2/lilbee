@@ -12,6 +12,8 @@ from litestar.testing import TestClient
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.role_validator import TaskMismatchError
+from lilbee.runtime.progress import EmbedEvent, EventType
+from tests.server.conftest import parse_sse_events
 
 
 @pytest.fixture(autouse=True)
@@ -1344,4 +1346,113 @@ class TestAuthRequiredRoutes:
 
     def test_put_models_embedding_requires_auth(self, auth_client):
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
+        assert resp.status_code == 401
+
+
+class _StubEmbedder:
+    truncated_total = 0
+
+    def embed_batch(self, texts, source="", on_progress=None, **_kwargs):
+        if on_progress is not None:
+            on_progress(
+                EventType.EMBED,
+                EmbedEvent(file=source, chunk=len(texts), total_chunks=len(texts)),
+            )
+        return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+@pytest.fixture()
+def dataset_store(tmp_path):
+    """Real store with one indexed page wired into services."""
+    import lilbee.app.services as svc_mod
+    from lilbee.data.store import Store
+    from tests.conftest import make_mock_services
+
+    store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb"}))
+    store.add_page_texts(
+        [{"source": "doc.pdf", "page": 1, "text": "page one", "content_type": "pdf"}]
+    )
+    store.upsert_source("doc.pdf", "h", 1)
+    svc_mod.set_services(make_mock_services(store=store, embedder=_StubEmbedder()))
+    yield store
+    svc_mod.set_services(None)
+
+
+class TestExportRoute:
+    def test_parquet_download_by_default(self, dataset_store, client):
+        resp = client.get("/api/export")
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"PAR1")
+        assert resp.headers["content-disposition"] == 'attachment; filename="pages.parquet"'
+
+    def test_jsonl_format(self, dataset_store, client):
+        resp = client.get("/api/export", params={"format": "jsonl"})
+        assert resp.status_code == 200
+        row = json.loads(resp.content.decode().splitlines()[0])
+        assert row["source"] == "doc.pdf"
+        assert resp.headers["content-disposition"] == 'attachment; filename="pages.jsonl"'
+
+    def test_read_only_without_token(self, dataset_store):
+        import lilbee.server.auth as auth_mod
+        from lilbee.server.app import create_app
+
+        auth_mod.session_manager.token = "test-secret"
+        try:
+            resp = TestClient(create_app()).get("/api/export")
+        finally:
+            auth_mod.session_manager.token = None
+        assert resp.status_code == 200
+
+    def test_unknown_source_is_400(self, dataset_store, client):
+        resp = client.get("/api/export", params={"source": "missing.pdf"})
+        assert resp.status_code == 400
+        assert "Source not found" in resp.json()["detail"]
+
+    def test_bad_format_is_400(self, dataset_store, client):
+        resp = client.get("/api/export", params={"format": "csv"})
+        assert resp.status_code == 400
+
+
+class TestImportRoute:
+    def test_round_trip_streams_progress_and_done(self, dataset_store, client):
+        data = client.get("/api/export", params={"format": "jsonl"}).content
+        dataset_store.delete_by_source("doc.pdf")
+
+        resp = client.post("/api/import", params={"format": "jsonl"}, content=data)
+        assert resp.status_code == 201
+        assert "text/event-stream" in resp.headers["content-type"]
+        events = parse_sse_events(resp.content)
+        assert any(name == "embed" for name, _ in events)
+        done = next(payload for name, payload in events if name == "done")
+        assert done["command"] == "import"
+        assert done["sources"] == ["doc.pdf"]
+        assert done["pages"] == 1
+        assert done["chunks"] > 0
+
+    def test_format_required(self, dataset_store, client):
+        resp = client.post("/api/import", content=b"{}")
+        assert resp.status_code == 400
+        assert "format is required" in resp.json()["detail"]
+
+    def test_bad_format_is_400(self, dataset_store, client):
+        resp = client.post("/api/import", params={"format": "csv"}, content=b"{}")
+        assert resp.status_code == 400
+
+    def test_empty_body_streams_error(self, dataset_store, client):
+        resp = client.post("/api/import", params={"format": "jsonl"}, content=b"")
+        assert resp.status_code == 201
+        error = next(p for name, p in parse_sse_events(resp.content) if name == "error")
+        assert "no pages" in error["message"]
+
+    def test_requires_auth(self, dataset_store):
+        import lilbee.server.auth as auth_mod
+        from lilbee.server.app import create_app
+
+        auth_mod.session_manager.token = "test-secret"
+        try:
+            resp = TestClient(create_app()).post(
+                "/api/import", params={"format": "jsonl"}, content=b""
+            )
+        finally:
+            auth_mod.session_manager.token = None
         assert resp.status_code == 401

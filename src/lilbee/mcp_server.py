@@ -330,6 +330,66 @@ def list_documents() -> dict[str, Any]:
 
 
 @mcp.tool()
+def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, Any]:
+    """Write a per-page {source, page, text} text dataset to a file on this machine.
+
+    Embedder-agnostic: drops vectors so the dataset can be re-imported under any
+    embedder. The file is written where ``output`` points (an absolute path is
+    safest); the format comes from ``fmt`` ("parquet" or "jsonl") or the output
+    suffix.
+
+    Args:
+        output: Destination file path (suffix sets the format unless fmt is given).
+        fmt: "parquet" or "jsonl". Empty infers from the output suffix.
+        source: Export only this source filename. Empty exports every source.
+    """
+    from lilbee.app.dataset import DatasetError, export_to_path
+
+    try:
+        summary = export_to_path(Path(output), fmt, source or None)
+    except DatasetError as exc:
+        return _error(str(exc))
+    return summary.model_dump()
+
+
+@mcp.tool()
+async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None) -> dict[str, Any]:
+    """Import a per-page text dataset, re-embedding it under the current model.
+
+    Re-chunks and re-embeds every page, replacing any existing copy of each
+    source. Imported sources are detached (not tied to a file on disk), so a
+    later sync against the documents directory leaves them in place. Streams
+    embedding progress via MCP notifications.
+
+    Args:
+        dataset: Path to the dataset file (parquet or jsonl).
+        fmt: "parquet" or "jsonl". Empty infers from the dataset suffix.
+    """
+    from lilbee.app.dataset import DatasetError, import_from_path
+    from lilbee.runtime.progress import EmbedEvent, EventType, ProgressEvent
+
+    loop = asyncio.get_running_loop()
+
+    def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+        # EMBED events carry chunk/total_chunks; other event types don't map to a percent.
+        if ctx is None or not isinstance(data, EmbedEvent):
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            ctx.report_progress(
+                progress=float(data.chunk), total=float(data.total_chunks), message=data.file
+            ),
+            loop,
+        )
+        future.add_done_callback(_log_progress_failure)
+
+    try:
+        summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
+    except DatasetError as exc:
+        return _error(str(exc))
+    return summary.model_dump()
+
+
+@mcp.tool()
 def reset(confirm: bool = False) -> dict[str, Any]:
     """Delete all documents and data (full factory reset).
     WARNING: This permanently removes all indexed documents and vector data.

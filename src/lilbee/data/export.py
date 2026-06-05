@@ -15,8 +15,6 @@ from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 if TYPE_CHECKING:
     from lilbee.data.store import Store
 
-_DATASET_COLUMNS = ("source", "page", "text", "content_type")
-
 
 class DatasetFormat(StrEnum):
     """On-disk format for the per-page text dataset."""
@@ -34,6 +32,14 @@ class ImportResult:
     chunks: int
 
 
+def decode_format(value: str) -> DatasetFormat:
+    """Decode an explicit format string, raising a user-facing ``ValueError``."""
+    try:
+        return DatasetFormat(value)
+    except ValueError:
+        raise ValueError(f"Unsupported format: {value!r} (expected parquet or jsonl)") from None
+
+
 def resolve_format(value: str, path: Path) -> DatasetFormat:
     """Pick a format from explicit *value*, else the *path* suffix.
 
@@ -41,16 +47,13 @@ def resolve_format(value: str, path: Path) -> DatasetFormat:
     known format.
     """
     if value:
-        try:
-            return DatasetFormat(value)
-        except ValueError:
-            raise ValueError(f"Unsupported format: {value!r} (expected parquet or jsonl)") from None
+        return decode_format(value)
     suffix = path.suffix.lower().lstrip(".")
     try:
         return DatasetFormat(suffix)
     except ValueError:
         raise ValueError(
-            f"Could not infer format from {path.name!r}; pass --format parquet or --format jsonl"
+            f"Could not infer format from {path.name!r}; use a .parquet or .jsonl path"
         ) from None
 
 
@@ -92,26 +95,33 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
     return rows
 
 
-def _write_parquet(rows: list[PageTextRecord], path: Path) -> None:
+def _serialize_parquet(rows: list[PageTextRecord]) -> bytes:
+    import io
+
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     table = pa.Table.from_pylist([dict(r) for r in rows])
-    pq.write_table(table, str(path))
+    buffer = io.BytesIO()
+    pq.write_table(table, buffer)
+    return buffer.getvalue()
 
 
-def _write_jsonl(rows: list[PageTextRecord], path: Path) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(dict(row)) + "\n")
+def _serialize_jsonl(rows: list[PageTextRecord]) -> bytes:
+    return "".join(json.dumps(dict(row)) + "\n" for row in rows).encode("utf-8")
 
 
-_WRITERS = {DatasetFormat.PARQUET: _write_parquet, DatasetFormat.JSONL: _write_jsonl}
+_SERIALIZERS = {DatasetFormat.PARQUET: _serialize_parquet, DatasetFormat.JSONL: _serialize_jsonl}
+
+
+def serialize_dataset(rows: list[PageTextRecord], fmt: DatasetFormat) -> bytes:
+    """Encode *rows* to dataset bytes in the given format."""
+    return _SERIALIZERS[fmt](rows)
 
 
 def write_dataset(rows: list[PageTextRecord], path: Path, fmt: DatasetFormat) -> None:
     """Write *rows* to *path* in the given format."""
-    _WRITERS[fmt](rows, path)
+    path.write_bytes(serialize_dataset(rows, fmt))
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:
@@ -127,30 +137,39 @@ def _coerce_row(raw: dict) -> PageTextRecord:
         raise ValueError("Dataset row is missing required source/page/text fields") from None
 
 
-def _read_parquet(path: Path) -> list[PageTextRecord]:
+def _deserialize_parquet(data: bytes) -> list[PageTextRecord]:
+    import io
+
     import pyarrow.parquet as pq
 
-    return [_coerce_row(row) for row in pq.read_table(str(path)).to_pylist()]
+    return [_coerce_row(row) for row in pq.read_table(io.BytesIO(data)).to_pylist()]
 
 
-def _read_jsonl(path: Path) -> list[PageTextRecord]:
+def _deserialize_jsonl(data: bytes) -> list[PageTextRecord]:
     rows: list[PageTextRecord] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if stripped:
-                rows.append(_coerce_row(json.loads(stripped)))
+    for line in data.decode("utf-8").splitlines():
+        stripped = line.strip()
+        if stripped:
+            rows.append(_coerce_row(json.loads(stripped)))
     return rows
 
 
-_READERS = {DatasetFormat.PARQUET: _read_parquet, DatasetFormat.JSONL: _read_jsonl}
+_DESERIALIZERS = {
+    DatasetFormat.PARQUET: _deserialize_parquet,
+    DatasetFormat.JSONL: _deserialize_jsonl,
+}
+
+
+def deserialize_dataset(data: bytes, fmt: DatasetFormat) -> list[PageTextRecord]:
+    """Decode dataset bytes in the given format back into rows."""
+    return _DESERIALIZERS[fmt](data)
 
 
 def load_page_dataset(path: Path, fmt: DatasetFormat) -> list[PageTextRecord]:
     """Read a per-page text dataset back from disk."""
     if not path.exists():
         raise ValueError(f"Dataset not found: {path}")
-    return _READERS[fmt](path)
+    return deserialize_dataset(path.read_bytes(), fmt)
 
 
 async def import_dataset(

@@ -2806,6 +2806,123 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
             assert "No documents" in mock_notify.call_args[0][0]
 
 
+class _DatasetStubEmbedder:
+    truncated_total = 0
+
+    def embed_batch(self, texts, **_kwargs):
+        return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+def _dataset_services(tmp_path, *, seed=True):
+    """A services container backed by a real store for /export and /import."""
+    from lilbee.data.store import Store
+    from tests.conftest import make_mock_services
+
+    store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "ds_lancedb"}))
+    if seed:
+        store.add_page_texts(
+            [{"source": "doc.pdf", "page": 1, "text": "page one", "content_type": "pdf"}]
+        )
+        store.upsert_source("doc.pdf", "h", 1)
+    return store, make_mock_services(store=store, embedder=_DatasetStubEmbedder())
+
+
+async def test_chat_slash_export_writes_file(tmp_path):
+    """``/export <path>`` writes the dataset and notifies success."""
+    _store, services = _dataset_services(tmp_path)
+    out = tmp_path / "pages.parquet"
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_export(str(out))
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert out.exists()
+            assert "Exported" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_export_no_arg(tmp_path):
+    _store, services = _dataset_services(tmp_path)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_export("")
+            await _pilot.pause()
+            mock_notify.assert_called_once()
+            assert "Usage" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_export_error(tmp_path):
+    """An empty store surfaces the DatasetError via an error notification."""
+    _store, services = _dataset_services(tmp_path, seed=False)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_export(str(tmp_path / "pages.parquet"))
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert "Nothing to export" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_import_round_trip(tmp_path):
+    """``/import <path>`` re-embeds the dataset and notifies success."""
+    _store, services = _dataset_services(tmp_path)
+    out = tmp_path / "pages.jsonl"
+    from lilbee.app.dataset import export_to_path
+
+    set_services(services)
+    export_to_path(out, "", None)
+    set_services(None)
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with (
+            patch.object(app.screen, "notify") as mock_notify,
+            patch(
+                "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
+            ) as mock_invalidate,
+        ):
+            app.screen._cmd_import(str(out))
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert "Imported" in mock_notify.call_args[0][0]
+            mock_invalidate.assert_called_once()
+    set_services(None)
+
+
+async def test_chat_slash_import_no_arg(tmp_path):
+    _store, services = _dataset_services(tmp_path)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_import("")
+            await _pilot.pause()
+            mock_notify.assert_called_once()
+            assert "Usage" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
+async def test_chat_slash_import_missing_file(tmp_path):
+    _store, services = _dataset_services(tmp_path)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_import(str(tmp_path / "nope.parquet"))
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            assert "Dataset not found" in mock_notify.call_args[0][0]
+    set_services(None)
+
+
 async def test_chat_slash_reset_pushes_confirm_dialog():
     """``/reset`` pushes a ConfirmDialog modal."""
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

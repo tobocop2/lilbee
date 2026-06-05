@@ -864,6 +864,59 @@ class ChatScreen(Screen[None]):
         invalidate_document_cache()
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
+    def _cmd_export(self, args: str) -> None:
+        """Run /export in a worker so the chat screen stays interactive."""
+        path = args.strip()
+        if not path:
+            self.notify(msg.CMD_EXPORT_USAGE, severity="warning")
+            return
+        self._cmd_export_worker(path)
+
+    @work(thread=True, name="chat_cmd_export", exit_on_error=False)
+    def _cmd_export_worker(self, raw_path: str) -> None:
+        """Build and write the dataset off the UI thread; notify back via dispatch."""
+        from lilbee.app.dataset import DatasetError, export_to_path
+
+        output = Path(raw_path).expanduser()
+        try:
+            summary = export_to_path(output, "", None)
+        except DatasetError as exc:
+            call_from_thread(self, self.notify, str(exc), severity="error")
+            return
+        call_from_thread(
+            self,
+            self.notify,
+            msg.CMD_EXPORT_SUCCESS.format(pages=summary.pages, output=output),
+        )
+
+    def _cmd_import(self, args: str) -> None:
+        """Run /import in a worker so re-embedding doesn't block the UI."""
+        path = args.strip()
+        if not path:
+            self.notify(msg.CMD_IMPORT_USAGE, severity="warning")
+            return
+        self._cmd_import_worker(path)
+
+    @work(thread=True, name="chat_cmd_import", exit_on_error=False)
+    def _cmd_import_worker(self, raw_path: str) -> None:
+        """Load and re-embed the dataset off the UI thread; notify back via dispatch."""
+        from lilbee.app.dataset import DatasetError, import_from_path
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
+        try:
+            summary = asyncio_loop.run(import_from_path(Path(raw_path).expanduser(), ""))
+        except DatasetError as exc:
+            call_from_thread(self, self.notify, str(exc), severity="error")
+            return
+        invalidate_document_cache()
+        call_from_thread(
+            self,
+            self.notify,
+            msg.CMD_IMPORT_SUCCESS.format(
+                sources=len(summary.sources), pages=summary.pages, chunks=summary.chunks
+            ),
+        )
+
     def _cmd_help(self, _args: str) -> None:
         self.action_show_command_catalog()
 

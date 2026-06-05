@@ -79,6 +79,20 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_rebuild",
         help_text="Re-index the documents directory from scratch",
     ),
+    SlashCommand(
+        "/export",
+        "_cmd_export",
+        aliases=(),
+        args_hint="<path>",
+        help_text="Export a per-page text dataset (parquet or jsonl)",
+    ),
+    SlashCommand(
+        "/import",
+        "_cmd_import",
+        aliases=(),
+        args_hint="<path>",
+        help_text="Import a per-page text dataset, re-embedding it",
+    ),
     SlashCommand("/status", "_cmd_status", help_text="Show knowledge-base status"),
     SlashCommand("/settings", "_cmd_settings", help_text="Open settings"),
     SlashCommand(
