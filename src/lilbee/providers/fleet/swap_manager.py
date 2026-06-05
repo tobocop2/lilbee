@@ -19,6 +19,7 @@ import httpx
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
+from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import build_swap_config
 
 if TYPE_CHECKING:
@@ -86,8 +87,9 @@ class SwapManager:
         return f"http://{_HOST}:{self._port}"
 
     def role_ready(self, role: WorkerRole) -> bool:
-        """Whether *role*'s upstream server is loaded and ready behind llama-swap."""
-        return role.value in self._ready_models()
+        """Whether at least one of *role*'s replica servers is loaded and ready."""
+        prefix = role_model_prefix(role)
+        return any(model.startswith(prefix) for model in self._ready_models())
 
     def reload(self, launches: list[InstanceLaunch]) -> None:
         """Apply a changed model set by restarting llama-swap with a fresh config."""

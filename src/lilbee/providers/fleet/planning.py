@@ -246,6 +246,18 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
 
+def _replica_count(role: WorkerRole) -> int:
+    """Requested data-parallel instances for *role*: embed/vision honor their
+    ``*_replicas`` knob (capped by available GPUs at placement); others run one."""
+    from lilbee.core.config import cfg
+
+    if role is WorkerRole.EMBED:
+        return max(1, cfg.embed_replicas)
+    if role is WorkerRole.VISION:
+        return max(1, cfg.vision_replicas)
+    return 1
+
+
 def _cache_type_flag() -> str | None:
     """KV cache type for chat, or ``None`` to leave llama-server's f16 default."""
     from lilbee.core.config import cfg
@@ -308,13 +320,20 @@ def _estimate_role(
         mmproj_path=mmproj,
     )
     return ModelPlacementInput(
-        role=role, est_vram_bytes=est.footprint(unified=unified_budget is not None)
+        role=role,
+        est_vram_bytes=est.footprint(unified=unified_budget is not None),
+        replicas=_replica_count(role),
     )
 
 
 def _search_reservation(inputs: dict[WorkerRole, ModelPlacementInput]) -> int:
-    """Total footprint of the placed search roles, held back ahead of chat."""
-    return sum(inputs[role].est_vram_bytes for role in _EMBED_ROLES if role in inputs)
+    """Total footprint of the placed search roles (all replicas), held back ahead
+    of chat."""
+    return sum(
+        inputs[role].est_vram_bytes * inputs[role].replicas
+        for role in _EMBED_ROLES
+        if role in inputs
+    )
 
 
 def _server_model_inputs(
@@ -436,9 +455,9 @@ def _launch_for(
         argv=argv,
         env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
         model=model_ref,
-        # Stamp the owning lilbee pid so a concurrent instance's reaper won't
-        # touch this server (only a dead parent's orphans get reaped).
-        port_file=data_dir / f"llama-server-{plan.role.value}-{os.getpid()}.port",
+        # Unique per role + replica + owning pid so a concurrent instance's reaper
+        # won't touch this server (only a dead parent's orphans get reaped).
+        port_file=data_dir / f"llama-server-{plan.role.value}-{plan.replica}-{os.getpid()}.port",
         # Embed/rerank truncate oversize inputs to the per-slot context.
         token_cap=ctx if plan.role in _EMBED_ROLES else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
@@ -446,6 +465,7 @@ def _launch_for(
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
         slots=slots,
         ctx=ctx,
+        replica=plan.replica,
     )
 
 

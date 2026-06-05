@@ -191,6 +191,15 @@ flowchart TD
   RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
+- **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
+  vision roles can run as N independent servers, one per GPU, so large-scale ingest
+  fans embedding / OCR across the whole box. The single roles (chat) are placed
+  first; each replica then lands on a distinct card with the most free VRAM (only
+  co-locating a second once every card has one), capped by what fits. The provider
+  holds a client pool per role and round-robins to the least-busy replica. With no
+  discrete GPU the replicas run as co-resident processes against the shared pool.
+  Each replica is its own llama-swap model id (`<role>-<n>`); a role is ready once
+  any replica is.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and

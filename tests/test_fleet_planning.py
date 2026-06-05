@@ -335,6 +335,36 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
     assert seen["chat_reservation"] == 0
 
 
+def test_replica_count_reads_per_role_knobs(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 3)
+    monkeypatch.setattr(cfg, "vision_replicas", 2)
+    assert planning_mod._replica_count(WorkerRole.EMBED) == 3
+    assert planning_mod._replica_count(WorkerRole.VISION) == 2
+    assert planning_mod._replica_count(WorkerRole.CHAT) == 1  # chat never replicates
+    assert planning_mod._replica_count(WorkerRole.RERANK) == 1  # rerank never replicates
+
+
+def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 4)
+    model = tmp_path / "e.gguf"
+    model.write_bytes(b"x" * 1000)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
+    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
+    assert inp.replicas == 4
+
+
+def test_search_reservation_scales_with_replicas() -> None:
+    inputs = {
+        WorkerRole.EMBED: ModelPlacementInput(WorkerRole.EMBED, 2 * _GB, replicas=3),
+        WorkerRole.RERANK: ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+    }
+    # 3 embed replicas + 1 rerank are all reserved ahead of chat.
+    assert planning_mod._search_reservation(inputs) == 3 * 2 * _GB + 1 * _GB
+
+
 class TestBuildFleetWiring:
     def test_server_model_inputs_skips_unconfigured_optional_roles(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -513,7 +543,7 @@ class TestBuildFleetWiring:
         assert launch.role == WorkerRole.CHAT
         assert launch.env_overrides == visible_env((device,))
         # port file is stamped with the owning pid so reaping is instance-safe
-        assert launch.port_file == Path(f"/data/llama-server-chat-{os.getpid()}.port")
+        assert launch.port_file == Path(f"/data/llama-server-chat-0-{os.getpid()}.port")
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout

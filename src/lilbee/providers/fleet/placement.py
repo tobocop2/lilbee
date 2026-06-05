@@ -25,10 +25,15 @@ _SEARCH_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 
 @dataclass(frozen=True)
 class ModelPlacementInput:
-    """A role's model and its estimated single-instance VRAM footprint."""
+    """A role's model, its estimated single-instance footprint, and replica count.
+
+    ``replicas`` > 1 requests N data-parallel instances (one per GPU) for the role,
+    each charged ``est_vram_bytes``; capped at runtime by the GPUs with room.
+    """
 
     role: WorkerRole
     est_vram_bytes: int
+    replicas: int = 1
 
 
 @dataclass(frozen=True)
@@ -37,12 +42,14 @@ class InstancePlan:
 
     ``devices`` >1 means the model is split across them; ``tensor_split`` is the
     per-device proportion (free VRAM in GiB) so an unequal pair splits by capacity
-    rather than evenly. Empty for a single-device instance.
+    rather than evenly. Empty for a single-device instance. ``replica`` is the
+    instance's index within its role's data-parallel pool (0 for a single server).
     """
 
     role: WorkerRole
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] = ()
+    replica: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,7 +86,11 @@ def plan_placement(
     if not devices:
         if unified_budget is None:
             return Placement(
-                instances=tuple(InstancePlan(role=m.role, devices=()) for m in models),
+                instances=tuple(
+                    InstancePlan(role=m.role, devices=(), replica=r)
+                    for m in models
+                    for r in range(m.replicas)
+                ),
                 unplaceable_roles=(),
             )
         return _place_shared_memory(models, unified_budget)
@@ -87,40 +98,83 @@ def plan_placement(
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
 
-    for model in sorted(models, key=lambda m: m.est_vram_bytes, reverse=True):
-        single = _best_single_device(model.est_vram_bytes, remaining)
-        if single is not None:
-            remaining[single] -= model.est_vram_bytes
-            instances.append(InstancePlan(role=model.role, devices=(single,)))
-            continue
-        split = _devices_for_split(model.est_vram_bytes, remaining)
-        if split is not None:
-            ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in split)
-            _charge_split(model.est_vram_bytes, split, remaining)
-            instances.append(
-                InstancePlan(role=model.role, devices=tuple(split), tensor_split=ratio)
-            )
-            continue
-        unplaceable.append(model.role)
+    # Single-instance roles first (chat tensor-splits here, claiming its cards),
+    # largest-first; then data-parallel replicas fill the remaining headroom.
+    singles = [m for m in models if m.replicas <= 1]
+    replicated = [m for m in models if m.replicas > 1]
+    for model in sorted(singles, key=lambda m: m.est_vram_bytes, reverse=True):
+        plan = _place_single(model, remaining)
+        if plan is None:
+            unplaceable.append(model.role)
+        else:
+            instances.append(plan)
+    for model in replicated:
+        replica_plans = _place_replicas(model, remaining)
+        if replica_plans:
+            instances.extend(replica_plans)
+        else:
+            unplaceable.append(model.role)
 
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+
+def _place_single(model: ModelPlacementInput, remaining: dict[int, float]) -> InstancePlan | None:
+    """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
+    single = _best_single_device(model.est_vram_bytes, remaining)
+    if single is not None:
+        remaining[single] -= model.est_vram_bytes
+        return InstancePlan(role=model.role, devices=(single,))
+    split = _devices_for_split(model.est_vram_bytes, remaining)
+    if split is not None:
+        ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in split)
+        _charge_split(model.est_vram_bytes, split, remaining)
+        return InstancePlan(role=model.role, devices=tuple(split), tensor_split=ratio)
+    return None
+
+
+def _place_replicas(model: ModelPlacementInput, remaining: dict[int, float]) -> list[InstancePlan]:
+    """Place up to ``model.replicas`` instances, one per distinct GPU (most-free first).
+
+    Spreads for throughput: each replica lands on a card not yet hosting one of this
+    role's replicas, only co-locating a second round once every card has one. Stops
+    early when no card has room, so the pool shrinks to what fits.
+    """
+    plans: list[InstancePlan] = []
+    used: set[int] = set()
+    for replica in range(model.replicas):
+        candidates = [idx for idx, free in remaining.items() if free >= model.est_vram_bytes]
+        if not candidates:
+            break
+        fresh = [idx for idx in candidates if idx not in used]
+        pick = max(fresh or candidates, key=lambda idx: remaining[idx])
+        remaining[pick] -= model.est_vram_bytes
+        used.add(pick)
+        if len(used) == len(remaining):
+            used = set()
+        plans.append(InstancePlan(role=model.role, devices=(pick,), replica=replica))
+    return plans
 
 
 def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Placement:
     """Fit un-pinned roles into one shared RAM *budget*.
 
     Search-critical roles (embed/rerank) are reserved first so the elastic chat
-    model can never crowd them out; the rest pack largest-first. A role that no
-    longer fits is unplaceable (gets no server, its calls error).
+    model can never crowd them out; the rest pack largest-first. Replicas run as N
+    co-resident processes against the shared pool (no per-GPU spread without GPUs).
+    A role with no instance placed is unplaceable (gets no server, its calls error).
     """
     remaining = budget
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
     for model in sorted(models, key=_shared_pool_order):
-        if model.est_vram_bytes <= remaining:
+        placed = 0
+        for _ in range(model.replicas):
+            if model.est_vram_bytes > remaining:
+                break
             remaining -= model.est_vram_bytes
-            instances.append(InstancePlan(role=model.role, devices=()))
-        else:
+            instances.append(InstancePlan(role=model.role, devices=(), replica=placed))
+            placed += 1
+        if placed == 0:
             unplaceable.append(model.role)
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
 

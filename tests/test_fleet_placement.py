@@ -132,3 +132,81 @@ class TestPlanPlacement:
         # now-emptier device 1. Each is a single-GPU instance.
         assert by_role == {WorkerRole.CHAT: (0,), WorkerRole.EMBED: (1,)}
         assert plan.unplaceable_roles == ()
+
+
+class TestReplicas:
+    """Data-parallel replicas: N instances of a role spread one-per-GPU for throughput."""
+
+    def _embeds(self, plan: Placement) -> list[InstancePlan]:
+        return [i for i in plan.instances if i.role is WorkerRole.EMBED]
+
+    def test_replicas_spread_one_per_distinct_gpu(self) -> None:
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=3)],
+            [(0, 24 * _GB), (1, 24 * _GB), (2, 24 * _GB)],
+        )
+        embeds = self._embeds(plan)
+        assert len(embeds) == 3
+        assert {i.devices[0] for i in embeds} == {0, 1, 2}  # one per distinct card
+        assert {i.replica for i in embeds} == {0, 1, 2}  # distinct replica indices
+        assert plan.unplaceable_roles == ()
+
+    def test_replicas_wrap_to_colocate_when_more_than_gpus(self) -> None:
+        # embed ~10GB, 2x24GB (21.6 usable) fits 2 per card -> 4 of 8 requested place.
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 10 * _GB, replicas=8)],
+            [(0, 24 * _GB), (1, 24 * _GB)],
+        )
+        embeds = self._embeds(plan)
+        assert len(embeds) == 4  # two per card, then no room
+        assert sorted(i.devices[0] for i in embeds) == [0, 0, 1, 1]
+        assert {i.replica for i in embeds} == {0, 1, 2, 3}
+
+    def test_replicated_role_unplaceable_when_no_gpu_fits_one(self) -> None:
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 100 * _GB, replicas=2)],
+            [(0, 24 * _GB)],
+        )
+        assert plan.instances == ()
+        assert plan.unplaceable_roles == (WorkerRole.EMBED,)
+
+    def test_chat_placed_before_replicas_then_replicas_fill_remaining(self) -> None:
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 20 * _GB),  # single, claims a card first
+                ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=2),
+            ],
+            [(0, 24 * _GB), (1, 24 * _GB)],
+        )
+        assert len([i for i in plan.instances if i.role is WorkerRole.CHAT]) == 1
+        assert len(self._embeds(plan)) == 2
+        assert plan.unplaceable_roles == ()
+
+    def test_unified_budget_runs_replicas_as_coresident_processes(self) -> None:
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 2 * _GB, replicas=3)],
+            [],
+            unified_budget=10 * _GB,
+        )
+        embeds = self._embeds(plan)
+        assert len(embeds) == 3  # 3x2GB <= 10GB
+        assert all(i.devices == () for i in embeds)
+        assert {i.replica for i in embeds} == {0, 1, 2}
+
+    def test_unified_budget_caps_replicas_to_what_fits(self) -> None:
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 4 * _GB, replicas=5)],
+            [],
+            unified_budget=10 * _GB,
+        )
+        assert len(self._embeds(plan)) == 2  # 2x4=8<=10; a third (12) overruns
+
+    def test_no_gpu_no_budget_expands_every_replica(self) -> None:
+        # GPU-less + ungated legacy path: each replica becomes an un-pinned instance.
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=2)],
+            [],
+        )
+        embeds = self._embeds(plan)
+        assert len(embeds) == 2
+        assert {i.replica for i in embeds} == {0, 1}
