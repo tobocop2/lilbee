@@ -463,7 +463,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.MEMORY,
-        help_text="Propose memories from each TUI turn for you to confirm (needs memory on)",
+        help_text="Auto-save durable facts and preferences from each TUI turn (needs memory on)",
     ),
     "memory_top_k": SettingDef(
         int,

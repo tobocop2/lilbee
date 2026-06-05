@@ -223,8 +223,8 @@ class Config(BaseSettings):
     # existing same-owner memory and updates it in place instead of inserting.
     memory_dedup_distance: float = ConfigField(default=0.05, ge=0.0, le=1.0, writable=True)
 
-    # LLM pass that proposes memories from the chat loop. Off by default; extracted
-    # memories are unconfirmed and never injected until the user confirms them.
+    # LLM pass that extracts memories from the chat loop. Off by default; extracted
+    # memories are saved directly and recalled like any other memory.
     memory_auto_extract: bool = ConfigField(default=False, writable=True)
 
     # Candidate count sent to the reranker.

@@ -1,10 +1,10 @@
-"""Memories management screen: browse, delete, toggle-shared, confirm.
+"""Memories management screen: browse, delete, toggle-shared.
 
 A single :class:`DataTable` of the human's (``owner=local``) stored memories
 with vim-style navigation. ``d`` deletes the highlighted memory (through the
-shared :class:`ConfirmDialog`), ``s`` toggles whether it is shared with agents,
-and ``c`` confirms an auto-extracted memory so it can be recalled. ``q`` / Esc
-backs out. Mirrors :class:`WikiDraftsScreen`'s structure and keymap.
+shared :class:`ConfirmDialog`) and ``s`` toggles whether it is shared with
+agents. ``q`` / Esc backs out. Mirrors :class:`WikiDraftsScreen`'s structure
+and keymap.
 """
 
 from __future__ import annotations
