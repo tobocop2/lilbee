@@ -198,7 +198,13 @@ class Lilbee:
         kind: MemoryKind = MemoryKind.FACT,
         shared: bool = False,
     ) -> str:
-        """Store a fact or preference in long-term memory; returns its id."""
+        """Store a fact or preference in long-term memory; returns its id.
+
+        This library primitive does not consult ``memory_enabled``: that flag
+        gates the interactive surfaces (TUI/CLI/MCP/REST) and the chat-prompt
+        injection, not direct programmatic access. ``remember`` and ``recall``
+        operate as a pair regardless of the flag.
+        """
         from lilbee.app.memory import make_memory_row
 
         with _swap_config(self._config):
