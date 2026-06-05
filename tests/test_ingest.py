@@ -104,6 +104,11 @@ def _make_kreuzberg_result(
     result.chunks = chunks
     result.content = text
     result.document = document
+    result.pages = (
+        [{"page_number": i + 1, "content": chunks[i].content} for i in range(num_chunks)]
+        if has_pages
+        else []
+    )
     return result
 
 
@@ -642,6 +647,42 @@ class TestDetectPending:
         mock_svc.store.upsert_source("synced.md", file_hash(f), 1, source_type="document")
 
         assert detect_pending() == 0
+
+    def test_imported_source_not_counted_as_removed(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import detect_pending
+        from lilbee.data.store import SourceType
+
+        # Detached import with no backing file: must not show up as pending removal.
+        mock_svc.store.upsert_source("shared.pdf", "", 4, source_type=SourceType.IMPORTED)
+
+        assert detect_pending() == 0
+
+
+class TestRemovableSources:
+    """Only document sources whose file is gone are removable; imports persist."""
+
+    def _src(self, filename, source_type):
+        return {
+            "filename": filename,
+            "file_hash": "",
+            "ingested_at": "",
+            "chunk_count": 1,
+            "source_type": source_type,
+        }
+
+    def test_keeps_imported_drops_missing_document(self):
+        from pathlib import Path
+
+        from lilbee.data.ingest.pipeline import _removable_sources
+        from lilbee.data.store import SourceType
+
+        sources = [
+            self._src("gone.md", SourceType.DOCUMENT),
+            self._src("present.md", SourceType.DOCUMENT),
+            self._src("shared.pdf", SourceType.IMPORTED),
+        ]
+        disk_files = {"present.md": Path("present.md")}
+        assert _removable_sources(sources, disk_files) == ["gone.md"]
 
 
 class TestDiscoverFiles:
@@ -1584,6 +1625,65 @@ class TestIngestMarkdownEdgeCases:
         md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
         result = await ingest_markdown(md, "fm_only.md")
         assert len(result) > 0, "Frontmatter content should be indexed"
+
+
+class TestPageTextAccumulator:
+    """`page_texts_out` captures clean per-page text for the export dataset."""
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_pdf_pages_captured(self, mock_kf, isolated_env):
+        mock_kf.return_value = _make_kreuzberg_result(num_chunks=2, has_pages=True)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        pages: list = []
+        await ingest_document(f, "test.pdf", "pdf", page_texts_out=pages)
+        assert [p["page"] for p in pages] == [1, 2]
+        assert all(p["content_type"] == "pdf" for p in pages)
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_non_paginated_doc_captured_as_page_zero(self, mock_kf, isolated_env):
+        mock_kf.return_value = _make_kreuzberg_result(text="Plain body. " * 10, has_pages=False)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "note.txt"
+        f.write_text("body")
+        pages: list = []
+        await ingest_document(f, "note.txt", "text", page_texts_out=pages)
+        assert len(pages) == 1
+        assert pages[0]["page"] == 0
+        assert pages[0]["content_type"] == "text"
+        assert "Plain body." in pages[0]["text"]
+
+    async def test_markdown_captured_as_page_zero(self, isolated_env):
+        from lilbee.data.ingest import ingest_markdown
+
+        md = isolated_env / "doc.md"
+        md.write_text("# Title\n\nSome markdown body text here.")
+        pages: list = []
+        await ingest_markdown(md, "doc.md", page_texts_out=pages)
+        assert len(pages) == 1
+        assert pages[0]["page"] == 0
+        assert "markdown body" in pages[0]["text"]
+
+    @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
+    async def test_ocr_fallback_captured(self, mock_kf, isolated_env, mock_svc):
+        cfg.enable_ocr = True
+        cfg.vision_model = ""
+        cfg.tesseract_timeout = 30.0
+        mock_kf.side_effect = [
+            _make_empty_result(),
+            _make_kreuzberg_result(text="OCR page text. " * 10, num_chunks=2, has_pages=True),
+        ]
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+        pages: list = []
+        await ingest_document(f, "scanned.pdf", "pdf", page_texts_out=pages)
+        assert {p["page"] for p in pages} == {1, 2}
+        assert all(p["content_type"] == "pdf" for p in pages)
 
 
 class TestIngestDocumentEdgeCases:

@@ -1,0 +1,185 @@
+"""Tests for the per-page text dataset export/import (lilbee.data.export)."""
+
+from pathlib import Path
+
+import pytest
+
+from lilbee.app import services as svc_mod
+from lilbee.core.config import cfg
+from lilbee.data.export import (
+    DatasetFormat,
+    build_page_dataset,
+    import_dataset,
+    load_page_dataset,
+    resolve_format,
+    write_dataset,
+)
+from lilbee.data.store import EmbeddingModelMismatchError, SourceType, Store
+from tests.conftest import make_mock_services
+
+
+@pytest.fixture()
+def test_config(tmp_path):
+    """A Config pointed at a temp LanceDB directory (mutable by tests)."""
+    return cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb"})
+
+
+@pytest.fixture()
+def store(test_config):
+    """A real Store on a temp LanceDB directory."""
+    return Store(test_config)
+
+
+@pytest.fixture()
+def services(store):
+    """Install a services container with the real store and a stub embedder."""
+    embedder = _StubEmbedder()
+    svc_mod.set_services(make_mock_services(store=store, embedder=embedder))
+    yield store
+    svc_mod.set_services(None)
+
+
+class _StubEmbedder:
+    """Deterministic embedder: every chunk maps to a fixed-dim vector."""
+
+    truncated_total = 0
+
+    def embed_batch(self, texts, **_kwargs):
+        return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+def _chunk(source, page, chunk_index, text):
+    return {
+        "source": source,
+        "content_type": "pdf",
+        "chunk_type": "raw",
+        "page_start": page,
+        "page_end": page,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": text,
+        "chunk_index": chunk_index,
+        "vector": [0.1] * cfg.embedding_dim,
+    }
+
+
+def _page(source, page, text, content_type="pdf"):
+    return {"source": source, "page": page, "text": text, "content_type": content_type}
+
+
+class TestResolveFormat:
+    def test_explicit_value_wins(self):
+        assert resolve_format("jsonl", Path("x.parquet")) == DatasetFormat.JSONL
+
+    def test_suffix_parquet(self):
+        assert resolve_format("", Path("data.parquet")) == DatasetFormat.PARQUET
+
+    def test_suffix_jsonl(self):
+        assert resolve_format("", Path("data.jsonl")) == DatasetFormat.JSONL
+
+    def test_bad_explicit_value(self):
+        with pytest.raises(ValueError, match="Unsupported format"):
+            resolve_format("csv", Path("data.parquet"))
+
+    def test_unknown_suffix(self):
+        with pytest.raises(ValueError, match="Could not infer format"):
+            resolve_format("", Path("data.txt"))
+
+
+class TestWriteRoundTrip:
+    @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
+    def test_round_trip(self, tmp_path, fmt):
+        rows = [_page("a.pdf", 1, "hello"), _page("a.pdf", 2, "world")]
+        path = tmp_path / f"pages.{fmt}"
+        write_dataset(rows, path, fmt)
+        loaded = load_page_dataset(path, fmt)
+        assert [(r["source"], r["page"], r["text"]) for r in loaded] == [
+            ("a.pdf", 1, "hello"),
+            ("a.pdf", 2, "world"),
+        ]
+
+    def test_load_missing_file(self, tmp_path):
+        with pytest.raises(ValueError, match="Dataset not found"):
+            load_page_dataset(tmp_path / "nope.parquet", DatasetFormat.PARQUET)
+
+    def test_jsonl_skips_blank_lines(self, tmp_path):
+        path = tmp_path / "pages.jsonl"
+        path.write_text('{"source":"a.pdf","page":1,"text":"x","content_type":"pdf"}\n\n')
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 1
+
+    def test_bad_row_raises(self, tmp_path):
+        path = tmp_path / "pages.jsonl"
+        path.write_text('{"source":"a.pdf"}\n')
+        with pytest.raises(ValueError, match="missing required"):
+            load_page_dataset(path, DatasetFormat.JSONL)
+
+
+class TestBuildPageDataset:
+    def test_clean_path_uses_captured_text(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "clean one"), _page("a.pdf", 2, "clean two")])
+        store.upsert_source("a.pdf", "h", 2)
+        rows = build_page_dataset(store)
+        assert [(r["page"], r["text"]) for r in rows] == [(1, "clean one"), (2, "clean two")]
+
+    def test_fallback_reconstructs_from_chunks(self, store):
+        # No page texts captured; reconstruct from chunks, ordered by chunk_index.
+        store.add_chunks([_chunk("b.pdf", 1, 1, "second"), _chunk("b.pdf", 1, 0, "first")])
+        store.upsert_source("b.pdf", "h", 2)
+        rows = build_page_dataset(store)
+        assert len(rows) == 1
+        assert rows[0]["page"] == 1
+        assert rows[0]["text"] == "first\nsecond"
+
+    def test_source_filter(self, store):
+        store.add_page_texts([_page("a.pdf", 1, "a-text")])
+        store.add_page_texts([_page("b.pdf", 1, "b-text")])
+        store.upsert_source("a.pdf", "h", 1)
+        store.upsert_source("b.pdf", "h", 1)
+        rows = build_page_dataset(store, source="b.pdf")
+        assert {r["source"] for r in rows} == {"b.pdf"}
+
+    def test_sorted_by_source_and_page(self, store):
+        store.add_page_texts(
+            [_page("b.pdf", 1, "b1"), _page("a.pdf", 2, "a2"), _page("a.pdf", 1, "a1")]
+        )
+        store.upsert_source("a.pdf", "h", 2)
+        store.upsert_source("b.pdf", "h", 1)
+        rows = build_page_dataset(store)
+        assert [(r["source"], r["page"]) for r in rows] == [
+            ("a.pdf", 1),
+            ("a.pdf", 2),
+            ("b.pdf", 1),
+        ]
+
+
+class TestImportDataset:
+    async def test_round_trip_into_fresh_store(self, services):
+        store = services
+        rows = [_page("doc.pdf", 1, "page one body"), _page("doc.pdf", 2, "page two body")]
+        result = await import_dataset(store, rows)
+
+        assert result.sources == ["doc.pdf"]
+        assert result.pages == 2
+        assert result.chunks > 0
+        # Page texts are preserved with their page numbers.
+        assert {r["page"] for r in store.get_page_texts("doc.pdf")} == {1, 2}
+        # Source is recorded as detached/imported.
+        sources = store.get_sources()
+        assert sources[0]["source_type"] == SourceType.IMPORTED
+        # Chunks landed and carry the page number.
+        chunks = store.get_chunks_by_source("doc.pdf")
+        assert chunks and all(c.page_start in {1, 2} for c in chunks)
+
+    async def test_reimport_replaces(self, services):
+        store = services
+        await import_dataset(store, [_page("doc.pdf", 1, "first version")])
+        await import_dataset(store, [_page("doc.pdf", 1, "second version")])
+        assert len(store.get_page_texts("doc.pdf")) == 1
+
+    async def test_dim_mismatch_raises(self, services, test_config):
+        store = services
+        # Seed a different embedding identity so the gate refuses the import.
+        store.add_chunks([_chunk("seed.pdf", 1, 0, "seed")])
+        test_config.embedding_model = "ollama/other-model:v1"
+        with pytest.raises(EmbeddingModelMismatchError):
+            await import_dataset(store, [_page("doc.pdf", 1, "body")])

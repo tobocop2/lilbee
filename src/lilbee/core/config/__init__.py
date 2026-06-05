@@ -17,6 +17,7 @@ from .defaults import (
     DEFAULT_NUM_CTX as DEFAULT_NUM_CTX,
     MEMORIES_TABLE as MEMORIES_TABLE,
     META_TABLE as META_TABLE,
+    PAGE_TEXTS_TABLE as PAGE_TEXTS_TABLE,
     SOURCES_TABLE as SOURCES_TABLE,
 )
 from .enums import (
@@ -44,6 +45,7 @@ __all__ = [
     "DEFAULT_NUM_CTX",
     "MEMORIES_TABLE",
     "META_TABLE",
+    "PAGE_TEXTS_TABLE",
     "SOURCES_TABLE",
     "ClustererBackend",
     "Config",
