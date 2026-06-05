@@ -3834,6 +3834,24 @@ class TestSelfCheckHelpers:
             setup._self_check_embed(tmp_path / "embed.gguf")
         swap.shutdown.assert_called_once()
 
+    def test_self_check_client_addresses_the_replica_model_id(self, monkeypatch, tmp_path) -> None:
+        # The client must address the model by its llama-swap id (role-0), matching
+        # the generated config, or the request would not route.
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=mock.MagicMock())
+        seen: dict[str, str] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient",
+            lambda _endpoint, model: seen.update(model=model) or mock.MagicMock(),
+        )
+        setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+        assert seen["model"] == "chat-0"
+
 
 class TestSelfCheckExtras:
     """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test."""
