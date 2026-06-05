@@ -17,7 +17,10 @@
     "lilbee": {
       "type": "local",
       "command": ["lilbee", "mcp"],
-      "timeout": 900000
+      "timeout": 900000,
+      "environment": {
+        "LILBEE_AGENT_ID": "opencode"
+      }
     }
   }
 }
