@@ -126,13 +126,19 @@ class SseStream:
         Emits a ``heartbeat`` event whenever the producer queue stays
         idle longer than ``cfg.sse_heartbeat_interval`` seconds so
         clients that enforce a stream-idle timeout don't abort.
+
+        The pending ``queue.get`` survives across poll rounds (``asyncio.wait``,
+        not ``wait_for``): cancelling a completed get on the timeout boundary
+        would drop the event it already popped from the queue.
         """
         last_yielded = time.monotonic()
+        getter: asyncio.Future[str | None] | None = None
         try:
             while True:
-                try:
-                    item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
-                except TimeoutError:
+                if getter is None:
+                    getter = asyncio.ensure_future(self.queue.get())
+                done, _ = await asyncio.wait({getter}, timeout=0.1)
+                if not done:
                     now = time.monotonic()
                     heartbeat_interval = cfg.sse_heartbeat_interval
                     if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:
@@ -140,8 +146,11 @@ class SseStream:
                         yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
                     # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
+                        getter.cancel()
                         break
                     continue
+                item = getter.result()
+                getter = None
                 if item is None:
                     break
                 last_yielded = time.monotonic()
@@ -150,3 +159,5 @@ class SseStream:
             log.info("%s cancelled by client", label)
             self.cancel.set()
             task.cancel()
+            if getter is not None:
+                getter.cancel()

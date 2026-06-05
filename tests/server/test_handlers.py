@@ -301,6 +301,26 @@ class TestSseStreamCallback:
         assert "embed" in item
 
 
+class TestSseStreamDrain:
+    async def test_drain_delivers_every_event_across_poll_boundaries(self):
+        """Events put near the poll timeout boundary are never dropped."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        total = 12
+
+        async def produce() -> None:
+            for i in range(total):
+                # Sleeps straddle drain's 0.1s poll period to hit the boundary.
+                await asyncio.sleep(0.03 + (i % 4) * 0.025)
+                sse.queue.put_nowait(f"event: tick\ndata: {i}\n\n")
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(produce())
+        received = [item async for item in sse.drain(task, "drain test")]
+        assert len([r for r in received if "tick" in r]) == total
+
+
 class TestOptionsPassthrough:
     """Verify generation options are extracted from request body and passed through."""
 
