@@ -14,9 +14,14 @@ if TYPE_CHECKING:
 _CHARS_PER_TOKEN = 4
 
 
+def estimate_text_tokens(text: str) -> int:
+    """Cheap char/4 token estimate for a string."""
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
+
 def estimate_tokens(message: ChatMessage) -> int:
     """Cheap char/4 token estimate for one message."""
-    return max(1, len(message["content"]) // _CHARS_PER_TOKEN)
+    return estimate_text_tokens(message["content"])
 
 
 def windowed_history(

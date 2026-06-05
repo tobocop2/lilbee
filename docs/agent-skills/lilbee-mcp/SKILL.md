@@ -84,6 +84,10 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
 | `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
+| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Needs `memory_enabled`. |
+| `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
+| `lilbee_memory_list(agent_id)` | List your stored memories. No embedding. |
+| `lilbee_memory_forget(memory_id)` | Delete one of your memories by id. No embedding. |
 
 ### Long (must go through `lilbee-worker`)
 

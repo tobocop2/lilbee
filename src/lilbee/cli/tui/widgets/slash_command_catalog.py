@@ -46,6 +46,10 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
         ("/add", "/crawl", "/wiki", "/delete", "/rebuild"),
     ),
     CatalogGroup(
+        "MEMORY",
+        ("/remember", "/memories"),
+    ),
+    CatalogGroup(
         "SETTINGS & SYSTEM",
         ("/settings", "/set", "/theme", "/reset", "/remove", "/login", "/version"),
     ),
