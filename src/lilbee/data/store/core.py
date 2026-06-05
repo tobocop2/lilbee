@@ -22,8 +22,8 @@ from lilbee.runtime.lock import write_lock
 
 from .lance_helpers import (
     _chunk_type_predicate,
-    _embedding_mismatch_message,
     _has_fts_index,
+    _has_vector_index,
     _safe_delete_unlocked,
     _sources_search_filter,
     _table_names,
@@ -83,6 +83,13 @@ def _hybrid_search(
 
 _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
+
+# Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
+# refine_factor re-ranks the PQ candidates against full vectors to recover recall.
+_VECTOR_METRIC = "cosine"
+_ANN_INDEX_TYPE = "IVF_PQ"
+_ANN_NPROBES = 20
+_ANN_REFINE_FACTOR = 10
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -240,12 +247,10 @@ class Store:
         ):
             return
         raise EmbeddingModelMismatchError(
-            _embedding_mismatch_message(
-                persisted_model=meta["embedding_model"],
-                persisted_dim=meta["embedding_dim"],
-                current_model=current_model,
-                current_dim=current_dim,
-            )
+            persisted_model=meta["embedding_model"],
+            persisted_dim=meta["embedding_dim"],
+            current_model=current_model,
+            current_dim=current_dim,
         )
 
     def _needs_canonical_meta_rewrite(
@@ -327,6 +332,34 @@ class Store:
                 self._fts_ready = True
             except Exception:
                 log.debug("FTS index ensure failed (empty table?)", exc_info=True)
+
+    def ensure_vector_index(self, *, force: bool = False) -> bool:
+        """Build or refresh the ANN vector index when the corpus is large enough.
+
+        Below ``cfg.ann_index_threshold`` (or when it is 0) the store keeps exact
+        flat search, which is faster and exact for small vaults and is all a
+        laptop needs. Once an index exists, ``optimize()`` folds new rows in.
+        Pass ``force=True`` to build regardless of the threshold (publish flow).
+        Returns True when an index was created or refreshed.
+        """
+        threshold = self._config.ann_index_threshold
+        with write_lock():
+            table = self.open_table(CHUNKS_TABLE)
+            if table is None:
+                return False
+            if _has_vector_index(table):
+                table.optimize()
+                log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
+                return True
+            if not force and (threshold <= 0 or table.count_rows() < threshold):
+                return False
+            try:
+                table.create_index(metric=_VECTOR_METRIC, index_type=_ANN_INDEX_TYPE)
+                log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
+                return True
+            except Exception:
+                log.debug("Vector index build failed (too few rows?)", exc_info=True)
+                return False
 
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added.
@@ -416,7 +449,11 @@ class Store:
                 log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
         candidate_k = top_k * self._config.candidate_multiplier
-        query = table.search(query_vector).metric("cosine").limit(candidate_k)
+        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(candidate_k)
+        if _has_vector_index(table):
+            # IVF_PQ is lossy; probe more partitions and refine against full
+            # vectors so recall stays close to the exact flat scan.
+            query = query.nprobes(_ANN_NPROBES).refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         rows = query.to_list()

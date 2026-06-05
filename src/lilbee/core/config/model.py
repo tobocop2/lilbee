@@ -158,6 +158,11 @@ class Config(BaseSettings):
     # Extra candidates retrieved for MMR reranking (multiplies top_k).
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Chunk count at/above which sync builds an approximate (ANN) vector index
+    # so search stays fast at millions of vectors. Below this, search uses exact
+    # flat scan (faster and exact for small vaults). 0 disables the ANN index.
+    ann_index_threshold: int = ConfigField(default=50_000, ge=0, writable=True)
+
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
 

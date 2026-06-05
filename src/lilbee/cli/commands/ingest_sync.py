@@ -299,6 +299,29 @@ def rebuild(
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
 
 
+def index(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Build the search indexes now (vector ANN + full-text).
+
+    Useful before publishing a large index so downloaders get fast search
+    without waiting for it to build on first query. Forces the vector index
+    even below the auto-build threshold.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    store = get_services().store
+    store.ensure_fts_index()
+    built = store.ensure_vector_index(force=True)
+    if cfg.json_mode:
+        json_output({"command": "index", "vector_index": built})
+        return
+    if built:
+        console.print("Search indexes built (vector ANN + full-text).")
+    else:
+        console.print("Full-text index built; vector index needs more chunks.")
+
+
 def _validate_file_paths(file_paths: list[Path]) -> None:
     """Exit on the first missing path; respects ``cfg.json_mode``."""
     for fp in file_paths:

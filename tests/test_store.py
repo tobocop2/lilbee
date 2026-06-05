@@ -120,6 +120,105 @@ class TestEnsureFtsIndex:
         assert kwargs.get("replace") is False
 
 
+def _make_indexable_records(n, dim):
+    """Records with varied vectors so IVF_PQ has something to train on."""
+    import math
+
+    return [
+        {
+            "source": f"doc{i}.md",
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": f"chunk number {i}",
+            "chunk_index": i,
+            "vector": [math.sin(i * 0.1 + j * 0.01) for j in range(dim)],
+        }
+        for i in range(n)
+    ]
+
+
+class TestEnsureVectorIndex:
+    """Small vaults stay on exact flat search; large ones get an ANN index."""
+
+    _INDEXABLE = 256  # enough rows for IVF_PQ to train under default params
+
+    def test_noop_when_no_table(self, store):
+        assert store.ensure_vector_index() is False
+
+    def test_below_threshold_keeps_flat_search(self, store, test_config):
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        store.add_chunks(_make_records())  # 3 rows, threshold defaults to 50_000
+        assert store.ensure_vector_index() is False
+        table = store.open_table("chunks")
+        assert _has_vector_index(table) is False
+        # Flat search still serves results without an ANN index.
+        assert store.search([0.5] * test_config.embedding_dim, top_k=3)
+
+    def test_threshold_zero_disables_build(self, store, test_config):
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        test_config.ann_index_threshold = 0
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        assert store.ensure_vector_index() is False
+        assert _has_vector_index(store.open_table("chunks")) is False
+
+    def test_builds_index_above_threshold(self, store, test_config):
+        import math
+
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        assert store.ensure_vector_index() is True
+        assert _has_vector_index(store.open_table("chunks")) is True
+        # Search still finds the chunk whose vector matches the query (nprobes/refine).
+        query = [math.sin(5 * 0.1 + j * 0.01) for j in range(test_config.embedding_dim)]
+        results = store.search(query, top_k=3)
+        assert results
+        assert results[0].source == "doc5.md"
+
+    def test_force_builds_below_threshold(self, store, test_config):
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        test_config.ann_index_threshold = 1_000_000
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        assert store.ensure_vector_index() is False  # below threshold, no force
+        assert store.ensure_vector_index(force=True) is True
+        assert _has_vector_index(store.open_table("chunks")) is True
+
+    def test_optimizes_when_index_exists(self, store, test_config):
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_vector_index()
+        table = store.open_table("chunks")
+        with mock.patch.object(type(table), "optimize") as optimize_spy:
+            assert store.ensure_vector_index() is True
+        optimize_spy.assert_called_once()
+
+    def test_build_failure_returns_false(self, store, test_config):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with mock.patch.object(
+            type(table), "create_index", side_effect=RuntimeError("too few rows")
+        ):
+            assert store.ensure_vector_index(force=True) is False
+
+    def test_has_vector_index_swallows_list_indices_errors(self, store):
+        from lilbee.data.store.lance_helpers import _has_vector_index
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with mock.patch.object(
+            type(table), "list_indices", side_effect=RuntimeError("backend down")
+        ):
+            assert _has_vector_index(table) is False
+
+
 class TestHasFtsIndex:
     def test_returns_false_on_fresh_table(self, store):
         store.add_chunks(_make_records())
@@ -1100,8 +1199,10 @@ class TestEmbeddingModelGate:
             store.add_chunks(_make_records())
         assert original_model in str(exc_info.value)
         assert "ollama/different-model:v1" in str(exc_info.value)
-        assert "lilbee rebuild" in str(exc_info.value)
-        assert "force_rebuild" in str(exc_info.value)
+        # Same-dim drift is adoptable: the index can be used under its own
+        # embedder, so the error names both models and reports dims_match.
+        assert exc_info.value.dims_match is True
+        assert exc_info.value.persisted_model == original_model
 
     def test_search_raises_when_model_drifts(self, store, test_config):
         """Search refuses to serve under a different embedding model than the persisted one."""

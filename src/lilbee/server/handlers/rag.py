@@ -136,7 +136,9 @@ async def _stream_rag_response(
             question, top_k=top_k, history=history, chunk_type=chunk_type
         )
     except EmbeddingModelMismatchError as exc:
-        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH)
+        # detail carries the index's embedder so the client can offer to adopt it.
+        detail = exc.persisted_model if exc.dims_match else None
+        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
         return
     if rag is None:
         yield sse_error("No relevant documents found.")

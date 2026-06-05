@@ -666,6 +666,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
+    "ann_index_threshold": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Chunk count to start building an ANN vector index (0 = always flat search)",
+    ),
     "max_distance": SettingDef(
         float,
         nullable=False,

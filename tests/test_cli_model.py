@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from lilbee.app import models as model_mod
 from lilbee.app.models import (
+    AdoptStatus,
     CatalogEntryData,
     ListModelsResult,
     ManifestData,
@@ -20,8 +21,10 @@ from lilbee.app.models import (
     RemoveResult,
     ShowModelResult,
 )
+from lilbee.app.settings import SettingsUpdateResult
 from lilbee.catalog.types import ModelSource
 from lilbee.cli import app
+from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import ModelNotFoundError
 from lilbee.modelhub.registry import ModelManifest
 
@@ -419,6 +422,35 @@ class TestPullModelData:
         assert events
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
+
+
+class TestAdoptEmbedder:
+    """Adopting a downloaded index's embedder pulls it when missing and routes
+    the switch through the settings boundary without a rebuild."""
+
+    _NO_REINDEX = SettingsUpdateResult(updated=["embedding_model"], reindex_required=False)
+
+    def test_adopts_and_pulls_when_missing(self, fake_manager):
+        target = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic.Q4_K_M.gguf"
+        with patch(
+            "lilbee.app.settings.apply_settings_update", return_value=self._NO_REINDEX
+        ) as apply:
+            result = model_mod.adopt_embedder(target)
+        assert result.status == AdoptStatus.ADOPTED
+        assert result.reindex_required is False
+        assert (target, ModelSource.NATIVE) in fake_manager.pull_calls
+        apply.assert_called_once_with({"embedding_model": target})
+
+    def test_already_active_skips_pull(self, fake_manager):
+        original = cfg.embedding_model
+        cfg.embedding_model = _CHAT_REF  # _CHAT_REF is installed in fake_manager
+        try:
+            with patch("lilbee.app.settings.apply_settings_update", return_value=self._NO_REINDEX):
+                result = model_mod.adopt_embedder(_CHAT_REF)
+        finally:
+            cfg.embedding_model = original
+        assert result.status == AdoptStatus.ALREADY_ACTIVE
+        assert fake_manager.pull_calls == []
 
 
 class TestPullCmd:

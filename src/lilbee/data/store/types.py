@@ -138,12 +138,45 @@ class StoreMeta(TypedDict):
 
 
 class EmbeddingModelMismatchError(RuntimeError):
-    """Raised when stored vectors were built with a different embedding model than ``cfg``.
+    """Raised when stored vectors were built with a different embedder than ``cfg``.
 
-    Carries a user-facing message naming both the persisted and the configured model and
-    pointing at the two recovery paths (``lilbee rebuild`` and ``POST /api/sync`` with
-    ``force_rebuild=true``).
+    Carries the persisted and configured refs and dims so each surface renders its
+    own recovery affordance (TUI prompt, CLI command, REST body) from the facts.
     """
+
+    def __init__(
+        self,
+        *,
+        persisted_model: str,
+        persisted_dim: int,
+        current_model: str,
+        current_dim: int,
+    ) -> None:
+        self.persisted_model = persisted_model
+        self.persisted_dim = persisted_dim
+        self.current_model = current_model
+        self.current_dim = current_dim
+        super().__init__(self._build_message())
+
+    @property
+    def dims_match(self) -> bool:
+        """True when the index is adoptable by switching embedder alone (same dim)."""
+        return self.persisted_dim == self.current_dim
+
+    def _build_message(self) -> str:
+        if self.dims_match:
+            return (
+                f"This index was built with embedding model '{self.persisted_model}', "
+                f"but lilbee is configured to use '{self.current_model}'. Configure lilbee "
+                f"to use '{self.persisted_model}' to search this index, or rebuild it under "
+                f"'{self.current_model}'."
+            )
+        return (
+            f"This index was built with embedding model '{self.persisted_model}' "
+            f"(dim {self.persisted_dim}), which differs from the current "
+            f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ, "
+            f"so rebuild the index under '{self.current_model}' to use it."
+        )
 
 
 @dataclass
