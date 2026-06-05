@@ -523,8 +523,8 @@ class TestMemoryExtractedEvent:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["I noted that."])
         with (
-            patch("lilbee.app.memory.auto_extract_enabled", return_value=True),
-            patch("lilbee.app.memory.auto_extract", return_value=self._saved()) as extract,
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=self._saved()) as extract,
         ):
             events = [e async for e in handlers.chat_stream("I drive a crown vic", [])]
 
@@ -542,8 +542,8 @@ class TestMemoryExtractedEvent:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["answer"])
         with (
-            patch("lilbee.app.memory.auto_extract_enabled", return_value=False),
-            patch("lilbee.app.memory.auto_extract") as extract,
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=False),
+            patch("lilbee.server.handlers.rag.auto_extract") as extract,
         ):
             events = [e async for e in handlers.chat_stream("q", [])]
         assert "memory_extracted" not in _event_types(events)
@@ -553,8 +553,8 @@ class TestMemoryExtractedEvent:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["answer"])
         with (
-            patch("lilbee.app.memory.auto_extract_enabled", return_value=True),
-            patch("lilbee.app.memory.auto_extract", return_value=[]),
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=[]),
         ):
             events = [e async for e in handlers.chat_stream("q", [])]
         assert "memory_extracted" not in _event_types(events)
@@ -563,8 +563,8 @@ class TestMemoryExtractedEvent:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter([])
         with (
-            patch("lilbee.app.memory.auto_extract_enabled", return_value=True),
-            patch("lilbee.app.memory.auto_extract") as extract,
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract") as extract,
         ):
             events = [e async for e in handlers.chat_stream("q", [])]
         assert "memory_extracted" not in _event_types(events)
@@ -574,8 +574,8 @@ class TestMemoryExtractedEvent:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["noted"])
         with (
-            patch("lilbee.app.memory.auto_extract_enabled", return_value=True),
-            patch("lilbee.app.memory.auto_extract", return_value=self._saved()),
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=self._saved()),
         ):
             events = [e async for e in handlers.ask_stream("q")]
         assert "memory_extracted" in _event_types(events)

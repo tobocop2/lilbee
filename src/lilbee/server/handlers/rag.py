@@ -8,6 +8,7 @@ import threading
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
+from lilbee.app.memory import auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
@@ -123,8 +124,6 @@ async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator
     when the answer is empty, auto-extraction is off, or nothing was extracted,
     so existing consumers are unaffected.
     """
-    from lilbee.app.memory import auto_extract, auto_extract_enabled
-
     if not answer or not auto_extract_enabled():
         return
     stored = await asyncio.to_thread(auto_extract, question, answer)
