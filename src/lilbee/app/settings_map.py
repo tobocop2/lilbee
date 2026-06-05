@@ -647,6 +647,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
     ),
+    "embed_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Embedding servers to run in parallel, one per GPU, for large-scale ingest",
+    ),
+    "vision_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Vision OCR servers to run in parallel, one per GPU, for large-scale ingest",
+    ),
     "candidate_multiplier": SettingDef(
         int,
         nullable=False,

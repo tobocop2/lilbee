@@ -148,9 +148,10 @@ class FleetProvider:
 
     def __init__(self) -> None:
         self._swap: SwapManager | None = None
-        # One OpenAI client per placed role, all pointed at the llama-swap endpoint
-        # and routed by model id; rebuilt whenever the swap process (re)starts.
-        self._clients: dict[WorkerRole, LlamaServerClient] = {}
+        # A pool of OpenAI clients per placed role (one per data-parallel replica),
+        # all pointed at the llama-swap endpoint and routed by replica model id;
+        # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
+        self._clients: dict[WorkerRole, list[LlamaServerClient]] = {}
         # Chat batching slots and per-slot context from the chat launch, surfaced to
         # the concurrency gate and clients; defaults until the swap is up.
         self._chat_slots = 1
@@ -201,48 +202,51 @@ class FleetProvider:
             return swap
 
     def _adopt_swap(self, swap: SwapManager, launches: list[InstanceLaunch]) -> None:
-        """Record a freshly started swap and build a client per placed role.
+        """Record a freshly started swap and build a client pool per placed role.
 
-        Caller holds ``self._lock``. ``launches`` carries each role's slots/ctx so
-        the chat capacity and served context come from the launch, not a probe.
+        Caller holds ``self._lock``. Each launch (one per replica) becomes a client
+        keyed by its replica model id; launches carry the chat slots/ctx so the
+        capacity and served context come from the launch, not a probe.
         """
         self._swap = swap
         endpoint = swap.endpoint()
         # token_cap truncates oversize embed/rerank inputs to the per-slot context
         # (the in-process backstop); the longer timeout covers a cold upstream load.
-        self._clients = {
-            launch.role: LlamaServerClient(
-                endpoint,
-                launch.role.value,
-                token_cap=launch.token_cap,
-                timeout=_REQUEST_TIMEOUT_S,
+        clients: dict[WorkerRole, list[LlamaServerClient]] = {}
+        for launch in launches:
+            clients.setdefault(launch.role, []).append(
+                LlamaServerClient(
+                    endpoint,
+                    launch.model_id,
+                    token_cap=launch.token_cap,
+                    timeout=_REQUEST_TIMEOUT_S,
+                )
             )
-            for launch in launches
-        }
+        self._clients = clients
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
-        """The client for *role*, or a user-facing error when it has no server.
+        """The client pool for *role*, or a user-facing error when it has no server.
 
-        A configured, placeable role gets a client; its absence means the role is
-        unconfigured or did not fit memory. llama-swap loads the upstream on the
-        first request, so a returned client may still be cold. No in-process
-        fallback, so a missing client is a hard error.
+        A configured, placeable role gets one or more replica clients; their absence
+        means the role is unconfigured or did not fit memory. llama-swap loads each
+        upstream on its first request, so a returned client may still be cold. No
+        in-process fallback, so a missing pool is a hard error.
         """
         from lilbee.providers.base import ProviderError
 
         self._ensure_swap()
         with self._lock:
-            client = self._clients.get(role)
-        if client is None:
+            clients = self._clients.get(role)
+        if not clients:
             raise ProviderError(
                 f"No {role.value} model server is running. Make sure a {role.value} "
                 "model is installed and configured, then try again.",
                 provider=_PROVIDER_NAME,
             )
-        return [client]
+        return list(clients)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.
@@ -275,7 +279,7 @@ class FleetProvider:
     def _shutdown_swap(self) -> None:
         with self._lock:
             swap = self._swap
-            clients = list(self._clients.values())
+            clients = [client for pool in self._clients.values() for client in pool]
             self._swap = None
             self._clients = {}
             self._chat_slots = 1
@@ -601,22 +605,24 @@ class FleetProvider:
                 self._warming = False
 
     def _preload_roles(self) -> None:
-        """Issue one cheap request per role so llama-swap loads its upstream now.
+        """Issue a cheap request per replica so llama-swap loads each upstream now.
 
         llama-swap starts an upstream on its first request, so warming sends a
-        minimal call per role (firing the spawn listeners around each). A per-role
-        failure is logged and skipped; the role still loads on its first real use.
+        minimal call to every replica of every role (firing the spawn listeners
+        around each role). A per-replica failure is logged and skipped; that replica
+        still loads on its first real use.
         """
         with self._lock:
-            clients = dict(self._clients)
+            pools = {role: list(clients) for role, clients in self._clients.items()}
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
-        for role, client in clients.items():
+        for role, clients in pools.items():
             if on_spawning is not None:
                 on_spawning(role)
-            try:
-                _warm_role(role, client)
-            except Exception:
-                log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
+            for client in clients:
+                try:
+                    _warm_role(role, client)
+                except Exception:
+                    log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
             if on_spawned is not None:
                 on_spawned(role)
 

@@ -71,10 +71,10 @@ def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = Non
 
 
 def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetProvider:
-    """A provider with a fake swap already up and one client per role (no real start)."""
+    """A provider with a fake swap already up and a client pool per role (no real start)."""
     p = FleetProvider()
     p._swap = _FakeSwap()  # non-None so _ensure_swap short-circuits
-    p._clients = {role: cs[0] for role, cs in clients.items() if cs}
+    p._clients = {role: list(cs) for role, cs in clients.items() if cs}
     return p
 
 
@@ -129,6 +129,24 @@ def test_embed_routes_to_server_when_present() -> None:
     client.embed.return_value = [[0.1]]
     p = _provider_with_clients({WorkerRole.EMBED: [client]})
     assert p.embed(["a"]) == [[0.1]]
+
+
+def test_embed_routes_to_least_busy_replica() -> None:
+    # Data-parallel replicas: a request goes to the idlest replica in the pool.
+    busy, idle = _fake_client(5), _fake_client(1)
+    idle.embed.return_value = [[0.2]]
+    p = _provider_with_clients({WorkerRole.EMBED: [busy, idle]})
+    assert p.embed(["a"]) == [[0.2]]
+    idle.embed.assert_called_once()
+    busy.embed.assert_not_called()
+
+
+def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
+    launches = [_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED)]
+    _install_engine(monkeypatch, launches=launches)
+    p = FleetProvider()
+    p._ensure_swap()
+    assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
 def test_embed_without_server_raises() -> None:

@@ -154,6 +154,23 @@ def _reset_services_after_test():
 
 
 @pytest.fixture(autouse=True)
+def _join_fleet_background_threads():
+    """Join lingering fleet warm-up / reload daemon threads after each test.
+
+    ``warm_up_pool`` / ``reload_role`` dispatch fire-and-forget daemon threads; on a
+    host without the engine binary they fail fast and log a warning. Joining them
+    here keeps that warning inside the test that started the thread instead of
+    leaking it into a later test's log capture.
+    """
+    yield
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name.startswith("fleet-") and thread.is_alive():
+            thread.join(timeout=5.0)
+
+
+@pytest.fixture(autouse=True)
 def _ignore_user_global_config(monkeypatch):
     """Skip the platform-default config.toml for unit tests.
 

@@ -57,7 +57,7 @@ def build_swap_config(launches: list[InstanceLaunch]) -> str:
         }
         if launch.env_overrides:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in launch.env_overrides.items()]
-        models[launch.role.value] = entry
+        models[launch.model_id] = entry
     config: dict[str, object] = {
         _KEY_START_PORT: _START_PORT,
         _KEY_HEALTH_TIMEOUT: _HEALTH_CHECK_TIMEOUT_S,
@@ -68,7 +68,7 @@ def build_swap_config(launches: list[InstanceLaunch]) -> str:
                 _KEY_SWAP: False,
                 _KEY_EXCLUSIVE: False,
                 _KEY_PERSISTENT: True,
-                _KEY_MEMBERS: [launch.role.value for launch in launches],
+                _KEY_MEMBERS: [launch.model_id for launch in launches],
             }
         },
     }

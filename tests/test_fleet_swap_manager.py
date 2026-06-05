@@ -122,15 +122,23 @@ class TestRoleReady:
     def test_true_when_role_loaded_and_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        running = {"running": [{"model": "chat", "state": "ready"}]}
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
         mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
         assert mgr.role_ready(WorkerRole.CHAT) is True
         assert mgr.role_ready(WorkerRole.EMBED) is False
 
+    def test_true_when_any_replica_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A role is ready as soon as one of its data-parallel replicas is up.
+        running = {"running": [{"model": "embed-1", "state": "ready"}]}
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
+        assert mgr.role_ready(WorkerRole.EMBED) is True
+
     def test_false_when_role_still_loading(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        running = {"running": [{"model": "chat", "state": "starting"}]}
+        running = {"running": [{"model": "chat-0", "state": "starting"}]}
         mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
         assert mgr.role_ready(WorkerRole.CHAT) is False
 

@@ -163,7 +163,7 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
     )
     swap = SwapManager(work_dir)
     swap.start([launch])
-    return swap, LlamaServerClient(swap.endpoint(), role.value)
+    return swap, LlamaServerClient(swap.endpoint(), launch.model_id)
 
 
 def _self_check_chat(model_path: Path, max_tokens: int) -> str:
