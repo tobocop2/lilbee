@@ -34,11 +34,9 @@ def make_memory_row(
     shared: bool = False,
     confirmed: bool = True,
 ) -> MemoryRow:
-    """Build a fully populated ``MemoryRow`` (id, timestamps, embedded vector).
-
-    Shared by the services-backed :func:`remember` and the standalone
-    :class:`~lilbee.api.Lilbee` API so id/timestamp/embedding assignment lives
-    in one place regardless of which store/embedder the caller owns.
+    """Build a fully populated ``MemoryRow`` with a fresh id, timestamps, and
+    an embedded vector. The single id/timestamp/embedding assignment point, so
+    callers supply only their own ``embed`` and store the result.
     """
     now = datetime.now(UTC).isoformat()
     return MemoryRow(
