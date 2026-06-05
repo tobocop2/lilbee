@@ -154,7 +154,9 @@ class TestAutoExtract:
         cfg.memory_auto_extract = True
         svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
         stored = app_memory.auto_extract("I love rust", "Rust is great.")
-        assert stored == ["the user prefers rust"]
+        assert [m.text for m in stored] == ["the user prefers rust"]
+        assert stored[0].id == "stored-id"
+        assert stored[0].kind is MemoryKind.FACT
         record = svc.store.add_memory.call_args.args[0]
         assert record.source is MemorySource.EXTRACTED
 

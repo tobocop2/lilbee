@@ -29,7 +29,12 @@ from lilbee.server.handlers.sse import (
     sse_error,
     sse_event,
 )
-from lilbee.server.models import AskResponse, CleanedChunk
+from lilbee.server.models import (
+    AskResponse,
+    CleanedChunk,
+    MemoryExtractedEvent,
+    MemoryExtractedItem,
+)
 
 if TYPE_CHECKING:
     from lilbee.retrieval.query import ChatMessage
@@ -73,8 +78,13 @@ def _run_llm_stream(
     queue: asyncio.Queue[str | None],
     cancel: threading.Event,
     error_holder: list[Exception],
+    answer_parts: list[str],
 ) -> None:
-    """Forward tokens from the cap-aware chat orchestrator into the SSE queue."""
+    """Forward tokens from the cap-aware chat orchestrator into the SSE queue.
+
+    Answer tokens (not reasoning) are also accumulated into *answer_parts* so the
+    caller can feed the finished answer to auto-extraction.
+    """
     try:
         events = stream_chat_with_cap(
             get_services().provider,
@@ -97,11 +107,34 @@ def _run_llm_stream(
                 )
             elif event.content:
                 kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
+                if kind is SseEvent.TOKEN:
+                    answer_parts.append(event.content)
                 queue.put_nowait(sse_event(kind, {"token": event.content}))
     except Exception as exc:
         error_holder.append(exc)
     finally:
         queue.put_nowait(None)
+
+
+async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
+    """Yield a ``memory_extracted`` SSE event if the turn auto-saved any memories.
+
+    Runs the extraction LLM pass off the event loop. Silent (yields nothing)
+    when the answer is empty, auto-extraction is off, or nothing was extracted,
+    so existing consumers are unaffected.
+    """
+    from lilbee.app.memory import auto_extract, auto_extract_enabled
+
+    if not answer or not auto_extract_enabled():
+        return
+    stored = await asyncio.to_thread(auto_extract, question, answer)
+    if not stored:
+        return
+    event = MemoryExtractedEvent(
+        count=len(stored),
+        items=[MemoryExtractedItem(id=m.id, kind=m.kind, text=m.text) for m in stored],
+    )
+    yield sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))
 
 
 def _error_event(exc: Exception) -> str:
@@ -147,9 +180,10 @@ async def _stream_rag_response(
 
     sse = SseStream()
     error_holder: list[Exception] = []
+    answer_parts: list[str] = []
 
     executor_fut = sse.loop.run_in_executor(
-        None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
+        None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder, answer_parts
     )
     task = asyncio.ensure_future(executor_fut)
     async for event in sse.drain(task, "RAG stream"):
@@ -165,6 +199,11 @@ async def _stream_rag_response(
 
     yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
     yield sse_done({})
+
+    # Auto-extraction (and its notification) trails ``done`` so clients that stop
+    # at ``done`` are unaffected; the memories are stored regardless.
+    async for event in _emit_extracted_memories(question, "".join(answer_parts)):
+        yield event
 
 
 def ask_stream(

@@ -529,3 +529,23 @@ class MemoryRemoveResponse(BaseModel):
     """Outcome of deleting a memory."""
 
     removed: str
+
+
+class MemoryExtractedItem(BaseModel):
+    """A single memory created by auto-extraction during a chat turn."""
+
+    id: str
+    kind: MemoryKind
+    text: str
+
+
+class MemoryExtractedEvent(BaseModel):
+    """``memory_extracted`` SSE payload: how many memories a turn auto-saved.
+
+    Emitted on the chat stream after ``done`` when auto-extraction is on and the
+    turn produced at least one memory, so a REST client (the Obsidian plugin) can
+    toast the count and refresh its memories view without a separate fetch.
+    """
+
+    count: int
+    items: list[MemoryExtractedItem]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from lilbee.app.services import get_services
@@ -118,13 +119,22 @@ def auto_extract_enabled() -> bool:
     return cfg.memory_enabled and cfg.memory_auto_extract
 
 
-def auto_extract(question: str, answer: str) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class SavedMemory:
+    """A memory created by auto-extraction: its stored id, kind, and text."""
+
+    id: str
+    kind: MemoryKind
+    text: str
+
+
+def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     """Extract durable memories from a chat turn and store them.
 
-    Returns the texts stored. Stored memories are ``source=EXTRACTED`` and are
-    recalled like any other; the user manages them in ``/memories``. A no-op
-    (returns ``[]``) unless both the master gate and ``memory_auto_extract`` are
-    on.
+    Returns one :class:`SavedMemory` per stored memory. Stored memories are
+    ``source=EXTRACTED`` and are recalled like any other; the user manages them
+    in ``/memories``. A no-op (returns ``[]``) unless both the master gate and
+    ``memory_auto_extract`` are on.
     """
     from lilbee.retrieval.query.memory_extract import extract_memories
 
@@ -132,8 +142,8 @@ def auto_extract(question: str, answer: str) -> list[str]:
         return []
     services = get_services()
     extracted = extract_memories(question, answer, services.provider.chat)
-    stored: list[str] = []
+    stored: list[SavedMemory] = []
     for memory in extracted:
-        remember(memory.text, kind=memory.kind, source=MemorySource.EXTRACTED)
-        stored.append(memory.text)
+        memory_id = remember(memory.text, kind=memory.kind, source=MemorySource.EXTRACTED)
+        stored.append(SavedMemory(id=memory_id, kind=memory.kind, text=memory.text))
     return stored
