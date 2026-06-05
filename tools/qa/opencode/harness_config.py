@@ -97,8 +97,8 @@ _CHAT_CTX_TARGET = 131072  # ~24K goes to opencode's system + tools schema; the
 # launched --ctx-size to num_ctx * slots. Unset on pods, where the giant gets the
 # full window.
 _NUM_CTX_OVERRIDE = os.environ.get("LILBEE_QA_NUM_CTX", "").strip()
-_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-_EMBED_PULL_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+_EMBED_REF = "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+_EMBED_PULL_REF = "Qwen/Qwen3-Embedding-8B-GGUF"
 
 
 class ScenarioStatus(StrEnum):

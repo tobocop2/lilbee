@@ -10,9 +10,10 @@
 
 [[model]]
 family = "minimax-m2"
-# Q4_K_M (3 shards, ~138GB) fits 8x24GB cards; Q8_0 (~245GB) is the 2xH200 config.
-ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
-size_gb = 138.0
+# Q4_K_S (3 shards, ~130GB) splits across 7 of 8x24GB cards, freeing one for the
+# embedder; Q8_0 (~245GB) is the 2xH200 config.
+ref = "unsloth/MiniMax-M2-GGUF/Q4_K_S/MiniMax-M2-Q4_K_S-00001-of-00003.gguf"
+size_gb = 130.0
 tier = "giant"
 
 [[model]]
