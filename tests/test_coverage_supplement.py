@@ -367,6 +367,21 @@ class TestSettingsFeatureGating:
         # Still settable through the CLI / env path.
         assert "sse_heartbeat_interval" in SETTINGS_MAP
 
+    def test_every_writable_memory_field_has_a_settings_map_entry(self) -> None:
+        """Each writable memory_* config field must be in SETTINGS_MAP.
+
+        Without the entry, the TUI ``/set`` rejects the key as unknown and the
+        Settings screen never renders it, even though the field is writable via
+        CLI/MCP/REST. This guards the docs-promised `/set memory_enabled true`.
+        """
+        from lilbee.app.settings import WRITABLE_CONFIG_FIELDS
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        writable_memory = {k for k in WRITABLE_CONFIG_FIELDS if k.startswith("memory_")}
+        assert writable_memory  # sanity: the fields exist
+        missing = writable_memory - set(SETTINGS_MAP)
+        assert missing == set(), f"memory fields missing from SETTINGS_MAP: {missing}"
+
     def test_no_setting_help_text_mentions_obsidian(self) -> None:
         """Obsidian is one host of the HTTP API; it must not leak into setting labels."""
         from lilbee.app.settings_map import SETTINGS_MAP
