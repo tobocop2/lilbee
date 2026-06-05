@@ -86,7 +86,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
 | `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
 | `lilbee_export_dataset(output, fmt, source)` | Write a per-page `{source, page, text}` dataset to a file (parquet or jsonl, no vectors). No embedding. |
-| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Needs `memory_enabled`. |
+| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
 | `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
 | `lilbee_memory_list(agent_id)` | List your stored memories. No embedding. |
 | `lilbee_memory_forget(memory_id)` | Delete one of your memories by id. No embedding. |
@@ -102,7 +102,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
 
-(Experimental wiki tools are documented at the end of this skill.)
+(Experimental wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
 ## Common workflows
 

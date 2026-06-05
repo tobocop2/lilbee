@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import lilbee.app.services as svc_mod
+import lilbee.mcp_server as mcp_server
 from lilbee.core.config import cfg
 from lilbee.crawler.task import clear_tasks
 from lilbee.data.ingest import SyncResult
@@ -587,6 +588,29 @@ class TestAdd:
         src.write_text("content")
         result = await add([str(src)])
         assert "warning" in result
+
+
+class TestConditionalToolRegistration:
+    def test_disabled_subsystems_register_no_tools(self):
+        """Defaults (wiki off, memory off) leave the tool registry untouched."""
+        before = set(mcp_server.mcp._tool_manager._tools)
+        mcp_server.register_conditional_tools()
+        assert set(mcp_server.mcp._tool_manager._tools) == before
+        assert not any(name.startswith(("wiki_", "memory_")) for name in before)
+
+    def test_enabled_subsystems_register_tools(self):
+        before = set(mcp_server.mcp._tool_manager._tools)
+        cfg.wiki = True
+        cfg.memory_enabled = True
+        try:
+            mcp_server.register_conditional_tools()
+            names = set(mcp_server.mcp._tool_manager._tools)
+            assert {"wiki_status", "wiki_build", "memory_remember", "memory_forget"} <= names
+        finally:
+            cfg.wiki = False
+            cfg.memory_enabled = False
+            for name in set(mcp_server.mcp._tool_manager._tools) - before:
+                del mcp_server.mcp._tool_manager._tools[name]
 
 
 class TestMain:

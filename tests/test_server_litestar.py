@@ -1422,7 +1422,7 @@ class TestImportRoute:
         assert resp.status_code == 201
         assert "text/event-stream" in resp.headers["content-type"]
         events = parse_sse_events(resp.content)
-        assert any(name == "embed" for name, _ in events)
+        assert any(name == "embed" for name, _ in events), events
         done = next(payload for name, payload in events if name == "done")
         assert done["command"] == "import"
         assert done["sources"] == ["doc.pdf"]

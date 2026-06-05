@@ -331,17 +331,10 @@ def list_documents() -> dict[str, Any]:
 
 @mcp.tool()
 def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, Any]:
-    """Write a per-page {source, page, text} text dataset to a file on this machine.
+    """Write the per-page {source, page, text} dataset to a file (no vectors).
 
-    Embedder-agnostic: drops vectors so the dataset can be re-imported under any
-    embedder. The file is written where ``output`` points (an absolute path is
-    safest); the format comes from ``fmt`` ("parquet" or "jsonl") or the output
-    suffix.
-
-    Args:
-        output: Destination file path (suffix sets the format unless fmt is given).
-        fmt: "parquet" or "jsonl". Empty infers from the output suffix.
-        source: Export only this source filename. Empty exports every source.
+    ``fmt`` is "parquet" or "jsonl"; empty infers from the output suffix.
+    ``source`` limits the export to one source filename. No embedding.
     """
     from lilbee.app.dataset import DatasetError, export_to_path
 
@@ -354,16 +347,11 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
 
 @mcp.tool()
 async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None) -> dict[str, Any]:
-    """Import a per-page text dataset, re-embedding it under the current model.
+    """Import a per-page text dataset file, re-embedding it under the current model.
 
-    Re-chunks and re-embeds every page, replacing any existing copy of each
-    source. Imported sources are detached (not tied to a file on disk), so a
-    later sync against the documents directory leaves them in place. Streams
-    embedding progress via MCP notifications.
-
-    Args:
-        dataset: Path to the dataset file (parquet or jsonl).
-        fmt: "parquet" or "jsonl". Empty infers from the dataset suffix.
+    Replaces existing copies of each source; imported sources are detached, so
+    sync won't delete them. Streams progress notifications. ``fmt`` empty
+    infers from the dataset suffix (parquet or jsonl).
     """
     from lilbee.app.dataset import DatasetError, import_from_path
     from lilbee.runtime.progress import EmbedEvent, EventType, ProgressEvent
@@ -405,7 +393,6 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages for citation staleness, missing sources, and unmarked claims.
     If wiki_source is provided, lint only that page. Otherwise, lint all wiki pages.
@@ -428,7 +415,6 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def wiki_citations(wiki_source: str) -> dict[str, Any]:
     """Get all citations for a wiki page.
     Args:
@@ -443,7 +429,6 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
@@ -468,7 +453,6 @@ def wiki_status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def wiki_list() -> dict[str, Any]:
     """List all wiki pages (summaries and concepts) with metadata.
     Returns page slugs, titles, types, source counts, and creation dates.
@@ -488,7 +472,6 @@ def wiki_list() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def wiki_read(slug: str) -> dict[str, Any]:
     """Read a wiki page's content and frontmatter by slug.
     Args:
@@ -507,7 +490,6 @@ def wiki_read(slug: str) -> dict[str, Any]:
     return {"command": "wiki_read", **asdict(result)}
 
 
-@mcp.tool()
 def wiki_build() -> dict[str, Any]:
     """Build the concept and entity wiki across all ingested sources.
 
@@ -520,7 +502,6 @@ def wiki_build() -> dict[str, Any]:
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
-@mcp.tool()
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     if not cfg.wiki:
@@ -530,7 +511,6 @@ def wiki_update() -> dict[str, Any]:
     return {"command": "wiki_update", **run_full_build(cfg)}
 
 
-@mcp.tool()
 def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters spanning three or more sources.
 
@@ -545,7 +525,6 @@ def wiki_synthesize() -> dict[str, Any]:
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
-@mcp.tool()
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
     Archives pages whose sources are all deleted or whose concept cluster
@@ -894,7 +873,6 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         return _error(str(exc))
 
 
-@mcp.tool()
 def wiki_drafts_list() -> dict[str, Any]:
     """List pending wiki drafts with drift, faithfulness, and pairing info.
 
@@ -911,7 +889,6 @@ def wiki_drafts_list() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Return a unified diff of the draft against its published counterpart.
 
@@ -952,7 +929,6 @@ def _derive_owner(agent_id: str, ctx: Context | None) -> str:
     return agent_owner(_slug(explicit or _client_name(ctx)))
 
 
-@mcp.tool()
 def memory_remember(
     text: str,
     kind: MemoryKind = MemoryKind.FACT,
@@ -976,7 +952,6 @@ def memory_remember(
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
-@mcp.tool()
 def memory_recall(
     query: str, limit: int = 0, agent_id: str = "", ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -992,7 +967,6 @@ def memory_recall(
     }
 
 
-@mcp.tool()
 def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
     """List every memory in this agent's namespace (any kind, newest first)."""
     if not memory_enabled():
@@ -1006,7 +980,6 @@ def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any
     }
 
 
-@mcp.tool()
 def memory_forget(memory_id: str) -> dict[str, Any]:
     """Delete a memory by id."""
     if not memory_enabled():
@@ -1015,8 +988,35 @@ def memory_forget(memory_id: str) -> dict[str, Any]:
     return {"ok": True, "id": memory_id}
 
 
+_WIKI_TOOLS = (
+    wiki_status,
+    wiki_list,
+    wiki_read,
+    wiki_lint,
+    wiki_citations,
+    wiki_build,
+    wiki_update,
+    wiki_synthesize,
+    wiki_prune,
+    wiki_drafts_list,
+    wiki_drafts_diff,
+)
+_MEMORY_TOOLS = (memory_remember, memory_recall, memory_list, memory_forget)
+
+
+def register_conditional_tools() -> None:
+    """Register wiki and memory tools only when their subsystems are enabled."""
+    if cfg.wiki:
+        for wiki_tool in _WIKI_TOOLS:
+            mcp.tool()(wiki_tool)
+    if memory_enabled():
+        for memory_tool in _MEMORY_TOOLS:
+            mcp.tool()(memory_tool)
+
+
 def main() -> None:
     """Entry point for the MCP server."""
+    register_conditional_tools()
     # Preload so the first tool call doesn't pay the cold-start cost
     # of provider/embedder/store init. Failures (missing model, bad
     # config) still surface on the first tool call rather than crashing

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from drivers.mcp import MCPStdioClient
 
-# Tools we expect on the MCP surface. Tools that need a model loaded to do
-# anything useful (sync, add, model_pull, wiki_build, wiki_synthesize) are
-# exercised in the writer tier with a model fixture; this set just pins the
-# inventory so a deletion or rename surfaces here.
+# Tools we expect on the MCP surface with default config. Tools that need a
+# model loaded to do anything useful (sync, add, model_pull) are exercised in
+# the writer tier with a model fixture; this set just pins the inventory so a
+# deletion or rename surfaces here. Wiki and memory tools register only when
+# their subsystems are enabled, so they are pinned as absent instead.
 _EXPECTED_TOOLS = {
     "search",
     "status",
@@ -22,17 +21,6 @@ _EXPECTED_TOOLS = {
     "remove",
     "list_documents",
     "reset",
-    "wiki_status",
-    "wiki_list",
-    "wiki_lint",
-    "wiki_citations",
-    "wiki_read",
-    "wiki_build",
-    "wiki_update",
-    "wiki_prune",
-    "wiki_synthesize",
-    "wiki_drafts_list",
-    "wiki_drafts_diff",
     "model_list",
     "model_show",
     "model_pull",
@@ -70,36 +58,14 @@ def test_list_documents_tool_returns_empty(mcp_client: MCPStdioClient) -> None:
 
 
 @pytest.mark.mcp
-def test_wiki_status_tool_response_has_documented_keys(mcp_client: MCPStdioClient) -> None:
-    """wiki_status MCP response is a dict carrying the documented
-    WikiStatusResult keys, even on an empty data dir. The wiki_* tools
-    are public MCP contract; an empty store should still return a
-    structurally valid envelope rather than a bare error.
-    """
-    response = mcp_client.call_tool("wiki_status")
-    assert isinstance(response, dict), response
-    text = json.dumps(response)
-    # The MCP layer wraps the typed result inside a content block; the
-    # documented WikiStatusResult fields appear in the JSON-serialized text.
-    assert "wiki_enabled" in text, response
-
-
-@pytest.mark.mcp
-def test_wiki_lint_tool_runs_on_empty_store(mcp_client: MCPStdioClient) -> None:
-    """wiki_lint over an empty wiki tree returns a structurally valid
-    response (empty issues list), not an error envelope."""
-    response = mcp_client.call_tool("wiki_lint")
-    assert isinstance(response, dict), response
-    # An empty wiki tree should report success, not isError.
-    assert response.get("isError") is not True, response
-
-
-@pytest.mark.mcp
-def test_wiki_list_tool_runs_on_empty_store(mcp_client: MCPStdioClient) -> None:
-    """wiki_list on an empty wiki tree returns a valid (likely empty) list."""
-    response = mcp_client.call_tool("wiki_list")
-    assert isinstance(response, dict), response
-    assert response.get("isError") is not True, response
+def test_conditional_tools_absent_by_default(mcp_client: MCPStdioClient) -> None:
+    """Wiki and memory tools stay out of tools/list until their subsystems are enabled."""
+    tools = mcp_client.list_tools()
+    names = {tool["name"] for tool in tools if "name" in tool}
+    conditional = {name for name in names if name.startswith(("wiki_", "memory_"))}
+    assert not conditional, (
+        f"conditional tools registered with default config: {sorted(conditional)}"
+    )
 
 
 @pytest.mark.mcp
