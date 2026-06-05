@@ -103,3 +103,69 @@ async def test_cmd_memories_pushes_screen():
         app.screen._cmd_memories("")
         await pilot.pause()
         assert isinstance(app.screen, MemoriesScreen)
+
+
+async def test_maybe_extract_skips_when_disabled(mock_svc):
+    cfg.memory_auto_extract = False
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch.object(app.screen, "_extract_memories_worker") as worker:
+            app.screen._maybe_extract_memories("q", "a")
+            await pilot.pause()
+            worker.assert_not_called()
+
+
+async def test_maybe_extract_skips_empty_answer(mock_svc):
+    cfg.memory_enabled = True
+    cfg.memory_auto_extract = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch.object(app.screen, "_extract_memories_worker") as worker:
+            app.screen._maybe_extract_memories("q", "")
+            await pilot.pause()
+            worker.assert_not_called()
+
+
+def _patch_active_tasks(monkeypatch, queue, tasks):
+    """Replace the read-only ``active_tasks`` property for one test."""
+    monkeypatch.setattr(type(queue), "active_tasks", property(lambda _self: tasks))
+
+
+async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
+    from types import SimpleNamespace
+
+    cfg.memory_enabled = True
+    cfg.memory_auto_extract = True
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [SimpleNamespace(task_type="sync")])
+        with patch.object(app.screen, "_extract_memories_worker") as worker:
+            app.screen._maybe_extract_memories("q", "a")
+            await pilot.pause()
+            worker.assert_not_called()
+
+
+async def test_maybe_extract_runs_when_idle(mock_svc):
+    cfg.memory_enabled = True
+    cfg.memory_auto_extract = True
+    mock_svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._maybe_extract_memories("I love rust", "Rust is great.")
+            await app.screen.workers.wait_for_complete()
+            await pilot.pause()
+        mock_svc.store.add_memory.assert_called_once()
+        assert mock_notify.call_args[0][0] == msg.MEMORY_AUTO_EXTRACTED.format(count=1)
+
+
+async def test_indexing_active_reflects_queue(mock_svc, monkeypatch):
+    from types import SimpleNamespace
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [])
+        assert app.screen._indexing_active() is False
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [SimpleNamespace(task_type="add")])
+        assert app.screen._indexing_active() is True

@@ -119,3 +119,34 @@ def set_memory_flags(
 ) -> bool:
     """Toggle a memory's shared/confirmed flags; returns True when the id exists."""
     return get_services().store.update_memory(memory_id, shared=shared, confirmed=confirmed)
+
+
+def auto_extract_enabled() -> bool:
+    """True when auto-extraction is on (requires the master gate too)."""
+    return cfg.memory_enabled and cfg.memory_auto_extract
+
+
+def auto_extract(question: str, answer: str) -> list[str]:
+    """Extract durable memories from a chat turn and store them unconfirmed.
+
+    Returns the texts stored. Stored memories are ``source=EXTRACTED`` and
+    ``confirmed=False`` so they are never recalled until the user confirms them
+    in ``/memories``. A no-op (returns ``[]``) unless both the master gate and
+    ``memory_auto_extract`` are on.
+    """
+    from lilbee.retrieval.query.memory_extract import extract_memories
+
+    if not auto_extract_enabled():
+        return []
+    services = get_services()
+    extracted = extract_memories(question, answer, services.provider.chat)
+    stored: list[str] = []
+    for memory in extracted:
+        remember(
+            memory.text,
+            kind=memory.kind,
+            source=MemorySource.EXTRACTED,
+            confirmed=False,
+        )
+        stored.append(memory.text)
+    return stored

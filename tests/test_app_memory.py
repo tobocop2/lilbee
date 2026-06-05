@@ -127,3 +127,43 @@ class TestListForgetFlags:
     def test_set_flags(self, svc):
         assert app_memory.set_memory_flags("u1", shared=True, confirmed=True) is True
         svc.store.update_memory.assert_called_once_with("u1", shared=True, confirmed=True)
+
+
+class TestAutoExtract:
+    @pytest.fixture(autouse=True)
+    def _restore_cfg(self):
+        snapshot = (cfg.memory_enabled, cfg.memory_auto_extract)
+        yield
+        cfg.memory_enabled, cfg.memory_auto_extract = snapshot
+
+    def test_enabled_requires_both_gates(self):
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = False
+        assert app_memory.auto_extract_enabled() is False
+        cfg.memory_auto_extract = True
+        assert app_memory.auto_extract_enabled() is True
+        cfg.memory_enabled = False
+        assert app_memory.auto_extract_enabled() is False
+
+    def test_disabled_does_not_call_model(self, svc):
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = False
+        assert app_memory.auto_extract("q", "a") == []
+        svc.provider.chat.assert_not_called()
+
+    def test_stores_extracted_unconfirmed(self, svc):
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = True
+        svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
+        stored = app_memory.auto_extract("I love rust", "Rust is great.")
+        assert stored == ["the user prefers rust"]
+        record = svc.store.add_memory.call_args.args[0]
+        assert record.source is MemorySource.EXTRACTED
+        assert record.confirmed is False
+
+    def test_nothing_extracted_stores_nothing(self, svc):
+        cfg.memory_enabled = True
+        cfg.memory_auto_extract = True
+        svc.provider.chat.return_value = "[]"
+        assert app_memory.auto_extract("hi", "hello") == []
+        svc.store.add_memory.assert_not_called()

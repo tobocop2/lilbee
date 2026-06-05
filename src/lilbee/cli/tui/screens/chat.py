@@ -1130,6 +1130,35 @@ class ChatScreen(Screen[None]):
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
+            call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+
+    def _maybe_extract_memories(self, question: str, answer: str) -> None:
+        """Spawn auto-extraction for the finished turn, when enabled and idle.
+
+        Runs on the main thread (scheduled from the stream worker). Skips while
+        indexing so the extraction's embed call never contends with a sync.
+        """
+        from lilbee.app.memory import auto_extract_enabled
+
+        if not answer or not auto_extract_enabled() or self._indexing_active():
+            return
+        self._extract_memories_worker(question, answer)
+
+    def _indexing_active(self) -> bool:
+        """True while a sync/add task is running (embed worker is busy)."""
+        from lilbee.cli.tui.task_queue import TaskType
+
+        busy = {TaskType.SYNC.value, TaskType.ADD.value}
+        return any(task.task_type in busy for task in self._task_bar.queue.active_tasks)
+
+    @work(thread=True, name="chat_memory_extract", exit_on_error=False)
+    def _extract_memories_worker(self, question: str, answer: str) -> None:
+        """Extract durable memories off the UI thread; notify how many landed."""
+        from lilbee.app.memory import auto_extract
+
+        stored = auto_extract(question, answer)
+        if stored:
+            call_from_thread(self, self.notify, msg.MEMORY_AUTO_EXTRACTED.format(count=len(stored)))
 
     def _consume_stream(
         self, stream: Any, widget: AssistantMessage, response_parts: list[str]
