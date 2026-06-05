@@ -161,6 +161,8 @@ tab-complete; `/help` opens the same catalog live.
 | `/delete <name>` | | Remove a document from the index |
 | `/remove <name>` | | Remove an installed model |
 | `/wiki` | | Open the auto-generated wiki |
+| `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
+| `/memories` | | Browse, delete, or share saved memories |
 | `/setup` | | Run the first-time setup wizard |
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
@@ -214,6 +216,64 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
+## Memory
+
+lilbee can remember durable facts about you and standing preferences for how
+you want answers, and recall them into context on later turns regardless of
+which conversation they came from. Memory is **off by default**, so users who
+don't want it pay nothing and never expose the injection surface. Turn it on
+once:
+
+```
+/set memory_enabled true
+```
+
+Then save things to remember. A leading `pref:` stores a standing preference
+(always recalled); anything else is stored as a fact (recalled by relevance):
+
+```
+/remember pref: keep answers terse, show code first
+/remember the Crown Vic manual is my main brake-work reference
+```
+
+Next time you ask a question, the relevant preference and facts are folded
+into the system prompt before the model answers. Memory is never mixed into
+the document citations: it shapes the answer but only your actual sources show
+up under `Sources:`. Open `/memories` to list, delete, or share entries.
+
+Memory lives in the active library's data directory, so it follows
+[per-project libraries](#per-project-libraries) automatically. A factory
+`/reset` clears it; a `/rebuild` (which only re-indexes documents) leaves it
+alone. If you switch embedding models, your memories are re-embedded from their
+stored text during the rebuild, so recall keeps working.
+
+**Sharing model.** Your own memories are private to you unless you mark them
+shared. Agent memories (see below) are private to that agent by default and
+are never folded into your prompt. This asymmetry keeps an agent's notes out
+of your chat unless you opt in.
+
+**Auto-extraction (optional, off by default).** With `memory_auto_extract`
+on, the TUI runs a small background pass after each answer that saves durable
+facts and preferences from the exchange, so memory builds up as you chat. The
+saved memories are recalled like any others; review and prune them anytime in
+`/memories`.
+
+```
+/set memory_auto_extract true
+```
+
+The `lilbee memory` CLI group (`add` / `list` / `recall` / `remove`) and the
+REST `/api/memories` routes operate on the same memories from outside the TUI.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `memory_enabled` | `false` | Master switch for the whole subsystem |
+| `memory_auto_extract` | `false` | Background extraction after each TUI turn |
+| `memory_top_k` | `5` | Max facts recalled per turn |
+| `memory_max_distance` | `0.6` | Recall cutoff (lower is stricter) |
+| `memory_token_budget` | `512` | Token cap on the injected memory block |
+| `memory_max_per_owner` | `200` | Soft cap before oldest memories are evicted |
+
 ## Agent integration
 
 lilbee is also the retrieval backend for AI coding agents. Wire it into any
@@ -223,6 +283,39 @@ quote back. Your files, the embeddings, and the index stay on your computer.
 See the [`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) for the full MCP
 tool list and workflows. Non-MCP agents can use the [JSON CLI
 fallback](#json-cli-fallback) below.
+
+### Agent memory
+
+Agents get their own [memory](#memory) through the `lilbee_memory_remember` and
+`lilbee_memory_recall` MCP tools (memory must be enabled first, e.g. the agent
+calls `lilbee_settings_set({"memory_enabled": true})`). An agent's memories are
+scoped to that agent and private by default: another agent won't see them, and
+they're never folded into the human TUI's prompt. An agent can recall its own
+memories plus any of yours you've marked shared.
+
+Each agent's memories are namespaced by an owner like `agent:opencode`.
+lilbee derives the agent id from the MCP client name when it can, but pin it
+explicitly so it stays stable across sessions and clients. Set
+`LILBEE_AGENT_ID` in the agent's MCP server config:
+
+```json
+{
+  "mcpServers": {
+    "lilbee": {
+      "command": "lilbee",
+      "args": ["mcp"],
+      "env": { "LILBEE_AGENT_ID": "opencode" }
+    }
+  }
+}
+```
+
+```
+lilbee_memory_remember({"text": "retrieval knobs live in core/config/model.py", "kind": "fact"})
+# -> stored under owner agent:opencode
+lilbee_memory_recall({"query": "where are retrieval settings"})
+# -> returns that note next session; lilbee_search results never mix in memory
+```
 
 ### JSON CLI fallback
 
@@ -432,6 +525,20 @@ MCP tools mirror the CLI: `wiki_list`, `wiki_read`, `wiki_synthesize`,
 `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`,
 `wiki_prune`.
 
+### Memory
+
+Requires memory enabled (`lilbee set memory_enabled true`). See
+[Memory](#memory) for the full model.
+
+```bash
+lilbee memory add "the project uses rust"        # remember a fact
+lilbee memory add "answer tersely" --preference  # remember a standing preference
+lilbee memory add "uses rust" --shared           # also expose it to agents
+lilbee memory list                               # show stored memories
+lilbee memory recall "what language"             # recall facts by relevance
+lilbee memory remove <id>                        # delete a memory by id
+```
+
 ### Vault and status
 
 ```bash
@@ -459,8 +566,10 @@ lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1
 ```
 
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
-document lifecycle, crawling, model management, configuration (including a
-defaults endpoint that powers per-setting reset), and status/health. The
+document lifecycle, crawling, model management, memory
+(`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
+configuration (including a defaults endpoint that powers per-setting reset),
+and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the

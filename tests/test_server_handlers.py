@@ -500,6 +500,87 @@ class TestChatStream:
         assert "reply" in token_events[0]
 
 
+def _event_types(events: list[str]) -> list[str]:
+    """The ordered ``event:`` names of every non-empty SSE frame."""
+    return [e.split("\n")[0].replace("event: ", "") for e in events if e]
+
+
+def _parse_data(event: str) -> dict:
+    """Parse the JSON ``data:`` payload of a single SSE frame."""
+    return json.loads(event.split("data: ")[1].strip())
+
+
+class TestMemoryExtractedEvent:
+    """The ``memory_extracted`` SSE event on the chat/ask streams (bb-30s)."""
+
+    def _saved(self):
+        from lilbee.app.memory import SavedMemory
+        from lilbee.data.store import MemoryKind
+
+        return [SavedMemory(id="m1", kind=MemoryKind.FACT, text="the user drives a crown vic")]
+
+    async def test_emitted_after_done_when_enabled(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["I noted that."])
+        with (
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=self._saved()) as extract,
+        ):
+            events = [e async for e in handlers.chat_stream("I drive a crown vic", [])]
+
+        types = _event_types(events)
+        assert "memory_extracted" in types
+        assert types.index("memory_extracted") > types.index("done")
+        extract.assert_called_once_with("I drive a crown vic", "I noted that.")
+        payload = _parse_data(next(e for e in events if e.startswith("event: memory_extracted")))
+        assert payload["count"] == 1
+        assert payload["items"] == [
+            {"id": "m1", "kind": "fact", "text": "the user drives a crown vic"}
+        ]
+
+    async def test_not_emitted_when_disabled(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        with (
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=False),
+            patch("lilbee.server.handlers.rag.auto_extract") as extract,
+        ):
+            events = [e async for e in handlers.chat_stream("q", [])]
+        assert "memory_extracted" not in _event_types(events)
+        extract.assert_not_called()
+
+    async def test_not_emitted_when_nothing_extracted(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        with (
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=[]),
+        ):
+            events = [e async for e in handlers.chat_stream("q", [])]
+        assert "memory_extracted" not in _event_types(events)
+
+    async def test_not_emitted_on_empty_answer(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter([])
+        with (
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract") as extract,
+        ):
+            events = [e async for e in handlers.chat_stream("q", [])]
+        assert "memory_extracted" not in _event_types(events)
+        extract.assert_not_called()
+
+    async def test_ask_stream_also_emits(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["noted"])
+        with (
+            patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=self._saved()),
+        ):
+            events = [e async for e in handlers.ask_stream("q")]
+        assert "memory_extracted" in _event_types(events)
+
+
 class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
@@ -2851,6 +2932,7 @@ class TestRunLlmStreamCancel:
                 queue,
                 cancel,
                 error_holder,
+                [],
             )
         # Should have None sentinel
         items = []
@@ -2899,6 +2981,7 @@ class TestReasoningCapHandling:
                     queue,
                     cancel,
                     error_holder,
+                    [],
                 )
 
             events = self._drain(queue)
@@ -2934,6 +3017,7 @@ class TestReasoningCapHandling:
                     queue,
                     cancel,
                     error_holder,
+                    [],
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -2974,6 +3058,7 @@ class TestReasoningCapHandling:
                     queue,
                     cancel,
                     error_holder,
+                    [],
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -3008,6 +3093,7 @@ class TestReasoningCapHandling:
                     queue,
                     cancel,
                     error_holder,
+                    [],
                 )
 
             events = self._drain(queue)

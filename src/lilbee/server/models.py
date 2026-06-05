@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.data.store import ChunkType, SearchScope
+from lilbee.data.store import ChunkType, MemoryKind, SearchScope
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 
@@ -480,3 +480,72 @@ class WikiDraftRejectResponse(BaseModel):
     """Outcome of rejecting a draft."""
 
     slug: str
+
+
+class RememberRequest(BaseModel):
+    """Request body for ``POST /api/memories``."""
+
+    text: str
+    kind: MemoryKind = MemoryKind.FACT
+    shared: bool = False
+
+
+class RememberResponse(BaseModel):
+    """Outcome of storing a memory."""
+
+    id: str
+    kind: MemoryKind
+
+
+class MemoryItem(BaseModel):
+    """A single stored memory in a list response."""
+
+    id: str
+    kind: MemoryKind
+    shared: bool
+    text: str
+
+
+class MemoryListResponse(BaseModel):
+    """Body for ``GET /api/memories``."""
+
+    memories: list[MemoryItem]
+
+
+class MemorySharedRequest(BaseModel):
+    """Request body for ``PATCH /api/memories/{memory_id}``."""
+
+    shared: bool
+
+
+class MemoryFlagsResponse(BaseModel):
+    """Outcome of a flag update; ``updated`` is False when the id was unknown."""
+
+    id: str
+    updated: bool
+
+
+class MemoryRemoveResponse(BaseModel):
+    """Outcome of deleting a memory."""
+
+    removed: str
+
+
+class MemoryExtractedItem(BaseModel):
+    """A single memory created by auto-extraction during a chat turn."""
+
+    id: str
+    kind: MemoryKind
+    text: str
+
+
+class MemoryExtractedEvent(BaseModel):
+    """``memory_extracted`` SSE payload: how many memories a turn auto-saved.
+
+    Emitted on the chat stream after ``done`` when auto-extraction is on and the
+    turn produced at least one memory, so a REST client (the Obsidian plugin) can
+    toast the count and refresh its memories view without a separate fetch.
+    """
+
+    count: int
+    items: list[MemoryExtractedItem]

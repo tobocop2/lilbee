@@ -39,6 +39,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
     build_sync_progress_callback,
     close_stream,
+    remember_from_input,
     remove_copied_files,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -1031,6 +1032,21 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
+    def _cmd_remember(self, args: str) -> None:
+        """Run /remember in a worker so embedding the text never blocks the UI."""
+        self._cmd_remember_worker(args)
+
+    @work(thread=True, name="chat_cmd_remember", exit_on_error=False)
+    def _cmd_remember_worker(self, raw: str) -> None:
+        """Store the memory off the UI thread; notify the outcome back on it."""
+        outcome = remember_from_input(raw)
+        call_from_thread(self, self.notify, outcome.message, severity=outcome.severity)
+
+    def _cmd_memories(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.memories import MemoriesScreen
+
+        self.app.push_screen(MemoriesScreen())
+
     def _cmd_status(self, _args: str) -> None:
         self.app.switch_view("Status")
 
@@ -1123,6 +1139,35 @@ class ChatScreen(Screen[None]):
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
+            call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+
+    def _maybe_extract_memories(self, question: str, answer: str) -> None:
+        """Spawn auto-extraction for the finished turn, when enabled and idle.
+
+        Runs on the main thread (scheduled from the stream worker). Skips while
+        indexing so the extraction's embed call never contends with a sync.
+        """
+        from lilbee.app.memory import auto_extract_enabled
+
+        if not answer or not auto_extract_enabled() or self._indexing_active():
+            return
+        self._extract_memories_worker(question, answer)
+
+    def _indexing_active(self) -> bool:
+        """True while a sync/add task is running (embed worker is busy)."""
+        from lilbee.cli.tui.task_queue import TaskType
+
+        busy = {TaskType.SYNC.value, TaskType.ADD.value}
+        return any(task.task_type in busy for task in self._task_bar.queue.active_tasks)
+
+    @work(thread=True, name="chat_memory_extract", exit_on_error=False)
+    def _extract_memories_worker(self, question: str, answer: str) -> None:
+        """Extract durable memories off the UI thread; notify how many landed."""
+        from lilbee.app.memory import auto_extract
+
+        stored = auto_extract(question, answer)
+        if stored:
+            call_from_thread(self, self.notify, msg.MEMORY_AUTO_EXTRACTED.format(count=len(stored)))
 
     def _on_embedding_mismatch(
         self, exc: EmbeddingModelMismatchError, question: str, widget: AssistantMessage

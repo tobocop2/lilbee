@@ -33,6 +33,7 @@ class SseEvent(StrEnum):
     PROGRESS = "progress"
     HEARTBEAT = "heartbeat"
     ALREADY_INGESTING = "already_ingesting"
+    MEMORY_EXTRACTED = "memory_extracted"
 
 
 class SseErrorCode(StrEnum):
