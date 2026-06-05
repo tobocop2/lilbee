@@ -10,12 +10,9 @@
 
 [[model]]
 family = "minimax-m2"
-# ggml-org/MiniMax-M2-GGUF (native mxfp4, ~230GB) was DELETED from HF; the official
-# MiniMaxAI/MiniMax-M2 is safetensors-only (130 shards, no GGUF -> not loadable in
-# llama.cpp). Use ilintar's full-fidelity Q8_0 GGUF (single file, ~245GB) -- the
-# full-size equivalent, splits across the 2xH200 like the original mxfp4 did.
-ref = "ilintar/MiniMax-M2-GGUF/MiniMax-M2-q8_0.gguf"
-size_gb = 245.0
+# Q4_K_M (3 shards, ~138GB) fits 8x24GB cards; Q8_0 (~245GB) is the 2xH200 config.
+ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+size_gb = 138.0
 tier = "giant"
 
 [[model]]
