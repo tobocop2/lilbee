@@ -8,6 +8,7 @@ embedding, id/timestamp assignment, and scoping live in one place.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from lilbee.app.services import get_services
@@ -21,6 +22,38 @@ from lilbee.data.store import (
     escape_sql_string,
     local_owner_predicate,
 )
+
+
+def make_memory_row(
+    text: str,
+    embed: Callable[[str], list[float]],
+    *,
+    owner: str = LOCAL_OWNER,
+    kind: MemoryKind = MemoryKind.FACT,
+    source: MemorySource = MemorySource.MANUAL,
+    shared: bool = False,
+    confirmed: bool = True,
+) -> MemoryRow:
+    """Build a fully populated ``MemoryRow`` (id, timestamps, embedded vector).
+
+    Shared by the services-backed :func:`remember` and the standalone
+    :class:`~lilbee.api.Lilbee` API so id/timestamp/embedding assignment lives
+    in one place regardless of which store/embedder the caller owns.
+    """
+    now = datetime.now(UTC).isoformat()
+    return MemoryRow(
+        id=uuid.uuid4().hex,
+        owner=owner,
+        shared=shared,
+        kind=kind,
+        source=source,
+        confirmed=confirmed,
+        text=text,
+        vector=embed(text),
+        created_at=now,
+        updated_at=now,
+    )
+
 
 MEMORY_DISABLED_HINT = (
     "Memory is off. Enable it in Settings or set memory_enabled=true "
@@ -44,18 +77,14 @@ def remember(
 ) -> str:
     """Embed *text* and store it as a memory; returns the stored id."""
     services = get_services()
-    now = datetime.now(UTC).isoformat()
-    record = MemoryRow(
-        id=uuid.uuid4().hex,
+    record = make_memory_row(
+        text,
+        services.embedder.embed,
         owner=owner,
-        shared=shared,
         kind=kind,
         source=source,
+        shared=shared,
         confirmed=confirmed,
-        text=text,
-        vector=services.embedder.embed(text),
-        created_at=now,
-        updated_at=now,
     )
     return services.store.add_memory(record)
 

@@ -31,6 +31,12 @@ from lilbee.server.routes.general import (
     source_content_route,
     status_route,
 )
+from lilbee.server.routes.memory import (
+    memories_list_route,
+    memories_remember_route,
+    memories_remove_route,
+    memories_update_route,
+)
 from lilbee.server.routes.models import (
     models_catalog_route,
     models_delete_route,
@@ -135,6 +141,10 @@ def create_app() -> Litestar:
             models_delete_route,
             documents_list_route,
             documents_remove_route,
+            memories_list_route,
+            memories_remember_route,
+            memories_update_route,
+            memories_remove_route,
             crawl_route,
             setup_crawler_route,
             setup_crawler_status_route,

@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.data.store import ChunkType, SearchScope
+from lilbee.data.store import ChunkType, MemoryKind, SearchScope
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 
@@ -480,3 +480,54 @@ class WikiDraftRejectResponse(BaseModel):
     """Outcome of rejecting a draft."""
 
     slug: str
+
+
+class RememberRequest(BaseModel):
+    """Request body for ``POST /api/memories``."""
+
+    text: str
+    kind: MemoryKind = MemoryKind.FACT
+    shared: bool = False
+
+
+class RememberResponse(BaseModel):
+    """Outcome of storing a memory."""
+
+    id: str
+    kind: MemoryKind
+
+
+class MemoryItem(BaseModel):
+    """A single stored memory in a list response."""
+
+    id: str
+    kind: MemoryKind
+    shared: bool
+    confirmed: bool
+    text: str
+
+
+class MemoryListResponse(BaseModel):
+    """Body for ``GET /api/memories``."""
+
+    memories: list[MemoryItem]
+
+
+class MemoryFlagsRequest(BaseModel):
+    """Request body for ``PATCH /api/memories/{memory_id}``."""
+
+    shared: bool | None = None
+    confirmed: bool | None = None
+
+
+class MemoryFlagsResponse(BaseModel):
+    """Outcome of a flag update; ``updated`` is False when the id was unknown."""
+
+    id: str
+    updated: bool
+
+
+class MemoryRemoveResponse(BaseModel):
+    """Outcome of deleting a memory."""
+
+    removed: str

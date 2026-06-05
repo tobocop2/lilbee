@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.ingest import copy_files
 from lilbee.app.services import reset_services
 from lilbee.core.config import Config, cfg
-from lilbee.data.store import Store
+from lilbee.data.store import MemoryKind, MemoryRow, Store
 from lilbee.providers.factory import create_provider
 from lilbee.retrieval.concepts import ConceptGraph
 from lilbee.retrieval.embedder import Embedder
@@ -190,3 +190,41 @@ class Lilbee:
 
         with _swap_config(self._config):
             return asyncio.run(_sync(force_rebuild=True, quiet=True))
+
+    def remember(
+        self,
+        text: str,
+        *,
+        kind: MemoryKind = MemoryKind.FACT,
+        shared: bool = False,
+    ) -> str:
+        """Store a fact or preference in long-term memory; returns its id."""
+        from lilbee.app.memory import make_memory_row
+
+        with _swap_config(self._config):
+            record = make_memory_row(text, self._embedder.embed, kind=kind, shared=shared)
+            return self._store.add_memory(record)
+
+    def recall(self, query: str, *, top_k: int | None = None) -> list[MemoryRow]:
+        """Recall facts relevant to *query* from long-term memory."""
+        from lilbee.data.store import local_owner_predicate
+
+        with _swap_config(self._config):
+            return self._store.search_memories(
+                self._embedder.embed(query),
+                owner_predicate=local_owner_predicate(),
+                top_k=self._config.memory_top_k if top_k is None else top_k,
+                max_distance=self._config.memory_max_distance,
+            )
+
+    def memories(self) -> list[MemoryRow]:
+        """List all stored memories, newest first."""
+        from lilbee.data.store import local_owner_predicate
+
+        with _swap_config(self._config):
+            return self._store.get_memories(owner_predicate=local_owner_predicate())
+
+    def forget(self, memory_id: str) -> None:
+        """Delete a memory by id."""
+        with _swap_config(self._config):
+            self._store.delete_memory(memory_id)
