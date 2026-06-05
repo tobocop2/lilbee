@@ -70,6 +70,21 @@ class TestDisabled:
         result = runner.invoke(app, ["--json", "memory", "add", "hi"])
         assert json.loads(result.output)["error"] == MEMORY_DISABLED_HINT
 
+    def test_list_disabled_shows_hint(self, mock_svc):
+        result = runner.invoke(app, ["memory", "list"])
+        assert "Memory is off." in result.output
+        mock_svc.store.get_memories.assert_not_called()
+
+    def test_recall_disabled_shows_hint(self, mock_svc):
+        result = runner.invoke(app, ["memory", "recall", "q"])
+        assert "Memory is off." in result.output
+        mock_svc.store.search_memories.assert_not_called()
+
+    def test_remove_disabled_shows_hint(self, mock_svc):
+        result = runner.invoke(app, ["memory", "remove", "abc"])
+        assert "Memory is off." in result.output
+        mock_svc.store.delete_memory.assert_not_called()
+
 
 class TestAdd:
     def test_add_fact(self, mock_svc):

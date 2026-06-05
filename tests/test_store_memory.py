@@ -13,9 +13,20 @@ from lilbee.data.store import (
     MemorySource,
     Store,
     agent_owner,
+    is_agent_owner,
 )
 
 LOCAL_PREDICATE = f"owner = '{LOCAL_OWNER}'"
+
+
+class TestOwnerHelpers:
+    def test_agent_owner_round_trips_through_is_agent_owner(self):
+        owner = agent_owner("opencode")
+        assert owner == "agent:opencode"
+        assert is_agent_owner(owner) is True
+
+    def test_local_owner_is_not_an_agent(self):
+        assert is_agent_owner(LOCAL_OWNER) is False
 
 
 @pytest.fixture()

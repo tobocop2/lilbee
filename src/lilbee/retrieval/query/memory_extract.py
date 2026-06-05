@@ -82,10 +82,10 @@ def parse_extraction(raw: str) -> list[ExtractedMemory]:
     if match is None:
         return []
     try:
+        # The regex captures a bracketed span, so a successful parse is always
+        # a list (a malformed span raises and is caught below).
         items = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return []
-    if not isinstance(items, list):
         return []
 
     memories: list[ExtractedMemory] = []
