@@ -223,11 +223,21 @@ def _is_hf_repo_id(value: str) -> bool:
     return True
 
 
-def build_adhoc_entry(hf_repo: str, *, task: ModelTask = ModelTask.CHAT) -> CatalogModel:
-    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
+def build_adhoc_entry(
+    hf_repo: str,
+    *,
+    gguf_filename: str = "*.gguf",
+    task: ModelTask = ModelTask.CHAT,
+) -> CatalogModel:
+    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo.
+
+    *gguf_filename* defaults to the ``*.gguf`` glob (bare-repo pull picks the best
+    quant); pass a concrete filename, which may include a repo subdirectory, to
+    pin the exact file the user named.
+    """
     return CatalogModel(
         hf_repo=hf_repo,
-        gguf_filename="*.gguf",
+        gguf_filename=gguf_filename,
         size_gb=0.0,
         min_ram_gb=2.0,
         description="",
@@ -238,8 +248,29 @@ def build_adhoc_entry(hf_repo: str, *, task: ModelTask = ModelTask.CHAT) -> Cata
 
 
 def resolve_pull_target(model: str) -> CatalogModel | None:
-    """Resolve *model* to a pullable entry: featured first, then ad-hoc HF."""
+    """Resolve *model* to a pullable entry.
+
+    A ref that names a concrete ``.gguf`` file (flat or in a repo subdir) is
+    honored exactly, HF-first: the explicit quant wins over a featured entry's
+    default. A bare ``owner/name`` repo prefers the featured entry, then falls
+    back to an ad-hoc glob pull that picks the best quant.
+    """
+    from lilbee.modelhub.registry import parse_hf_ref  # deferred: modelhub is heavy
+
+    if model.endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+        try:
+            hf_repo, gguf_filename = parse_hf_ref(model)
+        except ValueError:
+            return None
+        task = _task_for_repo(hf_repo)
+        return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
     featured = find_catalog_entry(model)
     if featured is not None:
         return featured
     return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
+
+
+def _task_for_repo(hf_repo: str) -> ModelTask:
+    """Task for a concrete-file pull: a featured repo's task, else CHAT."""
+    featured = find_catalog_entry(hf_repo)
+    return featured.task if featured is not None else ModelTask.CHAT

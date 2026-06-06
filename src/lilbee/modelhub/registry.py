@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.refs import format_native_gguf_ref
+from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES, format_native_gguf_ref
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -31,7 +31,10 @@ log = logging.getLogger(__name__)
 
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
 _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
-_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.gguf$")
+# A GGUF filename, optionally under repo subdirectories (unsloth stores quants
+# in e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``). Path separators are allowed;
+# ``..`` and absolute paths are rejected in the validator to stay inside the repo.
+_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+\.gguf$")
 
 REPO_DIR_SEPARATOR = "--"
 
@@ -44,8 +47,13 @@ def _validate_hf_repo(hf_repo: str) -> str:
 
 
 def _validate_gguf_filename(filename: str) -> str:
-    """Validate that a filename is a safe ``.gguf`` basename (no path separators)."""
-    if not filename or not _FILENAME_RE.match(filename) or ".." in filename:
+    """Validate a ``.gguf`` filename, allowing repo subdirectories but no traversal."""
+    if (
+        not filename
+        or not _FILENAME_RE.match(filename)
+        or ".." in filename
+        or filename.startswith("/")
+    ):
         raise ValueError(f"Invalid gguf_filename: {filename!r}")
     return filename
 
@@ -54,10 +62,17 @@ _REF_SHAPE_HINT = "Use '<org>/<repo>/<filename>.gguf'."
 
 
 def parse_hf_ref(ref: str) -> tuple[str, str]:
-    """Split ``<org>/<repo>/<file>.gguf`` into ``(hf_repo, gguf_filename)``."""
-    if not ref.endswith(".gguf") or "/" not in ref:
+    """Split ``<org>/<repo>/<file>.gguf`` into ``(hf_repo, gguf_filename)``.
+
+    The repo is always the first two segments (``<org>/<repo>``); everything
+    after is the filename, which may include repo subdirectories (unsloth stores
+    quants under e.g. ``Q4_K_M/Model-...-00001-of-00003.gguf``).
+    """
+    if not ref.endswith(".gguf") or ref.count("/") < NATIVE_GGUF_REF_MIN_SLASHES:
         raise ValueError(f"Model ref {ref!r} is not a HuggingFace ref. {_REF_SHAPE_HINT}")
-    hf_repo, gguf_filename = ref.rsplit("/", 1)
+    parts = ref.split("/")
+    hf_repo = "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES])
+    gguf_filename = "/".join(parts[NATIVE_GGUF_REF_MIN_SLASHES:])
     return _validate_hf_repo(hf_repo), _validate_gguf_filename(gguf_filename)
 
 
@@ -135,7 +150,10 @@ class ModelRegistry:
         return self._root / f"models--{repo_to_dir(hf_repo)}"
 
     def resolve(self, ref: str) -> Path:
-        """Return the blob path for *ref*; ``KeyError`` if not installed.
+        """Return the loadable GGUF path for *ref*; ``KeyError`` if not installed.
+
+        A single-file GGUF resolves to its content-hashed blob; a split GGUF to
+        its first shard's snapshot symlink (so llama.cpp finds the sibling shards).
 
         The canonical *ref* is ``<org>/<repo>/<file>.gguf`` resolved via the
         lilbee manifest. Two other shapes are accepted as a backwards-compat
@@ -148,9 +166,14 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
+        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
+
         if not ref.endswith(".gguf") and ref.count("/") == 1:
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
+        shards = split_shard_filenames(gguf_filename)
+        if len(shards) > 1:
+            return self._resolve_split(ref, hf_repo, shards)
         manifest = self._read_manifest(hf_repo, gguf_filename)
         if manifest is not None and manifest.blob is not None:
             blob_file = self._repo_cache_dir(manifest.hf_repo) / "blobs" / manifest.blob
@@ -176,6 +199,23 @@ class ModelRegistry:
                 f"{manifest.size_bytes} bytes; re-download required"
             )
         raise KeyError(f"Blob file missing for {ref}: {manifest.blob}")
+
+    def _resolve_split(self, ref: str, hf_repo: str, shards: list[str]) -> Path:
+        """Resolve a split GGUF to its first shard's snapshot symlink.
+
+        llama.cpp loads the whole set from the first shard, locating the siblings
+        by filename next to it. Only the snapshot dir co-locates the shards under
+        their real names (the blobs dir names them by hash), so hand back the
+        symlink, not the blob. Every shard must be present first: the first shard
+        alone used to read as installed, registering an unloadable model that a
+        re-pull then skipped.
+        """
+        if not self._split_shards_present(hf_repo, shards[0]):
+            raise KeyError(f"Split GGUF {ref} is missing shards; re-pull to fetch the full set")
+        first_shard = self._snapshot_gguf_path(hf_repo, shards[0])
+        if first_shard is None:
+            raise KeyError(f"Model {ref} not installed")
+        return first_shard
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
         """Resolve a bare ``<org>/<repo>`` ref to the GGUF of that repo on disk.
@@ -218,26 +258,55 @@ class ModelRegistry:
             if f.file_name.endswith(".gguf")
         }
 
-    def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
-        """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
+    def _snapshot_gguf_path(self, hf_repo: str, gguf_filename: str) -> Path | None:
+        """Return the snapshot *symlink* path for a cached GGUF, or None.
 
-        Uses ``huggingface_hub.try_to_load_from_cache`` so we honor whatever
-        cache layout HF uses, then resolves the returned snapshot symlink to the
-        blob, bounded to the cache directory.
+        Returns the symlink, not the blob, so a split GGUF loads from a dir where
+        its sibling shards are co-located under their real names.
         """
         from huggingface_hub import try_to_load_from_cache
 
         hit = try_to_load_from_cache(
             repo_id=hf_repo, filename=gguf_filename, cache_dir=str(self._root)
         )
-        if not isinstance(hit, str):  # None (not cached) or the _CACHED_NO_EXIST sentinel
+        candidate: Path | None = None
+        if isinstance(hit, str):  # exact repo-relative match
+            candidate = Path(hit)
+        else:  # None or the _CACHED_NO_EXIST sentinel: locate the basename instead
+            snapshots = self._repo_cache_dir(hf_repo) / "snapshots"
+            if snapshots.is_dir():
+                basename = Path(gguf_filename).name
+                candidate = next(iter(sorted(snapshots.rglob(basename))), None)
+        if candidate is None:
             return None
-        resolved = Path(hit).resolve()
         try:
-            validate_path_within(resolved, self._root)
+            validate_path_within(candidate.resolve(), self._root)
         except ValueError:
             return None
-        return resolved
+        return candidate
+
+    def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
+        """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
+
+        Locates the snapshot symlink (subdir-aware) and resolves it to its blob,
+        bounded to the cache directory.
+        """
+        symlink = self._snapshot_gguf_path(hf_repo, gguf_filename)
+        return symlink.resolve() if symlink is not None else None
+
+    def _split_shards_present(self, hf_repo: str, gguf_filename: str) -> bool:
+        """True unless *gguf_filename* is a split GGUF missing one of its shards.
+
+        A single-file GGUF is always present here. For a split set
+        (``<base>-0000N-of-0000M.gguf``) every shard must be cached, since
+        llama.cpp loads the whole set from the first shard but needs them all.
+        """
+        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
+
+        shards = split_shard_filenames(gguf_filename)
+        if len(shards) == 1:
+            return True
+        return all(self._find_cached_gguf(hf_repo, shard) is not None for shard in shards)
 
     def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
         """Write a fresh manifest for a model just recovered from the HF cache.
@@ -437,6 +506,26 @@ class ModelRegistry:
             return None
 
 
+_HF_SNAPSHOTS_DIR = "snapshots"
+
+
+def _repo_relative_gguf_name(file_path: Path) -> str:
+    """Recover the repo-relative GGUF filename, keeping any subdir prefix.
+
+    HF caches a file at ``models--<repo>/snapshots/<rev>/[<subdir>/]<name>``. A
+    subdir-quant giant (unsloth stores quants under e.g. ``Q4_K_M/``) must
+    register under that subdir-relative name so its manifest key round-trips with
+    the ref; ``file_path.name`` alone would drop the subdir. Falls back to the
+    basename when the path is not under a snapshot revision dir.
+    """
+    parts = file_path.parts
+    if _HF_SNAPSHOTS_DIR not in parts:
+        return file_path.name
+    rev_index = parts.index(_HF_SNAPSHOTS_DIR) + 1
+    relative_parts = parts[rev_index + 1 :]
+    return "/".join(relative_parts) if relative_parts else file_path.name
+
+
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
@@ -447,18 +536,19 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     from datetime import UTC, datetime
 
     registry = ModelRegistry(cfg.models_dir)
+    gguf_filename = _repo_relative_gguf_name(file_path)
     manifest = ModelManifest(
         hf_repo=entry.hf_repo,
-        gguf_filename=file_path.name,
+        gguf_filename=gguf_filename,
         size_bytes=file_path.stat().st_size,
         task=entry.task,
         downloaded_at=datetime.now(UTC).isoformat(),
     )
     try:
-        registry.install(entry.hf_repo, file_path.name, file_path, manifest)
-        log.info("Registered %s/%s in manifest", entry.hf_repo, file_path.name)
+        registry.install(entry.hf_repo, gguf_filename, file_path, manifest)
+        log.info("Registered %s/%s in manifest", entry.hf_repo, gguf_filename)
     except Exception:
-        ref = format_native_gguf_ref(entry.hf_repo, file_path.name)
+        ref = format_native_gguf_ref(entry.hf_repo, gguf_filename)
         if not registry.is_installed(ref):
             raise
         log.warning(

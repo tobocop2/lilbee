@@ -2,7 +2,9 @@
 
 import logging
 import os
+import time
 from collections.abc import Callable
+from threading import Lock
 
 import httpx
 
@@ -18,6 +20,7 @@ from lilbee.providers.local_servers import (
     openai_models_url,
 )
 from lilbee.providers.local_servers.config_urls import configured_local_servers
+from lilbee.providers.model_ref import format_remote_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 
 log = logging.getLogger(__name__)
@@ -54,18 +57,23 @@ def _classify_remote_task(name: str, family: str) -> ModelTask:
 
 
 def reclassify_by_name(ref: str, declared_task: str) -> str:
-    """Override declared_task to RERANK / VISION when ref names a known role.
+    """Override declared_task to RERANK / VISION / EMBEDDING when ref names a known role.
 
-    Defends against pre-fix manifests that stored ``task="chat"`` for
-    models whose ref obviously identifies them as rerankers (e.g.
-    ``bge-reranker-*``) or vision loaders. The model bar uses this so a
-    historical mis-tag does not surface a reranker in the chat picker.
+    Defends against manifests that stored ``task="chat"`` for models whose ref
+    obviously identifies them as rerankers (e.g. ``bge-reranker-*``), vision
+    loaders, or embedders. Embedders on a chat decoder arch (e.g.
+    ``Qwen3-Embedding-*``, a qwen3 backbone + pooling head) classify as chat by
+    architecture, so the name is the only signal short of probing the GGUF
+    pooling type. Reranker is checked before embedding so ``bge-reranker`` (which
+    also matches the ``bge-`` embedder pattern) stays a reranker.
     """
     name_lower = ref.lower()
     if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
         return ModelTask.RERANK
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
         return ModelTask.VISION
+    if any(ep in name_lower for ep in _EMBEDDING_NAME_PATTERNS):
+        return ModelTask.EMBEDDING
     return declared_task
 
 
@@ -216,3 +224,61 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
 def detect_remote_embedding_models() -> list[str]:
     """Return embedding-model names across every configured local server."""
     return [m.name for m in classify_all_remote_models() if m.task == ModelTask.EMBEDDING]
+
+
+def gather_known_model_refs() -> set[str]:
+    """Canonical refs from the native registry, every configured local server, and APIs.
+
+    Each primitive swallows its own failures, so a backend being down contributes an
+    empty subset rather than raising.
+    """
+    refs = {m.ref for m in get_services().registry.list_installed()}
+    for rm in classify_all_remote_models():
+        refs.add(format_remote_ref(rm.name, rm.provider))
+    for models in discover_api_models().values():
+        for rm in models:
+            refs.add(format_remote_ref(rm.name, rm.provider))
+    return refs
+
+
+class KnownModelCache:
+    """TTL-cached union of native + remote + frontier model refs."""
+
+    DEFAULT_TTL_S = 30.0
+
+    def __init__(self, ttl_s: float = DEFAULT_TTL_S) -> None:
+        self._ttl_s = ttl_s
+        self._refs: frozenset[str] = frozenset()
+        self._expires_at: float = 0.0
+        self._generation: int = 0
+        self._lock = Lock()
+
+    def refs(self) -> frozenset[str]:
+        """Cached canonical-ref set, refreshing past the TTL (fan-out runs off the lock)."""
+        with self._lock:
+            if time.monotonic() < self._expires_at:
+                return self._refs
+            captured_generation = self._generation
+        fresh = frozenset(gather_known_model_refs())
+        with self._lock:
+            self._refs = fresh
+            if self._generation == captured_generation:
+                self._expires_at = time.monotonic() + self._ttl_s
+            return self._refs
+
+    def resolve(self, model: str) -> str | None:
+        """Resolve *model* to its canonical ref, or None if unknown."""
+        refs = self.refs()
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = f"ollama/{model}"
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    def invalidate(self) -> None:
+        """Force the next ``refs()`` call to re-probe."""
+        with self._lock:
+            self._expires_at = 0.0
+            self._generation += 1
