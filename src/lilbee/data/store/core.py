@@ -16,6 +16,7 @@ from lilbee.core.config import (
     CITATIONS_TABLE,
     MEMORIES_TABLE,
     META_TABLE,
+    PAGE_TEXTS_TABLE,
     SOURCES_TABLE,
     Config,
 )
@@ -34,7 +35,7 @@ from .lance_helpers import (
     refs_compatible,
 )
 from .ranking import mmr_rerank
-from .schema import _citations_schema, _meta_schema, _sources_schema
+from .schema import _citations_schema, _meta_schema, _page_texts_schema, _sources_schema
 from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
@@ -44,9 +45,11 @@ from .types import (
     EmbeddingModelMismatchError,
     MemoryKind,
     MemoryRow,
+    PageTextRecord,
     RemoveResult,
     SearchChunk,
     SourceRecord,
+    SourceType,
     StoreMeta,
 )
 
@@ -256,6 +259,17 @@ class Store:
             current_model=current_model,
             current_dim=current_dim,
         )
+
+    def assert_embedding_compatible(self) -> None:
+        """Run the full embedding-identity gate (legacy init, canonicalize, check).
+
+        Mirrors the gate ``search`` applies. Callers that write under a fresh
+        embedder (import) use this to fail before any destructive work when the
+        store was built by a different model.
+        """
+        self.initialize_meta_if_legacy()
+        self.canonicalize_meta_if_legacy()
+        self._ensure_embedding_compat()
 
     def _needs_canonical_meta_rewrite(
         self, meta: StoreMeta | None, current_model: str, current_dim: int
@@ -552,16 +566,46 @@ class Store:
         return [SearchChunk(**r) for r in rows]
 
     def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete all chunks from *source*. Caller must hold ``write_lock()``."""
-        table = self.open_table(CHUNKS_TABLE)
-        if table is not None:
-            _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+        """Delete a source's chunks and page texts. Caller must hold ``write_lock()``."""
+        predicate = f"source = '{escape_sql_string(source)}'"
+        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE):
+            table = self.open_table(name)
+            if table is not None:
+                _safe_delete_unlocked(table, predicate)
 
     def delete_by_source(self, source: str) -> None:
-        """Delete all chunks from a given source file."""
+        """Delete a source's chunks and page texts."""
         with write_lock():
             self._delete_by_source_unlocked(source)
         self._invalidate_source_cache()
+
+    def add_page_texts(self, records: list[dict]) -> int:
+        """Add per-page text rows (no vectors). Returns count added."""
+        if not records:
+            return 0
+        with write_lock():
+            db = self.get_db()
+            table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
+            table.add(records)
+        return len(records)
+
+    def get_page_texts(self, source: str | None = None) -> list[PageTextRecord]:
+        """Return per-page text rows, all or for a single *source*."""
+        table = self.open_table(PAGE_TEXTS_TABLE)
+        if table is None:
+            return []
+        query = table.search()
+        if source is not None:
+            query = query.where(f"source = '{escape_sql_string(source)}'")
+        rows: list[PageTextRecord] = query.limit(None).to_list()
+        return rows
+
+    def page_text_sources(self) -> set[str]:
+        """Return the distinct sources present in the page-text table."""
+        table = self.open_table(PAGE_TEXTS_TABLE)
+        if table is None:
+            return set()
+        return {row["source"] for row in table.search().select(["source"]).limit(None).to_list()}
 
     def get_sources(
         self,
@@ -598,9 +642,9 @@ class Store:
         filename: str,
         file_hash: str,
         chunk_count: int,
-        source_type: str = "document",
+        source_type: SourceType = SourceType.DOCUMENT,
     ) -> None:
-        """Add or update a source file tracking record."""
+        """Add or update a source tracking record."""
         with write_lock():
             db = self.get_db()
             table = ensure_table(db, SOURCES_TABLE, _sources_schema())
@@ -612,7 +656,7 @@ class Store:
                         "file_hash": file_hash,
                         "ingested_at": datetime.now(UTC).isoformat(),
                         "chunk_count": chunk_count,
-                        "source_type": source_type,
+                        "source_type": str(source_type),
                     }
                 ]
             )

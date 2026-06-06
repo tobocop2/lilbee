@@ -29,6 +29,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_markers,
 )
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
+from lilbee.data.store import PageTextRecord, SourceRecord, SourceType
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
@@ -96,10 +97,11 @@ async def _ingest_file(
 ) -> int:
     """Ingest a single file. Returns chunk count."""
     records: list[ChunkRecord]
+    page_texts: list[PageTextRecord] = []
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
     elif path.suffix.lower() == ".md":
-        records = await ingest_markdown(path, source_name, on_progress)
+        records = await ingest_markdown(path, source_name, on_progress, page_texts_out=page_texts)
     else:
         records = await ingest_document(
             path,
@@ -107,10 +109,12 @@ async def _ingest_file(
             content_type,
             quiet=quiet,
             on_progress=on_progress,
+            page_texts_out=page_texts,
         )
 
     store = get_services().store
     chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    await asyncio.to_thread(store.add_page_texts, cast(list[dict], page_texts))
     await _index_concepts(records, source_name)
     return chunk_count
 
@@ -161,6 +165,19 @@ def _plan_file_changes(
     return files_to_process, added, updated, unchanged
 
 
+def _removable_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
+    """Document sources whose backing file is gone.
+
+    Imported sources are detached (no file under documents/), so a missing
+    disk file must not mark them for removal.
+    """
+    return [
+        s["filename"]
+        for s in sources
+        if s["filename"] not in disk_files and s["source_type"] != SourceType.IMPORTED
+    ]
+
+
 def detect_pending() -> int:
     """Count files in documents/ that are out of sync with the store.
 
@@ -174,8 +191,9 @@ def detect_pending() -> int:
     if not cfg.documents_dir.exists():
         return 0
     disk_files = discover_files()
-    existing_sources = {s["filename"]: s["file_hash"] for s in get_services().store.get_sources()}
-    removed = sum(1 for name in existing_sources if name not in disk_files)
+    sources = get_services().store.get_sources()
+    existing_sources = {s["filename"]: s["file_hash"] for s in sources}
+    removed = len(_removable_sources(sources, disk_files))
     skip_markers = load_skip_markers(cfg.data_root)
     files_to_process, _, _, _ = _plan_file_changes(
         disk_files, existing_sources, cancel=None, skip_markers=skip_markers
@@ -241,15 +259,16 @@ async def sync(
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
-    existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
+    sources = _store.get_sources()
+    existing_sources = {s["filename"]: s["file_hash"] for s in sources}
     skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     removed: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
 
-    # Find files to remove (in DB but not on disk)
-    to_remove = [name for name in existing_sources if name not in disk_files]
+    # Find files to remove (document sources whose file is gone; imports are kept)
+    to_remove = _removable_sources(sources, disk_files)
     if to_remove:
         _store.remove_documents(to_remove)
         removed.extend(to_remove)
