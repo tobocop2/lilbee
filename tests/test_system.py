@@ -11,6 +11,7 @@ from lilbee.core.system import (
     find_local_root,
     is_ignored_dir,
     scaled_chat_ctx_target_default,
+    stderr_suppressed,
 )
 
 
@@ -149,3 +150,19 @@ class TestScaledChatCtxTargetDefault:
 
             assert _read_total_memory_bytes() == 0
             assert scaled_chat_ctx_target_default() == 8192
+
+
+class TestStderrSuppressed:
+    def test_fd2_points_at_devnull_inside_then_restores(self):
+        devnull_stat = os.stat(os.devnull)
+        with stderr_suppressed():
+            inside = os.fstat(2)
+        # Inside the block fd 2 is the null device...
+        assert (inside.st_dev, inside.st_ino) == (devnull_stat.st_dev, devnull_stat.st_ino)
+        # ...and afterwards fd 2 is restored to a valid descriptor (no OSError).
+        os.fstat(2)
+
+    def test_restores_fd2_even_when_body_raises(self):
+        with pytest.raises(ValueError, match="boom"), stderr_suppressed():
+            raise ValueError("boom")
+        os.fstat(2)  # restored despite the exception

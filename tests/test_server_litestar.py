@@ -176,6 +176,49 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "q", "chunk_type": "bogus"})
         assert resp.status_code == 400
 
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_model_not_found_returns_404(self, mock_ask, client):
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        mock_ask.side_effect = ModelNotFoundError("vendor/missing.gguf")
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 404
+        assert "vendor/missing.gguf" in resp.text
+        assert "lilbee model pull" in resp.text
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_model_without_tool_support_returns_400(self, mock_ask, client):
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        mock_ask.side_effect = ModelDoesNotSupportToolsError("vendor/m.gguf")
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 400
+        assert "vendor/m.gguf" in resp.text
+        assert "tool-aware" in resp.text
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_context_window_exceeded_returns_400(self, mock_ask, client):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_ask.side_effect = ProviderError(
+            "Prompt of 9000 tokens exceeds...", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 400
+        assert "9000" in resp.text
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_not_found_provider_error_returns_404(self, mock_ask, client):
+        # A NOT_FOUND ProviderError (e.g. a role model isn't installed) maps to
+        # 404, matching the typed ModelNotFoundError path through one classifier.
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_ask.side_effect = ProviderError(
+            "embed model missing", kind=ProviderErrorKind.NOT_FOUND
+        )
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 404
+
 
 class TestAskStreamRoute:
     @mock.patch("lilbee.server.handlers.ask_stream")
@@ -219,6 +262,56 @@ class TestChatRoute:
             question="q", history=[], top_k=0, options=None, chunk_type=None
         )
 
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_model_not_found_returns_404(self, mock_chat, client):
+        """Dispatch's ``ModelNotFoundError`` becomes a 404 with the actionable hint."""
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+
+        mock_chat.side_effect = ModelNotFoundError("vendor/missing.gguf")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 404
+        assert "vendor/missing.gguf" in resp.text
+        assert "lilbee model pull" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_model_without_tool_support_returns_400(self, mock_chat, client):
+        """``ModelDoesNotSupportToolsError`` becomes a 400 with the actionable hint."""
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+
+        mock_chat.side_effect = ModelDoesNotSupportToolsError("vendor/m.gguf")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "vendor/m.gguf" in resp.text
+        assert "tool-aware" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_context_window_exceeded_returns_400(self, mock_chat, client):
+        """A CONTEXT_OVERFLOW ``ProviderError`` from the dispatch becomes a 400."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_chat.side_effect = ProviderError(
+            "Prompt of 9000 tokens exceeds...", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "9000" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_value_error_becomes_validation_exception(self, mock_chat, client):
+        """Plain ValueError surfaces as a 400 / ValidationException, mirroring /api/ask."""
+        mock_chat.side_effect = ValueError("question must not be empty")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "empty" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_unexpected_exception_becomes_503(self, mock_chat, client):
+        """An uncaught provider failure surfaces as 503 instead of 500, mirroring /api/ask."""
+        mock_chat.side_effect = RuntimeError("downstream broke")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "downstream broke" in resp.text
+
 
 class TestChatStreamRoute:
     @mock.patch("lilbee.server.handlers.chat_stream")
@@ -243,66 +336,91 @@ class TestChatStreamRoute:
 
 
 class TestStreamSingleFlightGate:
-    """The chat-streaming endpoints serialize to one in-flight request via _chat_inflight_lock."""
+    """The chat endpoints admit up to the backend's slot capacity, then 429."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_gate(self):
+        """Reset the lru_cache-backed gate so each test starts at zero in-flight."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
+
+        chat_gate.cache_clear()
+        yield
+        chat_gate.cache_clear()
+
+    @staticmethod
+    def _fill_gate() -> None:
+        """Mark every chat slot busy so the next request must wait, then 429."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
+
+        chat_gate()._in_flight = 999
 
     @mock.patch("lilbee.server.handlers.ask_stream")
-    def test_concurrent_ask_stream_returns_429(self, mock_stream, client):
-        """A second /api/ask/stream while the first holds the lock returns 429 + Retry-After."""
-        from lilbee.server.routes import search as search_routes
+    def test_concurrent_ask_stream_returns_429_after_wait_timeout(self, mock_stream, client):
+        """A second /api/ask/stream while every slot is busy waits, then 429s."""
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
-            try:
-                resp = client.post("/api/ask/stream", json={"question": "hi"})
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                search_routes._chat_inflight_lock.release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/ask/stream", json={"question": "hi"})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.chat_stream")
-    def test_concurrent_chat_stream_returns_429(self, mock_stream, client):
-        """A second /api/chat/stream while the first holds the lock returns 429."""
-        from lilbee.server.routes import search as search_routes
+    def test_concurrent_chat_stream_returns_429_after_wait_timeout(self, mock_stream, client):
+        """A second /api/chat/stream while every slot is busy waits, then 429s."""
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
 
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(search_routes._chat_inflight_lock.acquire())
-            try:
-                resp = client.post(
-                    "/api/chat/stream",
-                    json={"question": "hi", "history": []},
-                )
-                assert resp.status_code == 429
-                assert resp.headers.get("retry-after") == "1"
-            finally:
-                search_routes._chat_inflight_lock.release()
-        finally:
-            loop.close()
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
+
+    @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
+    def test_concurrent_ask_returns_429_after_wait_timeout(self, mock_ask, client):
+        """Non-streaming /api/ask shares the same admission gate."""
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
+
+        mock_ask.return_value = {"answer": "x", "sources": []}
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/ask", json={"question": "hi"})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_concurrent_chat_returns_429_after_wait_timeout(self, mock_chat, client):
+        """Non-streaming /api/chat shares the same admission gate."""
+        from lilbee.server.chat_dispatch import concurrency as concurrency_mod
+
+        mock_chat.return_value = {"answer": "x", "sources": []}
+        self._fill_gate()
+        with mock.patch.object(concurrency_mod, "DEFAULT_BUSY_WAIT_S", 0.05):
+            resp = client.post("/api/chat", json={"question": "hi", "history": []})
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") == "1"
 
     @mock.patch("lilbee.server.handlers.ask_stream")
     def test_sequential_streams_succeed(self, mock_stream, client):
-        """After the first stream completes, the second one is allowed."""
-        from lilbee.server.routes import search as search_routes
+        """After the first stream completes, its slot frees and the second is allowed."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
 
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp1 = client.post("/api/ask/stream", json={"question": "first"})
         assert resp1.status_code == 201
         assert b"event: token" in resp1.content
-        # Lock must have been released by the gated_stream's finally.
-        assert search_routes._chat_inflight_lock.locked() is False
+        # The slot must have been released by the gated_stream's finally.
+        assert chat_gate().in_flight == 0
         mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
         resp2 = client.post("/api/ask/stream", json={"question": "second"})
         assert resp2.status_code == 201
 
     @mock.patch("lilbee.server.handlers.ask_stream")
-    def test_lock_released_on_provider_error(self, mock_stream, client):
-        """When the SSE generator raises, the lock is still released for the next caller."""
-        from lilbee.server.routes import search as search_routes
+    def test_slot_released_on_provider_error(self, mock_stream, client):
+        """When the SSE generator raises, the slot is still freed for the next caller."""
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
 
         async def _raising_gen():
             yield "event: token\ndata: {}\n\n"
@@ -312,10 +430,10 @@ class TestStreamSingleFlightGate:
         import contextlib
 
         # The TestClient sees the partial response; the generator's finally
-        # block still runs and releases the lock.
+        # block still runs and frees the slot.
         with contextlib.suppress(Exception):
             client.post("/api/ask/stream", json={"question": "boom"})
-        assert search_routes._chat_inflight_lock.locked() is False
+        assert chat_gate().in_flight == 0
 
 
 class TestEmbeddingMismatchSurfacing:
@@ -369,15 +487,22 @@ class TestEmbeddingMismatchSurfacing:
         assert resp.status_code == 409
         assert resp.json()["extra"]["adoptable"] is False
 
-    def test_stream_emits_mismatch_code_and_embedder(self):
-        """_stream_rag_response catches the mismatch and emits a coded SSE error."""
+    def test_chat_stream_emits_mismatch_code_and_embedder(self):
+        """The chat stream catches the mismatch and emits a coded SSE error."""
+        self._assert_stream_emits_mismatch(lambda rag: rag.chat_stream(question="q", history=[]))
+
+    def test_ask_stream_emits_mismatch_code_and_embedder(self):
+        """The ask stream catches the mismatch and emits the same coded SSE error."""
+        self._assert_stream_emits_mismatch(lambda rag: rag.ask_stream(question="q"))
+
+    def _assert_stream_emits_mismatch(self, make_stream):
         from lilbee.runtime.progress import SseErrorCode
         from lilbee.server.handlers import rag
 
         async def _collect():
             with mock.patch.object(rag, "get_services") as mock_services:
                 mock_services.return_value.searcher.build_rag_context.side_effect = self._mismatch()
-                return [event async for event in rag.chat_stream(question="q", history=[])]
+                return [event async for event in make_stream(rag)]
 
         events = asyncio.run(_collect())
         payloads = [

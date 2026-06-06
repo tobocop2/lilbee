@@ -2001,8 +2001,13 @@ class TestCrawlCancel:
 
         # No synthetic failure entry on the cancel path
         assert results == []
-        # The teardown error is at DEBUG, not WARNING
-        warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+        # The teardown error is at DEBUG, not WARNING. Scope to the crawler logger:
+        # an unrelated background warm-up thread can otherwise leak a warning here.
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == _logging.WARNING and r.name.startswith("lilbee.crawler")
+        ]
         assert not warnings
 
     async def test_safe_strategy_cancel_missing_method(self):

@@ -993,10 +993,10 @@ class TestDiscoverApiModels:
     @pytest.fixture(autouse=True)
     def _force_auto_provider(self) -> Iterator[None]:
         # discover_api_models() calls get_services().provider.list_chat_models.
-        # LlamaCppProvider.list_chat_models hard-codes []; only RoutingProvider
+        # FleetProvider.list_chat_models hard-codes []; only RoutingProvider
         # (cfg.llm_provider == "auto") delegates to the SDK backend where the
         # sys.modules["litellm"] patch these tests rely on can take effect.
-        # Developers whose config.toml pins llm_provider="llama-cpp" would
+        # Developers whose config.toml pins llm_provider="remote" would
         # otherwise see these tests fail locally while passing in CI.
         from lilbee.app.services import reset_services
         from lilbee.core.config import cfg
@@ -1109,3 +1109,183 @@ class TestDiscoverApiModels:
         model = result["Anthropic"][0]
         assert model.provider == "Anthropic"
         assert model.name == "claude-sonnet-4-6"
+
+
+class TestKnownModelCache:
+    """TTL-cached union of native + remote + API refs.
+
+    The cache is the source of truth for the chat completions route's
+    "is this model known" check (bb-zsnf). Each test patches the
+    underlying primitives so the cache returns a known shape without
+    real HTTP traffic.
+    """
+
+    @staticmethod
+    def _stub_compose(monkeypatch, *, native=None, remote=None, api=None) -> None:
+        """Patch the three discovery primitives the cache composes."""
+        from lilbee.app import services as services_mod
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        registry = mock.MagicMock()
+        registry.list_installed.return_value = [mock.MagicMock(ref=r) for r in (native or [])]
+        services_stub = mock.MagicMock()
+        services_stub.registry = registry
+        monkeypatch.setattr(services_mod, "get_services", lambda: services_stub)
+        # discovery imports get_services at module load; patch its reference too
+        monkeypatch.setattr(discovery, "get_services", lambda: services_stub)
+
+        remote_models = [
+            RemoteModel(name=name, task="chat", family="", parameter_size="", provider=prov)
+            for name, prov in (remote or [])
+        ]
+        monkeypatch.setattr(discovery, "classify_all_remote_models", lambda **_kw: remote_models)
+        monkeypatch.setattr(discovery, "discover_api_models", lambda: api or {})
+
+    def test_refs_unions_all_three_sources(self, monkeypatch) -> None:
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        self._stub_compose(
+            monkeypatch,
+            native=["Qwen/Qwen3-8B-GGUF/q.gguf"],
+            remote=[("gemma4:26b", "Ollama")],
+            api={
+                "OpenAI": [
+                    RemoteModel(
+                        name="gpt-4o", task="chat", family="", parameter_size="", provider="OpenAI"
+                    )
+                ]
+            },
+        )
+        cache = KnownModelCache(ttl_s=60.0)
+        refs = cache.refs()
+        assert "Qwen/Qwen3-8B-GGUF/q.gguf" in refs
+        assert "ollama/gemma4:26b" in refs
+        assert "openai/gpt-4o" in refs
+
+    def test_refs_caches_until_ttl_expiry(self, monkeypatch) -> None:
+        """Repeated reads inside the TTL window do not re-run discovery."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        call_count = {"native": 0, "remote": 0}
+        self._stub_compose(monkeypatch, native=[], remote=[("a:1", "Ollama")])
+
+        from lilbee.modelhub.model_manager import discovery
+
+        real_classify = discovery.classify_all_remote_models
+
+        def counting_classify(**_kw):
+            call_count["remote"] += 1
+            return real_classify(**_kw)
+
+        monkeypatch.setattr(discovery, "classify_all_remote_models", counting_classify)
+
+        cache = KnownModelCache(ttl_s=60.0)
+        cache.refs()
+        cache.refs()
+        cache.refs()
+        assert call_count["remote"] == 1
+
+    def test_refs_refreshes_after_ttl_window(self, monkeypatch) -> None:
+        """Once the TTL elapses the cache calls discovery again."""
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(discovery.time, "monotonic", lambda: clock["t"])
+
+        call_count = {"remote": 0}
+        real_classify = discovery.classify_all_remote_models
+
+        def counting_classify(**_kw):
+            call_count["remote"] += 1
+            return real_classify(**_kw)
+
+        monkeypatch.setattr(discovery, "classify_all_remote_models", counting_classify)
+
+        cache = KnownModelCache(ttl_s=30.0)
+        cache.refs()
+        clock["t"] += 31.0  # past TTL
+        cache.refs()
+        assert call_count["remote"] == 2
+
+    def test_invalidate_forces_next_call_to_refresh(self, monkeypatch) -> None:
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        call_count = {"remote": 0}
+        real_classify = discovery.classify_all_remote_models
+
+        def counting_classify(**_kw):
+            call_count["remote"] += 1
+            return real_classify(**_kw)
+
+        monkeypatch.setattr(discovery, "classify_all_remote_models", counting_classify)
+
+        cache = KnownModelCache(ttl_s=600.0)
+        cache.refs()
+        cache.invalidate()
+        cache.refs()
+        assert call_count["remote"] == 2
+
+    def test_resolve_exact_match_wins(self, monkeypatch) -> None:
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("gemma4:26b", "Ollama")])
+        cache = KnownModelCache()
+        assert cache.resolve("ollama/gemma4:26b") == "ollama/gemma4:26b"
+
+    def test_resolve_canonicalizes_bare_ollama_name_tag(self, monkeypatch) -> None:
+        """A bare ``name:tag`` returns the discovered ``ollama/<name:tag>``."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("gemma4:26b", "Ollama")])
+        cache = KnownModelCache()
+        assert cache.resolve("gemma4:26b") == "ollama/gemma4:26b"
+
+    def test_resolve_returns_none_when_unknown(self, monkeypatch) -> None:
+        """A bare name with no matching cached entry surfaces as None."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("only:thing", "Ollama")])
+        cache = KnownModelCache()
+        assert cache.resolve("nonexistent:99b") is None
+
+    def test_resolve_skips_ollama_probe_for_unambiguous_shapes(self, monkeypatch) -> None:
+        """A ref already containing ``/`` is looked up verbatim, never auto-prefixed."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, native=["foo/bar"])
+        cache = KnownModelCache()
+        assert cache.resolve("foo/bar") == "foo/bar"
+        # No colon, so the bare-name auto-prefix path doesn't engage either.
+        assert cache.resolve("foo") is None
+
+    def test_invalidate_during_refresh_does_not_extend_expiry(self, monkeypatch) -> None:
+        """If ``invalidate()`` lands while a refresh is mid-flight (between the
+        I/O and the lock-reacquire), the stored set updates but the expiry
+        stays at zero so the next caller re-probes. Otherwise a model pull
+        finishing during the refresh would stay invisible for a full TTL.
+        """
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        cache = KnownModelCache(ttl_s=600.0)
+
+        # Simulate invalidate() landing during gather by patching the gather
+        # function to invalidate before returning.
+        original_gather = discovery.gather_known_model_refs
+
+        def _gather_then_invalidate():
+            result = original_gather()
+            cache.invalidate()
+            return result
+
+        monkeypatch.setattr(discovery, "gather_known_model_refs", _gather_then_invalidate)
+        cache.refs()
+        # The expiry was left at zero because invalidate ran during refresh.
+        assert cache._expires_at == 0.0

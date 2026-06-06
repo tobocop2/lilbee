@@ -91,8 +91,13 @@ def _mock_provider(
     faith_score: str = "0.85",
     capabilities: list[str] | None = None,
 ) -> MagicMock:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    def _result(text: str) -> ChatResult:
+        return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
+
     provider = MagicMock()
-    provider.chat.side_effect = [wiki_text, faith_score]
+    provider.chat.side_effect = [_result(wiki_text), _result(faith_score)]
     provider.get_capabilities.return_value = (
         list(capabilities) if capabilities is not None else ["completion"]
     )

@@ -9,6 +9,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -70,6 +71,11 @@ def mock_svc():
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
     searcher.build_rag_context.return_value = None
     services = make_mock_services(searcher=searcher)
+    # chat_dispatch validates cfg.chat_model against the registry.
+    chat_manifest = MagicMock()
+    chat_manifest.ref = cfg.chat_model
+    chat_manifest.task = "chat"
+    services.registry.list_installed = MagicMock(return_value=[chat_manifest])
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
@@ -90,11 +96,23 @@ class TestSseEvent:
 
 
 class TestHealth:
-    async def test_returns_status_and_version(self):
+    async def test_returns_status_and_version(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
         with patch("lilbee.server.handlers.get_version", return_value="1.2.3"):
             result = await handlers.health()
         assert result.status == "ok"
         assert result.version == "1.2.3"
+
+    async def test_chat_ready_reflects_role_readiness(self, mock_svc):
+        from lilbee.providers.roles import WorkerRole
+
+        mock_svc.provider.role_ready.return_value = False
+        result = await handlers.health()
+        assert result.chat_ready is False
+        mock_svc.provider.role_ready.assert_called_with(WorkerRole.CHAT)
+
+        mock_svc.provider.role_ready.return_value = True
+        assert (await handlers.health()).chat_ready is True
 
 
 class TestStatus:
@@ -241,6 +259,24 @@ class TestAskStream:
         assert "sources" in event_types
         assert "done" in event_types
 
+    async def test_emits_warming_event_when_chat_cold(self, mock_svc):
+        # A cold chat server yields an early "warming" event so the client shows
+        # a starting state instead of an apparently-dead stream.
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("question")]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert event_types[0] == "warming"
+
+    async def test_no_warming_event_when_chat_ready(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("question")]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert "warming" not in event_types
+
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = None
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
@@ -372,24 +408,122 @@ class TestAskStream:
         assert "answer" in token_events[0]
 
 
-class TestChat:
-    async def test_passes_history(self, mock_svc):
-        from lilbee.retrieval.query import AskResult
+def _canonical_text_stream(texts):
+    """Return an async iterator emitting one ``TextDelta`` event per text fragment."""
+    from lilbee.server.chat_dispatch.canonical import (
+        ContentBlockDelta,
+        ContentBlockStart,
+        ContentBlockStop,
+        MessageStart,
+        MessageStop,
+        TextBlock,
+        TextDelta,
+    )
 
-        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+    events = [
+        MessageStart(id="msg_test", model=cfg.chat_model),
+        ContentBlockStart(index=0, block=TextBlock(text="")),
+        *(ContentBlockDelta(index=0, delta=TextDelta(text=t)) for t in texts),
+        ContentBlockStop(index=0),
+        MessageStop(),
+    ]
+
+    async def _gen():
+        for ev in events:
+            yield ev
+
+    return _gen()
+
+
+class TestChat:
+    async def test_passes_history(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        captured = []
+
+        def _fake_dispatch(req):
+            captured.append(req)
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
         assert result.answer == "ok"
-        mock_svc.searcher.ask_raw.assert_called_once_with(
-            "follow up", top_k=0, history=history, options=None, chunk_type=None
+        # history is what build_rag_context received (search-side) when retrieval ran.
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("history") == history
+        assert len(captured) == 1
+
+    async def test_forwards_chunk_type(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
         )
 
-    async def test_forwards_chunk_type(self, mock_svc):
-        from lilbee.retrieval.query import AskResult
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
 
-        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         await handlers.chat("q", [], chunk_type="raw")
-        assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "raw"
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_retrieval_ran_but_no_context_falls_back_to_direct_chat(
+        self, mock_svc, monkeypatch
+    ):
+        """Search mode + ``build_rag_context`` returning None (no relevant docs)
+        falls back to a direct-chat turn: retrieval was attempted, the answer
+        still comes back, and the response carries no sources."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        captured = []
+
+        def _fake_dispatch(req):
+            captured.append(req)
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="direct answer")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        # Retrieval runs (search mode) but finds nothing -> build_rag_context None.
+        mock_svc.searcher.build_rag_context.return_value = None
+        result = await handlers.chat("anything", [])
+        # build_rag_context WAS consulted (retrieval not skipped) yet returned None.
+        assert mock_svc.searcher.build_rag_context.call_args is not None
+        assert result.answer == "direct answer"
+        assert result.sources == []  # direct-chat fallback carries no sources
+        assert len(captured) == 1
 
 
 class TestChatStream:
@@ -399,9 +533,11 @@ class TestChatStream:
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
 
-    async def test_yields_events_with_history(self, mock_svc):
+    async def test_yields_events_with_history(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["reply"])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["reply"])
+        )
         history = [{"role": "user", "content": "hi"}]
         events = [e async for e in handlers.chat_stream("follow up", history)]
 
@@ -416,9 +552,27 @@ class TestChatStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
 
-    async def test_unknown_error_yields_internal_error(self, mock_svc):
+    async def test_emits_warming_event_when_chat_cold(self, mock_svc, monkeypatch):
+        mock_svc.provider.role_ready.return_value = False
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = ConnectionError("provider down")
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["reply"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert event_types[0] == "warming"
+
+    async def test_unknown_error_yields_internal_error(self, mock_svc, monkeypatch):
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+
+        def _erroring_stream(_req):
+            async def _gen():
+                raise ConnectionError("provider down")
+                yield  # pragma: no cover
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _erroring_stream)
         events = [e async for e in handlers.chat_stream("q", [])]
 
         non_empty = [e for e in events if e]
@@ -426,11 +580,22 @@ class TestChatStream:
         assert len(error_events) == 1
         assert "Internal error" in error_events[0]
 
-    async def test_provider_error_surfaces_its_message(self, mock_svc):
+    async def test_provider_error_surfaces_its_message(self, mock_svc, monkeypatch):
+        """A ProviderError from the dispatch reaches the client verbatim with its kind code."""
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = ProviderError(
-            "gemini/m rejected your API key.", provider="litellm", kind=ProviderErrorKind.AUTH
-        )
+
+        def _erroring_stream(_req):
+            async def _gen():
+                raise ProviderError(
+                    "gemini/m rejected your API key.",
+                    provider="litellm",
+                    kind=ProviderErrorKind.AUTH,
+                )
+                yield  # pragma: no cover
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _erroring_stream)
         events = [e async for e in handlers.chat_stream("q", [])]
 
         error_events = [e for e in events if e and e.startswith("event: error")]
@@ -439,59 +604,48 @@ class TestChatStream:
         assert "rejected your API key" in parsed["message"]
         assert parsed["code"] == "auth"
 
-    async def test_cancel_sets_cancel_event(self, mock_svc):
-        """Closing the chat_stream generator mid-stream signals the thread to stop."""
-        import threading
-
-        barrier = threading.Event()
-
-        def blocking_chat(*args, **kwargs):
-            yield "first"
-            barrier.wait(timeout=2)
-            yield "second"
+    async def test_cancel_stops_emitting(self, mock_svc, monkeypatch):
+        """Closing the chat_stream generator stops further dispatch events from being emitted."""
+        from lilbee.server.chat_dispatch.canonical import (
+            ContentBlockDelta,
+            ContentBlockStart,
+            MessageStart,
+            TextBlock,
+            TextDelta,
+        )
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = blocking_chat
+
+        def _slow_stream(_req):
+            async def _gen():
+                yield MessageStart(id="m", model=cfg.chat_model)
+                yield ContentBlockStart(index=0, block=TextBlock(text=""))
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="first"))
+                # Generator is closed by aclose() before this point.
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="second"))
+
+            return _gen()
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat_stream", _slow_stream)
+
         gen = handlers.chat_stream("question", [])
         events = []
         async for event in gen:
             events.append(event)
             if event and "first" in event:
                 await gen.aclose()
-                barrier.set()
                 break
 
         non_empty = [e for e in events if e]
         assert any("first" in e for e in non_empty)
         assert not any("second" in e for e in non_empty)
 
-    async def test_cancel_logs_message(self, mock_svc, caplog):
-        """Closing the chat_stream generator mid-stream logs a cancellation message."""
-        import threading
-
-        barrier = threading.Event()
-
-        def blocking_chat(*args, **kwargs):
-            yield "first"
-            barrier.wait(timeout=2)
-            yield "second"
-
+    async def test_skips_empty_tokens(self, mock_svc, monkeypatch):
+        """Empty text deltas from dispatch are not emitted."""
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.side_effect = blocking_chat
-        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
-        gen = handlers.chat_stream("question", [])
-        async for event in gen:
-            if event and "first" in event:
-                await gen.aclose()
-                barrier.set()
-                break
-        await asyncio.sleep(0.05)
-        assert any("cancelled by client" in r.message for r in caplog.records)
-
-    async def test_skips_empty_tokens(self, mock_svc):
-        """Empty strings from provider are not emitted."""
-        mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["", "reply"])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["", "reply"])
+        )
         events = [e async for e in handlers.chat_stream("question", [])]
 
         non_empty = [e for e in events if e]
@@ -521,8 +675,12 @@ class TestMemoryExtractedEvent:
 
     async def test_emitted_after_done_when_enabled(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["I noted that."])
         with (
+            patch.object(
+                _rag_h,
+                "dispatch_chat_stream",
+                lambda req: _canonical_text_stream(["I noted that."]),
+            ),
             patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
             patch("lilbee.server.handlers.rag.auto_extract", return_value=self._saved()) as extract,
         ):
@@ -550,14 +708,19 @@ class TestMemoryExtractedEvent:
         extract.assert_not_called()
 
     async def test_not_emitted_when_nothing_extracted(self, mock_svc):
+        # A real (non-empty) answer reaches the extraction pass, which returns nothing;
+        # the stream must emit no memory_extracted event.
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
-        mock_svc.provider.chat.return_value = iter(["answer"])
         with (
+            patch.object(
+                _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["an answer"])
+            ),
             patch("lilbee.server.handlers.rag.auto_extract_enabled", return_value=True),
-            patch("lilbee.server.handlers.rag.auto_extract", return_value=[]),
+            patch("lilbee.server.handlers.rag.auto_extract", return_value=[]) as extract,
         ):
             events = [e async for e in handlers.chat_stream("q", [])]
         assert "memory_extracted" not in _event_types(events)
+        extract.assert_called_once_with("q", "an answer")
 
     async def test_not_emitted_on_empty_answer(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -2777,10 +2940,10 @@ class TestClassifyLoadError:
         assert code is None
         assert user_message == "Internal error"
 
-    def test_not_in_registry_is_classified_as_model_not_installed(self):
+    def test_not_installed_is_classified_as_model_not_installed(self):
         msg = (
-            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' not found in registry. "
-            "Install it via the catalog or 'lilbee model pull'."
+            "Model 'Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' is not installed. "
+            "Run 'lilbee model pull Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf' to download it."
         )
         code, user_message = handlers.classify_load_error(msg)
         assert code == SseErrorCode.MODEL_NOT_INSTALLED
@@ -2796,6 +2959,68 @@ class TestClassifyLoadError:
     def test_classifier_is_case_insensitive(self):
         code, _ = handlers.classify_load_error("FAILED TO LOAD model.gguf")
         assert code == SseErrorCode.MODEL_TOO_LARGE
+
+
+class TestClassifyStreamError:
+    def test_context_window_exception_routes_to_typed_code(self):
+        """A CONTEXT_OVERFLOW ``ProviderError`` produces the OpenAI-standard code."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError(
+            "Prompt of 9000 tokens exceeds 4096-token window of 'm'.",
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+        )
+        code, msg = _classify_stream_error(exc)
+        assert code == "context_length_exceeded"
+        assert "9000" in msg
+
+    def test_other_exception_falls_back_to_load_error_classifier(self):
+        """Non-typed errors delegate to ``classify_load_error`` for OOM detection."""
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, _ = _classify_stream_error(RuntimeError("llama_context: failed to allocate"))
+        assert code == "model_too_large"
+
+    def test_model_not_found_routes_to_typed_code(self):
+        """``ModelNotFoundError`` from the dispatch surfaces as a typed code."""
+        from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(ModelNotFoundError("vendor/missing.gguf"))
+        assert code == "model_not_found"
+        assert "vendor/missing.gguf" in msg
+
+    def test_not_found_provider_error_routes_to_model_not_found(self):
+        """A NOT_FOUND ProviderError (a missing role model) maps to model_not_found. (F3)"""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError(
+            "Model 'nomic-ai/embed/embed.gguf' is not installed. "
+            "Run 'lilbee model pull nomic-ai/embed/embed.gguf' to download it.",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+        code, msg = _classify_stream_error(exc)
+        assert code == "model_not_found"
+        assert "nomic-ai/embed/embed.gguf" in msg
+
+    def test_model_does_not_support_tools_routes_to_typed_code(self):
+        """``ModelDoesNotSupportToolsError`` from the dispatch surfaces as a typed code."""
+        from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(ModelDoesNotSupportToolsError("vendor/m.gguf"))
+        assert code == "model_does_not_support_tools"
+        assert "vendor/m.gguf" in msg
+
+    def test_generic_error_is_classified_as_internal(self):
+        """An unrecognised exception falls back to the generic envelope."""
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        code, msg = _classify_stream_error(RuntimeError("something else"))
+        assert code is None
+        assert msg == "Internal error"
 
 
 class TestResolveGenerationOptions:
@@ -2834,14 +3059,16 @@ class TestOptionInjectionBoundary:
         assert forwarded["temperature"] == 0.5
 
     async def test_chat_strips_injected_keys(self, mock_svc):
-        from lilbee.retrieval.query import AskResult
-
-        mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
-        await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))
-        forwarded = mock_svc.searcher.ask_raw.call_args.kwargs["options"]
-        assert "api_base" not in forwarded
-        assert "api_key" not in forwarded
-        assert forwarded["temperature"] == 0.5
+        # chat() routes through canonical dispatch (not ask_raw): injected
+        # endpoint/credential keys must never reach the dispatched request, while
+        # a legitimate generation option (temperature) still flows through.
+        with patch("lilbee.server.handlers.rag.dispatch_chat") as mock_dispatch:
+            mock_dispatch.return_value = MagicMock(content=[])
+            await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))
+        req = mock_dispatch.call_args.args[0]
+        assert req.temperature == 0.5  # a legitimate generation option flows through
+        assert "http://evil" not in repr(req)  # the injected endpoint never reaches dispatch
+        assert "api_key" not in repr(req)  # nor the injected credential
 
 
 class TestListExternalModels:
@@ -2917,7 +3144,7 @@ class TestRunLlmStreamCancel:
         cancel.set()  # pre-set cancel
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
-        error_holder: list[Exception] = []
+        error_holder: list[BaseException] = []
 
         mock_provider = MagicMock()
         # Return some stream tokens that would normally be emitted
@@ -2971,7 +3198,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[Exception] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -3007,7 +3234,7 @@ class TestReasoningCapHandling:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
-            error_holder: list[Exception] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -3048,7 +3275,7 @@ class TestReasoningCapHandling:
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             cancel = threading.Event()
             cancel.set()
-            error_holder: list[Exception] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider
@@ -3083,7 +3310,7 @@ class TestReasoningCapHandling:
 
             mock_provider.chat.side_effect = [iter([long_reasoning]), second_pass()]
             queue: asyncio.Queue[str | None] = asyncio.Queue()
-            error_holder: list[Exception] = []
+            error_holder: list[BaseException] = []
 
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
                 mock_svc.return_value.provider = mock_provider

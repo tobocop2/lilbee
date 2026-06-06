@@ -71,8 +71,11 @@ def _seed_hf_cache(
     blob = cache / "blobs" / digest
     blob.write_bytes(content)
     snap = cache / "snapshots" / _FAKE_REV
-    snap.mkdir(parents=True, exist_ok=True)
-    (snap / filename).symlink_to(blob)
+    # *filename* may carry a quant subdir (e.g. ``Q4_K_M/m-Q4_K_M.gguf``), which
+    # HF preserves in the snapshot tree; mirror that nesting here.
+    link = snap / filename
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(blob)
     (cache / "refs").mkdir(parents=True, exist_ok=True)
     (cache / "refs" / "main").write_text(_FAKE_REV)
     return blob
@@ -107,6 +110,19 @@ class TestParseHfRef:
         with pytest.raises(ValueError):
             parse_hf_ref("../etc/passwd.gguf")
 
+    def test_subdir_quant_ref(self) -> None:
+        # unsloth giant: repo is the first two segments, the rest (incl. the
+        # ``Q4_K_M/`` subdir) is the filename.
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        repo, filename = parse_hf_ref(ref)
+        assert repo == "unsloth/MiniMax-M2-GGUF"
+        assert filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+
+    def test_subdir_ref_round_trips(self) -> None:
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        repo, filename = parse_hf_ref(ref)
+        assert format_native_gguf_ref(repo, filename) == ref
+
 
 class TestValidators:
     def test_valid_repo(self) -> None:
@@ -131,13 +147,23 @@ class TestValidators:
         with pytest.raises(ValueError):
             _validate_gguf_filename("model.bin")
 
-    def test_filename_no_path(self) -> None:
-        with pytest.raises(ValueError):
-            _validate_gguf_filename("dir/file.gguf")
+    def test_filename_subdir_accepted(self) -> None:
+        # unsloth giants store each quant under a subdir (e.g. ``Q4_K_M/``); the
+        # validator keeps the subdir so the manifest key round-trips with the ref.
+        subdir = "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert _validate_gguf_filename(subdir) == subdir
 
     def test_filename_path_traversal(self) -> None:
         with pytest.raises(ValueError):
             _validate_gguf_filename("..gguf")
+
+    def test_filename_parent_traversal_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _validate_gguf_filename("../Q4_K_M/m.gguf")
+
+    def test_filename_leading_slash_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _validate_gguf_filename("/abs/path/m.gguf")
 
 
 class TestRepoToDir:
@@ -256,6 +282,126 @@ class TestModelRegistryResolve:
         assert path.exists()
         assert path.parent.name == "blobs"
 
+    def test_split_gguf_first_shard_only_not_installed(self, tmp_path: Path) -> None:
+        """A split GGUF with only its first shard cached must read as not installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        _seed_hf_cache(
+            tmp_path, repo=repo, filename="m-mxfp4-00001-of-00003.gguf", content=b"shard-1"
+        )
+        ref = f"{repo}/m-mxfp4-00001-of-00003.gguf"
+        assert registry.is_installed(ref) is False
+        with pytest.raises(KeyError, match="missing shards"):
+            registry.resolve(ref)
+
+    def test_split_gguf_all_shards_present_resolves(self, tmp_path: Path) -> None:
+        """Once every shard is cached, the split GGUF resolves and reads installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        ref = f"{repo}/m-mxfp4-00001-of-00003.gguf"
+        assert registry.is_installed(ref) is True
+        assert registry.resolve(ref).exists()
+
+    def test_split_gguf_resolves_to_snapshot_symlink_with_siblings(self, tmp_path: Path) -> None:
+        """A split GGUF resolves to its first shard's snapshot symlink, not its blob.
+
+        llama.cpp loads the whole set from the first shard and finds the siblings
+        by filename next to it; only the snapshot dir co-locates them under their
+        real ``-0000k-of-0000N`` names (blobs are hash-named). Returning the blob
+        path is what made gpt-oss-120b fail to load on the H200.
+        """
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        resolved = registry.resolve(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+        assert resolved.name == "m-mxfp4-00001-of-00003.gguf"  # the symlink, not a hash blob
+        assert resolved.parent.name == _FAKE_REV  # under snapshots/<rev>/, not blobs/
+        # Every sibling shard sits next to it under its real name.
+        for n in (2, 3):
+            assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
+
+    def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shards register as present, but if the first shard's snapshot symlink
+        can't be located, resolve raises 'not installed' rather than returning None."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        # Presence check forced True; snapshot resolution forced None. This is the
+        # narrow window where every shard reports present but the first shard's
+        # snapshot symlink is gone -- resolve must surface a clean 'not installed'.
+        monkeypatch.setattr(registry, "_split_shards_present", lambda *_a, **_k: True)
+        monkeypatch.setattr(registry, "_snapshot_gguf_path", lambda *_a, **_k: None)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+
+    def test_split_shards_present_true_for_single_file_gguf(self, tmp_path: Path) -> None:
+        """A non-split filename has exactly one 'shard' and is trivially present:
+        the presence check short-circuits without touching the cache."""
+        registry = ModelRegistry(tmp_path)
+        assert registry._split_shards_present("org/repo-GGUF", "model-Q4_K_M.gguf") is True
+
+    def test_subdir_quant_single_file_resolves(self, tmp_path: Path) -> None:
+        """A single-file quant nested in a ``Q4_K_M/`` subdir resolves by basename.
+
+        unsloth-style repos store each quant in its own subdir; the lilbee ref
+        keys on the basename, so cache lookup must find it wherever HF nested it.
+        """
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/SomeModel-GGUF"
+        _seed_hf_cache(
+            tmp_path, repo=repo, filename="Q4_K_M/SomeModel-Q4_K_M.gguf", content=b"single"
+        )
+        resolved = registry.resolve(f"{repo}/SomeModel-Q4_K_M.gguf")
+        assert resolved.exists()
+
+    def test_subdir_split_gguf_resolves_to_snapshot_symlink(self, tmp_path: Path) -> None:
+        """The glm-air case: a split quant under ``Q4_K_M/`` resolves to its
+        snapshot symlink with both shards co-located, addressed by basename ref."""
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/GLM-4.5-Air-GGUF"
+        for n in (1, 2):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"Q4_K_M/GLM-4.5-Air-Q4_K_M-0000{n}-of-00002.gguf",
+                content=f"glm-shard-{n}".encode(),
+            )
+        ref = f"{repo}/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert registry.is_installed(ref) is True
+        resolved = registry.resolve(ref)
+        assert resolved.name == "GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert resolved.parent.name == "Q4_K_M"  # subdir preserved in the snapshot tree
+        assert (resolved.parent / "GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf").exists()
+
+    def test_subdir_split_gguf_missing_shard_not_installed(self, tmp_path: Path) -> None:
+        """A subdir split quant missing its second shard reads as not installed."""
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/GLM-4.5-Air-GGUF"
+        _seed_hf_cache(
+            tmp_path,
+            repo=repo,
+            filename="Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
+            content=b"glm-shard-1",
+        )
+        ref = f"{repo}/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+        assert registry.is_installed(ref) is False
+        with pytest.raises(KeyError, match="missing shards"):
+            registry.resolve(ref)
+
     def test_resolve_missing_cache_dir(self, tmp_path: Path) -> None:
         """Manifest exists but the cache folder was deleted out from under us."""
         registry = ModelRegistry(tmp_path)
@@ -369,6 +515,45 @@ class TestModelRegistryResolve:
         (cache / "refs" / "main").write_text(_FAKE_REV)
         with pytest.raises(KeyError, match="not installed"):
             registry.resolve(_REF)
+
+
+class TestRegisterDownloadedModel:
+    def test_subdir_filename_round_trips(self, tmp_path: Path) -> None:
+        """A subdir-quant giant registers under its subdir-relative name.
+
+        The snapshot path is ``.../snapshots/<rev>/Q4_K_M/<file>.gguf``; the
+        manifest must key on ``Q4_K_M/<file>.gguf`` so the canonical ref
+        resolves back to the same blob (F2: subdir giants are first-class).
+        """
+        from lilbee.catalog.models import CatalogModel
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.registry import register_downloaded_model
+
+        repo = "unsloth/MiniMax-M2-GGUF"
+        subdir_name = "Q4_K_M/MiniMax-M2-Q4_K_M.gguf"
+        blob = _seed_hf_cache(tmp_path, repo=repo, filename=subdir_name, content=b"giant")
+        snapshot_path = (
+            tmp_path / f"models--{repo_to_dir(repo)}" / "snapshots" / _FAKE_REV / subdir_name
+        )
+        entry = CatalogModel(
+            hf_repo=repo,
+            gguf_filename=subdir_name,
+            size_gb=0.0,
+            min_ram_gb=2.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=ModelTask.CHAT,
+        )
+        with mock.patch("lilbee.modelhub.registry.cfg") as cfg_mock:
+            cfg_mock.models_dir = tmp_path
+            register_downloaded_model(entry, snapshot_path)
+            registry = ModelRegistry(tmp_path)
+            ref = format_native_gguf_ref(repo, subdir_name)
+            manifest = registry.get_manifest(ref)
+            assert manifest is not None
+            assert manifest.gguf_filename == subdir_name
+            assert registry.resolve(ref) == blob
 
 
 class TestModelRegistryIsInstalled:

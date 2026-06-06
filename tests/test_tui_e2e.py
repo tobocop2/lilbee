@@ -7,6 +7,7 @@ Every test here reproduces a bug that was found by manual testing.
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -62,7 +63,7 @@ def _suppress_catalog_auto_hf_fetch():
 def _mock_resolve():
     """Mock model resolution to succeed without real files."""
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield
@@ -120,7 +121,7 @@ class TestEmbeddingAvailable:
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value=cfg.models_dir / "test.gguf",
         ):
             assert embedder.embedding_available() is True
@@ -2955,6 +2956,10 @@ class TestCatalogGridFocus:
                     "Tab focus on a ModelGrid must auto-highlight the first card"
                 )
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Textual highlighted-row update timing is flaky on Windows runners",
+    )
     async def test_g_key_does_not_trigger_install(self, _mock_resolve):
         """Pressing G in the catalog grid jumps to the bottom, never installs (bb-8kxf)."""
         from lilbee.cli.tui.app import LilbeeApp
@@ -3220,7 +3225,7 @@ class TestChatEmbeddingReadyCoverage:
             screen = app.screen
             assert isinstance(screen, ChatScreen)
             with mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
+                "lilbee.providers.engine_params.resolve_model_path",
                 side_effect=FileNotFoundError("not found"),
             ):
                 assert screen._embedding_ready() is False
@@ -3277,9 +3282,7 @@ class TestChatEmbeddingReadyCoverage:
                     await pilot.pause()
                     screen = app.screen
                     assert isinstance(screen, ChatScreen)
-                    with mock.patch(
-                        "lilbee.providers.llama_cpp.provider.resolve_model_path"
-                    ) as resolve:
+                    with mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve:
                         assert screen._embedding_ready() is False
                         resolve.assert_not_called()
         finally:

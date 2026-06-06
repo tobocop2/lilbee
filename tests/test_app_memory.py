@@ -15,6 +15,7 @@ from lilbee.data.store import (
     agent_recall_predicate,
     local_owner_predicate,
 )
+from lilbee.providers.base import ChatResult, FinishReason
 from tests.conftest import make_mock_services
 
 
@@ -127,6 +128,11 @@ class TestListForgetFlags:
         svc.store.update_memory.assert_called_once_with("u1", shared=True)
 
 
+def _chat_result(text: str) -> ChatResult:
+    """A non-streaming chat result carrying ``text`` (what auto_extract reads)."""
+    return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
+
+
 class TestAutoExtract:
     @pytest.fixture(autouse=True)
     def _restore_cfg(self):
@@ -152,7 +158,9 @@ class TestAutoExtract:
     def test_stores_extracted(self, svc):
         cfg.memory_enabled = True
         cfg.memory_auto_extract = True
-        svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
+        svc.provider.chat.return_value = _chat_result(
+            '[{"text": "the user prefers rust", "kind": "fact"}]'
+        )
         stored = app_memory.auto_extract("I love rust", "Rust is great.")
         assert [m.text for m in stored] == ["the user prefers rust"]
         assert stored[0].id == "stored-id"
@@ -163,6 +171,6 @@ class TestAutoExtract:
     def test_nothing_extracted_stores_nothing(self, svc):
         cfg.memory_enabled = True
         cfg.memory_auto_extract = True
-        svc.provider.chat.return_value = "[]"
+        svc.provider.chat.return_value = _chat_result("[]")
         assert app_memory.auto_extract("hi", "hello") == []
         svc.store.add_memory.assert_not_called()

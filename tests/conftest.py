@@ -138,32 +138,36 @@ def _reset_services_after_test():
 
     Tests that inject a mock via ``set_services(make_mock_services(...))``
     would otherwise leak into the next test's ``get_services()`` call,
-    producing confusing cross-test failures. The injected mock holds a
-    real :class:`WorkerPool` and :class:`PoolRuntime` by default, so we
-    drain those explicitly before clearing the singleton; mocks pass
-    through the same path harmlessly.
+    producing confusing cross-test failures. Shutting the provider down
+    drops any running fleet; mocks pass through the same path harmlessly.
     """
     yield
     from contextlib import suppress
 
     from lilbee.app.services import peek_services, set_services
-    from lilbee.providers.worker.health_ticker import stop_health_ticker
 
     svc = peek_services()
     if svc is not None:
-        # Stop the health ticker before draining the runtime so it cannot
-        # schedule a fresh pool op against an already-stopped loop.
         with suppress(Exception):
-            stop_health_ticker(svc.pool_health_ticker, timeout=2.0)
-        runtime = svc.pool_runtime
-        pool = svc.worker_pool
-        # Real pool/runtime have these methods. Mocks no-op safely.
-        if hasattr(runtime, "shutdown") and hasattr(pool, "shutdown"):
-            with suppress(Exception):
-                runtime.run_sync(pool.shutdown(), timeout=5.0)
-            with suppress(Exception):
-                runtime.shutdown(timeout=5.0)
+            svc.provider.shutdown()
     set_services(None)
+
+
+@pytest.fixture(autouse=True)
+def _join_fleet_background_threads():
+    """Join lingering fleet warm-up / reload daemon threads after each test.
+
+    ``warm_up_pool`` / ``reload_role`` dispatch fire-and-forget daemon threads; on a
+    host without the engine binary they fail fast and log a warning. Joining them
+    here keeps that warning inside the test that started the thread instead of
+    leaking it into a later test's log capture.
+    """
+    yield
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name.startswith("fleet-") and thread.is_alive():
+            thread.join(timeout=5.0)
 
 
 @pytest.fixture(autouse=True)
@@ -235,9 +239,9 @@ def _isolate_cfg(tmp_path, request):
     # key makes a cloud model "available" and leaks into model discovery and
     # the chat-model availability fallback, breaking tests that assume a clean
     # environment. Tests that exercise key-dependent paths set the key themselves.
-    from lilbee.providers.sdk_backend import API_KEY_FIELDS
+    from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 
-    for field in API_KEY_FIELDS:
+    for field in PROVIDER_API_KEY_FIELD.values():
         setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
@@ -245,6 +249,29 @@ def _isolate_cfg(tmp_path, request):
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
     cfg.clear_model_defaults()
+
+
+def _default_provider_mock():
+    """Return a ``LLMProvider``-spec'd MagicMock whose ``chat`` yields a ``ChatResult``.
+
+    Without this default, ``MagicMock(spec=LLMProvider).chat(...)`` returns
+    another MagicMock and the searcher's ``result.text`` access then breaks
+    every downstream string consumer (regex, ``strip()``, etc.). Tests that
+    care about the chat output override the return value explicitly.
+    """
+    from lilbee.providers.base import ChatResult, FinishReason, LLMProvider
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat.return_value = ChatResult(text="", tool_calls=(), finish_reason=FinishReason.STOP)
+    provider.supports_tools.return_value = False
+    # role_ready feeds HealthResponse.chat_ready (a bool); default to warm so the
+    # mock validates. Cold-start tests override this explicitly.
+    provider.role_ready.return_value = True
+    # Chat admission + context advertising read these; default to single-flight
+    # with an unknown window so the gate and the /v1/models shape stay valid.
+    provider.max_concurrent_chats.return_value = 1
+    provider.served_chat_ctx.return_value = None
+    return provider
 
 
 def _default_store_mock():
@@ -290,22 +317,17 @@ def _default_clusterer_mock():
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
-    The worker pool defaults to a fresh :class:`WorkerPool` so tests that
-    drive ``LlamaCppProvider.embed`` get real pool semantics; the
-    :class:`PoolRuntime` defaults to a fresh real runtime so
-    ``run_sync`` works. Lightweight tests that never touch the pool can
-    override either with a :class:`MagicMock` to skip the runtime thread
-    cost.
+    The provider defaults to a ``MagicMock`` speccing :class:`LLMProvider`, so
+    inference lifecycle calls (cancel / reload_role / add_spawn_listener) and the
+    chat/embed/rerank methods are all stubbed. Override ``provider`` with a real
+    :class:`FleetProvider` for tests that need genuine fleet behaviour.
     """
     from lilbee.app.services import CrawlerSyncState, Services
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.providers.base import LLMProvider
-    from lilbee.providers.worker.health_ticker import HealthTickerHandle
-    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
     from lilbee.retrieval.query import Searcher
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = overrides.pop("provider", None) or MagicMock(spec=LLMProvider)
+    provider = overrides.pop("provider", None) or _default_provider_mock()
     store = overrides.pop("store", None) or _default_store_mock()
     embedder = overrides.pop("embedder", None) or _default_embedder_mock()
     reranker = overrides.pop("reranker", None) or _default_reranker_mock()
@@ -320,11 +342,7 @@ def make_mock_services(**overrides):
     model_manager = overrides.pop("model_manager", None) or MagicMock()
     crawler_semaphore = overrides.pop("crawler_semaphore", None)
     crawler_sync_state = overrides.pop("crawler_sync_state", None) or CrawlerSyncState()
-    worker_pool = overrides.pop("worker_pool", None) or WorkerPool()
-    pool_runtime = overrides.pop("pool_runtime", None) or PoolRuntime()
-    # Default to an idle ticker handle: tests that exercise the ticker
-    # build a real one explicitly via start_health_ticker.
-    pool_health_ticker = overrides.pop("pool_health_ticker", None) or HealthTickerHandle()
+    known_models = overrides.pop("known_models", None) or _default_known_models_mock()
 
     return Services(
         provider=provider,
@@ -340,10 +358,20 @@ def make_mock_services(**overrides):
         model_manager=model_manager,
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
-        worker_pool=worker_pool,
-        pool_runtime=pool_runtime,
-        pool_health_ticker=pool_health_ticker,
+        known_models=known_models,
     )
+
+
+def _default_known_models_mock():
+    """KnownModelCache double whose ``refs`` / ``resolve`` return empty by default.
+
+    Tests that need the cache to recognize specific refs override ``refs``
+    and ``resolve`` on the returned mock.
+    """
+    cache = MagicMock()
+    cache.refs.return_value = set()
+    cache.resolve.return_value = None
+    return cache
 
 
 def make_citation(

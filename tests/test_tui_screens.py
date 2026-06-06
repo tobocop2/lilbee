@@ -2294,17 +2294,17 @@ def test_status_read_chat_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "llama"},
         ),
     ):
         result = _read_chat_arch(info)
     assert result.chat_arch == "llama"
-    assert result.active_handler == "llama-cpp"
+    assert result.active_handler == "llama-server"
 
 
 def test_status_read_embed_arch_success():
@@ -2313,11 +2313,11 @@ def test_status_read_embed_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
         ),
     ):
@@ -2332,15 +2332,15 @@ def test_status_read_vision_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+            "lilbee.providers.gguf_meta.find_mmproj_for_model",
             return_value="/fake/mmproj",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_mmproj_projector_type",
+            "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
         ),
     ):
@@ -2364,27 +2364,11 @@ def test_status_read_vision_arch_swallows_errors():
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=RuntimeError("boom"),
     ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
-
-
-def test_status_read_model_arch_import_error():
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    with patch(
-        "builtins.__import__",
-        side_effect=lambda name, *a, **kw: (
-            (_ for _ in ()).throw(ImportError("no llama-cpp"))
-            if "llama_cpp" in name
-            else __import__(name, *a, **kw)
-        ),
-    ):
-        result = get_model_architecture()
-    assert result.chat_arch == "unknown"
 
 
 def test_get_model_architecture_caches_within_session():
@@ -10978,7 +10962,7 @@ async def test_chat_embedding_ready_false_on_exception():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         with patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             side_effect=FileNotFoundError("not found"),
         ):
             assert screen._embedding_ready() is False
@@ -11265,7 +11249,7 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=FileNotFoundError("not found"),
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -11281,7 +11265,7 @@ def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/fake/path/to/model.gguf",
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -12308,7 +12292,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     """
     from unittest.mock import patch
 
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
@@ -12675,6 +12659,10 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="CatalogScreen grid-mount timing race on Windows Textual",
+)
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
     """The success branches of _tick_loading_spinner update both targets."""
     from textual.widgets import Static

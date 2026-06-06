@@ -11,7 +11,7 @@ from lilbee.cli.tui.widgets.model_pick import (
     apply_model_pick,
     config_key_for_scope,
 )
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

@@ -58,7 +58,7 @@ def _suppress_catalog_auto_hf_fetch():
 @pytest.fixture()
 def _mock_resolve():
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield

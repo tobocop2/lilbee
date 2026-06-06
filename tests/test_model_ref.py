@@ -288,9 +288,11 @@ class TestChatOptionTranslationParity:
     """
 
     def _in_process(self) -> dict[str, object]:
-        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+        # The local llama-server path translates chat options here now (same
+        # mapping the in-process loader used: rename num_predict, drop num_ctx).
+        from lilbee.providers.engine_params import chat_options_to_kwargs
 
-        return LlamaCppProvider._chat_kwargs_from_options(dict(_SHARED_OPTIONS))
+        return chat_options_to_kwargs(dict(_SHARED_OPTIONS))
 
     def _api(self) -> dict[str, object]:
         ref = parse_model_ref("openai/gpt-4o")

@@ -13,6 +13,7 @@ import pytest
 litellm = pytest.importorskip("litellm")
 
 from lilbee.core.config import cfg  # noqa: E402
+from lilbee.providers.base import ChatResult, ToolCallDelta  # noqa: E402
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
 
@@ -82,11 +83,11 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert isinstance(result, ChatResult)
+        assert len(result.text) > 0
 
     def test_chat_stream_yields_tokens(self) -> None:
-        """Streaming chat yields string tokens."""
+        """Streaming chat yields text and (optionally) tool-call deltas."""
         cfg.chat_model = OLLAMA_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
@@ -95,10 +96,10 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        tokens = list(result)
-        assert len(tokens) > 0
-        assert all(isinstance(t, str) for t in tokens)
-        full_text = "".join(tokens)
+        items = list(result)
+        assert len(items) > 0
+        assert all(isinstance(t, (str, ToolCallDelta)) for t in items)
+        full_text = "".join(t for t in items if isinstance(t, str))
         assert len(full_text) > 0
 
     def test_chat_with_model_override(self) -> None:
@@ -111,8 +112,8 @@ class TestSdkChat:
             options={"temperature": 0},
         )
 
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert isinstance(result, ChatResult)
+        assert len(result.text) > 0
 
 
 class TestSdkModelManagement:
@@ -146,11 +147,12 @@ class TestSdkFactory:
         assert isinstance(provider, SdkLLMProvider)
 
     def test_ollama_alias_rejected(self) -> None:
-        """'ollama' is not a valid llm_provider value; only "remote" is."""
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import create_provider
+        """'ollama' is not a valid llm_provider value (use 'remote' for Ollama).
 
-        cfg.llm_provider = "ollama"
-        cfg.ollama_base_url = OLLAMA_HOST
-        with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            create_provider(cfg)
+        Now a validated ``LlmProvider`` enum, it is rejected at the config
+        boundary on assignment rather than later in ``create_provider``.
+        """
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            cfg.llm_provider = "ollama"

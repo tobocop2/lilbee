@@ -32,3 +32,16 @@ def test_overrides_to_vision_when_name_contains_moondream() -> None:
 
 def test_passes_through_embedding() -> None:
     assert reclassify_by_name("nomic-embed-text-v1.5", "embedding") == "embedding"
+
+
+def test_overrides_to_embedding_when_name_contains_embedding() -> None:
+    # Qwen3-Embedding is a qwen3 decoder arch (classifies as chat) + a pooling head,
+    # so the name is the only signal short of probing the GGUF pooling type (bb-m3b).
+    ref = "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+    assert reclassify_by_name(ref, "chat") == ModelTask.EMBEDDING
+
+
+def test_reranker_wins_over_embedding_pattern() -> None:
+    # bge-reranker matches both the bge- embedder pattern and the rerank pattern;
+    # rerank is checked first so it stays a reranker.
+    assert reclassify_by_name("gpustack/bge-reranker-v2-m3-GGUF", "chat") == ModelTask.RERANK

@@ -765,6 +765,29 @@ class TestFindCatalogEntry:
         assert find_catalog_entry("Qwen3 8B") is None
 
 
+class TestHfRepoFromRef:
+    def test_flat_ref_yields_repo(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf") == "Qwen/Qwen3-8B-GGUF"
+
+    def test_subdir_ref_yields_first_two_segments(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert hf_repo_from_ref(ref) == "unsloth/MiniMax-M2-GGUF"
+
+    def test_bare_repo_returned_unchanged(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("Qwen/Qwen3-8B-GGUF") == "Qwen/Qwen3-8B-GGUF"
+
+    def test_provider_prefixed_ref_returned_unchanged(self) -> None:
+        from lilbee.catalog.refs import hf_repo_from_ref
+
+        assert hf_repo_from_ref("ollama/llama3:8b") == "ollama/llama3:8b"
+
+
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
@@ -783,6 +806,14 @@ class TestBuildAdhocEntry:
         entry = build_adhoc_entry("foo/bar-reranker", task=ModelTask.RERANK)
         assert entry.task == ModelTask.RERANK
         assert entry.gguf_filename == "*.gguf"
+
+    def test_explicit_gguf_filename_is_pinned(self) -> None:
+        """A concrete filename (incl. a subdir) overrides the default glob."""
+        entry = build_adhoc_entry(
+            "unsloth/MiniMax-M2-GGUF",
+            gguf_filename="Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf",
+        )
+        assert entry.gguf_filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
 
 
 class TestIsHfRepoId:
@@ -840,6 +871,105 @@ class TestResolvePullTarget:
     )
     def test_malformed_hf_inputs_return_none(self, value: str) -> None:
         assert catalog.resolve_pull_target(value) is None
+
+    def test_subdir_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
+        """A full subdir ref (F2) resolves to an ad-hoc entry pinning that file."""
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        entry = catalog.resolve_pull_target(ref)
+        assert entry is not None
+        assert entry.featured is False
+        assert entry.hf_repo == "unsloth/MiniMax-M2-GGUF"
+        assert entry.gguf_filename == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+
+    def test_flat_gguf_ref_builds_adhoc_with_exact_filename(self) -> None:
+        ref = "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q5_K_M.gguf"
+        entry = catalog.resolve_pull_target(ref)
+        assert entry is not None
+        assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
+        assert entry.gguf_filename == "gemma-2-2b-it-Q5_K_M.gguf"
+
+    def test_traversal_gguf_ref_returns_none(self) -> None:
+        """A ``.gguf`` ref whose subdir path tries to escape the repo is rejected."""
+        assert catalog.resolve_pull_target("owner/repo/../escape/m.gguf") is None
+
+    def test_explicit_quant_overrides_featured_default(self) -> None:
+        """F5: naming a specific .gguf on a featured repo pins that exact quant.
+
+        The featured entry for the repo pins a default quant; an explicit
+        filename must win (HF-first) instead of being overridden.
+        """
+        featured = catalog.resolve_pull_target("Qwen/Qwen3-8B-GGUF")
+        assert featured is not None
+        explicit_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        entry = catalog.resolve_pull_target(explicit_ref)
+        assert entry is not None
+        assert entry.gguf_filename == "Qwen3-8B-Q4_K_M.gguf"
+        assert entry.gguf_filename != featured.gguf_filename
+
+
+class TestSplitShardFilenames:
+    def test_single_file_returns_itself(self) -> None:
+        assert catalog.download.split_shard_filenames("model-Q4_K_M.gguf") == ["model-Q4_K_M.gguf"]
+
+    def test_split_returns_every_part_in_order(self) -> None:
+        parts = catalog.download.split_shard_filenames("Q4_K_M/M-Q4_K_M-00001-of-00003.gguf")
+        assert parts == [
+            "Q4_K_M/M-Q4_K_M-00001-of-00003.gguf",
+            "Q4_K_M/M-Q4_K_M-00002-of-00003.gguf",
+            "Q4_K_M/M-Q4_K_M-00003-of-00003.gguf",
+        ]
+
+
+class TestSplitShardDownload:
+    def test_fetches_all_shards_and_finalizes_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A split GGUF pulls every shard, and on_complete fires once after the set."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00002.gguf")
+        requested: list[str] = []
+
+        def fake(**kwargs: Any) -> str:
+            requested.append(kwargs["filename"])
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        completed: list[Path] = []
+        download_model(entry, on_complete=lambda _e, p: completed.append(p))
+
+        assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
+        assert len(completed) == 1  # manifest write only after the full set is on disk
+
+    def test_xet_fallback_when_file_too_large_for_http(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 'too large for HTTP' error retries with xet enabled, then restores the flag."""
+        import huggingface_hub.constants as hc
+
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)  # lilbee's default
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+
+        calls = {"n": 0}
+        disable_during_retry: list[bool] = []
+
+        def fake(**kwargs: Any) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError(
+                    "The file is too large to be downloaded using the regular download method."
+                )
+            disable_during_retry.append(hc.HF_HUB_DISABLE_XET)
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        download_model(entry)
+
+        assert calls["n"] == 2  # original attempt + xet retry
+        assert disable_during_retry == [False]  # xet was on for the retry
+        assert hc.HF_HUB_DISABLE_XET is True  # flag restored afterwards
 
 
 class TestDownloadModel:
@@ -995,6 +1125,22 @@ class TestDownloadModel:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
+            download_model(entry)
+
+    def test_unexpected_exception_is_wrapped_with_type_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An error class the translator doesn't special-case is wrapped in a
+        RuntimeError that names the original exception type, not leaked raw."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_download(**kwargs: Any) -> str:
+            raise KeyError("missing sibling")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(RuntimeError, match=r"Failed to download.*KeyError"):
             download_model(entry)
 
 
@@ -1863,6 +2009,13 @@ class TestDownloadTaskName:
 
         assert download_task_name("foo/file.gguf") == ""
 
+    def test_subdir_quant_ref_uses_repo_not_subdir(self) -> None:
+        """A subdir-quant giant ref labels by its repo, not ``repo/Q4_K_M``. (F2)"""
+        from lilbee.catalog import download_task_name
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert download_task_name(ref) == "MiniMax M2"
+
 
 class TestDisplayLabelForRef:
     def test_native_hf_ref_uses_clean_repo_name(self) -> None:
@@ -1870,6 +2023,13 @@ class TestDisplayLabelForRef:
 
         ref = "Qwen/Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
         assert display_label_for_ref(ref) == "Qwen2.5 7B"
+
+    def test_subdir_quant_ref_uses_repo_not_subdir(self) -> None:
+        """A subdir-quant giant ref labels by its repo, matching download_task_name. (F2)"""
+        from lilbee.catalog import display_label_for_ref
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert display_label_for_ref(ref) == "MiniMax M2"
 
     def test_ollama_prefix_drops_only_the_prefix(self) -> None:
         from lilbee.catalog import display_label_for_ref

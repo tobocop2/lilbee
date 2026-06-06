@@ -55,12 +55,14 @@ class FakeBackend:
     list_chat_models_not_supported: bool = False
     list_chat_models_result: list[str] = field(default_factory=list)
     provider_name: str = "fake"
+    supports_tools_result: bool = False
     complete_calls: list[CompletionRequest] = field(default_factory=list)
     embed_calls: list[EmbeddingRequest] = field(default_factory=list)
     logging_calls: list[bool] = field(default_factory=list)
     pull_calls: list[tuple[str, str]] = field(default_factory=list)
     list_models_calls: list[tuple[str, str]] = field(default_factory=list)
     list_chat_models_calls: list[str] = field(default_factory=list)
+    supports_tools_calls: list[str] = field(default_factory=list)
 
     def available(self) -> bool:
         return True
@@ -121,6 +123,10 @@ class FakeBackend:
             raise NotImplementedError
         return self.show_model_result
 
+    def supports_tools(self, model_ref: str) -> bool:
+        self.supports_tools_calls.append(model_ref)
+        return self.supports_tools_result
+
 
 @pytest.fixture(autouse=True)
 def _reset_chat_model() -> Iterator[None]:
@@ -157,10 +163,72 @@ class TestInjectProviderKeys:
 
 
 class TestChatNonStream:
-    def test_returns_content_string(self) -> None:
-        backend = FakeBackend(complete_result=CompletionResult(content="hi"))
+    def test_returns_chat_result(self) -> None:
+        from lilbee.providers.base import ChatResult, FinishReason
+
+        backend = FakeBackend(complete_result=CompletionResult(content="hi", finish_reason="stop"))
         provider = SdkLLMProvider(backend)
-        assert provider.chat([{"role": "user", "content": "hey"}]) == "hi"
+        result = provider.chat([{"role": "user", "content": "hey"}])
+        assert isinstance(result, ChatResult)
+        assert result.text == "hi"
+        assert result.finish_reason == FinishReason.STOP
+
+    def test_tool_calls_surface_in_chat_result(self) -> None:
+        from lilbee.providers.base import ChatResult, FinishReason
+        from lilbee.providers.sdk_backend import SdkToolCall
+
+        backend = FakeBackend(
+            supports_tools_result=True,
+            complete_result=CompletionResult(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=(SdkToolCall(id="c1", name="get_weather", arguments='{"city":"SF"}'),),
+            ),
+        )
+        provider = SdkLLMProvider(backend)
+        result = provider.chat(
+            [{"role": "user", "content": "weather?"}],
+            model="openai/gpt-4o",
+            tools=[{"type": "function", "function": {"name": "get_weather"}}],
+        )
+        assert isinstance(result, ChatResult)
+        assert result.finish_reason == FinishReason.TOOL_CALLS
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "c1"
+        assert result.tool_calls[0].name == "get_weather"
+        assert result.tool_calls[0].arguments == '{"city":"SF"}'
+
+    def test_tools_and_tool_choice_threaded_into_request_options(self) -> None:
+        backend = FakeBackend(supports_tools_result=True)
+        provider = SdkLLMProvider(backend)
+        tools = [{"type": "function", "function": {"name": "get_weather"}}]
+        provider.chat(
+            [{"role": "user", "content": "x"}],
+            model="openai/gpt-4o",
+            tools=tools,
+            tool_choice="required",
+        )
+        opts = backend.complete_calls[-1].options
+        assert opts["tools"] == tools
+        assert opts["tool_choice"] == "required"
+
+    def test_tools_against_unsupported_model_raises_before_calling_backend(self) -> None:
+        backend = FakeBackend(supports_tools_result=False)
+        provider = SdkLLMProvider(backend)
+        with pytest.raises(ProviderError, match="does not support tool calls"):
+            provider.chat(
+                [{"role": "user", "content": "x"}],
+                model="openai/gpt-4o",
+                tools=[{"type": "function", "function": {"name": "f"}}],
+            )
+        # Gating happens before the SDK call, so no request reaches the backend.
+        assert backend.complete_calls == []
+
+    def test_supports_tools_delegates_to_backend(self) -> None:
+        backend = FakeBackend(supports_tools_result=True)
+        provider = SdkLLMProvider(backend)
+        assert provider.supports_tools("openai/gpt-4o") is True
+        assert backend.supports_tools_calls == ["openai/gpt-4o"]
 
     def test_builds_completion_request_with_parsed_ref(self) -> None:
         backend = FakeBackend()
@@ -274,6 +342,48 @@ class TestChatStream:
         backend = FakeBackend(stream_chunks=[StreamChunk(content=""), StreamChunk(content="ok")])
         provider = SdkLLMProvider(backend)
         assert list(provider.chat([{"role": "user", "content": "hi"}], stream=True)) == ["ok"]
+
+    def test_yields_tool_call_deltas_interleaved_with_text(self) -> None:
+        from lilbee.providers.base import ToolCallDelta
+        from lilbee.providers.sdk_backend import SdkToolCallDelta
+
+        backend = FakeBackend(
+            supports_tools_result=True,
+            stream_chunks=[
+                StreamChunk(content="He"),
+                StreamChunk(
+                    content="",
+                    tool_call_deltas=(
+                        SdkToolCallDelta(
+                            index=0, id="c1", name="get_weather", arguments_delta=None
+                        ),
+                    ),
+                ),
+                StreamChunk(
+                    content="",
+                    tool_call_deltas=(
+                        SdkToolCallDelta(
+                            index=0, id=None, name=None, arguments_delta='{"city":"SF"}'
+                        ),
+                    ),
+                ),
+            ],
+        )
+        provider = SdkLLMProvider(backend)
+        items = list(
+            provider.chat(
+                [{"role": "user", "content": "weather?"}],
+                model="openai/gpt-4o",
+                tools=[{"type": "function", "function": {"name": "get_weather"}}],
+                stream=True,
+            )
+        )
+        assert items[0] == "He"
+        deltas = [i for i in items if isinstance(i, ToolCallDelta)]
+        assert deltas[0].index == 0
+        assert deltas[0].id == "c1"
+        assert deltas[0].name == "get_weather"
+        assert deltas[1].arguments_delta == '{"city":"SF"}'
 
     def test_wraps_errors_when_opening_stream(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("stream boom"))

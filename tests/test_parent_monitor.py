@@ -150,7 +150,7 @@ class TestRunServerIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(
-                commands, "_port_file", return_value=mock.MagicMock(exists=lambda: False)
+                commands, "port_file", return_value=mock.MagicMock(exists=lambda: False)
             ),
             mock.patch("lilbee.parent_monitor.watch_parent_async") as watcher,
         ):
@@ -167,7 +167,7 @@ class TestRunServerIntegration:
         watcher = mock.AsyncMock()
 
         with (
-            mock.patch.object(commands, "_port_file", return_value=port_file),
+            mock.patch.object(commands, "port_file", return_value=port_file),
             mock.patch("lilbee.parent_monitor.watch_parent_async", new=watcher),
         ):
             await commands._run_server(fake_server, fake_config, "127.0.0.1")
@@ -188,7 +188,7 @@ class TestRunServerIntegration:
         fake_config.loaded = False
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         port_file = tmp_path / "server.port"
-        with mock.patch.object(commands, "_port_file", return_value=port_file):
+        with mock.patch.object(commands, "port_file", return_value=port_file):
             await commands._run_server(fake_server, fake_config, "127.0.0.1")
         fake_config.load.assert_called_once()
 

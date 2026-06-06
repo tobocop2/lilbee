@@ -46,6 +46,17 @@ def mock_svc():
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = None
     services = make_mock_services(embedder=embedder)
+    # /api/chat now goes through chat_dispatch, which validates the requested
+    # model against the KnownModelCache. Pre-load both the registry and the
+    # cache so resolve() finds cfg.chat_model.
+    chat_manifest = mock.MagicMock()
+    chat_manifest.ref = cfg.chat_model
+    chat_manifest.task = "chat"
+    services.registry.list_installed = mock.MagicMock(return_value=[chat_manifest])
+    services.known_models.refs = mock.MagicMock(return_value={cfg.chat_model})
+    services.known_models.resolve = mock.MagicMock(
+        side_effect=lambda model: model if model == cfg.chat_model else None
+    )
     set_services(services)
     yield services
     set_services(None)
@@ -569,9 +580,19 @@ class TestAddIngestMutex:
 class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
+    @staticmethod
+    def _cleanup_sources(store) -> list[str]:
+        """Sources whose batched write carried a cleanup delete."""
+        sources: list[str] = []
+        for call in store.write_chunks_batch.call_args_list:
+            for item in call.args[0]:
+                if item.needs_cleanup:
+                    sources.append(item.source)
+        return sources
+
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
-        """New files still call delete_by_source before adding: closes the
-        orphaned-chunks race when a prior ingest died before upsert_source."""
+        """New files still carry a cleanup delete in their batched write: closes
+        the orphaned-chunks race when a prior ingest died before upsert_source."""
         from lilbee.data.ingest import sync
 
         src = isolated_env / "fresh.txt"
@@ -588,12 +609,12 @@ class TestAddIngestHardening:
         ):
             await sync(quiet=True)
 
-        # Option-A hardening: delete_by_source is called even for 'new' files.
-        store.delete_by_source.assert_any_call("fresh.txt")
+        # Option-A hardening: cleanup is requested even for 'new' files.
+        assert "fresh.txt" in self._cleanup_sources(store)
 
     async def test_retry_after_orphaned_chunks_cleans_up(self, isolated_env, tmp_path, mock_svc):
         """If a prior run left chunks without an ``upsert_source`` record,
-        the retry path removes them before re-adding.
+        the retry path removes them in the same transaction as the re-add.
         """
         from lilbee.data.ingest import sync
 
@@ -602,7 +623,7 @@ class TestAddIngestHardening:
 
         store = mock_svc.store
         # No source row, yet chunks exist on disk (the crashed-previous-run
-        # scenario). ``delete_by_source`` is idempotent so it's safe to call.
+        # scenario). The batched write's cleanup delete is idempotent.
         store.get_sources.return_value = []
 
         with mock.patch(
@@ -612,7 +633,6 @@ class TestAddIngestHardening:
         ):
             await sync(quiet=True)
 
-        # The stale chunks are removed before the new add.
-        call_args = [c.args for c in store.delete_by_source.call_args_list]
-        assert ("orphan.txt",) in call_args
-        store.add_chunks.assert_called()
+        # The stale chunks are removed in the same batched write that re-adds them.
+        assert "orphan.txt" in self._cleanup_sources(store)
+        store.write_chunks_batch.assert_called()

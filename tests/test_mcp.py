@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import lilbee.app.services as svc_mod
-import lilbee.mcp_server as mcp_server
 from lilbee.core.config import cfg
 from lilbee.crawler.task import clear_tasks
 from lilbee.data.ingest import SyncResult
@@ -148,10 +147,22 @@ class TestSearch:
         search("q", top_k=3, scope="both")
         mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
 
-    def test_invalid_scope_returns_error(self, mock_svc):
-        result = search("q", top_k=3, scope="bogus")
-        assert "error" in result
-        mock_svc.searcher.search.assert_not_called()
+    def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
+        """Smaller models echo prose like 'indexed docs' back as scope; we
+        warn and run the search against the default scope instead of
+        hard-erroring, so the model's intent ('do a search') still resolves.
+        """
+        import logging
+
+        mock_svc.searcher.search.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
+            result = search("q", top_k=3, scope="bogus")
+        assert result == []
+        mock_svc.searcher.search.assert_called_once()
+        # chunk_type=None means "both" -> no filter at the data layer.
+        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        assert call_kwargs["chunk_type"] is None
+        assert any("unknown scope" in record.message for record in caplog.records)
 
     def test_filters_irrelevant_results(self, mock_svc):
         """Results with distance > max_distance are excluded."""
@@ -588,29 +599,6 @@ class TestAdd:
         src.write_text("content")
         result = await add([str(src)])
         assert "warning" in result
-
-
-class TestConditionalToolRegistration:
-    def test_disabled_subsystems_register_no_tools(self):
-        """Defaults (wiki off, memory off) leave the tool registry untouched."""
-        before = set(mcp_server.mcp._tool_manager._tools)
-        mcp_server.register_conditional_tools()
-        assert set(mcp_server.mcp._tool_manager._tools) == before
-        assert not any(name.startswith(("wiki_", "memory_")) for name in before)
-
-    def test_enabled_subsystems_register_tools(self):
-        before = set(mcp_server.mcp._tool_manager._tools)
-        cfg.wiki = True
-        cfg.memory_enabled = True
-        try:
-            mcp_server.register_conditional_tools()
-            names = set(mcp_server.mcp._tool_manager._tools)
-            assert {"wiki_status", "wiki_build", "memory_remember", "memory_forget"} <= names
-        finally:
-            cfg.wiki = False
-            cfg.memory_enabled = False
-            for name in set(mcp_server.mcp._tool_manager._tools) - before:
-                del mcp_server.mcp._tool_manager._tools[name]
 
 
 class TestMain:
@@ -1467,6 +1455,143 @@ class TestCatalogBrowseMcp:
         with mock.patch("lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")):
             result = catalog_browse(task="embedding", featured=True)
         assert result == {"error": "bad filter"}
+
+
+class TestToolsSchemaSize:
+    """Schema budget: keep the per-request OpenAI tools schema under a ceiling
+    so any model with ``n_ctx >= ~16K`` has room for system + history + content
+    after the tools schema is rendered. the original 20K-token schema on
+    Qwen3-8B making 51% of the context unusable; trimming docstrings and
+    gating the wiki / crawler tools dropped that significantly. A higher
+    number doesn't fail builds, it forces a deliberate cap bump that
+    reviewers can scrutinise.
+    """
+
+    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
+        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
+        returns a pass-through so the function stays importable but isn't on
+        the MCP wire. Cleans up after itself so the test doesn't pollute the
+        shared FastMCP server with a sentinel tool.
+        """
+        from lilbee.mcp_server import _tool_if
+        from lilbee.mcp_server import mcp as _mcp
+
+        sentinel_name = "_schema_size_test_sentinel"
+
+        def _schema_size_test_sentinel() -> None: ...
+
+        gated_off = _tool_if(False)(_schema_size_test_sentinel)
+        assert gated_off is _schema_size_test_sentinel
+        assert sentinel_name not in _mcp._tool_manager._tools
+
+        gated_on = _tool_if(True)(_schema_size_test_sentinel)
+        try:
+            assert callable(gated_on)
+            assert sentinel_name in _mcp._tool_manager._tools
+        finally:
+            _mcp._tool_manager._tools.pop(sentinel_name, None)
+
+    async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
+        """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
+        from lilbee.core.config import cfg as _cfg
+        from lilbee.mcp_server import mcp as _mcp
+
+        assert _cfg.wiki is False
+        tools = await _mcp.list_tools()
+        wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
+        assert wiki_tool_names == []
+
+    async def test_default_tools_schema_under_budget(self) -> None:
+        """Default schema (wiki off, crawler off unless the extra is installed)
+        must stay under 6 KB so small-context (16K) chat models keep room
+        for the user's actual content. _strip_schema_noise removes title /
+        default / null-arm-anyOf / additionalProperties=true noise, hitting
+        ~5.2 KB today.
+        """
+        import json as _json
+
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        payload = [
+            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            for t in tools
+        ]
+        total_bytes = len(_json.dumps(payload))
+        # Bumped from 6_000 when the always-on export_dataset / import_dataset tools
+        # landed; their docstrings were trimmed first. ~1.6K tokens still leaves a
+        # 16K-context model ample room for system + history + content.
+        ceiling = 7_000
+        assert total_bytes <= ceiling, (
+            f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
+            f"{ceiling}. Each MCP tool's docstring becomes the schema "
+            "description; trim verbose Args sections before bumping the cap."
+        )
+
+    async def test_no_title_noise_in_input_schema(self) -> None:
+        """``_strip_schema_noise`` keeps FastMCP-auto-generated title fields
+        off the wire. Adding a tool whose schema contains a title fails here.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            assert "title" not in t.inputSchema, f"{t.name}: top-level title leaked into schema"
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "title" not in pdef, (
+                        f"{t.name}.{pname}: per-property title leaked into schema"
+                    )
+
+    async def test_no_default_value_noise_in_input_schema(self) -> None:
+        """The model picks tools from name + description; ``default`` values
+        on properties are server-side trivia that cost tokens at every dispatch.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "default" not in pdef, (
+                        f"{t.name}.{pname}: default leaked into schema; "
+                        "remove via _strip_property_noise"
+                    )
+
+    async def test_nullable_anyof_collapsed_in_input_schema(self) -> None:
+        """``T | None`` should serialize as ``{type: T}``, not a two-arm
+        ``anyOf`` with a null branch the model gains nothing from.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    arms = pdef.get("anyOf")
+                    if isinstance(arms, list):
+                        null_arms = [
+                            a for a in arms if isinstance(a, dict) and a.get("type") == "null"
+                        ]
+                        assert not null_arms, (
+                            f"{t.name}.{pname}: nullable anyOf branch leaked "
+                            "into schema; collapse via _strip_property_noise"
+                        )
+
+    async def test_no_redundant_additional_properties_true(self) -> None:
+        """``additionalProperties: true`` is JSON Schema's default; serializing
+        it explicitly is bytes for nothing.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert pdef.get("additionalProperties") is not True, (
+                        f"{t.name}.{pname}: additionalProperties=true leaked "
+                        "into schema; remove via _strip_property_noise"
+                    )
 
 
 class _StubEmbedder:

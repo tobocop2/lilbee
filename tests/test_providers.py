@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import httpx
@@ -38,6 +38,28 @@ TEST_MODEL_FILE = "test-model.gguf"
 TEST_MODEL_REF = f"{TEST_MODEL_REPO}/{TEST_MODEL_FILE}"
 
 
+def write_test_gguf(path: Path, *, arch: str | None, fields: dict[str, object]) -> Path:
+    """Write a real (tensor-less) GGUF file for header-read tests.
+
+    ``read_gguf_metadata`` parses headers with the ``gguf`` library, so these
+    tests exercise the actual parser instead of mocking a native binding. Each
+    field value is written as a string or a uint32 by its Python type; the
+    architecture (when given) becomes ``general.architecture``.
+    """
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), arch=arch or "")
+    for key, value in fields.items():
+        if isinstance(value, str):
+            writer.add_string(key, value)
+        else:
+            writer.add_uint32(key, int(value))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.close()
+    return path
+
+
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
     """Create a temporary models directory with a registered test model."""
@@ -60,27 +82,6 @@ def models_dir(tmp_path: Path) -> Path:
     return models
 
 
-@pytest.fixture()
-def mock_llama_cpp() -> mock.MagicMock:
-    """Inject a mock llama_cpp module into sys.modules.
-
-    ``internals.LlamaContext`` is a real class (not a Mock) so the
-    ``_llama_n_seq_max`` context manager's monkey-patch of its
-    ``__init__`` succeeds. The class is otherwise inert; tests that
-    care about Llama kwargs assert against ``mod.Llama.call_args``.
-    """
-    mod = mock.MagicMock()
-
-    class _StubLlamaContext:
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
-
-    mod.internals.LlamaContext = _StubLlamaContext
-    sys.modules["llama_cpp"] = mod
-    yield mod
-    sys.modules.pop("llama_cpp", None)
-
-
 # ---------------------------------------------------------------------------
 # ProviderError
 # ---------------------------------------------------------------------------
@@ -101,1010 +102,6 @@ class TestProviderError:
         assert err.provider == "test"
 
 
-class TestWorkerErrorMessage:
-    """`_worker_error_message` must not double-period when the inner message ends with one."""
-
-    def test_no_double_period_when_exc_ends_with_period(self) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.worker.transport_pipe import WorkerError
-
-        exc = WorkerError(
-            "ProviderError",
-            "Model 'X' not found in registry. Install it via the catalog or 'lilbee model pull'.",
-            "",
-        )
-        msg = LlamaCppProvider._worker_error_message("Chat", exc)
-        assert ".." not in msg
-        assert msg.endswith(". Please try again.")
-        assert "'lilbee model pull'. Please try again." in msg
-
-    def test_appends_period_when_exc_has_none(self) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.worker.transport_pipe import WorkerError
-
-        msg = LlamaCppProvider._worker_error_message(
-            "Embed", WorkerError("RuntimeError", "boom", "")
-        )
-        assert msg == "Embed worker reported an error: RuntimeError: boom. Please try again."
-
-    def test_worker_crash_error_uses_exited_phrasing(self) -> None:
-        """``WorkerCrashError`` renders with 'exited unexpectedly' framing rather
-        than the generic 'reported an error' template, so the user can tell a
-        crash apart from a worker-side exception."""
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.worker.transport_pipe import WorkerCrashError
-
-        msg = LlamaCppProvider._worker_error_message("Embedding", WorkerCrashError("embed"))
-        assert msg.startswith("Embedding worker exited unexpectedly.")
-        assert msg.endswith(". Please try again.")
-
-
-# ---------------------------------------------------------------------------
-# LlamaCppProvider
-# ---------------------------------------------------------------------------
-
-
-class TestLlamaCppProvider:
-    @pytest.fixture(autouse=True)
-    def _shutdown_provider(self, models_dir: Path) -> None:
-        """Ensure any LlamaCppProvider created in a test is shut down.
-        Also patches resolve_model_path so the daemon embed thread
-        doesn't block on registry lookups for test .gguf files.
-        """
-        cfg.models_dir = models_dir
-        cfg.embedding_model = TEST_MODEL_REF
-        cfg.chat_model = TEST_MODEL_REF
-        self._providers: list = []
-        self._resolve_patcher = mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            side_effect=lambda m: models_dir / f"{m.rsplit('/', 1)[-1]}",
-        )
-        self._resolve_patcher.start()
-        yield
-        for p in self._providers:
-            p.shutdown()
-        self._resolve_patcher.stop()
-
-    def _make_provider(self) -> object:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        p = LlamaCppProvider()
-        self._providers.append(p)
-        return p
-
-    def test_list_models(self, models_dir: Path) -> None:
-        provider = self._make_provider()
-        result = provider.list_models()
-        assert result == [TEST_MODEL_REF]
-
-    def test_list_models_empty_dir(self, tmp_path: Path) -> None:
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        cfg.models_dir = empty
-
-        provider = self._make_provider()
-        assert provider.list_models() == []
-
-    def test_list_models_no_dir(self, tmp_path: Path) -> None:
-        cfg.models_dir = tmp_path / "nonexistent"
-
-        provider = self._make_provider()
-        assert provider.list_models() == []
-
-    def test_pull_model_raises(self) -> None:
-        provider = self._make_provider()
-        with pytest.raises(NotImplementedError, match="cannot pull"):
-            provider.pull_model("some-model")
-
-    def test_list_chat_models_empty(self) -> None:
-        # Native llama-cpp has no frontier-provider catalog.
-        provider = self._make_provider()
-        assert provider.list_chat_models("openai") == []
-
-    def test_show_model_returns_none(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._make_provider()
-        # Override the class-level resolve mock to raise for this test
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
-            side_effect=ProviderError("not found"),
-        ):
-            assert provider.show_model("some-model") is None
-
-    def test_show_model_returns_metadata_for_resolved_path(self, models_dir: Path) -> None:
-        """Success path: resolve + read_gguf_metadata returns a dict."""
-        provider = self._make_provider()
-        meta = {"architecture": "qwen3", "context_length": "8192"}
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value=meta,
-        ):
-            assert provider.show_model("test-model") == meta
-
-    def test_get_capabilities_rerank_short_circuits(self) -> None:
-        """Rerank refs return only ``["rerank"]`` without touching the loader."""
-        provider = self._make_provider()
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider._is_rerank_model",
-            return_value=True,
-        ):
-            assert provider.get_capabilities("any/rerank-model") == ["rerank"]
-
-    def test_get_capabilities_completion_only_when_no_mmproj(self, models_dir: Path) -> None:
-        """No mmproj sidecar -> ``["completion"]`` only."""
-        from lilbee.providers.base import ProviderError
-
-        provider = self._make_provider()
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider._is_rerank_model",
-                return_value=False,
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
-                side_effect=ProviderError("no mmproj"),
-            ),
-        ):
-            assert provider.get_capabilities("test-model") == ["completion"]
-
-    def test_get_capabilities_appends_vision_when_mmproj_present(self) -> None:
-        """An mmproj sidecar adds ``"vision"`` to the capability list."""
-        provider = self._make_provider()
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider._is_rerank_model",
-                return_value=False,
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.find_mmproj_for_model",
-                return_value=Path("/fake/mmproj.gguf"),
-            ),
-        ):
-            assert provider.get_capabilities("test-model") == ["completion", "vision"]
-
-    def test_get_capabilities_returns_completion_when_resolve_fails(self) -> None:
-        """resolve_model_path failure short-circuits to ``["completion"]``."""
-        from lilbee.providers.base import ProviderError
-
-        provider = self._make_provider()
-        with (
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider._is_rerank_model",
-                return_value=False,
-            ),
-            mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
-                side_effect=ProviderError("not found"),
-            ),
-        ):
-            assert provider.get_capabilities("missing") == ["completion"]
-
-    def testread_gguf_metadata(self, models_dir: Path) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
-
-        mock_llm = MagicMock()
-        mock_llm.metadata = {
-            "general.architecture": "qwen3",
-            "general.name": "Qwen3 8B",
-            "general.file_type": "15",
-            "qwen3.context_length": "32768",
-            "qwen3.embedding_length": "4096",
-            "qwen3.block_count": "32",
-            "qwen3.attention.head_count_kv": "8",
-            "qwen3.attention.head_count": "32",
-            "qwen3.attention.key_length": "128",
-            "qwen3.attention.value_length": "128",
-            "tokenizer.chat_template": "{% if messages %}...",
-        }
-        with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = read_gguf_metadata(models_dir / "test-model.gguf")
-        assert result["architecture"] == "qwen3"
-        assert result["context_length"] == "32768"
-        assert result["embedding_length"] == "4096"
-        assert result["chat_template"] == "{% if messages %}..."
-        assert result["name"] == "Qwen3 8B"
-        # KV-shape fields surfaced for the dynamic n_ctx picker.
-        assert result["block_count"] == "32"
-        assert result["head_count_kv"] == "8"
-        assert result["head_count"] == "32"
-        assert result["key_length"] == "128"
-        assert result["value_length"] == "128"
-        mock_llm.close.assert_called_once()
-
-    def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
-
-        mock_llm = MagicMock()
-        mock_llm.metadata = {}
-        with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = read_gguf_metadata(models_dir / "test-model.gguf")
-        assert result is None
-
-    def testload_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-        with (
-            patch("llama_cpp.Llama") as mock_llama_cls,
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="embed")
-            call_kwargs = mock_llama_cls.call_args[1]
-            assert call_kwargs["n_batch"] == 2048
-            assert call_kwargs["n_ubatch"] == 2048
-            assert call_kwargs["embedding"] is True
-
-    def testload_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        with patch("llama_cpp.Llama"):
-            load_llama(models_dir / "test-model.gguf", mode="chat")
-            import llama_cpp
-
-            call_kwargs = llama_cpp.Llama.call_args[1]
-            assert "n_batch" not in call_kwargs
-
-    def testload_llama_rerank_sets_pooling_type_rank(self, models_dir: Path) -> None:
-        """mode='rerank' wires ``LLAMA_POOLING_TYPE_RANK`` into the Llama kwargs."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        fake_llama = mock.MagicMock()
-        fake_module = mock.MagicMock()
-        fake_module.Llama = fake_llama
-        fake_module.LLAMA_POOLING_TYPE_RANK = 4
-
-        # _llama_n_seq_max patches LlamaContext.__init__; provide a real
-        # class so the monkey-patch assignment succeeds.
-        class _StubCtx:
-            def __init__(self, *_a, **_kw) -> None:
-                pass
-
-        fake_module.internals.LlamaContext = _StubCtx
-        with (
-            patch(
-                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
-                return_value=fake_module,
-            ),
-            patch.dict("sys.modules", {"llama_cpp": fake_module}),
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="rerank")
-            assert fake_llama.call_args[1]["pooling_type"] == 4
-
-    def testload_llama_embedding_asserts_n_seq_max_applied(self, models_dir: Path) -> None:
-        """A successful embed load reads ``n_seq_max`` back and accepts the expected value.
-
-        The ``_llama_n_seq_max`` shim mutates ``LlamaContext.__init__`` to set
-        ``context_params.n_seq_max``; this load-time readback proves the shim
-        took effect instead of silently leaving the C default (1), which would
-        make batched 2+ embed return ``llama_decode -1`` at inference time.
-        """
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.batching import EMBED_N_SEQ_MAX
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-        llm = mock.MagicMock()
-        llm.context_params.n_seq_max = EMBED_N_SEQ_MAX
-        with (
-            patch("llama_cpp.Llama", return_value=llm),
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-        ):
-            assert load_llama(models_dir / "test-model.gguf", mode="embed") is llm
-
-    def testload_llama_embedding_raises_when_n_seq_max_not_applied(self, models_dir: Path) -> None:
-        """If the shim silently fails to apply, load fails loudly instead of at decode."""
-        from unittest.mock import patch
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-        llm = mock.MagicMock()
-        llm.context_params.n_seq_max = 1  # C default: shim did not take effect.
-        with (
-            patch("llama_cpp.Llama", return_value=llm),
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-            pytest.raises(ProviderError, match="n_seq_max"),
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="embed")
-
-    def testload_llama_rerank_raises_on_multi_class_reranker(self, models_dir: Path) -> None:
-        """A multi-class reranker fails loudly: ``embedding[0]`` is not its score.
-
-        llama-cpp-python's RANK pooling path slices ``ptr[:n_embd]`` regardless
-        of ``n_cls_out``, so the response gives no in-band signal. The only
-        reliable check is the model's classifier-output count at load time;
-        lilbee's single-scalar extraction is valid only for ``n_cls_out == 1``.
-        """
-        from unittest.mock import patch
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        fake_llama = mock.MagicMock()
-        fake_module = mock.MagicMock()
-        fake_module.Llama = fake_llama
-        fake_module.LLAMA_POOLING_TYPE_RANK = 4
-        fake_module.llama_cpp.llama_model_n_cls_out.return_value = 3
-
-        class _StubCtx:
-            def __init__(self, *_a, **_kw) -> None:
-                pass
-
-        fake_module.internals.LlamaContext = _StubCtx
-        llm = mock.MagicMock()
-        llm.context_params.n_seq_max = 64
-        fake_llama.return_value = llm
-        with (
-            patch(
-                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
-                return_value=fake_module,
-            ),
-            patch.dict("sys.modules", {"llama_cpp": fake_module}),
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-            pytest.raises(ProviderError, match="classifier outputs"),
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="rerank")
-
-    def testload_llama_rerank_accepts_single_class_reranker(self, models_dir: Path) -> None:
-        """A standard single-class reranker (``n_cls_out == 1``) loads cleanly."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        fake_llama = mock.MagicMock()
-        fake_module = mock.MagicMock()
-        fake_module.Llama = fake_llama
-        fake_module.LLAMA_POOLING_TYPE_RANK = 4
-        fake_module.llama_cpp.llama_model_n_cls_out.return_value = 1
-
-        class _StubCtx:
-            def __init__(self, *_a, **_kw) -> None:
-                pass
-
-        fake_module.internals.LlamaContext = _StubCtx
-        llm = mock.MagicMock()
-        llm.context_params.n_seq_max = 64
-        fake_llama.return_value = llm
-        with (
-            patch(
-                "lilbee.providers.llama_cpp.provider.import_llama_cpp",
-                return_value=fake_module,
-            ),
-            patch.dict("sys.modules", {"llama_cpp": fake_module}),
-            patch(
-                "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                return_value={"context_length": "2048"},
-            ),
-        ):
-            assert load_llama(models_dir / "test-model.gguf", mode="rerank") is llm
-
-    def testload_llama_abort_callback_override_replaces_default(self, models_dir: Path) -> None:
-        """abort_callback_override threads a worker-side callback into Llama kwargs."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        fake_llama = mock.MagicMock()
-        fake_module = mock.MagicMock()
-        fake_module.Llama = fake_llama
-        sentinel = lambda _u=None: False  # noqa: E731 -- intentional one-liner sentinel
-        with patch(
-            "lilbee.providers.llama_cpp.provider.import_llama_cpp",
-            return_value=fake_module,
-        ):
-            load_llama(
-                models_dir / "test-model.gguf",
-                mode="chat",
-                abort_callback_override=sentinel,
-            )
-            assert fake_llama.call_args[1]["abort_callback"] is sentinel
-
-    def testload_llama_wraps_context_failure_with_diagnostic(
-        self, models_dir: Path, tmp_path: Path
-    ) -> None:
-        """Opaque ``Failed to create llama_context`` is rewrapped with diagnostic context."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        model = models_dir / "tiny.gguf"
-        model.write_bytes(b"x" * 1024)
-
-        with (
-            patch("llama_cpp.Llama", side_effect=ValueError("Failed to create llama_context")),
-            pytest.raises(ValueError) as exc_info,
-        ):
-            load_llama(model, mode="chat")
-
-        msg = str(exc_info.value)
-        assert "tiny.gguf" in msg
-        assert "n_ctx=" in msg
-        assert "Failed to create llama_context" in msg
-
-    def testload_llama_does_not_wrap_unrelated_value_errors(self, models_dir: Path) -> None:
-        """ValueErrors that aren't the two known load-failure messages pass through unchanged."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        with (
-            patch("llama_cpp.Llama", side_effect=ValueError("totally unrelated")),
-            pytest.raises(ValueError, match="totally unrelated") as exc_info,
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="chat")
-        # bare re-raise preserves the original chain; the exception isn't its own cause
-        assert exc_info.value.__cause__ is None
-
-    def testload_llama_chat_passes_flash_attn_by_default(self, models_dir: Path) -> None:
-        """Chat mode enables flash attention to halve the KV cache padding waste."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "auto"
-        with patch("llama_cpp.Llama") as mock_llama_cls:
-            load_llama(models_dir / "test-model.gguf", mode="chat")
-            assert mock_llama_cls.call_args[1].get("flash_attn") is True
-
-    def testload_llama_chat_skips_flash_attn_when_disabled(self, models_dir: Path) -> None:
-        """LILBEE_FLASH_ATTENTION=0 leaves the kwarg unset (llama-cpp default)."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"
-        try:
-            with patch("llama_cpp.Llama") as mock_llama_cls:
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                assert "flash_attn" not in mock_llama_cls.call_args[1]
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testload_llama_falls_back_when_flash_attn_unsupported(self, models_dir: Path) -> None:
-        """Older llama-cpp-python builds reject flash_attn=True; we drop it and retry."""
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "auto"
-        instance = MagicMock()
-        call_log: list[dict[str, object]] = []
-
-        def fake_llama(**kwargs: object) -> object:
-            call_log.append(kwargs)
-            if kwargs.get("flash_attn"):
-                raise TypeError("Llama.__init__() got an unexpected keyword argument 'flash_attn'")
-            return instance
-
-        with patch("llama_cpp.Llama", side_effect=fake_llama):
-            result = load_llama(models_dir / "test-model.gguf", mode="chat")
-        assert result is instance
-        assert len(call_log) == 2
-        assert call_log[0].get("flash_attn") is True
-        assert "flash_attn" not in call_log[1]
-
-    def testload_llama_retries_with_halved_ctx_on_oom(self, models_dir: Path) -> None:
-        """A llama_context load failure halves n_ctx and retries before wrapping the error."""
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"  # keep the call shape simple
-        instance = MagicMock()
-        ctx_seen: list[int] = []
-
-        def fake_llama(**kwargs: object) -> object:
-            ctx_seen.append(int(kwargs["n_ctx"]))
-            if int(kwargs["n_ctx"]) > 1024:
-                raise ValueError("Failed to create llama_context")
-            return instance
-
-        try:
-            with patch("llama_cpp.Llama", side_effect=fake_llama):
-                result = load_llama(models_dir / "test-model.gguf", mode="chat")
-            assert result is instance
-            assert ctx_seen[0] == 4096
-            assert ctx_seen[-1] <= 1024
-            assert len(ctx_seen) >= 2
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testload_llama_resolves_n_gpu_layers_modes(self, models_dir: Path) -> None:
-        """LILBEE_N_GPU_LAYERS supports 'auto', 'cpu', explicit int, and falls back on garbage."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"
-        try:
-            cases = [
-                ("cpu", 0),
-                ("auto", -1),
-                ("12", 12),
-                ("not-an-int", -1),
-            ]
-            for raw, expected in cases:
-                cfg.n_gpu_layers = raw
-                with patch("llama_cpp.Llama") as mock_llama_cls:
-                    load_llama(models_dir / "test-model.gguf", mode="chat")
-                    assert mock_llama_cls.call_args[1]["n_gpu_layers"] == expected
-        finally:
-            cfg.n_gpu_layers = "auto"
-            cfg.flash_attention = "auto"
-
-    def testload_llama_threads_main_gpu_when_set(self, models_dir: Path) -> None:
-        """``cfg.main_gpu`` reaches the Llama() constructor; default leaves it absent."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"
-        try:
-            cfg.main_gpu = None
-            with patch("llama_cpp.Llama") as mock_llama_cls:
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                assert "main_gpu" not in mock_llama_cls.call_args[1]
-
-            cfg.main_gpu = 1
-            with patch("llama_cpp.Llama") as mock_llama_cls:
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                assert mock_llama_cls.call_args[1]["main_gpu"] == 1
-        finally:
-            cfg.main_gpu = None
-            cfg.flash_attention = "auto"
-
-    def testapply_kv_cache_type_skips_when_internal_module_missing(self) -> None:
-        """Older llama-cpp-python without ``llama_cpp.llama_cpp`` skips the KV-quant kwargs."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import _apply_kv_cache_type
-
-        kwargs: dict[str, object] = {}
-        with (
-            patch.object(cfg, "kv_cache_type", "q8_0"),
-            patch("lilbee.providers.llama_cpp.provider._ggml_type_map", return_value=None),
-        ):
-            _apply_kv_cache_type(kwargs)
-        assert "type_k" not in kwargs
-        assert "type_v" not in kwargs
-
-    def testapply_kv_cache_type_returns_early_for_f16(self) -> None:
-        """F16 is the implicit llama-cpp default; the function skips the type_k/type_v kwargs."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import _apply_kv_cache_type
-
-        kwargs: dict[str, object] = {}
-        with patch.object(cfg, "kv_cache_type", "f16"):
-            _apply_kv_cache_type(kwargs)
-        assert "type_k" not in kwargs
-        assert "type_v" not in kwargs
-
-    def testload_llama_oom_retry_halves_embed_batch_sizes(self, models_dir: Path) -> None:
-        """OOM retry on embed loads halves n_batch and n_ubatch alongside n_ctx.
-
-        Embed loads use the model's training context (8192 here) regardless of
-        ``cfg.num_ctx`` so a chat-tuned setting doesn't clamp the rerank pair
-        size; the OOM retry path bisects from that starting value.
-        """
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096  # ignored for embed; kept for parity with chat tests
-        cfg.flash_attention = "0"
-        instance = MagicMock()
-        seen: list[dict[str, int]] = []
-
-        def fake_llama(**kwargs: object) -> object:
-            seen.append({k: int(kwargs[k]) for k in ("n_ctx", "n_batch", "n_ubatch")})
-            # Succeeds at n_ctx <= 2048 (third halving from 8192).
-            if int(kwargs["n_ctx"]) > 2048:
-                raise ValueError("Failed to create llama_context")
-            return instance
-
-        try:
-            with (
-                patch("llama_cpp.Llama", side_effect=fake_llama),
-                patch(
-                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                    return_value={"context_length": "8192"},
-                ),
-            ):
-                load_llama(models_dir / "test-model.gguf", mode="embed")
-            # First attempt at the model's training ctx (8192); retry halves
-            # n_ctx + n_batch + n_ubatch together until the load succeeds.
-            assert seen[0]["n_ctx"] == 8192
-            assert seen[0]["n_batch"] == 8192
-            assert seen[0]["n_ubatch"] == 8192
-            assert seen[-1]["n_ctx"] <= 2048
-            assert seen[-1]["n_batch"] == seen[-1]["n_ctx"]
-            assert seen[-1]["n_ubatch"] == seen[-1]["n_ctx"]
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testhalve_ctx_for_retry_returns_false_with_no_n_ctx(self) -> None:
-        """``_halve_ctx_for_retry`` is a no-op when n_ctx is missing or zero."""
-        from lilbee.providers.llama_cpp.provider import _halve_ctx_for_retry
-
-        kwargs: dict[str, object] = {}
-        assert _halve_ctx_for_retry(kwargs, ValueError("oom")) is False
-
-    def testkv_cache_type_rejects_unknown_values_at_assignment(self) -> None:
-        """Pydantic enforces the KvCacheType enum; unknown labels raise at assignment."""
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError, match="Input should be"):
-            cfg.kv_cache_type = "totally-not-a-real-type"  # type: ignore[assignment]
-
-    def testload_llama_kv_cache_type_q8_0_passes_ggml_type_to_llama(self, models_dir: Path) -> None:
-        """LILBEE_KV_CACHE_TYPE=q8_0 maps to llama-cpp-python's GGML_TYPE_Q8_0 constant."""
-        from unittest.mock import patch
-
-        import llama_cpp.llama_cpp as _llc
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        prior_kv = cfg.kv_cache_type
-        prior_fa = cfg.flash_attention
-        cfg.num_ctx = 4096
-        cfg.flash_attention = "0"
-        cfg.kv_cache_type = "q8_0"
-        try:
-            with patch("llama_cpp.Llama") as mock_llama_cls:
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                kwargs = mock_llama_cls.call_args[1]
-                assert kwargs["type_k"] == _llc.GGML_TYPE_Q8_0
-                assert kwargs["type_v"] == _llc.GGML_TYPE_Q8_0
-        finally:
-            cfg.kv_cache_type = prior_kv
-            cfg.flash_attention = prior_fa
-
-    def testload_llama_unrelated_typeerror_propagates(self, models_dir: Path) -> None:
-        """A TypeError that isn't about flash_attn passes through unchanged."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 4096
-        with (
-            patch("llama_cpp.Llama", side_effect=TypeError("totally unrelated")),
-            pytest.raises(TypeError, match="totally unrelated"),
-        ):
-            load_llama(models_dir / "test-model.gguf", mode="chat")
-
-    def testload_llama_oom_at_min_ctx_raises_diagnostic(self, models_dir: Path) -> None:
-        """When n_ctx is already at the floor, OOM retry gives up and wraps the error."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = 512  # Already at the floor; halving can't progress.
-        cfg.flash_attention = "0"
-        try:
-            model = models_dir / "tiny.gguf"
-            model.write_bytes(b"x" * 1024)
-            with (
-                patch("llama_cpp.Llama", side_effect=ValueError("Failed to create llama_context")),
-                pytest.raises(ValueError, match=r"Failed to load tiny\.gguf"),
-            ):
-                load_llama(model, mode="chat")
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testload_llama_dynamic_ctx_falls_back_to_static_cap_on_psutil_failure(
-        self, models_dir: Path
-    ) -> None:
-        """If memory accounting raises (psutil missing/broken), use min(training, default)."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-        cfg.flash_attention = "0"
-        try:
-            with (
-                patch("llama_cpp.Llama") as mock_llama_cls,
-                patch(
-                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                    return_value={"context_length": "4096"},
-                ),
-                patch(
-                    "lilbee.providers.model_cache.get_available_memory",
-                    side_effect=OSError("psutil broken"),
-                ),
-            ):
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                # Falls back to min(4096, DEFAULT_NUM_CTX=8192) -> 4096
-                assert mock_llama_cls.call_args[1]["n_ctx"] == 4096
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testload_llama_dynamic_ctx_handles_bad_training_ctx_metadata(
-        self, models_dir: Path
-    ) -> None:
-        """A non-numeric context_length in metadata falls back to DEFAULT_NUM_CTX."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import (
-            DEFAULT_NUM_CTX,
-            load_llama,
-        )
-
-        cfg.num_ctx = None
-        cfg.flash_attention = "0"
-        try:
-            with (
-                patch("llama_cpp.Llama") as mock_llama_cls,
-                patch(
-                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                    return_value={"context_length": "not-a-number"},
-                ),
-                patch(
-                    "lilbee.providers.model_cache.get_available_memory",
-                    return_value=64 * 1024**3,
-                ),
-            ):
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                # With DEFAULT_NUM_CTX as the training fallback and 64 GB
-                # available memory, the picker is bounded by that fallback.
-                assert mock_llama_cls.call_args[1]["n_ctx"] <= DEFAULT_NUM_CTX
-        finally:
-            cfg.flash_attention = "auto"
-
-    def testload_llama_dynamic_ctx_picks_smaller_for_tight_memory(self, models_dir: Path) -> None:
-        """When LILBEE_NUM_CTX is unset, n_ctx is sized to the host's free memory."""
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-        cfg.flash_attention = "0"
-        meta = {
-            "context_length": "131072",
-            "block_count": "32",
-            "head_count_kv": "8",
-            "key_length": "128",
-            "value_length": "128",
-        }
-        try:
-            with (
-                patch("llama_cpp.Llama") as mock_llama_cls,
-                patch(
-                    "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-                    return_value=meta,
-                ),
-                patch(
-                    "lilbee.providers.llama_cpp.provider.cfg.gpu_memory_fraction",
-                    0.75,
-                ),
-                patch(
-                    "lilbee.providers.model_cache.get_available_memory",
-                    return_value=(8 * 1024**3),
-                ),
-            ):
-                load_llama(models_dir / "test-model.gguf", mode="chat")
-                ctx_used = mock_llama_cls.call_args[1]["n_ctx"]
-            assert 512 <= ctx_used <= 16384
-            assert ctx_used % 256 == 0
-            # Should be much smaller than the 131072 training window on a tight host.
-            assert ctx_used < 131072
-        finally:
-            cfg.num_ctx = None
-            cfg.flash_attention = "auto"
-
-    def testload_llama_routes_llama_logs_through_python_logger(
-        self, models_dir: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """load_llama installs the llama_log callback; ggml WARN demotes to Python INFO."""
-        import logging
-        from unittest.mock import patch
-
-        from lilbee.providers.llama_cpp import log_dispatch, provider
-
-        snap = log_dispatch._dispatcher.snapshot()
-        log_dispatch._dispatcher.reset()
-        try:
-            with patch("llama_cpp.Llama"), patch("llama_cpp.llama_log_set") as mock_set:
-                provider.load_llama(models_dir / "test-model.gguf", mode="chat")
-                assert log_dispatch._dispatcher.installed is True
-                mock_set.assert_called_once()
-
-            with caplog.at_level(logging.INFO, logger="lilbee.llama_cpp"):
-                log_dispatch._dispatcher.dispatch(2, b"init: embeddings required\n", None)
-            records = [r for r in caplog.records if r.name == "lilbee.llama_cpp"]
-            assert records, "no lilbee.llama_cpp records captured"
-            assert records[-1].levelno == logging.INFO
-            assert "embeddings required" in records[-1].message
-        finally:
-            log_dispatch._dispatcher.restore(snap)
-
-    def testllama_log_dispatch_promotes_errors(self) -> None:
-        """ggml ERROR maps to Python ERROR so real failures surface at the default level."""
-        import logging
-
-        from lilbee.providers.llama_cpp import log_dispatch
-
-        snap = log_dispatch._dispatcher.snapshot()
-        log_dispatch._dispatcher.pending.clear()
-        log_dispatch._dispatcher.pending_level = 1  # _GGML_LOG_LEVEL_INFO
-        logger = logging.getLogger("lilbee.llama_cpp")
-        records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
-        logger.addHandler(handler)
-        try:
-            log_dispatch._dispatcher.dispatch(3, b"fatal: out of memory\n", None)
-        finally:
-            logger.removeHandler(handler)
-            log_dispatch._dispatcher.restore(snap)
-        assert any(r.levelno == logging.ERROR and "out of memory" in r.message for r in records)
-
-    def testllama_log_dispatch_coalesces_continuation_chunks(self) -> None:
-        """CONT chunks buffer until a newline; a new non-CONT line also flushes the buffer."""
-        import logging
-
-        from lilbee.providers.llama_cpp import log_dispatch
-
-        snap = log_dispatch._dispatcher.snapshot()
-        log_dispatch._dispatcher.pending.clear()
-        logger = logging.getLogger("lilbee.llama_cpp")
-        records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
-        logger.addHandler(handler)
-        prior_level = logger.level
-        logger.setLevel(logging.DEBUG)
-        try:
-            # WARN starts a record
-            log_dispatch._dispatcher.dispatch(2, b"loading model:", None)
-            # CONT extends it (no newline yet -> still buffered)
-            log_dispatch._dispatcher.dispatch(5, b" qwen3-0.6b", None)
-            assert records == []
-            # CONT with newline -> flush
-            log_dispatch._dispatcher.dispatch(5, b" Q4_K_M\n", None)
-            assert records, "newline should have flushed buffer"
-            assert "loading model: qwen3-0.6b Q4_K_M" in records[-1].message
-            records.clear()
-
-            # Buffered chunk without newline; a new non-CONT message must
-            # flush the prior buffer before starting fresh.
-            log_dispatch._dispatcher.dispatch(2, b"first line", None)
-            log_dispatch._dispatcher.dispatch(2, b"second line\n", None)
-            messages = [r.message for r in records]
-            assert "first line" in messages
-            assert "second line" in messages
-        finally:
-            logger.removeHandler(handler)
-            logger.setLevel(prior_level)
-            log_dispatch._dispatcher.restore(snap)
-
-    def testllama_log_demotes_known_advisory_errors_to_warning(self) -> None:
-        """Tokenizer / KV-cache advisories emit at GGML ERROR but aren't load failures."""
-        import logging
-
-        from lilbee.providers.llama_cpp import log_dispatch as prov
-
-        snap = prov._dispatcher.snapshot()
-        prov._dispatcher.pending.clear()
-        logger = logging.getLogger("lilbee.llama_cpp")
-        records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
-        logger.addHandler(handler)
-        try:
-            advisories = (
-                b"load: special_eos_id is not in special_eog_ids\n",
-                b"init: embeddings required but some input tokens were not marked as outputs\n",
-                b"llama_context: n_ctx_seq (3072) > n_ctx_train (2048)\n",
-            )
-            for line in advisories:
-                prov._dispatcher.dispatch(3, line, None)
-            for r in records:
-                assert r.levelno == logging.WARNING, f"advisory '{r.message}' kept at ERROR"
-        finally:
-            logger.removeHandler(handler)
-            prov._dispatcher.restore(snap)
-
-    def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
-        self._resolve_patcher.stop()
-        try:
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
-
-            cfg.models_dir = models_dir
-            abs_model = tmp_path / "standalone.gguf"
-            abs_model.write_bytes(b"standalone-model")
-            path = resolve_model_path(str(abs_model))
-            assert path == abs_model
-        finally:
-            self._resolve_patcher.start()
-
-    def testresolve_model_path_via_registry(self, models_dir: Path) -> None:
-        self._resolve_patcher.stop()
-        try:
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
-
-            cfg.models_dir = models_dir
-            path = resolve_model_path(TEST_MODEL_REF)
-            assert path.exists()
-        finally:
-            self._resolve_patcher.start()
-
-    def test_resolve_model_path_rejects_bare_name_tag(self, models_dir: Path) -> None:
-        """Bare ``name:tag`` strings are not HuggingFace refs and the registry rejects them."""
-        self._resolve_patcher.stop()
-        try:
-            from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
-
-            cfg.models_dir = models_dir
-            with pytest.raises(ProviderError, match="not found"):
-                resolve_model_path("test-model:latest")
-        finally:
-            self._resolve_patcher.start()
-
-    def testresolve_model_path_not_found(self, models_dir: Path) -> None:
-        self._resolve_patcher.stop()
-        try:
-            from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
-
-            cfg.models_dir = models_dir
-            with pytest.raises(ProviderError, match="not found"):
-                resolve_model_path("org/Missing-GGUF/missing.gguf")
-        finally:
-            self._resolve_patcher.start()
-
-    def testresolve_model_path_direct_not_exists(self, models_dir: Path, tmp_path: Path) -> None:
-        self._resolve_patcher.stop()
-        try:
-            from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp.provider import resolve_model_path
-
-            cfg.models_dir = models_dir
-            # Use a real absolute path that doesn't exist (works on all platforms)
-            fake_path = str(tmp_path / "nonexistent" / "model.gguf")
-            with pytest.raises(ProviderError, match="Model file not found"):
-                resolve_model_path(fake_path)
-        finally:
-            self._resolve_patcher.start()
-
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -1119,27 +116,28 @@ class TestFactory:
         provider = create_provider(cfg)
         assert isinstance(provider, RoutingProvider)
 
-    def test_explicit_llama_cpp(self) -> None:
-        from lilbee.providers.factory import create_provider
-        from lilbee.providers.llama_cpp import LlamaCppProvider
+    def test_retired_provider_string_rejected_at_config_boundary(self) -> None:
+        # The retired "llama-cpp" / "multi-gpu" values are no longer accepted:
+        # they fail enum validation at assignment like any other unknown value.
+        from pydantic import ValidationError
 
-        cfg.llm_provider = "llama-cpp"
-        provider = create_provider(cfg)
-        assert isinstance(provider, LlamaCppProvider)
+        for retired in ("llama-cpp", "multi-gpu"):
+            with pytest.raises(ValidationError):
+                cfg.llm_provider = retired
 
-    def test_unknown_provider_raises(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import create_provider
+    def test_unknown_provider_rejected_at_config_boundary(self) -> None:
+        # llm_provider is a validated LlmProvider StrEnum: an invalid value is
+        # rejected at assignment, so create_provider never sees a bad string.
+        from pydantic import ValidationError
 
-        cfg.llm_provider = "unknown"
-        with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            create_provider(cfg)
+        with pytest.raises(ValidationError):
+            cfg.llm_provider = "unknown"
 
     def test_services_singleton(self) -> None:
         from lilbee.app.services import get_services, reset_services
 
         reset_services()
-        cfg.llm_provider = "llama-cpp"
+        cfg.llm_provider = "auto"
         p1 = get_services().provider
         p2 = get_services().provider
         assert p1 is p2
@@ -1149,7 +147,7 @@ class TestFactory:
         from lilbee.app.services import get_services, reset_services
 
         reset_services()
-        cfg.llm_provider = "llama-cpp"
+        cfg.llm_provider = "auto"
         p1 = get_services().provider
         reset_services()
         p2 = get_services().provider
@@ -1221,7 +219,7 @@ class TestConfigProvider:
 class TestRoutingProvider:
     @pytest.fixture(autouse=True)
     def _shutdown_provider(self):
-        """Ensure all LlamaCppProvider background threads are stopped."""
+        """Ensure any provider built during a test is shut down."""
         self._to_shutdown: list = []
         yield
         for p in self._to_shutdown:
@@ -1232,8 +230,8 @@ class TestRoutingProvider:
 
         rp = RoutingProvider()
         # Track the real llama-cpp provider for shutdown (tests replace it with mocks)
-        if rp._llama_cpp is not None:
-            self._to_shutdown.append(rp._llama_cpp)
+        if rp._local is not None:
+            self._to_shutdown.append(rp._local)
         self._to_shutdown.append(rp)
         return rp
 
@@ -1250,6 +248,25 @@ class TestRoutingProvider:
         # RoutingProvider.chat; the call must reach the backend with stream=False.
         kwargs = mock_litellm.chat.call_args.kwargs
         assert kwargs["stream"] is False
+
+    def test_supports_tools_delegates_to_sdk_backend_for_remote_ref(self) -> None:
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.supports_tools.return_value = True
+        rp._sdk_provider = mock_sdk
+
+        assert rp.supports_tools("openai/gpt-4o") is True
+        mock_sdk.supports_tools.assert_called_once_with("openai/gpt-4o")
+
+    def test_supports_tools_delegates_to_local_backend_for_native_ref(self) -> None:
+        rp = self._make_provider()
+        mock_local = mock.MagicMock()
+        mock_local.supports_tools.return_value = False
+        rp._local = mock_local
+
+        ref = "org/repo/chat.gguf"
+        assert rp.supports_tools(ref) is False
+        mock_local.supports_tools.assert_called_once_with(ref)
 
     def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
@@ -1290,7 +307,7 @@ class TestRoutingProvider:
         mock_litellm.chat.return_value = "ok"
         rp._sdk_provider = mock_litellm
 
-        with mock.patch("lilbee.providers.llama_cpp.provider._resolve_chat_ctx") as resolve_ctx:
+        with mock.patch("lilbee.providers.engine_params.resolve_chat_ctx") as resolve_ctx:
             rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         resolve_ctx.assert_not_called()
 
@@ -1300,7 +317,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_llama.vision_ocr.return_value = "page text"
         mock_litellm = mock.MagicMock()
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_litellm
 
         result = rp.vision_ocr(
@@ -1320,7 +337,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_litellm = mock.MagicMock()
         mock_litellm.vision_ocr.return_value = "remote text"
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_litellm
 
         result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0)
@@ -1342,7 +359,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.chat_model = "org/Local-GGUF/local-model.gguf"
         result = rp.chat([{"role": "user", "content": "hi"}])
@@ -1365,7 +382,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.embedding_model = (
             "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -1385,7 +402,7 @@ class TestRoutingProvider:
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.9, 1.0]]
         rp._sdk_provider = mock_litellm
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.embedding_model = "org/Local-GGUF/embed.gguf"
         result = rp.embed(["test"])
@@ -1398,7 +415,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = False
@@ -1414,7 +431,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = True
@@ -1430,7 +447,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         mock_sdk = mock.MagicMock()
         mock_sdk.available.return_value = True
@@ -1440,15 +457,15 @@ class TestRoutingProvider:
         result = rp.list_models()
         assert result == ["local.gguf"]
 
-    def test_get_llama_cpp_caches_instance(self) -> None:
-        """``_get_llama_cpp`` memoizes the LlamaCppProvider on first call."""
+    def test_get_local_caches_instance(self) -> None:
+        """``_get_local`` memoizes the local engine (FleetProvider) on first call."""
         from lilbee.providers.routing_provider import RoutingProvider
 
         rp = RoutingProvider()
         self._to_shutdown.append(rp)
-        first = rp._get_llama_cpp()
+        first = rp._get_local()
         self._to_shutdown.append(first)
-        second = rp._get_llama_cpp()
+        second = rp._get_local()
         assert first is second
 
     def test_get_sdk_provider_caches_instance(self) -> None:
@@ -1499,7 +516,7 @@ class TestRoutingProvider:
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         ref = "org/Local-GGUF/local.gguf"
         result = rp.show_model(ref)
@@ -1561,7 +578,7 @@ class TestRoutingProvider:
         """``invalidate_load_cache`` releases the native side; SDK has no cache."""
         rp = self._make_provider()
         mock_native = mock.MagicMock()
-        rp._llama_cpp = mock_native
+        rp._local = mock_native
 
         rp.invalidate_load_cache()
         mock_native.invalidate_load_cache.assert_called_once_with(None)
@@ -1570,7 +587,7 @@ class TestRoutingProvider:
         """``warm_up_pool`` lazily constructs the native provider and warms it."""
         rp = self._make_provider()
         mock_native = mock.MagicMock()
-        with mock.patch.object(rp, "_get_llama_cpp", return_value=mock_native):
+        with mock.patch.object(rp, "_get_local", return_value=mock_native):
             rp.warm_up_pool()
         mock_native.warm_up_pool.assert_called_once_with()
 
@@ -1694,6 +711,101 @@ class TestLitellmResponseView:
         view = _LitellmResponseView(response)
         assert view.delta_content == "hello world"
 
+    def test_tool_calls_extracts_function_id_name_arguments(self) -> None:
+        """Non-stream ``tool_calls`` maps each litellm call to an SdkToolCall."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        call = mock.MagicMock(id="c1")
+        call.function = mock.MagicMock(name="ignored")  # 'name' is a MagicMock kwarg trap
+        call.function.name = "get_weather"
+        call.function.arguments = '{"city":"SF"}'
+        choice = mock.MagicMock()
+        choice.message = mock.MagicMock(tool_calls=[call])
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        calls = view.tool_calls
+        assert len(calls) == 1
+        assert (calls[0].id, calls[0].name, calls[0].arguments) == (
+            "c1",
+            "get_weather",
+            '{"city":"SF"}',
+        )
+
+    def test_tool_calls_empty_when_message_missing(self) -> None:
+        """A choice whose first message is None yields no tool calls."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        choice = mock.MagicMock()
+        choice.message = None
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        assert view.tool_calls == ()
+
+    def test_tool_calls_empty_when_no_choices(self) -> None:
+        """No choices -> no tool calls (the ``choice is None`` guard)."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        view = _LitellmResponseView(mock.MagicMock(choices=[]))
+        assert view.tool_calls == ()
+
+    def test_extract_tool_call_handles_missing_function(self) -> None:
+        """A tool call with function=None yields empty name/arguments, not a crash."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        call = mock.MagicMock(id="c2")
+        call.function = None
+        choice = mock.MagicMock()
+        choice.message = mock.MagicMock(tool_calls=[call])
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        only = view.tool_calls[0]
+        assert (only.id, only.name, only.arguments) == ("c2", "", "")
+
+    def test_delta_tool_calls_maps_opener_and_continuation(self) -> None:
+        """Streaming deltas: opener carries id+name; later frames carry args only."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        opener = mock.MagicMock(index=0, id="c1")
+        opener.function = mock.MagicMock()
+        opener.function.name = "get_weather"
+        opener.function.arguments = ""  # empty string normalises to None
+        choice = mock.MagicMock()
+        choice.delta = mock.MagicMock(tool_calls=[opener])
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        delta = view.delta_tool_calls[0]
+        assert delta.index == 0
+        assert delta.id == "c1"
+        assert delta.name == "get_weather"
+        assert delta.arguments_delta is None  # "" -> None
+
+    def test_delta_tool_calls_uses_fallback_index_when_absent(self) -> None:
+        """A delta without an .index uses its position in the array as the index."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        frame = mock.MagicMock(index=None, id=None)
+        frame.function = None  # function=None -> name/args stay None
+        choice = mock.MagicMock()
+        choice.delta = mock.MagicMock(tool_calls=[frame])
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        delta = view.delta_tool_calls[0]
+        assert delta.index == 0  # fallback to enumerate position
+        assert delta.id is None
+        assert delta.name is None
+        assert delta.arguments_delta is None
+
+    def test_delta_tool_calls_empty_when_delta_missing(self) -> None:
+        """A streaming chunk whose first choice has no .delta yields no deltas."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        choice = mock.MagicMock(spec=["delta"])
+        choice.delta = None
+        view = _LitellmResponseView(mock.MagicMock(choices=[choice]))
+        assert view.delta_tool_calls == ()
+
+    def test_delta_tool_calls_empty_when_no_choices(self) -> None:
+        """No choices -> no streaming tool-call deltas (the ``choice is None`` guard)."""
+        from lilbee.providers.litellm_sdk import _LitellmResponseView
+
+        view = _LitellmResponseView(mock.MagicMock(choices=[]))
+        assert view.delta_tool_calls == ()
+
 
 class TestLitellmAvailable:
     """Exercises the un-patched ``litellm_available`` install probe.
@@ -1749,6 +861,18 @@ class TestLitellmAvailable:
         litellm_available.cache_clear()
 
 
+class TestLitellmBackendSupportsTools:
+    """The SDK backend is optimistic about tool support: hosted models that lack
+    a tool template simply return an empty tool_calls array, handled downstream."""
+
+    def test_supports_tools_is_true_for_any_ref(self) -> None:
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+
+        backend = LitellmSdkBackend()
+        assert backend.supports_tools("openai/gpt-4o") is True
+        assert backend.supports_tools("ollama/llama3") is True
+
+
 class TestRequireLitellm:
     @pytest.mark.real_litellm_probe
     def test_raises_provider_error_with_install_hint(self) -> None:
@@ -1757,7 +881,7 @@ class TestRequireLitellm:
 
         with (
             mock.patch.dict("sys.modules", {"litellm": None}),
-            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+            pytest.raises(ProviderError, match="lilbee\\[remote\\] extra"),
         ):
             _require_litellm()
 
@@ -1912,9 +1036,9 @@ class TestLMStudioCapabilityGuards:
 
 class TestShowModelNotFound:
     def test_returns_none_for_missing_model(self) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
+        from lilbee.providers.fleet.provider import FleetProvider
 
-        provider = LlamaCppProvider()
+        provider = FleetProvider()
         assert provider.show_model("nonexistent-model-xyz") is None
 
 
@@ -1922,7 +1046,7 @@ class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF file with clip.projector_type = "ldp"
         buf = bytearray()
@@ -1943,7 +1067,7 @@ class TestReadMmprojProjectorType:
         assert read_mmproj_projector_type(gguf_file) == "ldp"
 
     def test_exception_returns_none(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
@@ -1952,7 +1076,7 @@ class TestReadMmprojProjectorType:
         as an int or bool), the reader returns None instead of decoding bytes."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a GGUF where clip.projector_type is value_type=4 (uint32), not string.
         buf = bytearray()
@@ -1977,7 +1101,7 @@ class TestReadMmprojProjectorType:
         """
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         buf = bytearray()
         buf += b"GGUF"
@@ -1999,200 +1123,11 @@ class TestReadMmprojProjectorType:
         assert read_mmproj_projector_type(f) == "lightonocr"
 
 
-class TestMtmdLoadVisionLlama:
-    """mtmd backend replaces the old projector-type → handler lookup."""
-
-    def test_vision_uses_training_ctx_from_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """Vision load reads ``context_length`` from the GGUF and uses it as n_ctx."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = 512  # chat-tuned; must NOT clamp vision
-
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                return_value={"context_length": "8192"},
-            ),
-            mock.patch(
-                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                return_value=mock.MagicMock(),
-            ),
-        ):
-            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 8192
-        assert call_kwargs["n_gpu_layers"] == -1
-
-    def test_vision_threads_main_gpu_when_set(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """``cfg.main_gpu`` reaches the vision Llama() constructor when set."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = None
-        cfg.main_gpu = 1
-        try:
-            with (
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                    return_value={"context_length": "8192"},
-                ),
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                    return_value=mock.MagicMock(),
-                ),
-            ):
-                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-            assert mock_llama_cpp.Llama.call_args[1]["main_gpu"] == 1
-        finally:
-            cfg.main_gpu = None
-
-    def test_vision_passes_flash_attn_by_default(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """mtmd only enables FA when the backing Llama has it on, so vision must opt in."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = None
-        cfg.flash_attention = None  # auto
-        try:
-            with (
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                    return_value={"context_length": "8192"},
-                ),
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                    return_value=mock.MagicMock(),
-                ),
-            ):
-                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-            assert mock_llama_cpp.Llama.call_args[1].get("flash_attn") is True
-        finally:
-            cfg.flash_attention = None
-
-    def test_vision_skips_flash_attn_when_disabled(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """``cfg.flash_attention = False`` keeps FA off the vision Llama kwargs."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = None
-        cfg.flash_attention = False
-        try:
-            with (
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                    return_value={"context_length": "8192"},
-                ),
-                mock.patch(
-                    "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                    return_value=mock.MagicMock(),
-                ),
-            ):
-                load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-            assert "flash_attn" not in mock_llama_cpp.Llama.call_args[1]
-        finally:
-            cfg.flash_attention = None
-
-    def test_vision_falls_back_to_default_when_metadata_missing(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """If the GGUF has no context_length, vision falls back to the explicit default."""
-        from lilbee.providers.mtmd_backend import _VISION_FALLBACK_N_CTX, load_vision_llama
-
-        cfg.num_ctx = None
-
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                return_value=None,
-            ),
-            mock.patch(
-                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                return_value=mock.MagicMock(),
-            ),
-        ):
-            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == _VISION_FALLBACK_N_CTX
-
-    def test_without_mmproj_calls_find(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = None
-
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.find_mmproj_for_model",
-                return_value=Path("found_mmproj.gguf"),
-            ),
-            mock.patch(
-                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                return_value=mock.MagicMock(),
-            ) as mock_handler,
-        ):
-            load_vision_llama(Path("model.gguf"))
-        assert mock_llama_cpp.Llama.called
-        mock_handler.assert_called_once()
-
-    def test_abort_callback_override_replaces_default(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """Passing ``abort_callback_override`` threads a worker-side callback into Llama kwargs."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = None
-        sentinel = lambda _u=None: False  # noqa: E731
-        with mock.patch(
-            "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-            return_value=mock.MagicMock(),
-        ):
-            load_vision_llama(
-                Path("model.gguf"),
-                mmproj_path=Path("mmproj.gguf"),
-                abort_callback_override=sentinel,
-            )
-        assert mock_llama_cpp.Llama.call_args[1]["abort_callback"] is sentinel
-
-    def test_resolve_vision_n_ctx_uses_training_context(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """Vision load uses the model's training context, not cfg.num_ctx."""
-        from lilbee.providers.mtmd_backend import load_vision_llama
-
-        cfg.num_ctx = 8192  # chat-tuned; must not influence vision
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                return_value={"context_length": "4096"},
-            ),
-            mock.patch(
-                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                return_value=mock.MagicMock(),
-            ),
-        ):
-            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == 4096
-
-    def test_resolve_vision_n_ctx_falls_back_when_metadata_unreadable(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """A metadata read failure falls back to the explicit vision default."""
-        from lilbee.providers.mtmd_backend import _VISION_FALLBACK_N_CTX, load_vision_llama
-
-        cfg.num_ctx = 4096
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_gguf_metadata",
-                side_effect=RuntimeError("boom"),
-            ),
-            mock.patch(
-                "lilbee.providers.mtmd_backend.build_vision_chat_handler",
-                return_value=mock.MagicMock(),
-            ),
-        ):
-            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
-        assert mock_llama_cpp.Llama.call_args[1]["n_ctx"] == _VISION_FALLBACK_N_CTX
-
-
 class TestVulkanGpuSelect:
     """``autoselect_best_gpu_index`` probes libvulkan via ctypes and picks discrete."""
 
     def test_pick_best_prefers_discrete_over_integrated(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
             _pick_best_device,
@@ -2211,7 +1146,7 @@ class TestVulkanGpuSelect:
         assert best.index == 1
 
     def test_pick_best_returns_none_for_cpu_only(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
             _pick_best_device,
@@ -2225,21 +1160,21 @@ class TestVulkanGpuSelect:
         assert _pick_best_device(devices) is None
 
     def test_pick_best_returns_none_for_empty_list(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _pick_best_device
+        from lilbee.providers.fleet.gpu_select import _pick_best_device
 
         assert _pick_best_device([]) is None
 
     def test_rank_for_unknown_device_type_returns_zero(self) -> None:
         """Drivers may report a deviceType outside the Vulkan 1.0 enum; we treat as CPU-rank."""
-        from lilbee.providers.llama_cpp.gpu_select import _rank_for
+        from lilbee.providers.fleet.gpu_select import _rank_for
 
         assert _rank_for(999) == 0
 
     def test_autoselect_returns_discrete_index_for_dual_gpu(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2268,8 +1203,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Single-device hosts keep the default ordering; auto-pin would be churn."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2291,7 +1226,7 @@ class TestVulkanGpuSelect:
     def test_autoselect_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
         assert gpu_select.autoselect_best_gpu_index() is None
@@ -2300,8 +1235,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """All-CPU adapter list shouldn't force a pin: software rendering is never right."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2324,8 +1259,8 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Two discrete GPUs of equal rank: no auto-pin (no decision to make)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             VulkanDevice,
         )
@@ -2352,7 +1287,7 @@ class TestVulkanGpuSelect:
 
     def test_loader_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal; the Vulkan probe explicitly skips."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
         assert gpu_select._load_vulkan_loader() is None
@@ -2360,7 +1295,7 @@ class TestVulkanGpuSelect:
     def test_loader_returns_none_when_library_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
 
@@ -2372,7 +1307,7 @@ class TestVulkanGpuSelect:
         assert gpu_select._load_vulkan_loader() is None
 
     def test_loader_falls_back_to_find_library(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
         attempts: list[str] = []
@@ -2392,7 +1327,7 @@ class TestVulkanGpuSelect:
 
     def test_loader_probes_dll_on_win32(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On Windows the probe tries ``vulkan-1.dll`` before giving up."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         attempts: list[str] = []
@@ -2409,13 +1344,13 @@ class TestVulkanGpuSelect:
     def test_enumerate_returns_none_when_loader_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: None)
         assert gpu_select._enumerate_vulkan_devices() is None
 
     def test_enumerate_catches_oserror_from_ctypes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
 
@@ -2426,22 +1361,23 @@ class TestVulkanGpuSelect:
         assert gpu_select._enumerate_vulkan_devices() is None
 
     def test_resolve_vk_symbols_stamps_argtypes(self) -> None:
-        """``_resolve_vk_symbols`` reads four named attributes off the loader."""
-        from lilbee.providers.llama_cpp.gpu_select import _resolve_vk_symbols
+        """``_resolve_vk_symbols`` reads five named attributes off the loader."""
+        from lilbee.providers.fleet.gpu_select import _resolve_vk_symbols
 
         fake_lib = mock.MagicMock()
-        create, destroy, enum_phys, get_props = _resolve_vk_symbols(fake_lib)
+        create, destroy, enum_phys, get_props, get_mem = _resolve_vk_symbols(fake_lib)
         assert create is fake_lib.vkCreateInstance
         assert destroy is fake_lib.vkDestroyInstance
         assert enum_phys is fake_lib.vkEnumeratePhysicalDevices
         assert get_props is fake_lib.vkGetPhysicalDeviceProperties
+        assert get_mem is fake_lib.vkGetPhysicalDeviceMemoryProperties
 
     def test_list_devices_with_instance_returns_parsed_devices(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Happy path: simulated VK calls populate the device list."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import (
             VkDeviceType,
             _list_devices_with_instance,
         )
@@ -2470,22 +1406,38 @@ class TestVulkanGpuSelect:
             props_ref._obj.deviceType = dtype
             props_ref._obj.deviceName = name
 
+        def _get_memory(handle: object, mem_ref: object) -> None:
+            # device 1 reports a 12 GB device-local heap + a host heap to ignore.
+            i = handle - 0xCAFE
+            mem_ref._obj.memoryHeapCount = 2
+            mem_ref._obj.memoryHeaps[0].size = (i + 1) * 12_000_000_000
+            mem_ref._obj.memoryHeaps[0].flags = 1  # VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+            mem_ref._obj.memoryHeaps[1].size = 64_000_000_000
+            mem_ref._obj.memoryHeaps[1].flags = 0  # host-visible, not VRAM
+
         monkeypatch.setattr(
             gpu_select,
             "_resolve_vk_symbols",
-            lambda _lib: (_create_instance, lambda *_: None, _enum_physical, _get_properties),
+            lambda _lib: (
+                _create_instance,
+                lambda *_: None,
+                _enum_physical,
+                _get_properties,
+                _get_memory,
+            ),
         )
         devices = _list_devices_with_instance(object())
         assert len(devices) == device_count
         assert devices[0].device_type == VkDeviceType.INTEGRATED_GPU
         assert devices[1].device_type == VkDeviceType.DISCRETE_GPU
         assert devices[1].device_name == "NVIDIA RTX"
+        assert devices[1].vram_bytes == 24_000_000_000
 
     def test_list_devices_returns_empty_when_create_instance_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import _list_devices_with_instance
 
         monkeypatch.setattr(
             gpu_select,
@@ -2495,6 +1447,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: None,
                 lambda *_a: 0,
                 lambda *_a: None,
+                lambda *_a: None,
             ),
         )
         assert _list_devices_with_instance(object()) == []
@@ -2502,8 +1455,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_first_enum_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2517,6 +1470,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: None,
                 lambda *_a: 1,  # enum fails
                 lambda *_a: None,
+                lambda *_a: None,
             ),
         )
         assert _list_devices_with_instance(object()) == []
@@ -2524,8 +1478,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_count_is_zero(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2543,6 +1497,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: None,
                 _enum_physical,
                 lambda *_a: None,
+                lambda *_a: None,
             ),
         )
         assert _list_devices_with_instance(object()) == []
@@ -2550,8 +1505,8 @@ class TestVulkanGpuSelect:
     def test_list_devices_returns_empty_when_second_enum_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import _list_devices_with_instance
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import _list_devices_with_instance
 
         def _create_instance(_info: object, _alloc: object, instance_ref: object) -> int:
             instance_ref._obj.value = 0x1
@@ -2571,6 +1526,7 @@ class TestVulkanGpuSelect:
                 lambda *_a: None,
                 _enum_physical,
                 lambda *_a: None,
+                lambda *_a: None,
             ),
         )
         assert _list_devices_with_instance(object()) == []
@@ -2579,7 +1535,7 @@ class TestVulkanGpuSelect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """find_library succeeds but CDLL on that path still raises -> overall None."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
 
@@ -2590,12 +1546,62 @@ class TestVulkanGpuSelect:
         monkeypatch.setattr(gpu_select.ctypes.util, "find_library", lambda _n: "/lib/libvulkan.so")
         assert gpu_select._load_vulkan_loader() is None
 
+    def test_enumerate_gpu_vram_returns_index_vram_pairs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import VkDeviceType, VulkanDevice
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                VulkanDevice(
+                    index=0,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="a",
+                    vendor_id=0,
+                    vram_bytes=24_000_000_000,
+                ),
+                VulkanDevice(
+                    index=1,
+                    device_type=VkDeviceType.DISCRETE_GPU,
+                    device_name="b",
+                    vendor_id=0,
+                    vram_bytes=8_000_000_000,
+                ),
+            ],
+        )
+        assert gpu_select.enumerate_gpu_vram() == [(0, 24_000_000_000), (1, 8_000_000_000)]
+
+    def test_enumerate_gpu_vram_none_when_probe_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
+        assert gpu_select.enumerate_gpu_vram() is None
+
+    def test_device_local_vram_sums_device_local_heaps_only(self) -> None:
+        from lilbee.providers.fleet.gpu_select import (
+            _device_local_vram,
+            _VkPhysicalDeviceMemoryProperties,
+        )
+
+        mem = _VkPhysicalDeviceMemoryProperties()
+        mem.memoryHeapCount = 2
+        mem.memoryHeaps[0].size = 8_000_000_000
+        mem.memoryHeaps[0].flags = 1  # VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+        mem.memoryHeaps[1].size = 16_000_000_000
+        mem.memoryHeaps[1].flags = 0  # host-visible
+        assert _device_local_vram(mem) == 8_000_000_000
+
 
 class TestClassifyManifestVendor:
     """``_classify_manifest_vendor`` maps an ICD manifest filename to a vendor."""
 
     def test_nvidia_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2603,7 +1609,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("nv-vk64.json") is PCIVendorID.NVIDIA
 
     def test_amdvlk_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2611,7 +1617,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("amdvlk64.json") is PCIVendorID.AMD
 
     def test_radeon_manifest_is_classified_as_amd(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2619,7 +1625,7 @@ class TestClassifyManifestVendor:
         assert _classify_manifest_vendor("radeon_icd.x64.json") is PCIVendorID.AMD
 
     def test_intel_manifest_is_classified(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2629,7 +1635,7 @@ class TestClassifyManifestVendor:
 
     def test_classifier_is_case_insensitive(self) -> None:
         """Windows file paths are case-insensitive; the loader's match is too."""
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _classify_manifest_vendor,
         )
@@ -2639,7 +1645,7 @@ class TestClassifyManifestVendor:
 
     def test_unknown_manifest_returns_none(self) -> None:
         """A manifest filename we don't recognise has no glob we can disable, so skip it."""
-        from lilbee.providers.llama_cpp.gpu_select import _classify_manifest_vendor
+        from lilbee.providers.fleet.gpu_select import _classify_manifest_vendor
 
         assert _classify_manifest_vendor("mesa_dzn.json") is None
         assert _classify_manifest_vendor("microsoft_dozen.json") is None
@@ -2649,7 +1655,7 @@ class TestSelectBestVendor:
     """``_select_best_vendor`` walks the hardcoded preference order."""
 
     def test_nvidia_wins_over_amd(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _select_best_vendor,
         )
@@ -2658,7 +1664,7 @@ class TestSelectBestVendor:
 
     def test_amd_wins_over_intel(self) -> None:
         """AMD discrete + Intel iGPU laptops: keep the discrete card."""
-        from lilbee.providers.llama_cpp.gpu_select import (
+        from lilbee.providers.fleet.gpu_select import (
             PCIVendorID,
             _select_best_vendor,
         )
@@ -2666,7 +1672,7 @@ class TestSelectBestVendor:
         assert _select_best_vendor({PCIVendorID.AMD, PCIVendorID.INTEL}) is PCIVendorID.AMD
 
     def test_returns_none_on_empty_set(self) -> None:
-        from lilbee.providers.llama_cpp.gpu_select import _select_best_vendor
+        from lilbee.providers.fleet.gpu_select import _select_best_vendor
 
         assert _select_best_vendor(set()) is None
 
@@ -2676,8 +1682,8 @@ class TestVulkanVendorsPresent:
 
     def test_collects_vendors_from_windows_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Windows-style backslash paths classify by filename correctly."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         manifests = [
             r"C:\Windows\System32\nv-vk64.json",
@@ -2699,8 +1705,8 @@ class TestVulkanVendorsPresent:
         Mesa RADV ships ``radeon_icd.x86_64.json`` (matches ``radeon*``),
         NVIDIA proprietary ships ``nvidia_icd.json`` (matches ``nv*``).
         """
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         manifests = [
             "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
@@ -2720,8 +1726,8 @@ class TestVulkanVendorsPresent:
 
     def test_linux_amdvlk_manifest_classifies_as_amd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Linux AMDVLK ships as ``amd_icd64.json`` (no leading ``amdvlk`` prefix)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(
             gpu_select,
@@ -2732,8 +1738,8 @@ class TestVulkanVendorsPresent:
 
     def test_drops_unknown_manifest_filenames(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """We can only disable manifests we have a glob for; unknown ones are dropped."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         manifests = [
             r"C:\Windows\System32\nv-vk64.json",
@@ -2748,7 +1754,7 @@ class TestVulkanVendorsPresent:
         assert gpu_select._vulkan_vendors_present() == {PCIVendorID.NVIDIA}
 
     def test_returns_empty_set_when_no_manifests(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(
             gpu_select,
@@ -2763,13 +1769,13 @@ class TestIterVulkanManifestPaths:
 
     def test_darwin_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "darwin")
         assert list(vulkan_icd_discovery.iter_vulkan_manifest_paths()) == []
 
     def test_windows_dispatches_to_registry_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "win32")
         monkeypatch.setattr(
@@ -2787,7 +1793,7 @@ class TestIterVulkanManifestPaths:
         ]
 
     def test_linux_dispatches_to_xdg_walker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.setattr(vulkan_icd_discovery.sys, "platform", "linux")
         monkeypatch.setattr(
@@ -2815,7 +1821,7 @@ class TestIterWindowsVulkanManifestPaths:
         the PnP path) or Microsoft software ICDs (live under
         ``Khronos\\Vulkan\\Drivers``).
         """
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg_stub = mock.MagicMock(name="winreg")
         monkeypatch.setitem(sys.modules, "winreg", winreg_stub)
@@ -2852,7 +1858,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_yields_json_files_from_real_directory(self, tmp_path: Path) -> None:
         """Globs ``*.json`` in each yielded directory, skips non-json names."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2872,7 +1878,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_duplicate_directories_are_deduped(self, tmp_path: Path) -> None:
         """A directory yielded twice must not produce duplicate manifest paths."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2889,7 +1895,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_missing_directories_are_silently_skipped(self, tmp_path: Path) -> None:
         """A nonexistent directory doesn't raise; the walk continues."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         with mock.patch.object(
             vulkan_icd_discovery,
@@ -2900,7 +1906,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_directory_with_dot_json_suffix_is_filtered_out(self, tmp_path: Path) -> None:
         """``foo.json`` directories match the glob but ``is_file`` rejects them."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         icd_dir = tmp_path / "icd.d"
         icd_dir.mkdir()
@@ -2916,7 +1922,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_unreadable_directory_does_not_abort_walk(self, tmp_path: Path) -> None:
         """``Path.glob`` raising OSError logs and continues to the next directory."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         readable = tmp_path / "ok"
         readable.mkdir()
@@ -2944,7 +1950,7 @@ class TestIterLinuxVulkanManifestPaths:
 
     def test_unexpandable_path_does_not_abort_walk(self, tmp_path: Path) -> None:
         """``Path.expanduser`` raising ``RuntimeError`` (HOME unset) skips and continues."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         good_dir = tmp_path / "ok"
         good_dir.mkdir()
@@ -2981,7 +1987,7 @@ class TestLinuxVulkanIcdDirectories:
         """All XDG_* vars unset -> spec defaults plus fixed /etc and Flatpak trees."""
         from pathlib import PurePosixPath
 
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         for var in ("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"):
             monkeypatch.delenv(var, raising=False)
@@ -3015,14 +2021,14 @@ class TestXdgDirs:
     """
 
     def test_uses_default_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.delenv("X_UNSET_TEST", raising=False)
         out = list(vulkan_icd_discovery._xdg_dirs("X_UNSET_TEST", "default", "sub"))
         assert out == [Path("default") / "sub"]
 
     def test_splits_colon_delimited_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.setenv("X_LIST_TEST", "share:opt")
         out = list(vulkan_icd_discovery._xdg_dirs("X_LIST_TEST", "default", "sub"))
@@ -3030,7 +2036,7 @@ class TestXdgDirs:
 
     def test_empty_components_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Vulkan-Loader#2331: ``"a::b"`` and trailing colons must not yield ``Path("")``."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         monkeypatch.setenv("X_EXTRA_COLON_TEST", "::share:")
         out = list(vulkan_icd_discovery._xdg_dirs("X_EXTRA_COLON_TEST", "default", "sub"))
@@ -3041,7 +2047,7 @@ class TestIterKhronosSoftwareManifests:
     """``_iter_khronos_software_manifests`` honours the Khronos REG_DWORD = 0 enabled flag."""
 
     def test_yields_only_enabled_entries(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0  # any sentinel; OpenKey is mocked
@@ -3080,7 +2086,7 @@ class TestIterKhronosSoftwareManifests:
         assert r"C:\disabled.json" not in result
 
     def test_missing_key_is_skipped(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3093,7 +2099,7 @@ class TestIterPnpClassManifests:
     """``_iter_pnp_class_manifests`` reads VulkanDriverName{,Wow} off PnP adapter keys."""
 
     def test_yields_strings_and_multi_sz_lists(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3129,7 +2135,7 @@ class TestIterPnpClassManifests:
         assert "" not in result
 
     def test_missing_root_returns_nothing(self) -> None:
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3146,7 +2152,7 @@ class TestIterPnpClassManifests:
 
     def test_unopenable_subkey_is_skipped(self) -> None:
         """A subkey that EnumKey returned but OpenKey fails on must not abort the walk."""
-        from lilbee.providers.llama_cpp import vulkan_icd_discovery
+        from lilbee.providers.fleet import vulkan_icd_discovery
 
         winreg = mock.MagicMock(name="winreg")
         winreg.HKEY_LOCAL_MACHINE = 0
@@ -3183,8 +2189,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_pins_nvidia_when_amd_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """NVIDIA + AMD installed on Windows -> disable AMD ICD globs, keep NVIDIA."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3202,8 +2208,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_pins_amd_when_intel_also_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """AMD-discrete + Intel-iGPU laptops keep AMD; the documented crash is AMD vs NVIDIA."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3223,8 +2229,8 @@ class TestDisableConflictingVulkanIcds:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Triple-vendor host: NVIDIA wins per ``_PREFERRED_VENDOR_ORDER``."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3241,15 +2247,15 @@ class TestDisableConflictingVulkanIcds:
 
     def test_returns_none_on_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "darwin")
         assert gpu_select.disable_conflicting_vulkan_icds() is None
 
     def test_active_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Linux gets the same dual-vendor pin (Steam overlay + AMDVLK/RADV are documented)."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "linux")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3270,8 +2276,8 @@ class TestDisableConflictingVulkanIcds:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Single-vendor systems aren't at risk; no pin needed."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3284,7 +2290,7 @@ class TestDisableConflictingVulkanIcds:
 
     def test_returns_none_when_no_vendors_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No matching manifests in the registry -> no pin (e.g. no Vulkan installed)."""
-        from lilbee.providers.llama_cpp import gpu_select
+        from lilbee.providers.fleet import gpu_select
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3293,8 +2299,8 @@ class TestDisableConflictingVulkanIcds:
 
     def test_user_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If the user set any Vulkan ICD-selection env var, we don't override it."""
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(
@@ -3320,8 +2326,8 @@ class TestDisableConflictingVulkanIcds:
         get its AMD ICD disabled by the NVIDIA-first preference.
         """
         from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp import gpu_select
-        from lilbee.providers.llama_cpp.gpu_select import PCIVendorID
+        from lilbee.providers.fleet import gpu_select
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
 
         monkeypatch.setattr(gpu_select.sys, "platform", "win32")
         monkeypatch.setattr(gpu_select.os, "environ", {})
@@ -3332,425 +2338,6 @@ class TestDisableConflictingVulkanIcds:
         )
         monkeypatch.setattr(cfg, "gpu_devices", "1")
         assert gpu_select.disable_conflicting_vulkan_icds() is None
-
-
-class TestImportLlamaCpp:
-    """``import_llama_cpp`` converts a missing-libvulkan OSError into a ProviderError."""
-
-    def test_returns_module_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Happy path: hands back the imported module."""
-        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
-
-        sentinel = mock.MagicMock(name="llama_cpp_module")
-        monkeypatch.setitem(sys.modules, "llama_cpp", sentinel)
-        assert import_llama_cpp() is sentinel
-
-    def test_libvulkan_oserror_raises_provider_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Bare Linux installs without libvulkan get install instructions, not a raw OSError."""
-        import builtins
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
-
-        real_import = builtins.__import__
-
-        def fake_import(name: str, *args: object, **kwargs: object) -> object:
-            if name == "llama_cpp":
-                raise OSError("libvulkan.so.1: cannot open shared object file")
-            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
-        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
-
-        with pytest.raises(ProviderError) as ei:
-            import_llama_cpp()
-        assert "libvulkan1" in str(ei.value)
-
-    def test_unrelated_oserror_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Non-vulkan OSErrors are not swallowed."""
-        import builtins
-
-        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
-
-        real_import = builtins.__import__
-
-        def fake_import(name: str, *args: object, **kwargs: object) -> object:
-            if name == "llama_cpp":
-                raise OSError("libsomethingelse.so: not found")
-            return real_import(name, *args, **kwargs)  # type: ignore[no-any-return]
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
-        monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
-        with pytest.raises(OSError, match="libsomethingelse"):
-            import_llama_cpp()
-
-    def test_gpu_devices_sets_visibility_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``cfg.gpu_devices`` propagates to every backend's visible-devices env var."""
-        from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _GPU_VISIBLE_ENV_VARS,
-            import_llama_cpp,
-        )
-
-        for name in _GPU_VISIBLE_ENV_VARS:
-            monkeypatch.delenv(name, raising=False)
-        monkeypatch.setattr(cfg, "gpu_devices", "0")
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        for name in _GPU_VISIBLE_ENV_VARS:
-            assert os.environ.get(name) == "0", name
-
-    def test_gpu_devices_none_leaves_env_untouched_when_autoselect_silent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With ``gpu_devices=None`` and autoselect returning None, env stays clean."""
-        from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _GPU_VISIBLE_ENV_VARS,
-            import_llama_cpp,
-        )
-
-        for name in _GPU_VISIBLE_ENV_VARS:
-            monkeypatch.delenv(name, raising=False)
-        monkeypatch.setattr(cfg, "gpu_devices", None)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        for name in _GPU_VISIBLE_ENV_VARS:
-            assert name not in os.environ, name
-
-    def test_gpu_devices_autoselect_only_sets_vulkan_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Autodetect targets Vulkan only: a CUDA wheel must not have its visible-devices
-        list silently rewritten from a Vulkan-loader index.
-        """
-        from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _GPU_VISIBLE_ENV_VARS,
-            _VULKAN_AUTODETECT_ENV_VARS,
-            import_llama_cpp,
-        )
-
-        for name in _GPU_VISIBLE_ENV_VARS:
-            monkeypatch.delenv(name, raising=False)
-        monkeypatch.setattr(cfg, "gpu_devices", None)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: "1",
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ["GGML_VK_VISIBLE_DEVICES"] == "1"
-        for name in set(_GPU_VISIBLE_ENV_VARS) - set(_VULKAN_AUTODETECT_ENV_VARS):
-            assert name not in os.environ, name
-
-    def test_user_env_var_wins_over_cfg(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A pre-set ``GGML_VK_VISIBLE_DEVICES`` is preserved even when cfg has a value."""
-        from lilbee.core.config import cfg
-        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
-
-        monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
-        monkeypatch.setattr(cfg, "gpu_devices", "0")
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ["GGML_VK_VISIBLE_DEVICES"] == "1"
-
-    def test_conflicting_icd_glob_writes_loader_env_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When the dual-vendor probe returns a glob, it lands in VK_LOADER_DRIVERS_DISABLE."""
-        from lilbee.providers.llama_cpp.gpu_select import VulkanIcdEnvVar
-        from lilbee.providers.llama_cpp.log_dispatch import import_llama_cpp
-
-        monkeypatch.delenv(VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE, raising=False)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
-            lambda: "amdvlk*,radeon*",
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ[VulkanIcdEnvVar.LOADER_DRIVERS_DISABLE] == "amdvlk*,radeon*"
-
-    def test_curated_layer_globs_written_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Windows the layer-disable env var holds the curated overlay glob list."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            _VK_LOADER_LAYERS_DISABLE_VALUE,
-            import_llama_cpp,
-        )
-
-        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
-        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
-            lambda: None,
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
-
-    def test_curated_layer_globs_written_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Linux the same curated overlay list lands."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            _VK_LOADER_LAYERS_DISABLE_VALUE,
-            import_llama_cpp,
-        )
-
-        monkeypatch.setattr(log_dispatch.sys, "platform", "linux")
-        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
-            lambda: None,
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == _VK_LOADER_LAYERS_DISABLE_VALUE
-
-    def test_curated_layer_list_does_not_disable_vendor_dispatch(self) -> None:
-        """Mesa device-select, NV Optimus, AMD switchable, MangoHud must survive.
-
-        The curated list targets known-crashing third-party overlays only.
-        Disabling vendor-dispatch layers would change GPU routing in ways
-        that don't match what other Vulkan apps see, and disabling MangoHud
-        / Mesa overlay would surprise users who explicitly opted into them.
-        """
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_GLOBS,
-        )
-
-        flat = ",".join(_VK_LOADER_LAYERS_DISABLE_GLOBS).lower()
-        for survivor in (
-            "VK_LAYER_MESA_device_select",
-            "VK_LAYER_NV_optimus",
-            "VK_LAYER_AMD_switchable_graphics",
-            "VK_LAYER_MANGOHUD_overlay",
-            "VK_LAYER_MESA_overlay",
-        ):
-            assert survivor.lower() not in flat, survivor
-
-    def test_implicit_layer_disable_skipped_on_darwin(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """macOS uses Metal directly; the Vulkan loader is not on the path."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            import_llama_cpp,
-        )
-
-        monkeypatch.delenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, raising=False)
-        monkeypatch.setattr(log_dispatch.sys, "platform", "darwin")
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
-            lambda: None,
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert _VK_LOADER_LAYERS_DISABLE_ENV_VAR not in os.environ
-
-    def test_user_layer_disable_setting_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A pre-set ``VK_LOADER_LAYERS_DISABLE`` survives our ~implicit~ default."""
-        from lilbee.providers.llama_cpp import log_dispatch
-        from lilbee.providers.llama_cpp.log_dispatch import (
-            _VK_LOADER_LAYERS_DISABLE_ENV_VAR,
-            import_llama_cpp,
-        )
-
-        monkeypatch.setattr(log_dispatch.sys, "platform", "win32")
-        monkeypatch.setenv(_VK_LOADER_LAYERS_DISABLE_ENV_VAR, "VK_LAYER_MyDebugLayer")
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.disable_conflicting_vulkan_icds",
-            lambda: None,
-        )
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.gpu_select.autoselect_best_gpu_index",
-            lambda: None,
-        )
-        monkeypatch.setitem(sys.modules, "llama_cpp", mock.MagicMock())
-
-        import_llama_cpp()
-        assert os.environ[_VK_LOADER_LAYERS_DISABLE_ENV_VAR] == "VK_LAYER_MyDebugLayer"
-
-
-class TestReadChatTemplate:
-    def test_reads_chat_template(self, tmp_path: Path) -> None:
-        import struct
-
-        from lilbee.providers.mtmd_backend import read_chat_template
-
-        template = "{% for message in messages %}{{ message.content }}{% endfor %}"
-        buf = bytearray()
-        buf += b"GGUF"
-        buf += struct.pack("<I", 3)
-        buf += struct.pack("<Q", 0)
-        buf += struct.pack("<Q", 1)
-        key = b"tokenizer.chat_template"
-        buf += struct.pack("<Q", len(key)) + key
-        buf += struct.pack("<I", 8)
-        value = template.encode("utf-8")
-        buf += struct.pack("<Q", len(value)) + value
-        f = tmp_path / "model.gguf"
-        f.write_bytes(bytes(buf))
-        assert read_chat_template(f) == template
-
-    def test_returns_none_on_missing_field(self, tmp_path: Path) -> None:
-        """A GGUF without tokenizer.chat_template returns None."""
-        import struct
-
-        from lilbee.providers.mtmd_backend import read_chat_template
-
-        buf = bytearray()
-        buf += b"GGUF"
-        buf += struct.pack("<I", 3)
-        buf += struct.pack("<Q", 0)
-        buf += struct.pack("<Q", 0)
-        f = tmp_path / "empty.gguf"
-        f.write_bytes(bytes(buf))
-        assert read_chat_template(f) is None
-
-    def test_returns_none_on_read_error(self) -> None:
-        from lilbee.providers.mtmd_backend import read_chat_template
-
-        assert read_chat_template(Path("/nonexistent/model.gguf")) is None
-
-
-class TestBuildVisionChatHandler:
-    """Use a stub Llava15ChatHandler so the test stays hermetic."""
-
-    def _patched(self, instances: list[object]):
-        class _StubHandler:
-            CHAT_FORMAT = "stub-default-format"
-            DEFAULT_SYSTEM_MESSAGE = "stub-default"
-
-            def __init__(self, clip_model_path: str, verbose: bool = True):
-                self.clip_model_path = clip_model_path
-                self.verbose = verbose
-                instances.append(self)
-
-        return mock.patch("llama_cpp.llama_chat_format.Llava15ChatHandler", _StubHandler)
-
-    def test_installs_gguf_template(self, tmp_path: Path) -> None:
-        from lilbee.providers.mtmd_backend import build_vision_chat_handler
-
-        template = "<|im_start|>user\n<|image_pad|>{{ content.text }}<|im_end|>"
-        instances: list[object] = []
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_chat_template",
-                return_value=template,
-            ),
-            self._patched(instances),
-        ):
-            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
-        assert "<|image_pad|>" not in type(handler).CHAT_FORMAT
-        assert "{{ content.image_url.url }}" in type(handler).CHAT_FORMAT
-        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
-
-    def test_falls_back_when_no_template(self, tmp_path: Path) -> None:
-        from lilbee.providers.mtmd_backend import build_vision_chat_handler
-
-        instances: list[object] = []
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_chat_template",
-                return_value=None,
-            ),
-            self._patched(instances),
-        ):
-            handler = build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
-        assert type(handler).CHAT_FORMAT == "stub-default-format"
-        assert type(handler).DEFAULT_SYSTEM_MESSAGE is None
-
-
-class TestAdaptGgufTemplate:
-    """``adapt_gguf_template_for_mtmd`` rewrites GGUF image-placeholder tokens."""
-
-    def test_replaces_image_pad(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        template = "prefix <|image_pad|> suffix"
-        out = adapt_gguf_template_for_mtmd(template)
-        assert "<|image_pad|>" not in out
-        assert "{{ content.image_url.url }}" in out
-
-    def test_replaces_image_tag(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        assert adapt_gguf_template_for_mtmd("A <image> B") == "A {{ content.image_url.url }} B"
-
-    def test_noop_when_no_token(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        template = "plain {{ content.image_url.url }} template"
-        assert adapt_gguf_template_for_mtmd(template) == template
-
-    def test_text_only_template_unaffected(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        template = "<|im_start|>user\n{{ content.text }}<|im_end|>"
-        assert adapt_gguf_template_for_mtmd(template) == template
-
-    def test_unknown_image_token_raises(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
-        with pytest.raises(ValueError, match="<vision_pad>") as exc:
-            adapt_gguf_template_for_mtmd(template)
-        assert "<|image_pad|>" in str(exc.value)
-
-    def test_unknown_media_token_raises(self) -> None:
-        from lilbee.providers.mtmd_backend import adapt_gguf_template_for_mtmd
-
-        with pytest.raises(ValueError, match="<media>"):
-            adapt_gguf_template_for_mtmd("A <media> B")
-
-    def test_build_handler_raises_on_unknown_token(self, tmp_path: Path) -> None:
-        from lilbee.providers.mtmd_backend import build_vision_chat_handler
-
-        template = "<|im_start|>user\n<vision_pad>{{ content.text }}<|im_end|>"
-        with (
-            mock.patch(
-                "lilbee.providers.mtmd_backend.read_chat_template",
-                return_value=template,
-            ),
-            pytest.raises(ValueError, match="<vision_pad>"),
-        ):
-            build_vision_chat_handler(tmp_path / "model.gguf", tmp_path / "mmproj.gguf")
 
 
 # ---------------------------------------------------------------------------
@@ -3804,44 +2391,44 @@ class TestTrainCtxFromMeta:
         return Path("/tmp/test-model.gguf")
 
     def test_returns_metadata_value_when_positive(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "8192"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 8192
 
     def test_returns_fallback_when_meta_is_none(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         assert train_ctx_from_meta(None, fallback=2048, model_path=self._path()) == 2048
 
     def test_returns_fallback_when_context_length_missing(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         assert train_ctx_from_meta({}, fallback=4096, model_path=self._path()) == 4096
 
     def test_clamps_zero_to_fallback(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "0"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
 
     def test_clamps_negative_to_fallback(self) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "-1"}
         assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
 
     def test_clamps_unparseable_to_fallback(self, caplog) -> None:
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         meta = {"context_length": "garbage"}
-        with caplog.at_level(logging.WARNING, logger="lilbee.providers.llama_cpp.gguf_meta"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.gguf_meta"):
             assert train_ctx_from_meta(meta, fallback=2048, model_path=self._path()) == 2048
         assert any("unparseable" in rec.message for rec in caplog.records)
 
     def test_each_loader_uses_its_own_fallback(self) -> None:
         """Embed / chat / vision picks reflect their respective task budgets."""
-        from lilbee.providers.llama_cpp.gguf_meta import train_ctx_from_meta
+        from lilbee.providers.gguf_meta import train_ctx_from_meta
 
         zero = {"context_length": "0"}
         path = self._path()
@@ -3851,24 +2438,23 @@ class TestTrainCtxFromMeta:
 
 
 class TestReadGgufMetadata:
-    def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns parsed fields."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+    def test_reads_all_fields(self, tmp_path: Path) -> None:
+        """read_gguf_metadata returns the parsed header fields."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {
-            "general.architecture": "llama",
-            "llama.context_length": 4096,
-            "llama.embedding_length": 4096,
-            "tokenizer.chat_template": "template",
-            "general.file_type": "7",
-            "general.name": "Test Model",
-        }
-        mock_llama_cpp.Llama.return_value = mock_llm
+        path = write_test_gguf(
+            tmp_path / "model.gguf",
+            arch="llama",
+            fields={
+                "llama.context_length": 4096,
+                "llama.embedding_length": 4096,
+                "tokenizer.chat_template": "template",
+                "general.file_type": 7,
+                "general.name": "Test Model",
+            },
+        )
 
-        result = read_gguf_metadata(Path("/test.gguf"))
-
-        assert result == {
+        assert read_gguf_metadata(path) == {
             "architecture": "llama",
             "context_length": "4096",
             "embedding_length": "4096",
@@ -3876,169 +2462,40 @@ class TestReadGgufMetadata:
             "file_type": "7",
             "name": "Test Model",
         }
-        mock_llm.close.assert_called_once()
 
-    def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata returns None when no fields found."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
+    def test_returns_none_for_empty_metadata(self, tmp_path: Path) -> None:
+        """read_gguf_metadata returns None when the header carries no fields."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
 
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = {}
-        mock_llama_cpp.Llama.return_value = mock_llm
+        reader = mock.MagicMock()
+        reader.fields = {}
+        with mock.patch("lilbee.providers.gguf_meta.GGUFReader", return_value=reader):
+            assert read_gguf_metadata(tmp_path / "model.gguf") is None
 
-        result = read_gguf_metadata(Path("/test.gguf"))
-        assert result is None
+    def test_caches_by_path_and_mtime(self, tmp_path: Path) -> None:
+        """A second read of the same file reuses the cache and never re-parses.
 
-    def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """read_gguf_metadata handles None metadata."""
-        from lilbee.providers.llama_cpp.gguf_meta import read_gguf_metadata
-
-        mock_llm = mock.MagicMock()
-        mock_llm.metadata = None
-        mock_llama_cpp.Llama.return_value = mock_llm
-
-        result = read_gguf_metadata(Path("/test.gguf"))
-        assert result is None
-
-
-class TestLoadLlama:
-    def test_embedding_uses_training_ctx_from_metadata(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """Embed load reads context_length from GGUF metadata and uses it as n_ctx."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value={"context_length": "2048"},
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 2048
-        assert call_kwargs["n_batch"] == 2048
-        assert call_kwargs["n_ubatch"] == 2048
-        assert call_kwargs["embedding"] is True
-
-    def test_embedding_no_metadata_defaults_to_2048(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """Embed load defaults to 2048 when the GGUF metadata read fails."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value=None,
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 2048
-        assert call_kwargs["n_batch"] == 2048
-
-    def test_embedding_ignores_cfg_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """Chat-tuned cfg.num_ctx does not propagate to embed/rerank loads.
-
-        Before this guard, ``min(cfg.num_ctx, embed_train_ctx)`` clamped the
-        rerank context to the chat ctx, which produced 'llama_decode
-        returned 1' on every rerank pair when a low-RAM user set a small
-        cfg.num_ctx. The embed/rerank context is the model's training ctx
-        regardless of cfg.num_ctx.
+        Planning reads each model's metadata several times per build; the cache
+        turns those repeats (each a full GGUFReader parse) into one.
         """
-        from lilbee.providers.llama_cpp.provider import load_llama
+        from lilbee.providers import gguf_meta
 
-        cfg.num_ctx = 512  # chat-sized; must NOT clamp embed
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value={"context_length": "8192"},
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 8192
-        assert call_kwargs["n_batch"] == 8192
-
-    def test_chat_mode(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """load_llama for chat does not set n_batch."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        load_llama(Path("/test.gguf"), mode="chat")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["embedding"] is False
-        assert "n_batch" not in call_kwargs
-
-    def test_embedding_clamps_zero_context_length_metadata(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """GGUF metadata reporting context_length=0 falls back to the safe default.
-
-        Several published GGUFs (nomic-embed, some Qwen3 variants) emit a
-        zero training context in their headers. Passing ``n_ctx=0`` into
-        ``Llama(embedding=True)`` propagates as ``n_batch=0`` /
-        ``n_ubatch=0``, which trips ggml's Vulkan dispatch into UB and
-        surfaces as STATUS_HEAP_CORRUPTION on Windows.
-        """
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value={"context_length": "0"},
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 2048
-        assert call_kwargs["n_batch"] == 2048
-        assert call_kwargs["n_ubatch"] == 2048
-
-    def test_embedding_clamps_negative_context_length_metadata(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """Negative ``context_length`` (corrupt metadata) also falls back."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value={"context_length": "-1"},
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 2048
-        assert call_kwargs["n_batch"] == 2048
-
-    def test_embedding_clamps_unparseable_context_length_metadata(
-        self, mock_llama_cpp: mock.MagicMock
-    ) -> None:
-        """Non-numeric ``context_length`` falls back rather than crashing the loader."""
-        from lilbee.providers.llama_cpp.provider import load_llama
-
-        cfg.num_ctx = None
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.read_gguf_metadata",
-            return_value={"context_length": "garbage"},
-        ):
-            load_llama(Path("/test.gguf"), mode="embed")
-
-        call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert call_kwargs["n_ctx"] == 2048
-        assert call_kwargs["n_batch"] == 2048
+        path = write_test_gguf(
+            tmp_path / "model.gguf", arch="llama", fields={"llama.context_length": 4096}
+        )
+        gguf_meta._METADATA_CACHE.clear()
+        with mock.patch.object(gguf_meta, "GGUFReader", wraps=gguf_meta.GGUFReader) as spy:
+            first = gguf_meta.read_gguf_metadata(path)
+            second = gguf_meta.read_gguf_metadata(path)
+        assert first == second == {"architecture": "llama", "context_length": "4096"}
+        assert spy.call_count == 1  # parsed once; second call served from cache
+        assert second is not first  # returns a copy so callers can't mutate the entry
 
 
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:
         """find_mmproj_for_model uses catalog lookup first."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         with mock.patch(
             "lilbee.catalog.find_mmproj_file",
@@ -4050,7 +2507,7 @@ class TestFindMmprojForModel:
 
     def test_directory_fallback(self, tmp_path: Path) -> None:
         """find_mmproj_for_model falls back to directory scan."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -4068,7 +2525,7 @@ class TestFindMmprojForModel:
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
         """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -4087,7 +2544,7 @@ class TestFindMmprojForModel:
         snapshot symlink, not in blobs/. find_mmproj_for_model must walk up to the
         sibling snapshots/ tree when the model path lives under blobs/.
         """
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -4105,7 +2562,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_blob_without_snapshots_falls_through(self, tmp_path: Path) -> None:
         """blobs/ dir with no sibling snapshots/ tree returns None from the HF
         helper, allowing the flat-dir fallback to take over."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -4125,7 +2582,7 @@ class TestFindMmprojForModel:
     def test_hf_cache_snapshots_without_mmproj_falls_through(self, tmp_path: Path) -> None:
         """snapshots/ tree exists but no mmproj GGUF lives in any snapshot --
         the HF helper returns None and the flat-dir fallback takes over."""
-        from lilbee.providers.llama_cpp.gguf_meta import find_mmproj_for_model
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
 
         model_root = tmp_path / "models--org--Repo-GGUF"
         blobs = model_root / "blobs"
@@ -4150,7 +2607,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type reads clip.projector_type from GGUF."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         # Build a minimal GGUF with one KV pair: clip.projector_type = "ldp"
         f = tmp_path / "test.gguf"
@@ -4174,7 +2631,7 @@ class TestReadMmprojProjectorTypePartial:
         """read_mmproj_projector_type skips unrelated keys."""
         import struct
 
-        from lilbee.providers.llama_cpp.gguf_meta import read_mmproj_projector_type
+        from lilbee.providers.gguf_meta import read_mmproj_projector_type
 
         f = tmp_path / "test.gguf"
         with open(f, "wb") as fp:
@@ -4492,8 +2949,11 @@ class TestSdkLLMProviderVisionOcr:
         return SdkLLMProvider(LitellmSdkBackend())
 
     def test_builds_multipart_message_and_routes_to_chat(self) -> None:
+        from lilbee.providers.base import ChatResult, FinishReason
+
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="page text") as mock_chat:
+        chat_result = ChatResult(text="page text", tool_calls=(), finish_reason=FinishReason.STOP)
+        with mock.patch.object(provider, "chat", return_value=chat_result) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr please")
 
         assert result == "page text"
@@ -4509,10 +2969,12 @@ class TestSdkLLMProviderVisionOcr:
         assert mock_chat.call_args[1]["stream"] is False
 
     def test_empty_prompt_uses_default_ocr_prompt(self) -> None:
+        from lilbee.providers.base import ChatResult, FinishReason
         from lilbee.vision import OCR_PROMPT
 
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        chat_result = ChatResult(text="ok", tool_calls=(), finish_reason=FinishReason.STOP)
+        with mock.patch.object(provider, "chat", return_value=chat_result) as mock_chat:
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b")
 
         text_part = mock_chat.call_args[0][0][0]["content"][1]
@@ -4520,8 +2982,11 @@ class TestSdkLLMProviderVisionOcr:
 
     def test_positive_timeout_returns_chat_result(self) -> None:
         """A non-expiring positive timeout returns the chat response unchanged."""
+        from lilbee.providers.base import ChatResult, FinishReason
+
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        chat_result = ChatResult(text="ok", tool_calls=(), finish_reason=FinishReason.STOP)
+        with mock.patch.object(provider, "chat", return_value=chat_result) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=5.0)
 
         assert result == "ok"
@@ -4544,8 +3009,11 @@ class TestSdkLLMProviderVisionOcr:
 
     def test_zero_timeout_returns_chat_result(self) -> None:
         """``timeout=0`` skips the thread pool and returns chat's result."""
+        from lilbee.providers.base import ChatResult, FinishReason
+
         provider = self._make_provider()
-        with mock.patch.object(provider, "chat", return_value="ok") as mock_chat:
+        chat_result = ChatResult(text="ok", tool_calls=(), finish_reason=FinishReason.STOP)
+        with mock.patch.object(provider, "chat", return_value=chat_result) as mock_chat:
             result = provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0)
 
         assert result == "ok"
@@ -4815,91 +3283,6 @@ class TestSdkRerank:
             provider.rerank("q", ["a"])
 
 
-class TestIsRerankModel:
-    def test_empty_model_returns_false(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _is_rerank_model
-
-        assert _is_rerank_model("") is False
-
-    def test_matches_featured_rerank_entry(self) -> None:
-        from lilbee.catalog import FEATURED_RERANK
-        from lilbee.providers.llama_cpp.provider import _is_rerank_model
-
-        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
-        assert _is_rerank_model(FEATURED_RERANK[0].hf_repo) is True
-
-    def test_non_rerank_model_returns_false(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _is_rerank_model
-
-        assert _is_rerank_model("org/Definitely-Not-Rerank-GGUF") is False
-
-    def test_substring_of_catalog_name_does_not_match(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _is_rerank_model
-
-        assert _is_rerank_model("base") is False
-        assert _is_rerank_model("reranker") is False
-
-    def test_full_hf_ref_matches(self) -> None:
-        """A full ``hf_repo/filename`` rerank ref also resolves."""
-        from lilbee.catalog import FEATURED_RERANK
-        from lilbee.providers.llama_cpp.provider import _is_rerank_model
-
-        assert FEATURED_RERANK, "catalog must have at least one rerank entry"
-        entry = FEATURED_RERANK[0]
-        assert _is_rerank_model(entry.hf_repo) is True
-
-
-class TestExtractRerankScore:
-    """``_extract_rerank_score`` operates on one ``data`` item from a batch response."""
-
-    def test_flat_list_embedding_returns_first_element(self) -> None:
-        """llama-cpp-python 0.3.x returns ``list[float]`` with length n_embd=1."""
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        assert _extract_rerank_score({"embedding": [0.73]}) == 0.73
-
-    def test_scalar_embedding_is_unexpected(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        with pytest.raises(ProviderError, match=r"unexpected score shape.*float"):
-            _extract_rerank_score({"embedding": 0.73})
-
-    def test_nested_list_embedding_is_unexpected(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        with pytest.raises(ProviderError, match=r"unexpected score shape.*list"):
-            _extract_rerank_score({"embedding": [[0.42]]})
-
-    def test_empty_embedding_list_is_unexpected(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        with pytest.raises(ProviderError, match=r"unexpected score shape.*list: \[\]"):
-            _extract_rerank_score({"embedding": []})
-
-    def test_non_numeric_embedding_is_unexpected(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _extract_rerank_score
-
-        with pytest.raises(ProviderError, match="unexpected score shape"):
-            _extract_rerank_score({"embedding": "not-a-number"})
-
-    def test_size_mismatch_at_batch_level_raises(self) -> None:
-        """``_rerank_one_call`` (the batch wrapper) catches data-length mismatches."""
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.batching import _rerank_one_call
-
-        class _StubLlama:
-            def create_embedding(self, *, input):
-                # Return one entry for two pairs (mismatch).
-                return {"data": [{"embedding": [0.5]}]}
-
-        with pytest.raises(ProviderError, match="returned 1 entries for 2 pairs"):
-            _rerank_one_call(_StubLlama(), ["q</s></s>a", "q</s></s>b"])
-
-
 class TestRoutingProviderRerank:
     """Routing-level rerank dispatch between native llama-cpp and hosted SDK."""
 
@@ -4914,7 +3297,7 @@ class TestRoutingProviderRerank:
         mock_sdk = mock.MagicMock()
         mock_sdk.supports_rerank.return_value = True
         mock_sdk.rerank.return_value = [0.9, 0.1]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
@@ -4930,7 +3313,7 @@ class TestRoutingProviderRerank:
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
         mock_sdk.supports_rerank.return_value = False
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "cohere/rerank-english-v3.0"
@@ -4947,7 +3330,7 @@ class TestRoutingProviderRerank:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.supports_rerank.return_value = True
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
 
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
         assert rp.supports_rerank() is True
@@ -4969,7 +3352,7 @@ class TestRoutingProviderRerank:
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
         mock_llama.rerank.return_value = [0.5, 0.5]
-        rp._llama_cpp = mock_llama
+        rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
@@ -5017,292 +3400,6 @@ class TestRoutingProviderRerank:
             rp.rerank("q", ["a", "b"])
 
 
-class TestLlamaCppHasRankPooling:
-    def test_has_rank_pooling_reports_import_status(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _llama_cpp_has_rank_pooling
-
-        fake_mod = mock.MagicMock()
-        fake_mod.LLAMA_POOLING_TYPE_RANK = 4
-        with mock.patch.dict(sys.modules, {"llama_cpp": fake_mod}):
-            assert _llama_cpp_has_rank_pooling() is True
-        with mock.patch.dict("sys.modules", {"llama_cpp": None}):
-            assert _llama_cpp_has_rank_pooling() is False
-
-    def test_supports_rerank_requires_rank_pooling(self) -> None:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        try:
-            with mock.patch(
-                "lilbee.providers.llama_cpp.provider._llama_cpp_has_rank_pooling",
-                return_value=True,
-            ):
-                assert provider.supports_rerank() is True
-            with mock.patch(
-                "lilbee.providers.llama_cpp.provider._llama_cpp_has_rank_pooling",
-                return_value=False,
-            ):
-                assert provider.supports_rerank() is False
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-
-class TestLlamaCppPdfOcr:
-    """``LlamaCppProvider.pdf_ocr`` aggregates streamed pages into a list."""
-
-    @staticmethod
-    def _stub_provider(stream_chunks):
-        """Build a provider whose pool accessor yields *stream_chunks* per stream call.
-
-        Returns ``(provider, captured)`` where ``captured["payload"]`` is
-        the second positional arg passed to the stub accessor's
-        ``stream`` method.
-        """
-        import asyncio
-
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        captured: dict = {}
-
-        async def _aiter():
-            for c in stream_chunks:
-                yield c
-
-        accessor = mock.MagicMock()
-
-        def _stream(_kind, payload):
-            captured["payload"] = payload
-            return _aiter()
-
-        accessor.stream = _stream
-        runtime = mock.MagicMock()
-        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
-            coro
-        )
-
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        provider._get_pool_accessor = lambda *_a, **_kw: accessor
-        provider._pool_runtime = lambda: runtime
-        return provider, captured
-
-    def test_pdf_ocr_aggregates_streamed_pages_in_order(self) -> None:
-        from lilbee.providers.worker.transport import PdfOcrRequest
-        from lilbee.vision import PageText, PdfOcrChunk
-
-        chunks = [
-            PdfOcrChunk(1, 3, "alpha"),
-            PdfOcrChunk(2, 3, "beta"),
-            PdfOcrChunk(3, 3, "gamma"),
-        ]
-        provider, captured = self._stub_provider(chunks)
-        input_path = Path("/fake.pdf")
-        try:
-            pages = provider.pdf_ocr(input_path, backend="vision", model="m")
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-        assert pages == [PageText(1, "alpha"), PageText(2, "beta"), PageText(3, "gamma")]
-        assert isinstance(captured["payload"], PdfOcrRequest)
-        assert captured["payload"].backend == "vision"
-        # PdfOcrRequest.path is str(Path), which renders with the host
-        # separator. Compare against the same str() conversion so the
-        # assertion is platform-independent.
-        assert captured["payload"].path == str(input_path)
-        assert captured["payload"].model == "m"
-
-    def test_pdf_ocr_propagates_per_page_progress(self) -> None:
-        from lilbee.runtime.progress import EventType, ExtractEvent
-        from lilbee.vision import PdfOcrChunk
-
-        chunks = [PdfOcrChunk(1, 2, "a"), PdfOcrChunk(2, 2, "b")]
-        provider, _ = self._stub_provider(chunks)
-        events: list = []
-        try:
-            provider.pdf_ocr(
-                Path("/scan.pdf"),
-                backend="vision",
-                on_progress=lambda et, ev: events.append((et, ev)),
-            )
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-        # Two streamed pages -> two EXTRACT events with matching page+total.
-        assert [e[0] for e in events] == [EventType.EXTRACT, EventType.EXTRACT]
-        assert events[0][1] == ExtractEvent(file="scan.pdf", page=1, total_pages=2)
-        assert events[1][1] == ExtractEvent(file="scan.pdf", page=2, total_pages=2)
-
-    def test_pdf_ocr_wraps_worker_error_as_provider_error(self) -> None:
-        import asyncio
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-        from lilbee.providers.worker.transport_pipe import WorkerError
-
-        async def _aiter():
-            raise WorkerError("RuntimeError", "boom", "")
-            yield  # pragma: no cover
-
-        accessor = mock.MagicMock()
-        accessor.stream = lambda _kind, _payload: _aiter()
-        runtime = mock.MagicMock()
-        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
-            coro
-        )
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        provider._get_pool_accessor = lambda *_a, **_kw: accessor
-        provider._pool_runtime = lambda: runtime
-        try:
-            with pytest.raises(ProviderError, match="PDF OCR worker"):
-                provider.pdf_ocr(Path("/x.pdf"), backend="vision")
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-    def test_pdf_ocr_rejects_unexpected_frame_type(self) -> None:
-        """A non-``PdfOcrChunk`` frame surfaces as ProviderError, not a silent unpack."""
-        from lilbee.providers.base import ProviderError
-
-        # Wire-format guard: if the worker contract regresses to a bare
-        # tuple or anything else, the provider must surface a typed error
-        # instead of unpacking it via positional access (which would let
-        # the bug land silently in production).
-        chunks = [("not", "a", "PdfOcrChunk")]
-        provider, _ = self._stub_provider(chunks)
-        try:
-            with pytest.raises(ProviderError, match="unexpected frame type"):
-                provider.pdf_ocr(Path("/x.pdf"), backend="vision")
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-    def test_pdf_ocr_wraps_timeout_as_provider_error(self) -> None:
-        """A pool TimeoutError surfaces as a friendly ProviderError, not the raw timeout."""
-        import asyncio
-
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        async def _aiter():
-            raise TimeoutError("worker stalled")
-            yield  # pragma: no cover
-
-        accessor = mock.MagicMock()
-        accessor.stream = lambda _kind, _payload: _aiter()
-        runtime = mock.MagicMock()
-        runtime.run_sync = lambda coro, *, timeout: asyncio.new_event_loop().run_until_complete(
-            coro
-        )
-        with mock.patch("threading.Thread.start"):
-            provider = LlamaCppProvider()
-        provider._get_pool_accessor = lambda *_a, **_kw: accessor
-        provider._pool_runtime = lambda: runtime
-        try:
-            with pytest.raises(ProviderError, match="PDF OCR worker timed out"):
-                provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-
-class TestPdfDrainBudget:
-    """``LlamaCppProvider._pdf_drain_budget`` sizes the streamed-drain timeout."""
-
-    @staticmethod
-    def _provider() -> Any:
-        from lilbee.providers.llama_cpp import LlamaCppProvider
-
-        with mock.patch("threading.Thread.start"):
-            return LlamaCppProvider()
-
-    def test_returns_no_cap_when_per_page_is_none(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _VISION_NO_CAP_TIMEOUT_S
-
-        provider = self._provider()
-        try:
-            assert provider._pdf_drain_budget(Path("/x.pdf"), None) == _VISION_NO_CAP_TIMEOUT_S
-            assert provider._pdf_drain_budget(Path("/x.pdf"), 0) == _VISION_NO_CAP_TIMEOUT_S
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-    def test_returns_pages_times_per_page_plus_load_grace(self, monkeypatch) -> None:
-        """Total budget = page_count * per_page + ``cfg.vision_load_budget_s``."""
-        monkeypatch.setattr(
-            "lilbee.providers.llama_cpp.provider.pdf_page_count",
-            lambda _path: 8,
-        )
-        cfg.vision_load_budget_s = 100.0
-        provider = self._provider()
-        try:
-            assert provider._pdf_drain_budget(Path("/x.pdf"), 30.0) == 8 * 30.0 + 100.0
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-    def test_falls_back_to_no_cap_when_page_probe_fails(self, monkeypatch) -> None:
-        """A pdfium probe failure mustn't kill an otherwise-valid run."""
-        from lilbee.providers.llama_cpp.provider import _VISION_NO_CAP_TIMEOUT_S
-
-        def _raise(_path):
-            raise RuntimeError("pdfium probe boom")
-
-        monkeypatch.setattr("lilbee.providers.llama_cpp.provider.pdf_page_count", _raise)
-        provider = self._provider()
-        try:
-            assert provider._pdf_drain_budget(Path("/x.pdf"), 30.0) == _VISION_NO_CAP_TIMEOUT_S
-        finally:
-            provider._embed_thread = mock.MagicMock()
-            provider._rerank_thread = mock.MagicMock()
-            provider.shutdown()
-
-
-class TestLlamaNSeqMaxContextManager:
-    """``_llama_n_seq_max`` patches ``internals.LlamaContext.__init__``."""
-
-    def test_patched_init_sets_n_seq_max_then_calls_original(self) -> None:
-        """Constructing a LlamaContext inside the with-block forces ``params.n_seq_max``.
-
-        Outside the with-block, the original ``__init__`` is restored
-        unchanged so non-embed loads (chat, vision) keep their default
-        single-sequence behaviour.
-        """
-        from lilbee.providers.llama_cpp.provider import _llama_n_seq_max
-
-        captured: list[Any] = []
-
-        class _StubLlamaContext:
-            def __init__(self, *, model: Any, params: Any, verbose: bool) -> None:
-                captured.append((model, params, verbose, params.n_seq_max))
-
-        fake_internals = mock.MagicMock()
-        fake_internals.LlamaContext = _StubLlamaContext
-        fake_module = mock.MagicMock()
-        fake_module.internals = fake_internals
-
-        with mock.patch.dict(sys.modules, {"llama_cpp": fake_module}):
-            original_init = _StubLlamaContext.__init__
-            with _llama_n_seq_max(7):
-                params = mock.MagicMock()
-                params.n_seq_max = 1  # initial value the patched body must overwrite.
-                _StubLlamaContext(model="m", params=params, verbose=False)
-            # Original is restored after the with-block exits.
-            assert _StubLlamaContext.__init__ is original_init
-
-        assert captured == [("m", mock.ANY, False, 7)]
-
-
 class TestRoutingProviderPdfOcr:
     """``RoutingProvider.pdf_ocr`` dispatches by ref prefix, like ``vision_ocr``."""
 
@@ -5312,7 +3409,7 @@ class TestRoutingProviderPdfOcr:
         rp = RoutingProvider()
         mock_native = mock.MagicMock()
         mock_native.pdf_ocr.return_value = ["p1", "p2"]
-        rp._llama_cpp = mock_native
+        rp._local = mock_native
         progress = mock.MagicMock()
         native_ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
@@ -5362,15 +3459,121 @@ class TestSdkLLMProviderPdfOcr:
             provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
 
 
-class TestProviderReadHelpers:
-    """The SDK-shape readers degrade to None when the attribute is unreadable."""
+class TestChatWithToolsRouting:
+    def test_base_default_raises(self) -> None:
+        from lilbee.providers.base import LLMProvider, ProviderError
 
-    def test_read_context_n_seq_max_none_without_context_params(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _read_context_n_seq_max
+        class _Bare(LLMProvider): ...
 
-        assert _read_context_n_seq_max(object()) is None
+        with pytest.raises(ProviderError, match="does not support tool calling"):
+            _Bare().chat_with_tools([], tools=[])
 
-    def test_read_rerank_class_count_none_without_model(self) -> None:
-        from lilbee.providers.llama_cpp.provider import _read_rerank_class_count
+    def test_routing_dispatches_to_picked_backend(self, monkeypatch) -> None:
+        from lilbee.providers.base import ChatToolResult
+        from lilbee.providers.routing_provider import RoutingProvider
 
-        assert _read_rerank_class_count(object()) is None
+        backend = mock.MagicMock()
+        backend.chat_with_tools.return_value = ChatToolResult(content="", tool_calls=[])
+        rp = RoutingProvider()
+        monkeypatch.setattr(rp, "_pick_backend", lambda _ref: backend)
+        cfg.chat_model = "org/repo/model.gguf"
+        rp.chat_with_tools(
+            [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice="auto",
+        )
+        backend.chat_with_tools.assert_called_once()
+        assert backend.chat_with_tools.call_args.kwargs["tool_choice"] == "auto"
+
+
+class TestRoutingLifecycleForwarding:
+    def test_cancel_and_reload_forward_to_local_when_present(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        rp._local = local
+        rp.cancel_inference()
+        local.cancel_inference.assert_called_once_with()
+        rp.reload_role(WorkerRole.EMBED)
+        local.reload_role.assert_called_once_with(WorkerRole.EMBED)
+
+    def test_cancel_and_reload_are_noop_without_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()  # _local is None
+        rp.cancel_inference()  # must not raise
+        rp.reload_role(WorkerRole.CHAT)  # must not raise
+
+    def test_drop_loaded_models_async_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        rp._local = local
+        rp.drop_loaded_models_async()
+        local.drop_loaded_models_async.assert_called_once_with()
+
+    def test_drop_loaded_models_async_noop_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        RoutingProvider().drop_loaded_models_async()  # _local is None: must not raise
+
+    def test_max_concurrent_chats_defaults_to_one_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().max_concurrent_chats() == 1  # _local is None
+
+    def test_max_concurrent_chats_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.max_concurrent_chats.return_value = 3
+        assert rp.max_concurrent_chats() == 3
+
+    def test_served_chat_ctx_is_none_without_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        assert RoutingProvider().served_chat_ctx() is None  # _local is None
+
+    def test_served_chat_ctx_forwards_to_local(self) -> None:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        rp._local = mock.MagicMock()
+        rp._local.served_chat_ctx.return_value = 16384
+        assert rp.served_chat_ctx() == 16384
+
+    def test_role_ready_forwards_to_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        local.role_ready.return_value = False
+        rp._local = local
+        assert rp.role_ready(WorkerRole.CHAT) is False
+        local.role_ready.assert_called_once_with(WorkerRole.CHAT)
+
+    def test_role_ready_true_without_local(self) -> None:
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        # No local engine yet: treat as reachable so callers don't show a stuck
+        # warming state before the fleet is ever constructed.
+        assert RoutingProvider().role_ready(WorkerRole.CHAT) is True
+
+
+def test_gguf_scalar_str_array_field_returns_none() -> None:
+    from types import SimpleNamespace
+
+    from gguf import GGUFValueType
+
+    from lilbee.catalog.header_probe import gguf_scalar_str
+
+    # An ARRAY-typed scalar field is not renderable as a single value.
+    field = SimpleNamespace(types=[GGUFValueType.ARRAY], data=[0], parts=[b"x"])
+    assert gguf_scalar_str(field) is None

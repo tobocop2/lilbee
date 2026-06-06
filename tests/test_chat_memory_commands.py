@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from lilbee.app.services import set_services
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.providers.base import ChatResult, FinishReason
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests.conftest import make_mock_services
 
@@ -148,7 +149,11 @@ async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
 async def test_maybe_extract_runs_when_idle(mock_svc):
     cfg.memory_enabled = True
     cfg.memory_auto_extract = True
-    mock_svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
+    mock_svc.provider.chat.return_value = ChatResult(
+        text='[{"text": "the user prefers rust", "kind": "fact"}]',
+        tool_calls=(),
+        finish_reason=FinishReason.STOP,
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)

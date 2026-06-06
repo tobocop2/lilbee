@@ -1003,7 +1003,7 @@ class TestModelPickerButton:
         """Pressing Yes on the confirm modal applies the swap and reloads embed."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -1062,7 +1062,7 @@ class TestModelPickerButton:
     async def test_embed_picker_dismiss_empty_store_skips_confirm(self) -> None:
         """A store with no chunks (fresh install) swaps without the confirm modal."""
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -1095,7 +1095,7 @@ class TestModelPickerButton:
         role that actually changed.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -2098,6 +2098,10 @@ class TestClassifyInstalledModels:
                 "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[blank, good],
             ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
+            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_chat_embed()
@@ -2134,6 +2138,10 @@ class TestClassifyInstalledModels:
             mock.patch(
                 "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]

@@ -1626,3 +1626,19 @@ class TestChatCtxTargetDefault:
         ):
             c = Config()
         assert c.chat_n_ctx_target == 8192
+
+
+class TestEngineKnobValidators:
+    """The tri-state engine knobs accept string aliases from env/config."""
+
+    def test_flash_attention_auto_is_none(self):
+        with mock.patch.dict(os.environ, {"LILBEE_FLASH_ATTENTION": "auto"}):
+            assert Config().flash_attention is None
+
+    def test_n_gpu_layers_cpu_alias_is_zero(self):
+        # Call the before-validator directly: the env source coerces int-typed
+        # fields before the validator runs, so "cpu" must be exercised here.
+        assert Config._parse_n_gpu_layers("cpu") == 0
+
+    def test_n_gpu_layers_auto_alias_is_none(self):
+        assert Config._parse_n_gpu_layers("auto") is None

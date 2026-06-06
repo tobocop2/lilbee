@@ -15,6 +15,7 @@ from lilbee.providers.model_cache import (
     _try_nvidia_memory,
     compute_dynamic_ctx,
     estimate_model_memory,
+    free_system_memory,
     get_available_memory,
     kv_bytes_per_token,
 )
@@ -198,6 +199,16 @@ class TestGetAvailableMemory:
             "lilbee.providers.model_cache._try_nvidia_memory", lambda: 4_000_000_000
         )
         assert get_available_memory(0.5) == 2_000_000_000
+
+
+class TestFreeSystemMemory:
+    def test_returns_live_psutil_available(self, monkeypatch) -> None:
+        # Unlike get_available_memory (total capacity), this is what's free right
+        # now -- the number that decides whether a model load would swap-thrash.
+        fake_psutil = mock.MagicMock()
+        fake_psutil.virtual_memory.return_value.available = 7_000_000_000
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        assert free_system_memory() == 7_000_000_000
 
 
 class TestTryNvidiaMemory:

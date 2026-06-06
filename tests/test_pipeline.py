@@ -272,3 +272,47 @@ class TestSourceTracking:
         store.upsert_source("drop_test.pdf", "hash", 3)
         store.drop_all()
         assert store.get_sources() == []
+
+
+class TestMaxConcurrent:
+    """``_max_concurrent`` scales ingest file-concurrency to the replica fleet."""
+
+    def test_defaults_to_cpu_quota_without_vision(self, monkeypatch) -> None:
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 6)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 6
+
+    def test_scales_to_total_vision_slots_when_replicated(self, monkeypatch) -> None:
+        # 8 vision replicas x 4 OCR slots each = 32, which must outvote a 4-core quota
+        # so the extra GPUs are not starved.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 8)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 32
+
+    def test_single_replica_does_not_scale_above_cpu_quota(self, monkeypatch) -> None:
+        # A single vision replica (default) must leave cpu_quota untouched so weaker
+        # single-GPU/CPU hosts and the macOS TUI see no regression.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 8)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 4
+
+    def test_scales_to_embed_replicas_when_no_vision(self, monkeypatch) -> None:
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 8)
+        assert pipeline._max_concurrent() == 8

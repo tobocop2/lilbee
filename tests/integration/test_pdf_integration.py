@@ -50,8 +50,8 @@ def pdf_pipeline(tmp_path_factory, _integration_loop):
     # Copy scanned PDF fixture
     shutil.copy2(SCANNED_PDF, docs_dir / "scanned_maintenance.pdf")
 
-    # Configure lilbee for llama-cpp
-    cfg.llm_provider = "llama-cpp"
+    # Configure lilbee for the local engine
+    cfg.llm_provider = "auto"
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
     cfg.data_root = tmp
@@ -160,7 +160,7 @@ class TestTesseractOcrFallback:
 def _vision_model_available() -> bool:
     """Check if a vision model is configured and its file exists locally."""
     try:
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
 
         if not cfg.vision_model:
             return False

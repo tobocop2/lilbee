@@ -172,7 +172,7 @@ class TestValidateModel:
         try:
             mock_provider.list_models.return_value = []
             embedder = Embedder(cfg, mock_provider)
-            with mock.patch("lilbee.providers.llama_cpp.provider.resolve_model_path") as resolve:
+            with mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve:
                 assert embedder.embedding_available() is False
                 resolve.assert_not_called()
         finally:
