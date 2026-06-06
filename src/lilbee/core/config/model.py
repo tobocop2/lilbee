@@ -24,7 +24,7 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from .enums import ChatMode, ClustererBackend, KvCacheType, LlmProvider, WikiEntityMode
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -108,6 +108,14 @@ class Config(BaseSettings):
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
     # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
+    # Hard cap on tokens generated per OCR page. A real page is well under this;
+    # the cap bounds the occasional runaway repetition loop (a page that loops to
+    # tens of thousands of chars) which otherwise dominates a scan's OCR time.
+    vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
+    # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
+    # A single-page decode underutilizes a modern GPU (~half SM); batching several
+    # pages raises throughput. Each slot adds KV cache, so lower it on small GPUs.
+    vision_ocr_concurrency: int = ConfigField(default=4, ge=1, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
@@ -131,7 +139,11 @@ class Config(BaseSettings):
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
-    llm_provider: str = ConfigField(default="auto", writable=True)
+    llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
+    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
+    # wheel binary, else a llama-server on PATH.
+    llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec
     # default" (resolved in providers.local_servers.config_urls); the default
     # URL literal lives only in the spec, which core must not import.
@@ -291,26 +303,22 @@ class Config(BaseSettings):
     # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
+    # Data-parallel replicas of the embed / vision role across GPUs: N independent
+    # servers (one per spare GPU), round-robined, so large-scale ingest fans the
+    # embedding / OCR work across the whole box. 1 = a single server (the default).
+    # Capped at runtime by the GPUs with room after the chat model is placed.
+    embed_replicas: int = ConfigField(default=1, ge=1, writable=True)
+    vision_replicas: int = ConfigField(default=1, ge=1, writable=True)
+
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Per-call deadline for one pool round-trip (send + recv). Embed batches
-    # larger than this on slow machines surface as TimeoutError; raise for
-    # heavy ingest jobs.
-    worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
-
-    # Spawn every configured role at startup instead of on first use. Trades
-    # a slower TUI mount (~1-3s per worker, cold-started in parallel) for a
-    # responsive first interaction. Roles whose model is unset are skipped,
-    # so a setup with only chat + embed never spawns rerank or vision.
-    # Set to false for headless / scripted use where the first call doesn't
-    # need to be fast.
+    # Spawn every configured role server at startup instead of on first use.
+    # Trades a slower TUI mount (the role servers cold-start in parallel) for a
+    # responsive first interaction. Roles whose model is unset are skipped, so a
+    # setup with only chat + embed never spawns rerank or vision. Set to false
+    # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
-
-    # Idle worker reap. A worker that has been quiet for this many seconds
-    # is shut down to free RAM/VRAM; the next request respawns it.
-    # ``0`` disables reaping (workers stay up until TUI exit).
-    worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
@@ -350,7 +358,7 @@ class Config(BaseSettings):
     # enumerates every adapter the system exposes and may pick the
     # integrated one first, producing stalls or OOMs that look like
     # llama.cpp bugs. Setting ``gpu_devices`` constrains visibility
-    # before llama_cpp loads, pinning inference to the chosen device(s).
+    # before the servers spawn, pinning inference to the chosen device(s).
     #
     # Accepts a comma-separated list of device indexes ("0", "1",
     # "0,1") and applies it to every backend simultaneously:
@@ -362,7 +370,7 @@ class Config(BaseSettings):
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
     # only take effect after a restart). ``None`` (default) hands off
-    # to the autodetect in ``providers/llama_cpp/gpu_select.py``,
+    # to the autodetect in ``providers/fleet/gpu_select.py``,
     # which parses ``vulkaninfo --summary`` and pins the discrete
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the

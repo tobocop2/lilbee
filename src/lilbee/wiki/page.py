@@ -14,7 +14,6 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
@@ -292,7 +291,7 @@ def generate_page(
     )
     try:
         response = provider.chat(messages, stream=False, options=options)
-        wiki_text = strip_reasoning(cast(str, response)).strip()
+        wiki_text = strip_reasoning(response.text).strip()
     except Exception as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
         _emit("failed", error=str(exc))

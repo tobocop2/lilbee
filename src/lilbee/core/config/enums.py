@@ -10,6 +10,18 @@ class ChatMode(StrEnum):
     CHAT = "chat"
 
 
+class LlmProvider(StrEnum):
+    """Inference backend that ``create_provider`` builds.
+
+    ``auto`` prefix-routes: native GGUF refs to the local llama-server engine,
+    remote-prefixed refs (``ollama/``, ``openai/``, ...) to the SDK backend.
+    ``remote`` forces the SDK backend.
+    """
+
+    AUTO = "auto"
+    REMOTE = "remote"
+
+
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
 

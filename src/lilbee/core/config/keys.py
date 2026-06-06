@@ -1,8 +1,8 @@
-"""Config-field key sets shared by the settings boundary and worker pool."""
+"""Config-field key sets shared by the settings boundary and the engine."""
 
 from __future__ import annotations
 
-# Keep in sync with ``providers.sdk_backend.API_KEY_FIELDS``.
+# API-key cfg field names: keep in sync with ``providers.sdk_backend.PROVIDER_KEYS``.
 PROVIDER_API_KEYS: frozenset[str] = frozenset(
     {
         "llm_api_key",
@@ -29,9 +29,6 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "reranker_model",
     }
 )
-
-# Subset of LOAD_AFFECTING_KEYS the worker can swap in place on the next call.
-PER_CALL_RELOADABLE_KEYS: frozenset[str] = frozenset({"chat_model", "vision_model"})
 
 # Writes here require reconstructing the services singleton.
 PROVIDER_SWITCHING_KEYS: frozenset[str] = frozenset({"llm_provider"})

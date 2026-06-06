@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
+import inspect
 import logging
 import os
 import re
+import textwrap
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.app.memory import (
@@ -33,7 +38,7 @@ from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
-from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
     MemoryKind,
@@ -51,9 +56,59 @@ log = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "lilbee",
-    instructions="Local search engine over your files, code, and crawled pages. "
-    "Search indexed documents for answers with file and line citations.",
+    instructions="Local search engine over the user's files, code, and crawled pages. "
+    "For any question about the user's own documents or codebase -- a lookup, a "
+    "find-in-docs, 'where is X', 'how does Y work here' -- call lilbee_search first "
+    "and answer from its cited chunks. Prefer it over web-fetch or file-read tools: "
+    "those cannot see the indexed corpus.",
 )
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _offload_sync(fn: _F) -> _F:
+    """Run a sync tool handler off the event loop; async handlers pass through.
+
+    The bundled mcp SDK calls sync tool handlers directly on the event loop, so
+    under the shared streamable-http daemon one slow handler would stall every
+    connected agent. ``functools.wraps`` preserves the wrapped signature so the
+    generated tool schema is unchanged.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    @functools.wraps(fn)
+    async def _runner(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    return cast("_F", _runner)
+
+
+def _tool(fn: _F) -> _F:
+    """Register *fn* as an MCP tool with sync handlers offloaded off the loop.
+
+    Returns the original callable so in-process callers (tests, the stdio
+    fallback) keep the synchronous API while the schema sees the offloaded form.
+    """
+    mcp.tool()(_offload_sync(fn))
+    return fn
+
+
+def _tool_if(condition: bool) -> Callable[[_F], _F]:
+    """Register an MCP tool only when *condition* is true.
+
+    The function stays importable so direct callers (tests, in-process
+    fallback) can still reach it. Whether the tool appears in the MCP
+    schema is fixed at import time; changing the gating config requires
+    a server restart.
+    """
+    if condition:
+        return _tool
+
+    def _passthrough(fn: _F) -> _F:
+        return fn
+
+    return _passthrough
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -66,24 +121,30 @@ def _error(msg: str) -> dict[str, Any]:
     return {"error": msg}
 
 
-@mcp.tool()
+@_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Search the knowledge base for relevant document chunks.
+    """Search the user's indexed documents, code, and crawled pages.
 
-    ``top_k`` defaults to the ``top_k`` config field so ``settings_set``
-    governs the candidate count for agents that don't pass it explicitly.
-    ``scope`` picks the pool: ``"raw"`` (source chunks), ``"wiki"`` (wiki
-    page bodies), or ``"both"`` (default, unfiltered). Returns chunks
-    sorted by relevance. No LLM call -- uses pre-computed embeddings.
+    Use this for any lookup about the user's own files or code, and prefer it
+    over web-fetch or file-read tools, which cannot see the index. Returns
+    chunks ranked by relevance with source and line citations.
+
+    ``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"both"`` (default) or
+    ``"raw"`` for ingested docs and code; use ``"wiki"`` only when ``status``
+    shows a built wiki, else it just falls back to the full pool.
     """
     if not query or not query.strip():
         return _error("query must not be empty")
     try:
         chunk_type = scope_to_chunk_type(scope)
-    except ValueError as exc:
-        return _error(str(exc))
+    except ValueError:
+        # Smaller models routinely echo prose like "indexed docs" or "all"
+        # back as the scope value. Treat unrecognised scopes as the default
+        # "both" rather than a hard failure so the request still does work.
+        log.warning("lilbee_search: unknown scope %r, falling back to %r", scope, SearchScope.BOTH)
+        chunk_type = scope_to_chunk_type(SearchScope.BOTH.value)
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
         results = get_services().searcher.search(
@@ -95,7 +156,7 @@ def search(
         return _error(str(exc))
 
 
-@mcp.tool()
+@_tool
 def status() -> dict[str, Any]:
     """Show indexed documents, configuration, and chunk counts."""
     sources = get_services().store.get_sources()
@@ -125,16 +186,12 @@ def status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict[str, Any]:
-    """Sync documents directory with the vector store.
+    """Sync the documents directory into the vector store.
 
-    Args:
-        force_rebuild: Drop every table and re-ingest from scratch (equivalent
-            to ``lilbee rebuild``). Also clears the failed-file skip markers.
-        retry_skipped: Clear the failed-file skip markers so files that were
-            skipped on a previous sync get another attempt, without dropping
-            the store.
+    ``force_rebuild`` drops every table and re-ingests. ``retry_skipped``
+    clears failed-file skip markers without dropping the store.
     """
     from lilbee.data.ingest import sync as run_sync
 
@@ -143,25 +200,18 @@ async def sync(force_rebuild: bool = False, retry_skipped: bool = False) -> dict
     ).model_dump()
 
 
-@mcp.tool()
+@_tool
 async def add(
     paths: list[str],
     force: bool = False,
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Add files, directories, or URLs to the knowledge base and sync.
-    Copies the given paths into the documents directory, then ingests them.
-    URLs (http:// or https://) are fetched as markdown and saved to _web/.
-    Paths must be absolute and accessible from this machine.
+    """Add files, directories, or URLs to the knowledge base, then sync.
 
-    Args:
-        paths: Absolute file/directory paths or URLs to add.
-        force: Overwrite files that already exist in the knowledge base.
-        enable_ocr: Force vision OCR on (True), off (False), or auto-detect
-            from chat model capabilities (None/omit).
-        ocr_timeout: Per-page timeout in seconds for vision OCR. Overrides
-            the configured default for this invocation only.
+    Paths must be absolute. URLs (http(s)://) are crawled as markdown.
+    ``enable_ocr`` forces OCR on/off; ``ocr_timeout`` overrides the
+    per-page OCR cap for this call.
     """
     from lilbee.app.ingest import copy_files
     from lilbee.data.ingest import sync as run_sync
@@ -217,22 +267,16 @@ async def add(
     return result
 
 
-@mcp.tool()
+@_tool_if(crawler_available())
 def crawl(
     url: str,
     depth: int | None = None,
     max_pages: int | None = None,
 ) -> dict[str, Any]:
-    """Crawl a web page and add it to the knowledge base (non-blocking).
-    Launches the crawl as a background task and returns immediately with a
-    task_id. Use crawl_status(task_id) to poll progress.
+    """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
 
-    Args:
-        url: The URL to crawl (must start with http:// or https://).
-        depth: None (default) crawls the whole site; 0 fetches only this URL;
-            positive int caps link-follow depth.
-        max_pages: None (default) means no page limit. Positive int caps total
-            pages fetched.
+    ``depth=None`` crawls the whole site, ``0`` is single-URL, positive ints
+    cap follow depth. ``max_pages=None`` is unlimited.
     """
     from lilbee.crawler import crawler_available
 
@@ -247,15 +291,9 @@ def crawl(
     return {"status": "started", "task_id": task_id, "url": url}
 
 
-@mcp.tool()
+@_tool_if(crawler_available())
 def crawl_status(task_id: str) -> dict[str, Any]:
-    """Check the status of a running crawl task.
-    Returns the current state including status, pages crawled, and any error.
-    Use this to poll after crawl returns a task_id.
-
-    Args:
-        task_id: The task ID returned by crawl.
-    """
+    """Poll a crawl task by id; returns ``{status, pages, error}``."""
     task = get_task(task_id)
     if task is None:
         return _error(f"No task found with id: {task_id}")
@@ -271,13 +309,11 @@ def crawl_status(task_id: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def init(path: str = "") -> dict[str, Any]:
-    """Initialize a local .lilbee/ knowledge base in a directory.
-    Creates .lilbee/ with documents/, data/, and .gitignore.
-    If path is empty, uses the current working directory.
-    Also switches the MCP session to use this knowledge base for
-    subsequent tool calls.
+    """Initialize a local ``.lilbee/`` knowledge base; empty path = cwd.
+
+    Switches the MCP session to use it for subsequent calls.
     """
     base = Path(path) if path else Path.cwd()
     root = base / LOCAL_ROOT_DIRNAME
@@ -304,20 +340,16 @@ def init(path: str = "") -> dict[str, Any]:
     return {"command": "init", "path": str(root), "created": created}
 
 
-@mcp.tool()
+@_tool
 def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
-    """Remove documents from the knowledge base by source name.
-    Args:
-        names: Source filenames to remove (as shown by status).
-        delete_files: Also delete the physical files from the documents directory.
-    """
+    """Remove documents by source name; ``delete_files=true`` also deletes the file on disk."""
     result = get_services().store.remove_documents(
         names, delete_files=delete_files, documents_dir=cfg.documents_dir
     )
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 
-@mcp.tool()
+@_tool
 def list_documents() -> dict[str, Any]:
     """List all indexed documents with their chunk counts."""
     sources = get_services().store.get_sources()
@@ -329,12 +361,11 @@ def list_documents() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, Any]:
     """Write the per-page {source, page, text} dataset to a file (no vectors).
 
-    ``fmt`` is "parquet" or "jsonl"; empty infers from the output suffix.
-    ``source`` limits the export to one source filename. No embedding.
+    ``fmt`` is parquet/jsonl (empty infers from the suffix); ``source`` limits to one file.
     """
     from lilbee.app.dataset import DatasetError, export_to_path
 
@@ -345,13 +376,11 @@ def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, An
     return summary.model_dump()
 
 
-@mcp.tool()
+@_tool
 async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None) -> dict[str, Any]:
-    """Import a per-page text dataset file, re-embedding it under the current model.
+    """Import a per-page text dataset, re-embedding under the current model.
 
-    Replaces existing copies of each source; imported sources are detached, so
-    sync won't delete them. Streams progress notifications. ``fmt`` empty
-    infers from the dataset suffix (parquet or jsonl).
+    Replaces existing copies; imported sources are detached so sync won't delete them.
     """
     from lilbee.app.dataset import DatasetError, import_from_path
     from lilbee.runtime.progress import EmbedEvent, EventType, ProgressEvent
@@ -377,12 +406,9 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
     return summary.model_dump()
 
 
-@mcp.tool()
+@_tool
 def reset(confirm: bool = False) -> dict[str, Any]:
-    """Delete all documents and data (full factory reset).
-    WARNING: This permanently removes all indexed documents and vector data.
-    Pass confirm=true to proceed.
-    """
+    """Factory reset: delete all documents and indexed data. Requires ``confirm=true``."""
     if not confirm:
         return _error("pass confirm=true to confirm deletion")
     from lilbee.app.reset import perform_reset
@@ -393,13 +419,9 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     return result
 
 
+@_tool_if(cfg.wiki)
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
-    """Lint wiki pages for citation staleness, missing sources, and unmarked claims.
-    If wiki_source is provided, lint only that page. Otherwise, lint all wiki pages.
-
-    Args:
-        wiki_source: Path like "wiki/summaries/doc.md". Empty = lint all.
-    """
+    """Lint wiki pages; empty ``wiki_source`` lints all."""
     from lilbee.wiki.lint import lint_all, lint_wiki_page
 
     store = get_services().store
@@ -415,11 +437,9 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     }
 
 
+@_tool_if(cfg.wiki)
 def wiki_citations(wiki_source: str) -> dict[str, Any]:
-    """Get all citations for a wiki page.
-    Args:
-        wiki_source: Wiki page path, e.g. "wiki/summaries/doc.md".
-    """
+    """List citations for a wiki page."""
     records = get_services().store.get_citations_for_wiki(wiki_source)
     return {
         "command": "wiki_citations",
@@ -429,6 +449,7 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
     }
 
 
+@_tool_if(cfg.wiki)
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
@@ -453,10 +474,9 @@ def wiki_status() -> dict[str, Any]:
     }
 
 
+@_tool_if(cfg.wiki)
 def wiki_list() -> dict[str, Any]:
-    """List all wiki pages (summaries and concepts) with metadata.
-    Returns page slugs, titles, types, source counts, and creation dates.
-    """
+    """List wiki pages with metadata."""
     if not cfg.wiki:
         return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
@@ -472,11 +492,9 @@ def wiki_list() -> dict[str, Any]:
     }
 
 
+@_tool_if(cfg.wiki)
 def wiki_read(slug: str) -> dict[str, Any]:
-    """Read a wiki page's content and frontmatter by slug.
-    Args:
-        slug: Page slug like "summaries/my-doc" or "concepts/typing".
-    """
+    """Read a wiki page's content + frontmatter by slug."""
     if not cfg.wiki:
         return _error(WIKI_DISABLED_ERROR)
     from dataclasses import asdict
@@ -490,11 +508,9 @@ def wiki_read(slug: str) -> dict[str, Any]:
     return {"command": "wiki_read", **asdict(result)}
 
 
+@_tool_if(cfg.wiki)
 def wiki_build() -> dict[str, Any]:
-    """Build the concept and entity wiki across all ingested sources.
-
-    Returns ``{paths, entities, count}``.
-    """
+    """Build the concept and entity wiki across all ingested sources."""
     if not cfg.wiki:
         return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_build
@@ -502,6 +518,7 @@ def wiki_build() -> dict[str, Any]:
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
+@_tool_if(cfg.wiki)
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     if not cfg.wiki:
@@ -511,13 +528,9 @@ def wiki_update() -> dict[str, Any]:
     return {"command": "wiki_update", **run_full_build(cfg)}
 
 
+@_tool_if(cfg.wiki)
 def wiki_synthesize() -> dict[str, Any]:
-    """Generate synthesis pages for concept clusters spanning three or more sources.
-
-    Returns the list of synthesis page paths written to disk. When no
-    cluster meets the 3+ source threshold, returns an empty list and
-    ``count: 0``.
-    """
+    """Generate synthesis pages for concept clusters with three or more sources."""
     if not cfg.wiki:
         return _error(WIKI_DISABLED_ERROR)
     from lilbee.wiki import run_full_synthesize
@@ -525,12 +538,9 @@ def wiki_synthesize() -> dict[str, Any]:
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
+@_tool_if(cfg.wiki)
 def wiki_prune() -> dict[str, Any]:
-    """Prune stale and orphaned wiki pages.
-    Archives pages whose sources are all deleted or whose concept cluster
-    dropped below 3 live sources. Flags pages with >50% stale citations
-    for regeneration.
-    """
+    """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)
@@ -564,20 +574,11 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-@mcp.tool()
+@_tool
 def settings_list(group: str = "") -> dict[str, Any]:
-    """List every writable lilbee setting with its current value and metadata.
+    """List writable lilbee settings (each with value, default, type, help, choices).
 
-    Returns one row per setting with ``key``, ``value``, ``default``,
-    ``type`` (``int``, ``float``, ``bool``, ``str``, ``list``, or a
-    ``foo|null`` union), ``nullable``, ``group`` (Retrieval, Generation,
-    Models, Ingest, Wiki, Crawling, API-Keys, System, Display),
-    ``help`` text, ``choices`` (for enum-typed fields), and
-    ``reindex_required`` (whether changing the value invalidates the
-    persisted vector store).
-
-    Args:
-        group: Filter by group name (case-insensitive). Empty = all.
+    ``group`` filters by group name (case-insensitive); empty returns all.
     """
 
     try:
@@ -591,19 +592,9 @@ def settings_list(group: str = "") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def settings_get(key: str) -> dict[str, Any]:
-    """Get the current value and metadata for a single lilbee setting.
-
-    The ``nullable`` field on the returned setting means the writer
-    accepts ``None`` to delete the persisted entry; ``vision_model`` /
-    ``reranker_model`` report ``nullable=false`` even though an empty
-    string clears them.
-
-    Args:
-        key: Setting name (e.g. ``"top_k"``, ``"chunk_size"``,
-            ``"chat_model"``). Use ``settings_list`` to discover keys.
-    """
+    """Get a single setting's current value + metadata."""
 
     try:
         info = get_setting(key)
@@ -612,25 +603,13 @@ def settings_get(key: str) -> dict[str, Any]:
     return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
 
 
-@mcp.tool()
+@_tool
 def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
-    """Update one or more writable lilbee settings atomically.
+    """Atomically update writable settings; rolls back on any validation error.
 
-    Validates every key and value upfront; if any value fails validation
-    the entire batch rolls back and nothing is persisted. Successful
-    writes flush to ``config.toml`` and invalidate the in-process model
-    architecture, provider load, and API-key caches so the next call
-    observes the new configuration.
-
-    Args:
-        updates: Map of setting key to new value. Pass ``null`` to clear
-            a nullable field (falls back to the pydantic default on next
-            process start). Numeric strings are coerced to int / float by
-            pydantic; booleans accept ``true`` / ``false`` / ``1`` / ``0``.
-
-    Returns ``updated`` (the keys persisted) and ``reindex_required``
-    (true when one of ``chunk_size`` / ``chunk_overlap`` changed; the
-    caller should run ``sync(force_rebuild=true)`` to refresh the index).
+    Persists to ``config.toml`` and invalidates in-process caches. Returns
+    ``{updated, reindex_required}``; ``reindex_required=true`` means run
+    ``sync(force_rebuild=true)`` to refresh the index.
     """
 
     try:
@@ -644,18 +623,9 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
-    """Reset writable settings to their built-in defaults.
-
-    Nullable fields are cleared (the next process start falls back to
-    the pydantic default); non-nullable fields are written to disk with
-    their default value. Invalidates the same caches as ``settings_set``.
-
-    Args:
-        keys: Setting keys to reset. Use ``settings_list`` to discover
-            available keys.
-    """
+    """Reset writable settings to their built-in defaults."""
 
     try:
         result = reset_settings(keys)
@@ -668,14 +638,9 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool
 def model_list(source: str = "", task: str = "") -> dict[str, Any]:
-    """List installed models across native and SDK-backend sources.
-
-    Args:
-        source: Filter by source: "native", "remote", or "" for all.
-        task: Filter by task: "chat", "embedding", "vision", "rerank", or "" for all.
-    """
+    """List installed models. ``source`` is ``native`` / ``remote``; ``task`` filters by role."""
     from lilbee.app.models import list_models_data
     from lilbee.catalog.types import ModelTask
 
@@ -690,7 +655,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
     return list_models_data(source=src, task=parsed_task).model_dump()
 
 
-@mcp.tool()
+@_tool
 def catalog_browse(
     task: str = "",
     search: str = "",
@@ -701,30 +666,13 @@ def catalog_browse(
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Browse the lilbee model catalog (featured entries + Hugging Face).
+    """Browse the lilbee model catalog (featured + Hugging Face).
 
-    Lets an agent discover candidates for any model role before pulling.
-    The catalog is the same one the TUI browses: a curated featured list
-    augmented with live Hugging Face results when ``featured=false``.
-
-    Args:
-        task: ``"chat"``, ``"embedding"``, ``"vision"``, ``"rerank"``, or
-            ``""`` for all.
-        search: Substring filter on name / repo / description.
-        size: ``"small"`` (<3 GB), ``"medium"`` (3-10 GB), or ``"large"``
-            (>10 GB). Empty = no size filter.
-        installed: ``true`` shows only installed repos, ``false`` only
-            uninstalled, ``null`` shows both.
-        featured: ``true`` restricts to the curated featured list,
-            ``false`` skips it (HF results only), ``null`` includes both.
-        sort: ``"featured"``, ``"downloads"``, ``"name"``,
-            ``"size_asc"``, or ``"size_desc"``.
-        limit: Page size (default 20).
-        offset: Page offset for pagination.
-
-    Returns ``{total, limit, offset, has_more, models}`` where each model
-    is ``{ref, display_name, task, size_gb, min_ram_gb, downloads,
-    featured, description}``.
+    ``task`` is ``chat`` / ``embedding`` / ``vision`` / ``rerank``.
+    ``size`` is ``small`` / ``medium`` / ``large``. ``installed`` filters
+    by install state, ``featured`` toggles the curated list, ``sort`` is
+    one of ``featured`` / ``downloads`` / ``name`` / ``size_asc`` /
+    ``size_desc``. Returns paginated model records.
     """
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
@@ -773,7 +721,7 @@ def catalog_browse(
     }
 
 
-@mcp.tool()
+@_tool
 def model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref."""
     from lilbee.app.models import show_model_data
@@ -797,22 +745,17 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
         log.warning("MCP report_progress failed", exc_info=True)
 
 
-@mcp.tool()
+@_tool
 async def model_pull(
     model: str,
     source: str = ModelSource.NATIVE.value,
     allow_unsupported: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Download a model, streaming progress via MCP notifications.
+    """Download a model and stream progress.
 
-    Args:
-        model: Model ref to pull (e.g. "Qwen/Qwen3-0.6B-GGUF" or
-            "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf").
-        source: "native" (HuggingFace GGUF) or "remote" (SDK-managed).
-        allow_unsupported: Set true to pull even when the model's architecture
-            isn't supported by this lilbee build. Default refuses with a
-            structured error and the list of supported architectures.
+    ``source`` is ``native`` (GGUF) or ``remote`` (SDK).
+    ``allow_unsupported`` overrides the supported-architecture refusal.
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
@@ -855,7 +798,7 @@ async def model_pull(
     return result.model_dump()
 
 
-@mcp.tool()
+@_tool
 def model_rm(model: str, source: str = "") -> dict[str, Any]:
     """Remove an installed model.
 
@@ -873,11 +816,9 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         return _error(str(exc))
 
 
+@_tool_if(cfg.wiki)
 def wiki_drafts_list() -> dict[str, Any]:
-    """List pending wiki drafts with drift, faithfulness, and pairing info.
-
-    Read-only. Accept and reject are CLI-only (destructive, explicit).
-    """
+    """List pending wiki drafts (read-only; accept/reject are CLI-only)."""
     from lilbee.wiki.drafts import list_drafts
 
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -889,12 +830,9 @@ def wiki_drafts_list() -> dict[str, Any]:
     }
 
 
+@_tool_if(cfg.wiki)
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
-    """Return a unified diff of the draft against its published counterpart.
-
-    Args:
-        slug: Draft slug (e.g. ``"chevrolet"``).
-    """
+    """Unified diff of a draft against its published counterpart."""
     from lilbee.wiki.drafts import diff_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -903,6 +841,87 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     except FileNotFoundError as exc:
         return _error(str(exc))
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
+
+
+def _collapse_nullable_anyof(prop: dict[str, Any]) -> None:
+    """Collapse ``anyOf: [{type: X}, {type: null}]`` to ``{type: X}`` in place.
+
+    Pydantic emits ``T | None`` parameters as a two-arm anyOf with a null
+    branch. The null branch carries no information the model needs to pick
+    or shape its call, but it costs tokens at every dispatch. Drop it.
+    """
+    arms = prop.get("anyOf")
+    if not isinstance(arms, list):
+        return
+    non_null = [a for a in arms if isinstance(a, dict) and a.get("type") != "null"]
+    if len(non_null) == 1 and len(non_null) < len(arms):
+        prop.pop("anyOf", None)
+        for key, value in non_null[0].items():
+            prop.setdefault(key, value)
+
+
+def _strip_property_noise(prop: dict[str, Any]) -> None:
+    """Drop tokens that don't change the model's behavior."""
+    prop.pop("title", None)
+    prop.pop("default", None)
+    if prop.get("additionalProperties") is True:
+        prop.pop("additionalProperties", None)
+    _collapse_nullable_anyof(prop)
+
+
+def _strip_schema_noise() -> None:
+    """Trim auto-generated noise from every registered tool's schema before
+    it ships on the OpenAI tools wire for each chat request.
+
+    Drops:
+    - FastMCP/Pydantic ``title`` keys (per-schema + per-property). Tools the
+      model picks by name don't need a separate display title.
+    - ``default`` values on properties: clients send what they want and
+      omitted fields fall back server-side.
+    - ``additionalProperties: true`` on dict params: Pydantic emits it for
+      every ``dict[str, Any]`` but it's the JSON Schema default behavior.
+    - The ``null`` arm of ``anyOf: [{type: X}, {type: null}]`` unions for
+      ``T | None`` defaults; the null branch is implicit.
+    - Triple-quoted docstring indentation on the tool description. The model
+      sees a flat sentence instead of multi-line text with 4-space prefixes.
+
+    The net effect is a roughly 25-35% reduction in the serialized tools
+    payload, which matters most for small-context (16K) chat models where
+    the tools surface was previously eating ~60% of the budget.
+
+    Runs once after every ``@_tool`` decoration in this module has fired.
+    """
+    for info in mcp._tool_manager._tools.values():
+        params = info.parameters
+        if isinstance(params, dict):
+            params.pop("title", None)
+            properties = params.get("properties")
+            if isinstance(properties, dict):
+                for prop in properties.values():
+                    if isinstance(prop, dict):
+                        _strip_property_noise(prop)
+        if isinstance(info.description, str):
+            info.description = textwrap.dedent(info.description).strip()
+
+
+_NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
+
+
+def _tune_search_scope_for_corpus() -> None:
+    """Tell ``search`` which scopes this corpus actually has.
+
+    When wiki generation is off (``cfg.wiki`` is False), a model that guesses
+    ``scope="wiki"`` only gets a silent fallback to the full pool, so advertise
+    raw/both only. Idempotent and reversible so a config reload re-tunes it.
+    """
+    info = mcp._tool_manager._tools.get("search")
+    if info is None or not isinstance(info.description, str):
+        return
+    has_hint = _NO_WIKI_SCOPE_HINT in info.description
+    if cfg.wiki and has_hint:
+        info.description = info.description.replace(_NO_WIKI_SCOPE_HINT, "")
+    elif not cfg.wiki and not has_hint:
+        info.description += _NO_WIKI_SCOPE_HINT
 
 
 def _client_name(ctx: Context | None) -> str:
@@ -929,6 +948,7 @@ def _derive_owner(agent_id: str, ctx: Context | None) -> str:
     return agent_owner(_slug(explicit or _client_name(ctx)))
 
 
+@_tool_if(memory_enabled())
 def memory_remember(
     text: str,
     kind: MemoryKind = MemoryKind.FACT,
@@ -952,6 +972,7 @@ def memory_remember(
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
+@_tool_if(memory_enabled())
 def memory_recall(
     query: str, limit: int = 0, agent_id: str = "", ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -967,6 +988,7 @@ def memory_recall(
     }
 
 
+@_tool_if(memory_enabled())
 def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
     """List every memory in this agent's namespace (any kind, newest first)."""
     if not memory_enabled():
@@ -980,6 +1002,7 @@ def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any
     }
 
 
+@_tool_if(memory_enabled())
 def memory_forget(memory_id: str) -> dict[str, Any]:
     """Delete a memory by id."""
     if not memory_enabled():
@@ -988,35 +1011,12 @@ def memory_forget(memory_id: str) -> dict[str, Any]:
     return {"ok": True, "id": memory_id}
 
 
-_WIKI_TOOLS = (
-    wiki_status,
-    wiki_list,
-    wiki_read,
-    wiki_lint,
-    wiki_citations,
-    wiki_build,
-    wiki_update,
-    wiki_synthesize,
-    wiki_prune,
-    wiki_drafts_list,
-    wiki_drafts_diff,
-)
-_MEMORY_TOOLS = (memory_remember, memory_recall, memory_list, memory_forget)
-
-
-def register_conditional_tools() -> None:
-    """Register wiki and memory tools only when their subsystems are enabled."""
-    if cfg.wiki:
-        for wiki_tool in _WIKI_TOOLS:
-            mcp.tool()(wiki_tool)
-    if memory_enabled():
-        for memory_tool in _MEMORY_TOOLS:
-            mcp.tool()(memory_tool)
+_strip_schema_noise()
+_tune_search_scope_for_corpus()
 
 
 def main() -> None:
     """Entry point for the MCP server."""
-    register_conditional_tools()
     # Preload so the first tool call doesn't pay the cold-start cost
     # of provider/embedder/store init. Failures (missing model, bad
     # config) still surface on the first tool call rather than crashing

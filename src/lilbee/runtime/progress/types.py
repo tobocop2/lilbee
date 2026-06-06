@@ -33,6 +33,7 @@ class SseEvent(StrEnum):
     PROGRESS = "progress"
     HEARTBEAT = "heartbeat"
     ALREADY_INGESTING = "already_ingesting"
+    WARMING = "warming"
     MEMORY_EXTRACTED = "memory_extracted"
 
 

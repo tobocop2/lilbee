@@ -10,7 +10,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from textual.app import App

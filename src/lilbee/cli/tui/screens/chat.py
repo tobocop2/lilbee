@@ -100,6 +100,28 @@ _STREAM_FLUSH_INTERVAL = 0.05
 _STREAM_SCROLL_INTERVAL = 0.15
 
 
+def _parse_add_paths(args: str) -> list[Path]:
+    """Resolve ``/add`` arguments to filesystem paths.
+
+    A single unquoted path may contain spaces and apostrophes (e.g. macOS
+    "Star Wars Collector's Edition.pdf"), which shell parsing would split into
+    fragments or reject with "No closing quotation". So when the whole argument
+    points at an existing file or directory, take it as one path; otherwise fall
+    back to shell-style splitting for multiple, optionally quoted, paths.
+    """
+    whole = Path(args.strip().strip('"').strip("'")).expanduser()
+    if whole.exists():
+        return [whole]
+    try:
+        # posix=False on Windows keeps backslash path separators literal.
+        tokens = shlex.split(args, posix=os.name != "nt")
+    except ValueError:
+        return [whole]  # unbalanced quote in a literal path; treat as one path
+    if os.name == "nt":
+        tokens = [t.strip('"').strip("'") for t in tokens]
+    return [Path(token).expanduser() for token in tokens]
+
+
 class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
 
@@ -311,7 +333,7 @@ class ChatScreen(Screen[None]):
             return True
         from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
             if parse_model_ref(model).is_remote:
@@ -554,19 +576,7 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
-        # Platform-aware shell parsing: POSIX rules treat backslashes as
-        # escapes, so a Windows path like C:\Users\foo gets mangled to
-        # C:Usersfoo. shlex(posix=False) keeps backslashes literal but
-        # leaves surrounding quotes attached to tokens, so trim those
-        # before constructing Path objects.
-        try:
-            tokens = shlex.split(args, posix=os.name != "nt")
-        except ValueError as exc:
-            self.notify(str(exc), severity="error")
-            return
-        if os.name == "nt":
-            tokens = [t.strip('"').strip("'") for t in tokens]
-        paths = [Path(token).expanduser() for token in tokens]
+        paths = _parse_add_paths(args)
         missing = [p for p in paths if not p.exists()]
         if missing:
             self.notify(

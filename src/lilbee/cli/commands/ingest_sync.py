@@ -248,6 +248,75 @@ def _run_crawl_with_signal_cancel(
         signal.signal(signal.SIGINT, previous_handler)
 
 
+def _cancellable_progress(
+    cancel_event: threading.Event, chain: DetailedProgressCallback
+) -> DetailedProgressCallback:
+    """Wrap *chain* so a set *cancel_event* aborts the in-flight file cooperatively.
+
+    The ingest pipeline and the per-page vision OCR loop both call the progress
+    callback between units of work; raising :class:`TaskCancelledError` there is
+    the established cooperative-cancel signal, so a Ctrl+C stops a long OCR
+    between pages instead of after the whole document.
+    """
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    def _callback(event_type: object, data: object) -> None:
+        if cancel_event.is_set():
+            raise TaskCancelledError
+        chain(event_type, data)  # type: ignore[arg-type]
+
+    return _callback
+
+
+def _run_sync_with_signal_cancel(
+    *,
+    force_rebuild: bool = False,
+    retry_skipped: bool = False,
+    on_progress: DetailedProgressCallback | None = None,
+) -> object:
+    """Run ``sync`` on a dedicated loop with a SIGINT->cancel hook (no traceback on Ctrl+C).
+
+    Mirrors the crawl path: a plain signal handler sets a ``threading.Event``
+    that ``sync`` polls between files and the OCR loop polls between pages, so
+    Ctrl+C aborts cleanly rather than raising KeyboardInterrupt mid-ingest.
+    """
+    import signal
+
+    from lilbee.data.ingest import sync
+    from lilbee.runtime.progress import noop_callback
+
+    # Batch ingest is a headless one-shot: skip the eager warm so services init
+    # doesn't spawn every role. With lazy per-role spawn, the sync brings up only
+    # the embed server (plus vision/chat if those steps actually run), instead of
+    # holding an idle chat server's VRAM for the whole build.
+    cfg.worker_pool_eager_start = False
+
+    cancel_event = threading.Event()
+    callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum: int, _frame: object) -> None:
+        cancel_event.set()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(
+            sync(
+                force_rebuild=force_rebuild,
+                quiet=cfg.json_mode,
+                on_progress=callback,
+                cancel=cancel_event,
+                retry_skipped=retry_skipped,
+            )
+        )
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+        signal.signal(signal.SIGINT, previous_handler)
+
+
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -258,10 +327,9 @@ def sync_cmd(
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
-    from lilbee.data.ingest import sync
 
     try:
-        result = asyncio.run(sync(quiet=cfg.json_mode, retry_skipped=retry_skipped))
+        result = _run_sync_with_signal_cancel(retry_skipped=retry_skipped)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -283,16 +351,18 @@ def rebuild(
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
-    from lilbee.data.ingest import sync
+    from lilbee.data.ingest import SyncResult
 
     try:
-        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode))
+        result = _run_sync_with_signal_cancel(force_rebuild=True)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output({"command": "rebuild", "ingested": len(result.added)})
         return
@@ -419,12 +489,10 @@ def add(
             return
 
         if file_paths:
-            add_paths(file_paths, console, force=force)
+            add_paths(file_paths, console, force=force, run_sync=_run_sync_with_signal_cancel)
         elif urls:
-            # URLs already saved; just trigger sync
-            from lilbee.data.ingest import sync
-
-            result = asyncio.run(sync())
+            # URLs already saved; just trigger sync (Ctrl+C-cancellable)
+            result = _run_sync_with_signal_cancel()
             console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:

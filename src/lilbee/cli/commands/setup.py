@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -21,7 +22,12 @@ from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.progress import EventType, SetupProgressEvent
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.swap_manager import SwapManager
 
 _SELF_CHECK_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _SELF_CHECK_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -100,55 +106,121 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     }
 
 
+def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager, LlamaServerClient]:
+    """Start a one-model llama-swap for *model_path* in *role* and return its
+    manager plus an OpenAI client.
+
+    Builds the launch with the fleet's per-role argv builder (ctx, gpu-layers,
+    and -- for chat -- the flash-attn / KV-cache flags) so the check exercises the
+    same binary and flags a real request drives. The upstream loads on the first
+    request; the caller shuts the manager down.
+    """
+    from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.engine_params import (
+        resolve_chat_ctx,
+        resolve_embed_ctx,
+        resolve_n_gpu_layers,
+    )
+    from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+    from lilbee.providers.fleet.binary import (
+        llama_server_runtime_env,
+        resolve_llama_server,
+    )
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.swap_manager import SwapManager
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    meta = read_gguf_metadata(model_path)
+    is_embed = role is WorkerRole.EMBED
+    if is_embed:
+        ctx = resolve_embed_ctx(meta, model_path)
+    else:
+        ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
+    argv = build_server_argv(
+        binary=resolve_llama_server(),
+        spec=ROLE_SPECS[role],
+        model_path=model_path,
+        devices=(),
+        n_gpu_layers=resolve_n_gpu_layers(embedding=is_embed),
+        slots=1,
+        ctx_per_slot=ctx,
+        # Chat mirrors the fleet's chat flags; embed runs f16 KV with a full-ctx batch.
+        flash_attn=None if is_embed else ("off" if cfg.flash_attention is False else "on"),
+        cache_type=(
+            None if is_embed or cfg.kv_cache_type is KvCacheType.F16 else cfg.kv_cache_type.value
+        ),
+        batch_size=ctx if is_embed else None,
+    )
+    work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
+    launch = InstanceLaunch(
+        role=role,
+        argv=argv,
+        env_overrides=llama_server_runtime_env(),
+        model=str(model_path),
+        port_file=work_dir / f"{role.value}.port",
+        token_cap=ctx if is_embed else None,
+    )
+    swap = SwapManager(work_dir)
+    swap.start([launch])
+    return swap, LlamaServerClient(swap.endpoint(), launch.model_id)
+
+
+def _self_check_chat(model_path: Path, max_tokens: int) -> str:
+    """Run a chat model through a one-off llama-swap, request a tiny completion, tear down."""
+    swap, client = _self_check_server(WorkerRole.CHAT, model_path)
+    try:
+        result = client.chat(
+            [{"role": "user", "content": "2+2="}],
+            options={"max_tokens": max_tokens},
+            stream=False,
+        )
+        return str(result)
+    finally:
+        swap.shutdown()
+
+
+def _self_check_embed(model_path: Path) -> int:
+    """Run an embedding model through a one-off llama-swap, return one vector's dim."""
+    swap, client = _self_check_server(WorkerRole.EMBED, model_path)
+    try:
+        vectors = client.embed(["test"])
+        return len(vectors[0]) if vectors else 0
+    finally:
+        swap.shutdown()
+
+
 def self_check_cmd(
     chat_model_path: Path | None = _self_check_chat_path_option,
     embed_model_path: Path | None = _self_check_embed_path_option,
     max_tokens: int = _self_check_max_tokens_option,
     skip_embedding: bool = _self_check_skip_embedding_option,
 ) -> None:
-    """Verify the installation can load llama.cpp and run real inference.
+    """Verify the installation can launch llama-server and run real inference.
 
-    Routes both legs through :func:`lilbee.providers.llama_cpp.provider.load_llama`
-    so the dynamic-``n_ctx`` picker, flash-attention default, KV cache type,
-    ``n_gpu_layers`` resolution, and OOM retry path all run -- i.e. the same
-    provider stack a real ``lilbee ask`` / ``lilbee chat`` exercises. Failure
-    here means either the vendored shared libraries don't load or one of the
-    cfg-driven provider knobs is misconfigured for the host.
+    Spawns a one-off llama-server for each leg with the same launch builder the
+    fleet uses (so the dynamic-``n_ctx`` picker, flash-attention default, KV cache
+    type, and ``n_gpu_layers`` resolution all fire), then issues a request over
+    HTTP -- i.e. the same engine a real ``lilbee ask`` / ``lilbee chat`` drives.
+    Failure here means either the bundled binary / its shared libraries don't load
+    or one of the cfg-driven knobs is misconfigured for the host.
 
     Two legs:
 
-    1. **Chat**: downloads ``Qwen3-0.6B-Q8_0.gguf`` (~500MB),
-       runs ``load_llama(..., mode=LoaderMode.CHAT)`` so the dynamic-ctx picker /
-       flash-attention default / KV cache mapping fire, then issues a tiny
-       ``create_completion``.
+    1. **Chat**: downloads ``Qwen3-0.6B-Q8_0.gguf`` (~500MB), spawns a chat
+       server, and requests a tiny completion.
     2. **Embedding**: downloads ``nomic-embed-text-v1.5.Q4_K_M.gguf`` (~84MB),
-       runs ``load_llama(..., mode=LoaderMode.EMBED)`` so the embed-mode ctx clamp
-       fires, then issues ``create_embedding``. Catches the "Memory is not
-       initialized" assert from llama-cpp-python <0.3.19, where BERT-style
-       encoders trip ``kv_cache_clear`` on a context that never allocated
-       memory.
+       spawns an embedding server, and requests one embedding vector.
 
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
-    from typing import cast
-
-    from lilbee.providers.llama_cpp.provider import load_llama
-    from lilbee.providers.model_cache import LoaderMode
-
     try:
         chat_path = chat_model_path or _download_self_check_model(
             _SELF_CHECK_CHAT_REPO, _SELF_CHECK_CHAT_FILE
         )
         console.print(f"Loading chat model {chat_path}")
-
-        llm = load_llama(chat_path, mode=LoaderMode.CHAT)
-        # stream=False (default) returns a dict, not an iterator, but
-        # create_completion's return type is a union; cast to Any so the
-        # indexing below type-checks without forcing llama_cpp to be a
-        # typecheck-time dep of lilbee.
-        out = cast(Any, llm.create_completion("2+2=", max_tokens=max_tokens))
-        text: str = out["choices"][0]["text"]
+        text = _self_check_chat(chat_path, max_tokens)
     except Exception as exc:
         _self_check_emit_failure(repr(exc))
         raise typer.Exit(1) from exc
@@ -164,17 +236,14 @@ def self_check_cmd(
                 _SELF_CHECK_EMBED_REPO, _SELF_CHECK_EMBED_FILE
             )
             console.print(f"Loading embedding model {embed_path}")
-            enc = load_llama(embed_path, mode=LoaderMode.EMBED)
-            emb = cast(Any, enc.create_embedding(input=["test"]))
-            vec = emb["data"][0]["embedding"]
+            embedding_dims = _self_check_embed(embed_path)
         except Exception as exc:
             _self_check_emit_failure(repr(exc))
             raise typer.Exit(1) from exc
 
-        if not vec:
+        if not embedding_dims:
             _self_check_emit_failure("empty embedding vector")
             raise typer.Exit(1)
-        embedding_dims = len(vec)
 
     provider_kwargs = _resolved_provider_kwargs()
     if cfg.json_mode:
