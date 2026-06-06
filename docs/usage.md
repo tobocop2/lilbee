@@ -682,7 +682,7 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[remote]'` (or `uv tool install --prerelease=allow 'lilbee[remote]'`), any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
@@ -740,7 +740,7 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
 | `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `≥64 GiB → 24576`. 8192 is the floor on smaller hosts. The picker still clamps the result to the model's training context and available memory at worker start. Set explicitly to override |
 | `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
-| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
+| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
@@ -787,12 +787,12 @@ extras add capabilities that require heavier dependencies:
 # pip
 pip install --pre 'lilbee[graph]'      # concept graph: topic clustering + search boosting
 pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside local docs
-pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
+pip install --pre 'lilbee[remote]'    # remote providers: connect to any SDK-backed provider
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
 uv tool install --prerelease=allow 'lilbee[crawler]'
-uv tool install --prerelease=allow 'lilbee[litellm]'
+uv tool install --prerelease=allow 'lilbee[remote]'
 ```
 
 Install multiple at once:
@@ -931,7 +931,7 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 ### Remote providers (SDK backend)
 
 Connect to hosted or local OpenAI-compatible LLM backends alongside lilbee's
-native in-process inference.
+managed local llama-server engine.
 
 **What it does:** Routes chat and embedding calls to any provider reachable
 via the SDK backend. The routing provider automatically detects which models
@@ -941,9 +941,8 @@ are available locally vs. remotely and routes each call to the right backend.
 embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
-**Install:** `pip install --pre 'lilbee[litellm]'` or
-`uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
-adapter library name).
+**Install:** `pip install --pre 'lilbee[remote]'` or
+`uv tool install --prerelease=allow 'lilbee[remote]'`.
 
 **Configuration:**
 
@@ -1058,7 +1057,7 @@ vision model is configured, it takes precedence.
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[remote]'` / `uv tool install --prerelease=allow 'lilbee[remote]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
@@ -1077,12 +1076,12 @@ sudo apt install tesseract-ocr  # Ubuntu/Debian
 
 lilbee runs vision OCR in one of two ways:
 
-1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
-   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly, in-process. This is the recommended path and supports an SSE
-   heartbeat for long scans.
-2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
-   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
+1. **Local vision model.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
+   (e.g. `lightonocr`) and lilbee serves it on `llama-server` with an `--mmproj`
+   projector. This is the recommended path and supports an SSE heartbeat for
+   long scans.
+2. **Remote vision model.** With `pip install --pre 'lilbee[remote]'` (or
+   `uv tool install --prerelease=allow 'lilbee[remote]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route
    vision calls accordingly.
 

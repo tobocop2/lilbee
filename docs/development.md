@@ -23,7 +23,7 @@ make format     # Auto-format code
 |-----------|------|
 | Language | Python 3.11+ |
 | Package manager | uv |
-| LLM runtime | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (in-process; native GGUF) |
+| LLM runtime | [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server`, managed by lilbee (native GGUF) |
 | Embeddings | nomic-embed-text (configurable) |
 | Vector DB | LanceDB (embedded, Rust-based) |
 | PDF extraction | pymupdf4llm |

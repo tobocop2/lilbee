@@ -1612,8 +1612,8 @@ dependencies = [
     { name = "jinja2" },
     { name = "kreuzberg" },
     { name = "lancedb" },
+    { name = "lilbee-engine" },
     { name = "litestar" },
-    { name = "llama-cpp-python" },
     { name = "mcp" },
     { name = "numpy" },
     { name = "pillow" },
@@ -1635,14 +1635,14 @@ graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
 ]
-litellm = [
-    { name = "litellm" },
-]
 release = [
     { name = "crawl4ai" },
     { name = "graspologic-native" },
     { name = "litellm" },
     { name = "spacy" },
+]
+remote = [
+    { name = "litellm" },
 ]
 
 [package.dev-dependencies]
@@ -1673,10 +1673,10 @@ requires-dist = [
     { name = "jinja2", specifier = ">=2.11.3" },
     { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
-    { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
+    { name = "lilbee", extras = ["crawler", "remote", "graph"], marker = "extra == 'release'" },
+    { name = "lilbee-engine", directory = "packaging/engine-wheel" },
+    { name = "litellm", marker = "extra == 'remote'", specifier = ">=1.50" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "numpy" },
     { name = "pillow", specifier = ">=11.3.0" },
@@ -1690,7 +1690,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "graph", "crawler", "release"]
+provides-extras = ["remote", "graph", "crawler", "release"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1707,6 +1707,11 @@ dev = [
     { name = "ruff", specifier = ">=0.15.4" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
+
+[[package]]
+name = "lilbee-engine"
+version = "0.0.0"
+source = { directory = "packaging/engine-wheel" }
 
 [[package]]
 name = "linkify-it-py"
@@ -1775,18 +1780,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/3f/b9/7e296aa1adada25cc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/24/8d99982f0aa9c1cd82073c6232b54a0dbe6797c7d63c0583a6c68ee3ddf2/litestar_htmx-0.5.0-py3-none-any.whl", hash = "sha256:92833aa47e0d0e868d2a7dbfab75261f124f4b83d4f9ad12b57b9a68f86c50e6", size = 9970 },
 ]
-
-[[package]]
-name = "llama-cpp-python"
-version = "0.3.23"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "diskcache" },
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/61/fb/3932d67b89eb7d8f451719b40b67034e031e04b8b598a7f65d13e255ebfb/llama_cpp_python-0.3.23.tar.gz", hash = "sha256:85493cd887b543588941e8704640fef6a54c057443292e527559c30728375ffd", size = 68300621 }
 
 [[package]]
 name = "lxml"

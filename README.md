@@ -107,7 +107,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 ### Opencode integration (coming)
 
-Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families.
+Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families. See [docs/opencode-models.md](docs/opencode-models.md) for the verified model list and how the QA harness measures it (architecture, per-cell lifecycle, and the tool-dispatch pass gate).
 
 The demo shows a small local model (Qwen) given a specific instruction: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 
@@ -349,9 +349,9 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 lilbee stands on a stack of established open-source projects, all bundled into one install:
 
-- [llama.cpp] (via [llama-cpp-python]) is the local model runtime. Every chat, embedding, vision, and reranker call goes through it. Without llama.cpp there is no lilbee.
-- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [llama.cpp] is the local model runtime: lilbee bundles its `llama-server` and starts it for you, so every chat, embedding, vision, and reranker call goes through it. [llama-swap] keeps a server per role resident together behind one endpoint, and [gguf-parser] estimates each model's memory footprint so lilbee loads what fits. Without llama.cpp there is no lilbee.
+- [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
 - [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
@@ -366,7 +366,8 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com
 [llama.cpp]: https://github.com/ggml-org/llama.cpp
-[llama-cpp-python]: https://github.com/abetlen/llama-cpp-python
+[llama-swap]: https://github.com/mostlygeek/llama-swap
+[gguf-parser]: https://github.com/gpustack/gguf-parser-go
 [Hugging Face Hub]: https://huggingface.co
 [huggingface_hub]: https://github.com/huggingface/huggingface_hub
 [crawl4ai]: https://github.com/unclecode/crawl4ai
