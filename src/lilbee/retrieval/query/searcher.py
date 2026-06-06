@@ -285,11 +285,17 @@ class Searcher:
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
     ) -> list[SearchChunk]:
-        """Pick ``max_sources`` chunks by greedy IDF-weighted set cover."""
+        """Pick ``max_sources`` chunks.
+
+        Results carrying ``rerank_score`` keep the cross-encoder order (top
+        ``max_sources``); otherwise greedy IDF-weighted set cover.
+        """
         if max_sources is None:
             max_sources = self._config.max_context_sources
         if len(results) <= max_sources:
             return results
+        if any(r.rerank_score is not None for r in results):
+            return results[:max_sources]
 
         question_terms = set(_tokenize(question))
         if not question_terms:

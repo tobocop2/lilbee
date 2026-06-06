@@ -6,6 +6,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
 
@@ -119,6 +120,36 @@ class TestRerank:
         with _patch_provider(explode):
             out = reranker.rerank("test", results)
         assert [c.chunk for c in out] == ["A", "B"]
+        assert all(r.rerank_score is None for r in out)
+
+    def test_stamps_rerank_score_on_candidates_only(self, reranker):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        results = [
+            _chunk("a.md", "chunk A"),
+            _chunk("b.md", "chunk B"),
+            _chunk("c.md", "chunk C"),
+        ]
+        with _patch_provider(lambda query, cands: [0.9, 0.1]):
+            reranked = reranker.rerank("test", results, candidates=2)
+        scored = [r.chunk for r in reranked if r.rerank_score is not None]
+        unscored = [r.chunk for r in reranked if r.rerank_score is None]
+        assert sorted(scored) == ["chunk A", "chunk B"]
+        assert unscored == ["chunk C"]
+        assert all(r.rerank_score is None for r in results)  # inputs stay untouched
+
+    def test_pinned_top_keeps_blended_rerank_score(self, reranker):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.expansion_skip_threshold = 0.8
+        results = [
+            _chunk("a.md", "exact match", relevance=0.9),
+            _chunk("b.md", "reranker favorite", relevance=0.5),
+        ]
+        with _patch_provider(lambda query, cands: [0.0, 1.0]):
+            reranked = reranker.rerank("test", results)
+        assert [c.chunk for c in reranked] == ["exact match", "reranker favorite"]
+        assert len(reranked) == 2  # the pin must not duplicate the top chunk
+        # The pin sentinel orders the list; the stamped score stays the real blend.
+        assert all(r.rerank_score is not None and r.rerank_score <= 1.0 for r in reranked)
 
     def test_sends_chunk_text_to_provider(self, reranker):
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
@@ -217,6 +248,47 @@ class TestGoldenOrdering:
         with _patch_provider(lambda query, cands: [0.1, 0.9]):
             reranked = reranker.rerank("test", results)
         assert [c.chunk for c in reranked] == ["B", "A"]
+
+
+class TestRerankChangesContext:
+    """Empirical gate: reranking changes WHICH chunks reach the model.
+
+    The cross-encoder favorite shares no surface terms with the question,
+    so term-coverage set cover alone can never select it.
+    """
+
+    _QUESTION = "radio resets and headlights dim at idle"
+
+    def _candidates(self) -> list[SearchChunk]:
+        return [
+            _chunk("dock.md", "radio resets when the laptop dock is plugged", relevance=0.9),
+            _chunk("lightbar.md", "headlights dim with the light bar load", relevance=0.8),
+            _chunk("battery.md", "battery log shows the radio and headlights draw", relevance=0.7),
+            _chunk("grounding.md", "grounding upgrade with one zero gauge cable", relevance=0.6),
+        ]
+
+    def test_reranking_changes_selected_context_set(self):
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.expansion_skip_threshold = 0.95  # top fusion hit stays below: no pin
+        reranker = Reranker(cfg)
+        searcher = Searcher(
+            cfg,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+            reranker,
+            mock.MagicMock(),
+        )
+
+        baseline = searcher.select_context(self._candidates(), self._QUESTION, max_sources=3)
+        assert "grounding.md" not in {r.source for r in baseline}
+
+        with _patch_provider(lambda query, cands: [0.1, 0.2, 0.1, 1.0]):
+            reranked = reranker.rerank(self._QUESTION, self._candidates())
+        selected = searcher.select_context(reranked, self._QUESTION, max_sources=3)
+        sources = {r.source for r in selected}
+        assert "grounding.md" in sources
+        assert sources != {r.source for r in baseline}
 
 
 class TestMixedPoolBias:
