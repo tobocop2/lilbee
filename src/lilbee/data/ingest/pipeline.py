@@ -29,7 +29,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_markers,
 )
 from lilbee.data.ingest.types import ChunkRecord, FileToProcess, SyncResult, _IngestResult
-from lilbee.data.store import PageTextRecord, SourceRecord, SourceType
+from lilbee.data.store import ChunkWrite, PageTextRecord, SourceRecord, SourceType
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
@@ -37,19 +37,40 @@ from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
     DetailedProgressCallback,
+    EmbedEvent,
     EventType,
+    ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    ProgressEvent,
     SyncDoneEvent,
     noop_callback,
-    shared_progress,
 )
 
 log = logging.getLogger(__name__)
 
-# Limit concurrent ingestion. Sourced from cpu_quota() so worker storms
-# can't starve the TUI's asyncio main thread on macOS.
-_MAX_CONCURRENT = cpu_quota()
+
+def _max_concurrent() -> int:
+    """Files allowed in their compute phase at once.
+
+    ``cpu_quota()`` (cpu_count // 2) keeps worker storms from starving the TUI's asyncio
+    main thread. But with a data-parallel fleet (N vision/embed servers, one per GPU), a
+    few-core box would cap file concurrency below the GPU count and starve the extra
+    cards, so the bottleneck role's total slots set the floor: vision OCR (replicas x
+    per-server pages) when a vision model is configured, else the embed replicas.
+    """
+    from lilbee.core.config import cfg
+
+    # Only a multi-replica (multi-GPU) fleet scales above cpu_quota; with one replica per
+    # role the cpu_quota cap is untouched, so single-GPU/CPU hosts and the macOS TUI see
+    # exactly the previous behavior.
+    vision_slots = (
+        cfg.vision_replicas * cfg.vision_ocr_concurrency
+        if cfg.vision_model and cfg.vision_replicas > 1
+        else 0
+    )
+    embed_slots = cfg.embed_replicas if cfg.embed_replicas > 1 else 0
+    return max(cpu_quota(), vision_slots, embed_slots)
 
 
 async def _rebuild_concept_clusters() -> None:
@@ -87,17 +108,25 @@ async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
         log.warning("Concept indexing failed for %s", source_name, exc_info=True)
 
 
-async def _ingest_file(
+async def _produce_records(
     path: Path,
     source_name: str,
     content_type: str,
     *,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
-) -> int:
-    """Ingest a single file. Returns chunk count."""
+    page_texts_out: list[PageTextRecord] | None = None,
+) -> list[ChunkRecord]:
+    """Extract, chunk, and embed a single file into store-ready records.
+
+    The LanceDB write is deferred: records are returned to the caller and written
+    in a batched flush (see :func:`_flush_writes`), so bulk ingest pays one
+    write-lock acquisition per batch instead of one per file. The per-page text
+    dataset rows land in ``page_texts_out`` and are written by the same flush.
+    Concept indexing runs here because it reads the in-memory records, not the store.
+    """
     records: list[ChunkRecord]
-    page_texts: list[PageTextRecord] = []
+    page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
     elif path.suffix.lower() == ".md":
@@ -112,11 +141,8 @@ async def _ingest_file(
             page_texts_out=page_texts,
         )
 
-    store = get_services().store
-    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
-    await asyncio.to_thread(store.add_page_texts, cast(list[dict], page_texts))
     await _index_concepts(records, source_name)
-    return chunk_count
+    return records
 
 
 def _plan_file_changes(
@@ -333,6 +359,31 @@ async def sync(
     return result
 
 
+def _phase_progress_callback(
+    progress: Progress, ptask: Any, chain: DetailedProgressCallback
+) -> DetailedProgressCallback:
+    """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
+
+    EXTRACT (vision OCR page i/N) and EMBED (chunk i/N) events would otherwise
+    leave the bar frozen between file completions; surfacing them on the spinner
+    description keeps a single large file's row visibly moving. All events still
+    forward to *chain* so the caller's own callback (TUI / JSON) is unaffected.
+    """
+
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        if event_type is EventType.EXTRACT and isinstance(data, ExtractEvent):
+            progress.update(
+                ptask, description=f"OCR {data.file} (page {data.page}/{data.total_pages})"
+            )
+        elif event_type is EventType.EMBED and isinstance(data, EmbedEvent):
+            progress.update(
+                ptask, description=f"Embedding {data.file} ({data.chunk}/{data.total_chunks})"
+            )
+        chain(event_type, data)
+
+    return _callback
+
+
 async def ingest_batch(
     files_to_process: list[FileToProcess],
     added: list[str],
@@ -349,7 +400,7 @@ async def ingest_batch(
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.
     """
-    semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    semaphore = asyncio.Semaphore(_max_concurrent())
     total_files = len(files_to_process)
 
     async def _process_one(
@@ -374,20 +425,32 @@ async def ingest_batch(
                 # normalize so _collect_results can drain siblings cleanly.
                 raise asyncio.CancelledError from exc
             try:
-                if needs_cleanup:
-                    get_services().store.delete_by_source(name)
-                chunk_count = await _ingest_file(
+                # The source's old chunks are deleted in the same locked
+                # transaction as the new write (see _flush_writes), so cleanup is
+                # carried on the result rather than run eagerly here.
+                page_texts: list[PageTextRecord] = []
+                records = await _produce_records(
                     path,
                     name,
                     content_type,
                     quiet=quiet,
                     on_progress=on_progress,
+                    page_texts_out=page_texts,
                 )
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="ok", chunks=chunk_count),
+                    FileDoneEvent(file=name, status="ok", chunks=len(records)),
                 )
-                return _IngestResult(name, path, chunk_count, error=None, file_hash=fhash)
+                return _IngestResult(
+                    name,
+                    path,
+                    len(records),
+                    error=None,
+                    file_hash=fhash,
+                    records=records,
+                    needs_cleanup=needs_cleanup,
+                    page_texts=page_texts,
+                )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
                 # by reporter.check_cancelled() inside on_progress; treat it as
@@ -429,24 +492,32 @@ async def ingest_batch(
             transient=True,
         ) as progress:
             ptask = progress.add_task("Ingesting documents...", total=total_files)
-            token = shared_progress.set((progress, ptask))
-            try:
-                tasks = [
-                    asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
-                    for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
-                ]
-                await _collect_results(
-                    tasks,
-                    added,
-                    updated,
-                    failed,
-                    skipped,
-                    on_progress=on_progress,
-                    progress=progress,
-                    ptask=ptask,
-                )
-            finally:
-                shared_progress.reset(token)
+            # The bar advances once per file (in _collect_results), so a single
+            # multi-page scanned PDF would freeze at "0/1" through its whole
+            # OCR + embed phase. Drive the spinner's description off the same
+            # EXTRACT (OCR page i/N) and EMBED (chunk i/N) events the TUI uses
+            # so the row visibly moves while one file is being worked.
+            phase_progress = _phase_progress_callback(progress, ptask, on_progress)
+            tasks = [
+                asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+                for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
+            ]
+            await _collect_results(
+                tasks,
+                added,
+                updated,
+                failed,
+                skipped,
+                on_progress=phase_progress,
+                progress=progress,
+                ptask=ptask,
+            )
+
+
+# Accumulate roughly this many chunks across documents before one batched
+# LanceDB write. Bounds buffered-vector memory while amortizing the write lock
+# and per-transaction overhead over many documents instead of one write per file.
+_WRITE_FLUSH_CHUNKS = 2000
 
 
 async def _collect_results(
@@ -460,40 +531,46 @@ async def _collect_results(
     progress: Progress | None = None,
     ptask: Any = None,
 ) -> None:
-    """Collect task results, optionally updating a Rich progress bar.
+    """Collect task results, batching successful writes and updating a progress bar.
 
-    On exception (typically asyncio.CancelledError from a user cancel),
-    cancel every sibling task and await them with ``return_exceptions=True``
-    so their pending CancelledErrors don't surface as
+    Successful files are buffered and flushed to LanceDB in batches (one locked
+    transaction per batch) rather than one write per file. The buffer is flushed
+    on the way out too -- even on cancel -- so completed-but-unwritten work is
+    persisted. On exception (typically asyncio.CancelledError from a user cancel),
+    cancel every sibling task and await them with ``return_exceptions=True`` so
+    their pending CancelledErrors don't surface as
     "Task exception was never retrieved" warnings.
     """
+    buffer: list[_IngestResult] = []
+    buffered_chunks = 0
     try:
         for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
             result = await fut
-            _apply_result(result, added, updated, failed, skipped)
+            status = _classify_result(result, added, updated, failed, skipped)
+            if status is BatchStatus.INGESTED:
+                buffer.append(result)
+                buffered_chunks += result.chunk_count
+                if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
+                    await asyncio.to_thread(_flush_writes, buffer, added, updated, failed)
+                    buffered_chunks = 0
             if progress is not None and ptask is not None:
                 desc = (
                     f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
                 )
                 progress.update(ptask, description=desc)
                 progress.advance(ptask)
-            if result.error is not None:
-                progress_status = BatchStatus.FAILED
-            elif result.chunk_count == 0:
-                progress_status = BatchStatus.SKIPPED
-            else:
-                progress_status = BatchStatus.INGESTED
             with contextlib.suppress(TaskCancelledError):
                 on_progress(
                     EventType.BATCH_PROGRESS,
                     BatchProgressEvent(
                         file=result.name,
-                        status=progress_status,
+                        status=status,
                         current=completed_count,
                         total=len(tasks),
                     ),
                 )
     finally:
+        await asyncio.to_thread(_flush_writes, buffer, added, updated, failed)
         pending = [t for t in tasks if not t.done()]
         for task in pending:
             task.cancel()
@@ -507,14 +584,19 @@ def _discard_from_list(lst: list[str], value: str) -> None:
         lst.remove(value)
 
 
-def _apply_result(
+def _classify_result(
     result: _IngestResult,
     added: list[str],
     updated: list[str],
     failed: list[str],
     skipped: list[str],
-) -> None:
-    """Record an ingestion result: update store on success, track failure."""
+) -> BatchStatus:
+    """Record a completed file's outcome and return its batch status.
+
+    Failures and zero-chunk files are tracked here; a successful file is reported
+    as ``INGESTED`` and its chunks are persisted by the batched flush, so it stays
+    in ``added`` / ``updated`` until then.
+    """
     if result.error is not None:
         # Log the error message without the traceback: ingest failures are
         # already surfaced to callers via SyncResult.failed, and the raw
@@ -526,7 +608,7 @@ def _apply_result(
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         failed.append(result.name)
-        return
+        return BatchStatus.FAILED
     if result.chunk_count == 0:
         # No chunks produced (e.g. scanned PDF without vision model, or
         # vision OCR returned no text). Don't record as a source so it
@@ -535,7 +617,48 @@ def _apply_result(
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         skipped.append(result.name)
-        return
+        return BatchStatus.SKIPPED
+    return BatchStatus.INGESTED
 
-    fhash = result.file_hash or file_hash(result.path)
-    get_services().store.upsert_source(result.name, fhash, result.chunk_count)
+
+def _flush_writes(
+    buffer: list[_IngestResult],
+    added: list[str],
+    updated: list[str],
+    failed: list[str],
+) -> None:
+    """Write the buffered documents in one transaction; track a write failure.
+
+    Each buffered file's chunks, its cleanup delete, and its source upsert land
+    together in ``Store.write_chunks_batch`` under a single write lock. If the
+    batch write fails, every file in it is moved to ``failed`` since its chunks
+    did not persist. The buffer is cleared either way.
+    """
+    if not buffer:
+        return
+    items = [
+        ChunkWrite(
+            source=r.name,
+            file_hash=r.file_hash or file_hash(r.path),
+            records=cast(list[dict], r.records or []),
+            needs_cleanup=r.needs_cleanup,
+        )
+        for r in buffer
+    ]
+    try:
+        get_services().store.write_chunks_batch(items)
+    except Exception as exc:
+        for r in buffer:
+            log.warning("Failed to write %s: %s", r.name, exc)
+            _discard_from_list(added, r.name)
+            _discard_from_list(updated, r.name)
+            if r.name not in failed:
+                failed.append(r.name)
+        buffer.clear()
+        return
+    # Chunks persisted; write the batch's per-page text dataset rows (a separate
+    # table) in one more locked pass so bulk ingest stays batched there too.
+    page_texts = [pt for r in buffer for pt in (r.page_texts or [])]
+    if page_texts:
+        get_services().store.add_page_texts(cast(list[dict], page_texts))
+    buffer.clear()

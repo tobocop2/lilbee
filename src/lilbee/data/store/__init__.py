@@ -15,6 +15,7 @@ from .ranking import cosine_sim, mmr_rerank
 from .types import (
     LOCAL_OWNER,
     ChunkType,
+    ChunkWrite,
     CitationRecord,
     EmbeddingModelMismatchError,
     MemoryKind,
@@ -34,6 +35,7 @@ from .types import (
 __all__ = [
     "LOCAL_OWNER",
     "ChunkType",
+    "ChunkWrite",
     "CitationRecord",
     "EmbeddingModelMismatchError",
     "MemoryKind",

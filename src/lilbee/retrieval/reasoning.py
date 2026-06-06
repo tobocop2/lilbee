@@ -59,7 +59,7 @@ class CapNotice:
 
 
 @dataclass
-class _TagParser:
+class TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 
     show: bool
@@ -140,7 +140,7 @@ def filter_reasoning(
     the running reasoning-chars count each time it grows by at least 256
     characters. A non-positive *cap_chars* disables the cap.
     """
-    parser = _TagParser(show=show)
+    parser = TagParser(show=show)
     last_progress_tick = 0
     try:
         for token in tokens:
@@ -206,7 +206,7 @@ def stream_chat_with_cap(
 
     first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
     yield from filter_reasoning(
-        first_stream,
+        _text_only(first_stream),
         show=show_reasoning,
         cap_chars=cap_chars,
         on_cap=_on_cap,
@@ -217,11 +217,23 @@ def stream_chat_with_cap(
     nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
     second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
     try:
-        for chunk in second_stream:
+        for chunk in _text_only(second_stream):
             if chunk:
                 yield StreamToken(content=chunk, is_reasoning=False)
     finally:
         _close_iterator(second_stream)
+
+
+def _text_only(stream: Iterator[Any]) -> Iterator[str]:
+    """Filter a chat stream down to its text deltas.
+
+    Tool-call deltas (when ``tools`` is passed) and the trailing token-usage
+    frame both ride the same iterator; the RAG / reasoning paths only consume
+    text, so any non-str frame is dropped here rather than crashing the chat.
+    """
+    for item in stream:
+        if isinstance(item, str):
+            yield item
 
 
 def cap_events_as_stream_tokens(
@@ -243,7 +255,7 @@ def cap_events_as_stream_tokens(
             yield event
 
 
-def _close_iterator(tokens: Iterator[str]) -> None:
+def _close_iterator(tokens: Iterator[Any]) -> None:
     """Close *tokens* if it satisfies the ClosableIterator protocol."""
     if isinstance(tokens, ClosableIterator):
         with contextlib.suppress(Exception):

@@ -9,7 +9,13 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from lilbee.core.config.enums import (
+    ChatMode,
+    ClustererBackend,
+    KvCacheType,
+    LlmProvider,
+    WikiEntityMode,
+)
 
 
 class RenderStyle(StrEnum):
@@ -651,31 +657,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
-    "worker_pool_call_timeout_s": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Per-call deadline for one worker-pool round-trip in seconds. "
-            "Raise this for very large embed batches on slow machines"
-        ),
-    ),
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Spawn every registered worker at TUI startup instead of on first use. "
-            "Trades 1-3 seconds of cold-start per role for first-call latency"
-        ),
-    ),
-    "worker_pool_max_idle_s": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Shut a worker down after this many seconds idle to free RAM/VRAM. "
-            "0 disables idle reaping"
+            "Spawn every configured role server at TUI startup instead of on first use. "
+            "Trades cold-start time per role for first-call latency"
         ),
     ),
     "max_tokens": SettingDef(
@@ -704,6 +692,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+    ),
+    "embed_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Embedding servers to run in parallel, one per GPU, for large-scale ingest",
+    ),
+    "vision_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Vision OCR servers to run in parallel, one per GPU, for large-scale ingest",
     ),
     "candidate_multiplier": SettingDef(
         int,
@@ -844,9 +844,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        choices=("auto", "llama-cpp", "remote"),
+        choices=tuple(p.value for p in LlmProvider),
         help_text=(
-            "Provider routing: auto picks the first key present; force a specific one when set"
+            "Inference provider: auto (default, runs models locally on llama-server) "
+            "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
     "ollama_base_url": SettingDef(
@@ -860,6 +861,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.LOCAL_SERVERS,
         help_text="LM Studio server URL (blank uses http://localhost:1234/v1)",
+    ),
+    "llama_server_path": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.API_KEYS,
+        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

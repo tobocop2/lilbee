@@ -141,7 +141,11 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     if not auto_extract_enabled():
         return []
     services = get_services()
-    extracted = extract_memories(question, answer, services.provider.chat)
+
+    def _chat_text(messages: list[dict[str, str]], **_kwargs: object) -> str:
+        return services.provider.chat(messages, stream=False).text
+
+    extracted = extract_memories(question, answer, _chat_text)
     stored: list[SavedMemory] = []
     for memory in extracted:
         memory_id = remember(memory.text, kind=memory.kind, source=MemorySource.EXTRACTED)

@@ -19,7 +19,6 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
-    PER_CALL_RELOADABLE_KEYS,
     PROVIDER_API_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
@@ -226,6 +225,30 @@ def _restore_snapshot(snapshot: dict[str, Any]) -> None:
         setattr(cfg, key, value)
 
 
+def _reload_changed_roles(changed_keys: set[str]) -> None:
+    """Off-thread reload for each changed model-role server; full off-thread drop otherwise.
+
+    A model-role change (chat_model/embedding_model/reranker_model/vision_model)
+    respawns only that role's server via the per-role reload, so unrelated roles
+    keep serving uninterrupted. A genuinely role-agnostic load key (num_ctx,
+    kv_cache_type) has no single owning role, so it falls back to dropping the
+    whole fleet. Both paths run off the caller's thread, so the settings write
+    never blocks on a slow stop-and-respawn.
+    """
+    from lilbee.app.services import peek_services
+    from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
+
+    services = peek_services()
+    if services is None:
+        return
+    changed_role_fields = changed_keys & MODEL_ROLE_FIELDS
+    for field in changed_role_fields:
+        services.reload_role(MODEL_FIELD_TO_ROLE[field])
+    role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
+    if role_agnostic:
+        services.provider.drop_loaded_models_async()
+
+
 def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
@@ -235,17 +258,9 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    load_affecting = (changed_keys & LOAD_AFFECTING_KEYS) - PER_CALL_RELOADABLE_KEYS
-    if load_affecting:
-        # heavy: app.services pulls llama_cpp + lancedb (~70 ms)
-        from lilbee.app.services import peek_services
-
-        services = peek_services()
-        if services is not None:
-            # model_path=None drops every loaded role; the changed key may be
-            # role-agnostic (num_ctx) or role-specific, and per-role granularity
-            # would force a key->role map that adds nothing over a full drop.
-            services.provider.invalidate_load_cache()
+    if changed_keys & LOAD_AFFECTING_KEYS:
+        # heavy: app.services pulls the provider stack + lancedb (~70 ms)
+        _reload_changed_roles(changed_keys)
     if changed_keys & PROVIDER_API_KEYS:
         # heavy: sdk_llm_provider pulls litellm fanout (~145 ms)
         from lilbee.providers.sdk_llm_provider import inject_provider_keys
