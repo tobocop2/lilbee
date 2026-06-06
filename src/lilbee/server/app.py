@@ -21,6 +21,8 @@ from lilbee.server.routes.documents import (
     add_route,
     documents_list_route,
     documents_remove_route,
+    export_route,
+    import_route,
     sync_route,
 )
 from lilbee.server.routes.general import (
@@ -145,6 +147,8 @@ def create_app() -> Litestar:
             memories_remember_route,
             memories_update_route,
             memories_remove_route,
+            export_route,
+            import_route,
             crawl_route,
             setup_crawler_route,
             setup_crawler_status_route,

@@ -11,6 +11,7 @@ from lilbee.data.store import (
     CitationRecord,
     SearchChunk,
     SearchScope,
+    SourceType,
     Store,
     cosine_sim,
     escape_sql_string,
@@ -798,13 +799,56 @@ class TestSourceTypeField:
         store.upsert_source("a.md", "hash123", 5)
         sources = store.get_sources()
         assert len(sources) == 1
-        assert sources[0]["source_type"] == "document"
+        assert sources[0]["source_type"] == SourceType.DOCUMENT
 
-    def test_source_type_wiki(self, store):
-        store.upsert_source("wiki/summary.md", "hash456", 3, source_type="wiki")
+    def test_source_type_imported(self, store):
+        store.upsert_source("shared.pdf", "", 3, source_type=SourceType.IMPORTED)
         sources = store.get_sources()
         assert len(sources) == 1
-        assert sources[0]["source_type"] == "wiki"
+        assert sources[0]["source_type"] == SourceType.IMPORTED
+
+
+def _page_rows(source="doc.pdf", pages=(1, 2)):
+    return [
+        {"source": source, "page": p, "text": f"page {p} text", "content_type": "pdf"}
+        for p in pages
+    ]
+
+
+class TestPageTexts:
+    def test_add_and_get_all(self, store):
+        assert store.add_page_texts(_page_rows()) == 2
+        rows = store.get_page_texts()
+        assert {r["page"] for r in rows} == {1, 2}
+        assert rows[0]["content_type"] == "pdf"
+
+    def test_add_empty_is_noop(self, store):
+        assert store.add_page_texts([]) == 0
+        assert store.get_page_texts() == []
+
+    def test_get_by_source(self, store):
+        store.add_page_texts(_page_rows("a.pdf", (1,)))
+        store.add_page_texts(_page_rows("b.pdf", (1, 2)))
+        assert {r["source"] for r in store.get_page_texts("b.pdf")} == {"b.pdf"}
+        assert len(store.get_page_texts("b.pdf")) == 2
+
+    def test_get_missing_table_returns_empty(self, store):
+        assert store.get_page_texts() == []
+        assert store.get_page_texts("x.pdf") == []
+
+    def test_page_text_sources(self, store):
+        store.add_page_texts(_page_rows("a.pdf", (1,)))
+        store.add_page_texts(_page_rows("b.pdf", (1,)))
+        assert store.page_text_sources() == {"a.pdf", "b.pdf"}
+
+    def test_page_text_sources_missing_table(self, store):
+        assert store.page_text_sources() == set()
+
+    def test_delete_by_source_removes_page_texts(self, store):
+        store.add_chunks(_make_records(n=1))
+        store.add_page_texts(_page_rows("doc0.md", (1,)))
+        store.delete_by_source("doc0.md")
+        assert store.get_page_texts("doc0.md") == []
 
 
 class TestGetSourcesPagination:
@@ -1228,6 +1272,21 @@ class TestEmbeddingModelGate:
     def test_search_short_circuits_on_missing_chunks_table(self, store, test_config):
         """Empty stores (no chunks table) return [] before the gate runs."""
         assert store.search([0.1] * test_config.embedding_dim) == []
+
+    def test_assert_embedding_compatible_passes_on_match(self, store):
+        store.add_chunks(_make_records())
+        store.assert_embedding_compatible()  # no raise under the same embedder
+
+    def test_assert_embedding_compatible_raises_on_drift(self, store, test_config):
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        store.add_chunks(_make_records())
+        test_config.embedding_model = "ollama/another-model:v1"
+        with pytest.raises(EmbeddingModelMismatchError):
+            store.assert_embedding_compatible()
+
+    def test_assert_embedding_compatible_noop_on_empty_store(self, store):
+        store.assert_embedding_compatible()  # no meta, no chunks: nothing to check
 
     def test_legacy_store_search_writes_meta_with_warning(self, store, test_config, caplog):
         """First search on a pre-upgrade store (chunks present, no _meta) lazy-inits meta."""

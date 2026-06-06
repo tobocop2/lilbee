@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from litestar import get, post
+from litestar import Request, Response, get, post
 from litestar.exceptions import ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -75,3 +75,47 @@ async def documents_list_route(
 async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
     return await handlers.delete_documents(data.names, delete_files=data.delete_files)
+
+
+@get("/api/export")
+@read_only
+async def export_route(
+    fmt: str = Parameter(query="format", default=""),
+    source: str = Parameter(query="source", default=""),
+) -> Response[bytes]:
+    """Download the per-page text dataset as a file (parquet by default)."""
+    from lilbee.app.dataset import DatasetError, export_to_bytes
+
+    try:
+        payload = export_to_bytes(fmt, source or None)
+    except DatasetError as exc:
+        raise ValidationException(str(exc)) from exc
+    return Response(
+        content=payload.data,
+        media_type="application/octet-stream",
+        headers={"content-disposition": f'attachment; filename="pages.{payload.fmt}"'},
+    )
+
+
+@post("/api/import")
+async def import_route(
+    request: Request,
+    fmt: str = Parameter(query="format", default=""),
+) -> Stream:
+    """Import an uploaded per-page dataset with streaming SSE progress events.
+
+    The request body is the raw dataset bytes; ``?format=parquet|jsonl`` is
+    required since there is no filename to infer from. Bounded by the server's
+    body-size limit; larger datasets use the path-based CLI/MCP import.
+    """
+    from lilbee.app.dataset import DatasetError, require_format
+
+    try:
+        require_format(fmt)
+    except DatasetError as exc:
+        raise ValidationException(str(exc)) from exc
+    return Stream(
+        handlers.import_stream(await request.body(), fmt),
+        media_type="text/event-stream",
+        status_code=201,
+    )

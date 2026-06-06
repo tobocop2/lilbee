@@ -22,7 +22,7 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.data.store import ChunkType
+from lilbee.data.store import ChunkType, PageTextRecord
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -44,6 +44,11 @@ def _has_meaningful_text(result: ExtractionResult) -> bool:
 def content_type_to_mode(content_type: str) -> ExtractMode:
     """Map a content_type to the extraction mode."""
     return ExtractMode.PAGINATED if content_type == PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
+
+
+def _page_text_record(source: str, page: int, text: str, content_type: str) -> PageTextRecord:
+    """Build one per-page text row for the export dataset."""
+    return PageTextRecord(source=source, page=page, text=text, content_type=content_type)
 
 
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
@@ -93,6 +98,20 @@ def _should_run_ocr() -> bool:
     return bool(cfg.vision_model)
 
 
+def _record_page_texts(
+    page_texts: Sequence[tuple[int, str]],
+    source_name: str,
+    content_type: str,
+    page_texts_out: list[PageTextRecord] | None,
+) -> None:
+    """Append OCR page texts to the export accumulator when one is supplied."""
+    if page_texts_out is None:
+        return
+    page_texts_out.extend(
+        _page_text_record(source_name, page, text, content_type) for page, text in page_texts
+    )
+
+
 async def _vision_ocr_fallback(
     path: Path,
     source_name: str,
@@ -100,6 +119,7 @@ async def _vision_ocr_fallback(
     *,
     on_progress: DetailedProgressCallback,
     quiet: bool,
+    page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
     """Vision OCR via the persistent worker pool, chunk + embed the pages.
 
@@ -120,7 +140,8 @@ async def _vision_ocr_fallback(
     except Exception:
         log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
         return []
-    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+    _record_page_texts(page_texts, source_name, content_type, page_texts_out)
+    return await chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
 def _run_tesseract_sync(path: Path) -> Any:
@@ -147,6 +168,7 @@ async def _tesseract_ocr_fallback(
     content_type: str,
     *,
     on_progress: DetailedProgressCallback,
+    page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
     """Tesseract OCR via ``asyncio.to_thread`` (no model load = no pool).
 
@@ -176,16 +198,17 @@ async def _tesseract_ocr_fallback(
         page = int(chunk.metadata.get("first_page") or 1)
         by_page.setdefault(page, []).append(chunk.content)
     page_texts = [(page, "\n".join(by_page[page])) for page in sorted(by_page)]
-    return await _chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
+    _record_page_texts(page_texts, source_name, content_type, page_texts_out)
+    return await chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
-async def _chunk_and_embed_pages(
+async def chunk_and_embed_pages(
     page_texts: Sequence[tuple[int, str]],
     source_name: str,
     content_type: str,
     on_progress: DetailedProgressCallback,
 ) -> list[ChunkRecord]:
-    """Chunk OCR per-page text and embed every chunk through the embedder."""
+    """Chunk per-page text and embed every chunk. Shared by OCR ingest and import."""
     if not page_texts:
         return []
 
@@ -218,6 +241,28 @@ async def _chunk_and_embed_pages(
     ]
 
 
+def _capture_result_page_texts(
+    result: ExtractionResult,
+    source_name: str,
+    content_type: str,
+    page_texts_out: list[PageTextRecord] | None,
+) -> None:
+    """Append a normal extraction's page texts to the export accumulator.
+
+    Paginated PDFs yield one row per ``result.pages`` entry; other documents
+    have no page split, so the full ``result.content`` is recorded as page 0.
+    """
+    if page_texts_out is None:
+        return
+    if result.pages:
+        page_texts_out.extend(
+            _page_text_record(source_name, page["page_number"], page["content"], content_type)
+            for page in result.pages
+        )
+    elif result.content.strip():
+        page_texts_out.append(_page_text_record(source_name, 0, result.content, content_type))
+
+
 async def _handle_scanned_pdf_fallback(
     path: Path,
     source_name: str,
@@ -226,6 +271,7 @@ async def _handle_scanned_pdf_fallback(
     *,
     quiet: bool,
     on_progress: DetailedProgressCallback,
+    page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
     """Route a scanned PDF through the configured OCR backend.
 
@@ -249,6 +295,7 @@ async def _handle_scanned_pdf_fallback(
             content_type,
             on_progress=on_progress,
             quiet=quiet,
+            page_texts_out=page_texts_out,
         )
 
     log.info("Scanned PDF: falling back to Tesseract OCR for %s", source_name)
@@ -257,6 +304,7 @@ async def _handle_scanned_pdf_fallback(
         source_name,
         content_type,
         on_progress=on_progress,
+        page_texts_out=page_texts_out,
     )
     if not chunks:
         log.warning(
@@ -275,10 +323,12 @@ async def ingest_document(
     *,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
+    page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document, embed, return records.
 
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
+    When ``page_texts_out`` is given, per-page text is appended for export.
     """
     from kreuzberg import extract_file_sync
 
@@ -293,10 +343,13 @@ async def ingest_document(
             result,
             quiet=quiet,
             on_progress=on_progress,
+            page_texts_out=page_texts_out,
         )
 
     if not result.chunks:
         return []
+
+    _capture_result_page_texts(result, source_name, content_type, page_texts_out)
 
     # Fire one EXTRACT event per file so subscribers (chat /add, /sync,
     # CLI Rich progress) can show "extracted N pages" before the embed
@@ -335,10 +388,12 @@ async def ingest_markdown(
     path: Path,
     source_name: str,
     on_progress: DetailedProgressCallback = noop_callback,
+    page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
     """Chunk a markdown file with heading context prepended to each chunk.
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
-    prepended for better retrieval context.
+    prepended for better retrieval context. When ``page_texts_out`` is given,
+    the full text is appended as page 0 for export.
     """
     raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
     if not raw_text.strip():
@@ -347,6 +402,9 @@ async def ingest_markdown(
     texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
+
+    if page_texts_out is not None:
+        page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
     vectors = await asyncio.to_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
