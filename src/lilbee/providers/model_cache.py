@@ -141,6 +141,17 @@ def get_available_memory(fraction: float) -> int:
     return int(total * fraction)
 
 
+def free_system_memory() -> int:
+    """Live allocatable system RAM in bytes (free + reclaimable), right now.
+
+    The load-time counterpart to :func:`get_available_memory`, which scales total
+    capacity for sizing rather than reporting what is free this instant.
+    """
+    import psutil
+
+    return int(psutil.virtual_memory().available)
+
+
 def _try_nvidia_memory() -> int | None:
     """Try to get NVIDIA GPU total memory via pynvml, then nvidia-smi."""
     try:

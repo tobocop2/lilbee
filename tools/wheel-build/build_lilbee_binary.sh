@@ -42,6 +42,19 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
+# Bundle the local inference engine when its package is installed. The release
+# build installs packaging/engine-wheel after build_llama_server.sh fills its
+# bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs with a
+# baked rpath) plus the llama-swap and gguf-parser helpers, so
+# --include-package-data ships the whole engine inside the onefile and the runtime
+# resolver finds each via lilbee_engine.get_*_path(). Optional so a build without
+# the engine wheel still succeeds (resolver falls back to PATH).
+LLAMA_SERVER_FLAGS=()
+if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
+    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
+fi
+
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --no-deployment-flag=self-execution \
@@ -55,7 +68,6 @@ uv run --no-sync python -m nuitka \
     --nofollow-import-to=*.tests.* \
     --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
     --include-package=lancedb            --include-package-data=lancedb \
-    --include-package=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
@@ -81,6 +93,8 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
+    --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
     "${MYPYC_FLAGS[@]}" \
+    "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py
