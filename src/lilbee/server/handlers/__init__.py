@@ -26,6 +26,7 @@ from lilbee.server.handlers.documents import (
 from lilbee.server.handlers.ingest import (
     MAX_ADD_FILES,
     add_files_stream,
+    import_stream,
     sync_stream,
     validate_add_paths,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "get_config_defaults",
     "get_source_content",
     "health",
+    "import_stream",
     "list_documents",
     "list_external_models",
     "list_models",

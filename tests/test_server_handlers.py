@@ -3270,6 +3270,52 @@ class TestSourceContentRoute:
             )
         assert resp.status_code == 404
 
+    async def test_imported_source_served_from_page_texts(self, isolated_env):
+        """A source with no file on disk previews from its stored page texts."""
+        from litestar.testing import AsyncTestClient
+
+        import lilbee.app.services as svc_mod
+        from lilbee.server.app import create_app
+
+        svc_mod.get_services().store.get_page_texts.return_value = [
+            {"source": "imported.md", "page": 2, "text": "page two", "content_type": "text"},
+            {
+                "source": "imported.md",
+                "page": 1,
+                "text": "# Imported\n\npage one",
+                "content_type": "text",
+            },
+        ]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source", params={"source": "imported.md"}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        # Pages are ordered, joined, and the title parsed from the reconstructed text.
+        assert payload["markdown"].index("page one") < payload["markdown"].index("page two")
+        assert payload["content_type"] == "text/markdown"
+        assert payload["title"] == "Imported"
+
+    async def test_imported_source_raw_returns_text_bytes(self, isolated_env):
+        """``raw=1`` on an imported source returns its page text as bytes."""
+        from litestar.testing import AsyncTestClient
+
+        import lilbee.app.services as svc_mod
+        from lilbee.server.app import create_app
+
+        svc_mod.get_services().store.get_page_texts.return_value = [
+            {"source": "imported.md", "page": 1, "text": "raw body", "content_type": "text"},
+        ]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": "imported.md", "raw": "1"},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert b"raw body" in resp.content
+
     async def test_path_traversal_returns_400(self, isolated_env):
         """``..`` traversal escapes ``documents_dir`` → ValueError → 400.
 

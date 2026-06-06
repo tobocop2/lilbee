@@ -51,6 +51,15 @@ def _is_safe_for_inline_render(content_type: str) -> bool:
     return content_type.startswith("text/") or content_type.startswith("image/")
 
 
+def _imported_source_markdown(source: str) -> str | None:
+    """Page texts joined in page order; ``None`` when the source has none."""
+    rows = get_services().store.get_page_texts(source)
+    if not rows:
+        return None
+    ordered = sorted(rows, key=lambda row: row["page"])
+    return "\n\n".join(row["text"] for row in ordered)
+
+
 async def delete_documents(
     names: list[str], *, delete_files: bool = False
 ) -> DocumentRemoveResponse:
@@ -105,7 +114,15 @@ async def get_source_content(
     documents_dir = cfg.documents_dir
     resolved = validate_path_within(documents_dir / source, documents_dir)
     if not resolved.is_file():
-        raise FileNotFoundError(source)
+        # Imported sources have no file on disk; their text lives in the page-text store.
+        markdown = _imported_source_markdown(source)
+        if markdown is None:
+            raise FileNotFoundError(source)
+        if raw:
+            return markdown.encode("utf-8"), "text/markdown"
+        return SourceContentResponse(
+            markdown=markdown, content_type="text/markdown", title=parse_title(markdown) or None
+        )
 
     content_type, _ = mimetypes.guess_type(resolved.name)
     if content_type is None:

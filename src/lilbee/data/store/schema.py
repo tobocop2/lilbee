@@ -28,6 +28,17 @@ def _sources_schema() -> pa.Schema:
     )
 
 
+def _page_texts_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("source", pa.utf8()),
+            pa.field("page", pa.int32()),
+            pa.field("text", pa.utf8()),
+            pa.field("content_type", pa.utf8()),
+        ]
+    )
+
+
 def _citations_schema() -> pa.Schema:
     return pa.schema(
         [
