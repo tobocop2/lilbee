@@ -269,7 +269,8 @@ def test_opencode_config_sets_limit_context_when_known():
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=32768
     )
     entry = block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
-    assert entry["limit"] == {"context": 32768}
+    # Both keys required: opencode rejects a limit with only context (bb-c4t).
+    assert entry["limit"] == {"context": 32768, "output": 8192}
 
 
 def test_opencode_config_omits_limit_when_ctx_unknown():

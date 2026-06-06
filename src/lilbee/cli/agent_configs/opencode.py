@@ -9,6 +9,9 @@ _GGUF_SUFFIX = ".gguf"
 _NATIVE_REF_PARTS = 3
 """Number of slash-separated segments in a native GGUF ref: ``<org>/<repo>/<file>``."""
 
+_OUTPUT_TOKEN_LIMIT = 8192
+"""Per-response output cap reported to opencode (it reserves this from the context)."""
+
 _QUANT_TRAILER = re.compile(
     r"[-.](?P<quant>I?Q\d+(?:_[A-Z0-9]+)*|F16|F32|BF16)$",
     re.IGNORECASE,
@@ -37,10 +40,18 @@ def display_name(ref: str) -> str:
 
 
 def _model_entry(ref: str, chat_ctx: int | None) -> dict[str, Any]:
-    """One opencode model entry, carrying the served window so opencode trims to it."""
+    """One opencode model entry, carrying the served window so opencode trims to it.
+
+    opencode's schema requires both ``limit.context`` and ``limit.output`` once a
+    ``limit`` is present, so when the window is known emit both -- a limit with only
+    ``context`` makes opencode reject the whole config and fail to start.
+    """
     entry: dict[str, Any] = {"name": display_name(ref)}
     if chat_ctx is not None:
-        entry["limit"] = {"context": chat_ctx}
+        entry["limit"] = {
+            "context": chat_ctx,
+            "output": max(1, min(chat_ctx // 2, _OUTPUT_TOKEN_LIMIT)),
+        }
     return entry
 
 
