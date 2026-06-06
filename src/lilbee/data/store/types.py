@@ -79,6 +79,7 @@ class SearchChunk(BaseModel):
     """A search result from LanceDB.
     Hybrid results have ``relevance_score`` set (higher = better).
     Vector-only results have ``distance`` set (lower = better).
+    Reranked results have ``rerank_score`` set (higher = better).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -102,6 +103,7 @@ class SearchChunk(BaseModel):
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
     relevance_score: float | None = Field(None, alias="_relevance_score")
+    rerank_score: float | None = None
 
 
 class SourceRecord(TypedDict):
