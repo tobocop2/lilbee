@@ -185,6 +185,83 @@ jobs:
           choco install tesseract -y
           echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # Integration tests run real local inference, which now means a real
+      # llama-server. The lilbee-engine wheel ships empty bin/ in this lane
+      # (CI fills it only in the release wheel build), so download a prebuilt
+      # llama.cpp release binary; resolve_llama_server() finds it on PATH.
+      - name: Install llama-server (engine)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Pinned: releases/latest can ship partial asset sets (b9352 dropped
+          # the x64/windows builds). Bump to a tag carrying all three platforms.
+          LLAMA_CPP_TAG: b9351
+        run: |
+          set -euxo pipefail
+          # Anchored to the suffix: ubuntu/macos ship .tar.gz, windows .zip, and
+          # the bare -x64/-arm64 names must not match the vulkan/kleidiai variants.
+          case "${{ runner.os }}" in
+            Linux)   pat="bin-ubuntu-x64.tar.gz$" ;;
+            macOS)   pat="bin-macos-arm64.tar.gz$" ;;
+            Windows) pat="bin-win-cpu-x64.zip$" ;;
+          esac
+          url=$(gh api "repos/ggml-org/llama.cpp/releases/tags/${LLAMA_CPP_TAG}" \
+            --jq ".assets[] | select(.name | test(\"${pat}\")) | .browser_download_url" | head -1)
+          [ -n "${url}" ] || { echo "no llama.cpp ${LLAMA_CPP_TAG} asset matching ${pat}" >&2; exit 1; }
+          mkdir -p "${HOME}/llama-engine"
+          case "${url}" in
+            *.zip)    curl -fsSL "${url}" -o engine.zip && unzip -q engine.zip -d "${HOME}/llama-engine" ;;
+            *.tar.gz) curl -fsSL "${url}" | tar -xz -C "${HOME}/llama-engine" ;;
+          esac
+          bindir=$(dirname "$(find "${HOME}/llama-engine" \( -name llama-server -o -name llama-server.exe \) | head -1)")
+          [ -n "${bindir}" ] || { echo "llama-server not found in the release archive" >&2; exit 1; }
+          # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
+          # /c/... form, or Python's shutil.which won't find the binary. cygpath
+          # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
+          if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "${bindir}" >> "${GITHUB_PATH}"
+          else
+            echo "${bindir}" >> "${GITHUB_PATH}"
+            echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+            echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
+          fi
+
+      # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
+      # gguf-parser (footprint estimator), introduced with the llama-swap engine.
+      # The lilbee-engine wheel ships these only in the release build, so build the
+      # pinned versions from source here; resolve_llama_swap()/resolve_gguf_parser()
+      # then find them on PATH. Same Go toolchain the release wheel uses.
+      - name: Set up Go (engine helpers)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Install llama-swap + gguf-parser (engine helpers)
+        shell: bash
+        env:
+          # Keep in sync with tools/wheel-build/build_llama_server.sh.
+          LLAMA_SWAP_VERSION: v223
+          GGUF_PARSER_REF: main
+        run: |
+          set -euxo pipefail
+          helperdir="${HOME}/engine-helpers"
+          mkdir -p "${helperdir}"
+          exe=""
+          if [ "${{ runner.os }}" = "Windows" ]; then exe=".exe"; fi
+          work="$(mktemp -d)"
+          git clone -q --depth 1 --branch "${LLAMA_SWAP_VERSION}" \
+            https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
+          ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap${exe}" . )
+          # gguf-parser's CLI lives under a nested go.mod in cmd/gguf-parser.
+          git clone -q --depth 1 --branch "${GGUF_PARSER_REF}" \
+            https://github.com/gpustack/gguf-parser-go.git "${work}/gguf-parser-go"
+          ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser${exe}" . )
+          if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "${helperdir}" >> "${GITHUB_PATH}"
+          else
+            echo "${helperdir}" >> "${GITHUB_PATH}"
+          fi
+
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
@@ -345,6 +422,6 @@ jobs:
         run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_LLM_PROVIDER: llama-cpp
+          LILBEE_LLM_PROVIDER: auto
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
