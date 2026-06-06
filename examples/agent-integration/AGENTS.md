@@ -54,7 +54,8 @@ You will spend most of your time on two things:
 
 ## Remembering across sessions (optional)
 
-If memory is enabled (`lilbee_settings_set({"memory_enabled": true})`), use
+If memory is enabled (`lilbee_settings_set({"memory_enabled": true})`, then
+restart the MCP server so the memory tools register), use
 `lilbee_memory_remember` to keep durable notes about the project and
 `lilbee_memory_recall` to pull them back in a later session. Your memories are
 private to you; they never

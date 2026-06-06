@@ -26,6 +26,18 @@ class ChunkType(StrEnum):
     WIKI = "wiki"
 
 
+class SourceType(StrEnum):
+    """Values for the ``_sources.source_type`` column.
+
+    ``DOCUMENT`` mirrors a file under ``documents/`` and is managed by the
+    file-driven sync. ``IMPORTED`` is detached: it came from ``lilbee import``
+    and has no backing file, so sync must not treat it as a missing document.
+    """
+
+    DOCUMENT = "document"
+    IMPORTED = "imported"
+
+
 # ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
 # add or rename a meta column without forcing every store to drop_all.
 META_SCHEMA_VERSION = 1
@@ -100,6 +112,15 @@ class SourceRecord(TypedDict):
     ingested_at: str
     chunk_count: int
     source_type: str
+
+
+class PageTextRecord(TypedDict):
+    """One row of the per-page text dataset, matching ``_page_texts``."""
+
+    source: str
+    page: int
+    text: str
+    content_type: str
 
 
 class CitationRecord(TypedDict):

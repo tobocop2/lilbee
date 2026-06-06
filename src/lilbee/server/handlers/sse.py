@@ -118,6 +118,18 @@ class SseStream:
 
         return _callback
 
+    async def _flush_pending(self) -> AsyncGenerator[str, None]:
+        """Events left behind the sentinel by a producer that outran the consumer.
+
+        A fast producer can enqueue its sentinel before its threadsafe progress
+        callbacks run; one loop tick lets them land.
+        """
+        await asyncio.sleep(0)
+        while not self.queue.empty():
+            leftover = self.queue.get_nowait()
+            if leftover is not None:
+                yield leftover
+
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
@@ -126,13 +138,19 @@ class SseStream:
         Emits a ``heartbeat`` event whenever the producer queue stays
         idle longer than ``cfg.sse_heartbeat_interval`` seconds so
         clients that enforce a stream-idle timeout don't abort.
+
+        The pending ``queue.get`` survives across poll rounds (``asyncio.wait``,
+        not ``wait_for``): cancelling a completed get on the timeout boundary
+        would drop the event it already popped from the queue.
         """
         last_yielded = time.monotonic()
+        getter: asyncio.Future[str | None] | None = None
         try:
             while True:
-                try:
-                    item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
-                except TimeoutError:
+                if getter is None:
+                    getter = asyncio.ensure_future(self.queue.get())
+                done, _ = await asyncio.wait({getter}, timeout=0.1)
+                if not done:
                     now = time.monotonic()
                     heartbeat_interval = cfg.sse_heartbeat_interval
                     if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:
@@ -140,9 +158,15 @@ class SseStream:
                         yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
                     # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
+                        getter.cancel()
                         break
                     continue
+                item = getter.result()
+                getter = None
                 if item is None:
+                    async for leftover in self._flush_pending():
+                        last_yielded = time.monotonic()
+                        yield leftover
                     break
                 last_yielded = time.monotonic()
                 yield item
@@ -150,3 +174,5 @@ class SseStream:
             log.info("%s cancelled by client", label)
             self.cancel.set()
             task.cancel()
+            if getter is not None:
+                getter.cancel()

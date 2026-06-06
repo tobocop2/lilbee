@@ -19,6 +19,7 @@ from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
+    from lilbee.app.dataset import ImportSummary
     from lilbee.data.ingest import SyncResult
 
 log = logging.getLogger(__name__)
@@ -181,3 +182,27 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
                     await task
     finally:
         IngestLockRegistry.release(acquired)
+
+
+async def _run_import_with_sentinel(sse: SseStream, data: bytes, fmt: str) -> ImportSummary:
+    """Run the dataset import and guarantee the drain sentinel is enqueued."""
+    from lilbee.app.dataset import import_from_bytes
+
+    try:
+        return await import_from_bytes(data, fmt, on_progress=sse.callback)
+    finally:
+        sse.queue.put_nowait(None)
+
+
+async def import_stream(data: bytes, fmt: str) -> AsyncGenerator[str, None]:
+    """Import a dataset, yield SSE embed-progress events, then a done event."""
+    sse = SseStream()
+    task = asyncio.create_task(_run_import_with_sentinel(sse, data, fmt))
+    async for event in sse.drain(task, "Import stream"):
+        yield event
+    if not sse.cancel.is_set() and task.done() and not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            yield sse_error(str(exc))
+            return
+        yield sse_done(task.result().model_dump())

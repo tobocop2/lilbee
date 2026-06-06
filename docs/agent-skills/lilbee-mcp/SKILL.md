@@ -50,7 +50,8 @@ full setup.
 ## The shared-embedder rule (read this first)
 
 The MCP server hosts one embedder worker. Indexing (`lilbee_add`, `lilbee_sync`,
-`lilbee_crawl`, `lilbee_model_pull`, plus the experimental wiki builds) pins it;
+`lilbee_crawl`, `lilbee_import_dataset`, `lilbee_model_pull`, plus the
+experimental wiki builds) pins it;
 `lilbee_search` also needs it to embed the query. Run them
 concurrently and `lilbee_search` will hang until your host times out.
 
@@ -84,7 +85,8 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_settings_get(key)` | One setting's current value + metadata. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
 | `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
-| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Needs `memory_enabled`. |
+| `lilbee_export_dataset(output, fmt, source)` | Write a per-page `{source, page, text}` dataset to a file (parquet or jsonl, no vectors). No embedding. |
+| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
 | `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
 | `lilbee_memory_list(agent_id)` | List your stored memories. No embedding. |
 | `lilbee_memory_forget(memory_id)` | Delete one of your memories by id. No embedding. |
@@ -97,9 +99,10 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
 | `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
+| `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
 
-(Experimental wiki tools are documented at the end of this skill.)
+(Experimental wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
 ## Common workflows
 

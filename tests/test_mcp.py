@@ -1,5 +1,6 @@
 """Tests for the MCP server tools."""
 
+import asyncio
 import os
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -7,15 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import lilbee.app.services as svc_mod
+import lilbee.mcp_server as mcp_server
 from lilbee.core.config import cfg
 from lilbee.crawler.task import clear_tasks
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import SearchChunk, Store
 from lilbee.mcp_server import (
     add,
     catalog_browse,
     crawl,
     crawl_status,
+    export_dataset,
+    import_dataset,
     init,
     list_documents,
     main,
@@ -40,6 +44,7 @@ from lilbee.mcp_server import (
     wiki_synthesize,
     wiki_update,
 )
+from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 
 
@@ -583,6 +588,29 @@ class TestAdd:
         src.write_text("content")
         result = await add([str(src)])
         assert "warning" in result
+
+
+class TestConditionalToolRegistration:
+    def test_disabled_subsystems_register_no_tools(self):
+        """Defaults (wiki off, memory off) leave the tool registry untouched."""
+        before = set(mcp_server.mcp._tool_manager._tools)
+        mcp_server.register_conditional_tools()
+        assert set(mcp_server.mcp._tool_manager._tools) == before
+        assert not any(name.startswith(("wiki_", "memory_")) for name in before)
+
+    def test_enabled_subsystems_register_tools(self):
+        before = set(mcp_server.mcp._tool_manager._tools)
+        cfg.wiki = True
+        cfg.memory_enabled = True
+        try:
+            mcp_server.register_conditional_tools()
+            names = set(mcp_server.mcp._tool_manager._tools)
+            assert {"wiki_status", "wiki_build", "memory_remember", "memory_forget"} <= names
+        finally:
+            cfg.wiki = False
+            cfg.memory_enabled = False
+            for name in set(mcp_server.mcp._tool_manager._tools) - before:
+                del mcp_server.mcp._tool_manager._tools[name]
 
 
 class TestMain:
@@ -1439,3 +1467,104 @@ class TestCatalogBrowseMcp:
         with mock.patch("lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")):
             result = catalog_browse(task="embedding", featured=True)
         assert result == {"error": "bad filter"}
+
+
+class _StubEmbedder:
+    truncated_total = 0
+
+    def embed_batch(self, texts, **_kwargs):
+        return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+@pytest.fixture()
+def dataset_store(tmp_path):
+    """Real store wired into services for the dataset tools."""
+    from tests.conftest import make_mock_services
+
+    store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb"}))
+    store.add_page_texts(
+        [{"source": "doc.pdf", "page": 1, "text": "page one", "content_type": "pdf"}]
+    )
+    store.upsert_source("doc.pdf", "h", 1)
+    svc_mod.set_services(make_mock_services(store=store, embedder=_StubEmbedder()))
+    yield store
+    svc_mod.set_services(None)
+
+
+class TestExportDataset:
+    def test_writes_file(self, dataset_store, tmp_path):
+        out = tmp_path / "pages.parquet"
+        result = export_dataset(str(out))
+        assert result == {
+            "command": "export",
+            "format": "parquet",
+            "output": str(out),
+            "pages": 1,
+            "sources": 1,
+        }
+        assert out.exists()
+
+    def test_error_envelope(self, dataset_store, tmp_path):
+        result = export_dataset(str(tmp_path / "pages.parquet"), source="missing.pdf")
+        assert "Source not found" in result["error"]
+
+
+class _ProgressStubEmbedder:
+    """Stub embedder that forwards one non-embed and one embed progress event."""
+
+    truncated_total = 0
+
+    def embed_batch(self, texts, source="", on_progress=noop_callback, **_kwargs):
+        on_progress(
+            EventType.FILE_START, FileStartEvent(file=source, total_files=1, current_file=1)
+        )
+        on_progress(
+            EventType.EMBED, EmbedEvent(file=source, chunk=len(texts), total_chunks=len(texts))
+        )
+        return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+class TestImportDataset:
+    async def test_round_trip(self, dataset_store, tmp_path):
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        result = await import_dataset(str(out))
+        assert result["command"] == "import"
+        assert result["sources"] == ["doc.pdf"]
+        assert result["pages"] == 1
+
+    async def test_error_envelope(self, dataset_store, tmp_path):
+        result = await import_dataset(str(tmp_path / "nope.parquet"))
+        assert "Dataset not found" in result["error"]
+
+    async def test_reports_embed_progress_with_ctx(self, dataset_store, tmp_path):
+        from tests.conftest import make_mock_services
+
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        svc_mod.set_services(
+            make_mock_services(store=dataset_store, embedder=_ProgressStubEmbedder())
+        )
+        ctx = MagicMock()
+        ctx.report_progress = AsyncMock()
+
+        result = await import_dataset(str(out), ctx=ctx)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert "error" not in result
+        assert ctx.report_progress.await_count == 1
+        kwargs = ctx.report_progress.await_args_list[0].kwargs
+        assert kwargs["progress"] == kwargs["total"]
+        assert kwargs["message"] == "doc.pdf"
+
+    async def test_no_ctx_skips_progress(self, dataset_store, tmp_path):
+        from tests.conftest import make_mock_services
+
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        svc_mod.set_services(
+            make_mock_services(store=dataset_store, embedder=_ProgressStubEmbedder())
+        )
+        result = await import_dataset(str(out))
+        assert "error" not in result
