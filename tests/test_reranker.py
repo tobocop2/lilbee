@@ -6,7 +6,10 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
+
+_RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +64,7 @@ class TestRerank:
         assert reranker.rerank("query", results) == results
 
     def test_reranks_with_provider_scores(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [
             _chunk("a.md", "chunk A", relevance=0.3),
             _chunk("b.md", "chunk B", relevance=0.8),
@@ -72,7 +75,7 @@ class TestRerank:
         assert [c.chunk for c in reranked] == ["chunk B", "chunk A", "chunk C"]
 
     def test_bm25_protection(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         cfg.expansion_skip_threshold = 0.8
         results = [
             _chunk("a.md", "exact match", distance=0.9, relevance=0.9),
@@ -84,7 +87,7 @@ class TestRerank:
         assert reranked[0].chunk == "exact match"
 
     def test_handles_remainder(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         cfg.rerank_candidates = 2
         results = [
             _chunk("a.md", "chunk A"),
@@ -97,11 +100,11 @@ class TestRerank:
         assert reranked[-1].chunk == "chunk C"
 
     def test_empty_results(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         assert reranker.rerank("query", []) == []
 
     def test_equal_scores(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
         with _patch_provider(lambda query, cands: [0.5, 0.5]):
             reranked = reranker.rerank("test", results)
@@ -110,7 +113,7 @@ class TestRerank:
         assert chunks == {"A", "B"}
 
     def test_provider_error_preserves_results(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
 
         def explode(query: str, cands: list[str]) -> list[float]:
@@ -119,9 +122,39 @@ class TestRerank:
         with _patch_provider(explode):
             out = reranker.rerank("test", results)
         assert [c.chunk for c in out] == ["A", "B"]
+        assert all(r.rerank_score is None for r in out)
+
+    def test_stamps_rerank_score_on_candidates_only(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [
+            _chunk("a.md", "chunk A"),
+            _chunk("b.md", "chunk B"),
+            _chunk("c.md", "chunk C"),
+        ]
+        with _patch_provider(lambda query, cands: [0.9, 0.1]):
+            reranked = reranker.rerank("test", results, candidates=2)
+        scored = [r.chunk for r in reranked if r.rerank_score is not None]
+        unscored = [r.chunk for r in reranked if r.rerank_score is None]
+        assert sorted(scored) == ["chunk A", "chunk B"]
+        assert unscored == ["chunk C"]
+        assert all(r.rerank_score is None for r in results)  # inputs stay untouched
+
+    def test_pinned_top_keeps_blended_rerank_score(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.expansion_skip_threshold = 0.8
+        results = [
+            _chunk("a.md", "exact match", relevance=0.9),
+            _chunk("b.md", "reranker favorite", relevance=0.5),
+        ]
+        with _patch_provider(lambda query, cands: [0.0, 1.0]):
+            reranked = reranker.rerank("test", results)
+        assert [c.chunk for c in reranked] == ["exact match", "reranker favorite"]
+        assert len(reranked) == 2  # the pin must not duplicate the top chunk
+        # The pin sentinel orders the list; the stamped score stays the real blend.
+        assert all(r.rerank_score is not None and r.rerank_score <= 1.0 for r in reranked)
 
     def test_sends_chunk_text_to_provider(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "alpha"), _chunk("b.md", "beta")]
         captured: dict[str, list[str] | str] = {}
 
@@ -144,7 +177,7 @@ class TestBlendSchedule:
 
 class TestRerankerBlendPositions:
     def test_mid_and_bottom_positions(self):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         r = Reranker(cfg)
         scores = [0.9 - i * 0.05 for i in range(12)]
 
@@ -154,7 +187,7 @@ class TestRerankerBlendPositions:
         assert len(reranked) == 12
 
     def test_no_bm25_protection_when_below_threshold(self):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         cfg.expansion_skip_threshold = 0.8
         r = Reranker(cfg)
         results = [
@@ -174,7 +207,7 @@ class TestGoldenOrdering:
     """
 
     def test_higher_rerank_score_sorts_first(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [
             _chunk("a.md", "least", relevance=0.5),
             _chunk("b.md", "most", relevance=0.5),
@@ -186,7 +219,7 @@ class TestGoldenOrdering:
         assert [c.chunk for c in reranked] == ["most", "middle", "least"]
 
     def test_all_equal_scores_preserve_input_order(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         cfg.expansion_skip_threshold = 0.6  # above chunk relevance: no BM25 pin
         results = [_chunk(f"{i}.md", f"chunk {i}", relevance=0.5) for i in range(5)]
         with _patch_provider(lambda query, cands: [0.5] * len(cands)):
@@ -195,7 +228,7 @@ class TestGoldenOrdering:
         assert [c.chunk for c in reranked] == [f"chunk {i}" for i in range(5)]
 
     def test_both_scores_none_uses_fusion_default(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         cfg.expansion_skip_threshold = 0.6  # top relevance is None->0: no pin
 
         def _bare(source: str, chunk: str) -> SearchChunk:
@@ -217,6 +250,47 @@ class TestGoldenOrdering:
         with _patch_provider(lambda query, cands: [0.1, 0.9]):
             reranked = reranker.rerank("test", results)
         assert [c.chunk for c in reranked] == ["B", "A"]
+
+
+class TestRerankChangesContext:
+    """Empirical gate: reranking changes WHICH chunks reach the model.
+
+    The cross-encoder favorite shares no surface terms with the question,
+    so term-coverage set cover alone can never select it.
+    """
+
+    _QUESTION = "radio resets and headlights dim at idle"
+
+    def _candidates(self) -> list[SearchChunk]:
+        return [
+            _chunk("dock.md", "radio resets when the laptop dock is plugged", relevance=0.9),
+            _chunk("lightbar.md", "headlights dim with the light bar load", relevance=0.8),
+            _chunk("battery.md", "battery log shows the radio and headlights draw", relevance=0.7),
+            _chunk("grounding.md", "grounding upgrade with one zero gauge cable", relevance=0.6),
+        ]
+
+    def test_reranking_changes_selected_context_set(self):
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.expansion_skip_threshold = 0.95  # top fusion hit stays below: no pin
+        reranker = Reranker(cfg)
+        searcher = Searcher(
+            cfg,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+            reranker,
+            mock.MagicMock(),
+        )
+
+        baseline = searcher.select_context(self._candidates(), self._QUESTION, max_sources=3)
+        assert "grounding.md" not in {r.source for r in baseline}
+
+        with _patch_provider(lambda query, cands: [0.1, 0.2, 0.1, 1.0]):
+            reranked = reranker.rerank(self._QUESTION, self._candidates())
+        selected = searcher.select_context(reranked, self._QUESTION, max_sources=3)
+        sources = {r.source for r in selected}
+        assert "grounding.md" in sources
+        assert sources != {r.source for r in baseline}
 
 
 class TestMixedPoolBias:
@@ -242,7 +316,7 @@ class TestMixedPoolBias:
         )
 
     def test_ambiguous_scores_keep_both_sides(self, reranker):
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.reranker_model = _RERANKER_MODEL
         results = [
             self._wiki_chunk("wiki/summaries/a.md", "wiki a", relevance=0.5),
             _chunk("a.md", "raw a", relevance=0.5),

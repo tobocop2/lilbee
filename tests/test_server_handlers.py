@@ -188,6 +188,7 @@ class TestAsk:
                     chunk="c",
                     chunk_index=0,
                     distance=0.1,
+                    rerank_score=0.8,
                     vector=[0.1],
                 )
             ],
@@ -196,6 +197,7 @@ class TestAsk:
         assert result.answer == "42"
         assert len(result.sources) == 1
         assert result.sources[0].distance == 0.1
+        assert result.sources[0].rerank_score == 0.8
 
     async def test_no_sources(self, mock_svc):
         from lilbee.retrieval.query import AskResult
