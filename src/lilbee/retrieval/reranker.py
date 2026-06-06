@@ -51,7 +51,11 @@ def _normalize_scores(scores: list[float]) -> list[float]:
 
 
 def _blend_scores(to_rerank: list[SearchChunk], norm_scores: list[float]) -> list[ScoredChunk]:
-    """Blend fusion scores with reranker scores using position-aware weights."""
+    """Blend fusion scores with reranker scores using position-aware weights.
+
+    Each chunk is copied with ``rerank_score`` set to its blended score;
+    the input chunks are left untouched.
+    """
     blended: list[ScoredChunk] = []
     for i, (chunk, rerank_score) in enumerate(zip(to_rerank, norm_scores, strict=True)):
         fusion_score = chunk.relevance_score or (1.0 - (chunk.distance or 0.5))
@@ -65,24 +69,23 @@ def _blend_scores(to_rerank: list[SearchChunk], norm_scores: list[float]) -> lis
             fw, rw = _BLEND_SCHEDULE["bottom"]
 
         final_score = fw * fusion_norm + rw * rerank_score
-        blended.append(ScoredChunk(final_score, chunk))
+        scored = chunk.model_copy(update={"rerank_score": final_score})
+        blended.append(ScoredChunk(final_score, scored))
     return blended
 
 
 def _pin_original_top(
     blended: list[ScoredChunk],
-    to_rerank: list[SearchChunk],
     skip_threshold: float,
 ) -> list[ScoredChunk]:
     """Pin the original top result if its relevance exceeds the skip threshold."""
-    top_score = to_rerank[0].relevance_score or 0 if to_rerank else 0
+    original_top = blended[0].chunk
+    top_score = original_top.relevance_score or 0
     blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
-    if top_score >= skip_threshold:
-        original_top = to_rerank[0]
-        if blended_sorted[0].chunk is not original_top:
-            blended_sorted = [ScoredChunk(999.0, original_top)] + [
-                ScoredChunk(s, c) for s, c in blended_sorted if c is not original_top
-            ]
+    if top_score >= skip_threshold and blended_sorted[0].chunk is not original_top:
+        blended_sorted = [ScoredChunk(999.0, original_top)] + [
+            ScoredChunk(s, c) for s, c in blended_sorted if c is not original_top
+        ]
     return blended_sorted
 
 
@@ -120,9 +123,7 @@ class Reranker:
 
         norm_scores = _normalize_scores(scores)
         blended = _blend_scores(to_rerank, norm_scores)
-        blended_sorted = _pin_original_top(
-            blended, to_rerank, self._config.expansion_skip_threshold
-        )
+        blended_sorted = _pin_original_top(blended, self._config.expansion_skip_threshold)
 
         reranked = [chunk for _, chunk in blended_sorted]
         return reranked + remainder
