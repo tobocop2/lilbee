@@ -22,6 +22,14 @@ class LlmProvider(StrEnum):
     REMOTE = "remote"
 
 
+class RerankerType(StrEnum):
+    """How the reranker GGUF is served. ``auto`` detects by architecture."""
+
+    AUTO = "auto"
+    CROSS_ENCODER = "cross_encoder"
+    LLM = "llm"
+
+
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
 

@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.catalog.types import ModelTask
 from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
 
 def test_passes_through_when_name_has_no_special_pattern() -> None:
     assert reclassify_by_name("Qwen/Qwen3-0.6B-GGUF", "chat") == "chat"
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "Qwen/Qwen3-Reranker-8B-GGUF/Qwen3-Reranker-8B-Q4_K_M.gguf",
+        "mixedbread-ai/mxbai-rerank-base-v2-GGUF/mxbai-rerank-base-v2.Q4_K_M.gguf",
+    ],
+)
+def test_decoder_reranker_classified_rerank_by_name(ref) -> None:
+    # Decoder rerankers have a chat arch (qwen2/qwen3); name reclassification is
+    # what lets role validation accept them as the RERANK slot.
+    assert reclassify_by_name(ref, ModelTask.CHAT) == ModelTask.RERANK
 
 
 def test_overrides_to_rerank_when_name_contains_reranker() -> None:

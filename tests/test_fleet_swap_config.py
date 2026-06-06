@@ -32,6 +32,10 @@ def _config(launches: list[InstanceLaunch]) -> dict:
     return json.loads(build_swap_config(launches))
 
 
+def test_instance_launch_rerank_mode_defaults_none() -> None:
+    assert _launch(WorkerRole.RERANK, ["llama-server"]).rerank_mode is None
+
+
 class TestBuildSwapConfig:
     def test_emits_valid_json_with_top_level_keys(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server", "--model", "/m/c.gguf"])])

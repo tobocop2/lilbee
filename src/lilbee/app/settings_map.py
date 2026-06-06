@@ -14,6 +14,7 @@ from lilbee.core.config.enums import (
     ClustererBackend,
     KvCacheType,
     LlmProvider,
+    RerankerType,
     WikiEntityMode,
 )
 
@@ -142,6 +143,22 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         writable=False,
         group=SettingGroup.MODELS,
         help_text="Cross-encoder model for result reranking",
+    ),
+    "reranker_type": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        choices=tuple(t.value for t in RerankerType),
+        help_text=(
+            "Reranker serving mode: auto (detect cross-encoder vs LLM by model), "
+            "cross_encoder, or llm"
+        ),
+    ),
+    "reranker_prompt": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text="Relevance prompt for LLM rerankers (blank uses the built-in template)",
     ),
     "temperature": SettingDef(
         float,

@@ -24,7 +24,14 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, KvCacheType, LlmProvider, WikiEntityMode
+from .enums import (
+    ChatMode,
+    ClustererBackend,
+    KvCacheType,
+    LlmProvider,
+    RerankerType,
+    WikiEntityMode,
+)
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -218,6 +225,12 @@ class Config(BaseSettings):
     # llama-cpp rank pooling; hosted refs (cohere/voyage/jina/together/hf-tei)
     # need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
+
+    # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
+    reranker_type: RerankerType = ConfigField(default=RerankerType.AUTO, writable=True, public=True)
+    # Relevance prompt for LLM rerankers; empty uses the built-in generic template.
+    # A format string with {query} and {document} placeholders.
+    reranker_prompt: str = ConfigField(default="", writable=True, public=True)
 
     # Long-term chat memory. Off by default (opt-in): when disabled the whole
     # subsystem is dormant and the write surfaces respond with an enable hint.

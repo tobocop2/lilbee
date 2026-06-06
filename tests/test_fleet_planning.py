@@ -9,12 +9,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import KvCacheType
+from lilbee.core.config.enums import KvCacheType, RerankerType
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
 
@@ -641,6 +641,73 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "flash_attention", False)
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
         assert argv[argv.index("--flash-attn") + 1] == "off"
+
+    def _launch_rerank(self, tmp_path, monkeypatch, arch: str | None):
+        model = tmp_path / "r.gguf"
+        model.write_bytes(b"x" * 1000)
+        meta = {"architecture": arch} if arch is not None else {}
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
+        return planning_mod._launch_for(
+            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
+        )
+
+    def test_launch_for_rerank_decoder_arch_serves_generatively(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        launch = self._launch_rerank(tmp_path, monkeypatch, "qwen3")
+        assert launch.rerank_mode is RerankMode.LLM
+        assert "--jinja" in launch.argv
+        assert "--pooling" not in launch.argv
+        assert "--batch-size" not in launch.argv  # generative, not pooled embeddings
+        assert launch.token_cap is None  # LLM path relies on ctx headroom, no truncation
+        assert launch.argv[launch.argv.index("--flash-attn") + 1] == "on"
+
+    def test_launch_for_rerank_encoder_arch_stays_cross_encoder(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        launch = self._launch_rerank(tmp_path, monkeypatch, "bert")
+        assert launch.rerank_mode is RerankMode.CROSS_ENCODER
+        assert launch.argv[launch.argv.index("--pooling") + 1] == "rank"
+        assert "--batch-size" in launch.argv
+        assert "--jinja" not in launch.argv
+
+    def test_launch_for_rerank_override_forces_llm_on_encoder(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.LLM)
+        launch = self._launch_rerank(tmp_path, monkeypatch, "bert")
+        assert launch.rerank_mode is RerankMode.LLM
+        assert "--jinja" in launch.argv
+
+    def test_role_ctx_rerank_llm_uses_llm_rerank_ctx(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.LLM)
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_llm_rerank_ctx", lambda _m, _p: 1024
+        )
+        ctx = planning_mod._role_ctx(
+            WorkerRole.RERANK, tmp_path / "r.gguf", {"architecture": "qwen3"}
+        )
+        assert ctx == 1024
+
+    def test_resolve_llm_rerank_ctx_adds_query_headroom(self, tmp_path, monkeypatch) -> None:
+        from lilbee.providers import engine_params
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(engine_params, "train_ctx_from_meta", lambda *a, **k: 40960)
+        ctx = engine_params.resolve_llm_rerank_ctx({"architecture": "qwen3"}, tmp_path / "m.gguf")
+        assert ctx == 512 + engine_params._LLM_RERANK_HEADROOM
+
+    def test_resolve_llm_rerank_ctx_capped_by_train_ctx(self, tmp_path, monkeypatch) -> None:
+        from lilbee.providers import engine_params
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(engine_params, "train_ctx_from_meta", lambda *a, **k: 600)
+        assert engine_params.resolve_llm_rerank_ctx({}, tmp_path / "m.gguf") == 600
 
     def test_launch_for_vision_threads_floor_when_cpu_count_unknown(
         self, tmp_path, monkeypatch

@@ -27,6 +27,7 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "embedding_model",
         "vision_model",
         "reranker_model",
+        "reranker_type",
     }
 )
 

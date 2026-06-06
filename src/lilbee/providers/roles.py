@@ -21,6 +21,17 @@ class WorkerRole(StrEnum):
     VISION = "vision"
 
 
+class RerankMode(StrEnum):
+    """Resolved reranker serving mode for one RERANK server.
+
+    ``CROSS_ENCODER`` serves an encoder GGUF with rank-pooling embeddings;
+    ``LLM`` serves a decoder GGUF generatively and scores yes/no logprobs.
+    """
+
+    CROSS_ENCODER = "cross_encoder"
+    LLM = "llm"
+
+
 MODEL_FIELD_TO_ROLE: dict[str, WorkerRole] = {
     "chat_model": WorkerRole.CHAT,
     "embedding_model": WorkerRole.EMBED,

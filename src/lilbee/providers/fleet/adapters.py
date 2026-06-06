@@ -11,7 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.providers.roles import WorkerRole
+from lilbee.core.config.enums import RerankerType
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 _HOST = "127.0.0.1"
 
@@ -59,6 +60,43 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
         server_capable=True,
     ),
 }
+
+# Decoder-arch rerankers (Qwen3-Reranker, mxbai-rerank-v2) are served generatively.
+_DECODER_RERANK_ARCHS: frozenset[str] = frozenset(
+    {"qwen2", "qwen3", "llama", "mistral", "gemma", "gemma2", "gemma3", "phi3"}
+)
+
+LLM_RERANK_SPEC = RoleServerSpec(
+    role=WorkerRole.RERANK,
+    endpoint_path="/v1/chat/completions",
+    extra_args=("--jinja",),
+    server_capable=True,
+)
+
+_RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
+    RerankMode.CROSS_ENCODER: ROLE_SPECS[WorkerRole.RERANK],
+    RerankMode.LLM: LLM_RERANK_SPEC,
+}
+
+
+def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
+    """Pick the reranker serving mode from the config setting and GGUF arch.
+
+    ``auto`` serves a known decoder arch generatively; encoder/unknown archs stay
+    cross-encoder. Explicit settings override the arch.
+    """
+    if reranker_type is RerankerType.LLM:
+        return RerankMode.LLM
+    if reranker_type is RerankerType.CROSS_ENCODER:
+        return RerankMode.CROSS_ENCODER
+    if arch in _DECODER_RERANK_ARCHS:
+        return RerankMode.LLM
+    return RerankMode.CROSS_ENCODER
+
+
+def rerank_spec(mode: RerankMode) -> RoleServerSpec:
+    """The server spec for a RERANK launch given its resolved mode."""
+    return _RERANK_MODE_SPECS[mode]
 
 
 def build_server_argv(

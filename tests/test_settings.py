@@ -124,6 +124,42 @@ class TestTomlEscaping:
         assert _escape_toml_string("") == ""
 
 
+class TestRerankerConfig:
+    """Reranker mode + prompt config fields."""
+
+    def test_reranker_type_defaults_auto(self):
+        from lilbee.core.config import Config
+        from lilbee.core.config.enums import RerankerType
+
+        assert Config().reranker_type == RerankerType.AUTO
+
+    def test_reranker_type_rejects_junk(self):
+        import pydantic
+        import pytest
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Config(reranker_type="bogus")
+
+    def test_reranker_prompt_defaults_empty(self):
+        from lilbee.core.config import Config
+
+        assert Config().reranker_prompt == ""
+
+    def test_reranker_type_is_load_affecting(self):
+        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+
+        assert "reranker_type" in LOAD_AFFECTING_KEYS
+
+    def test_reranker_fields_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert "reranker_type" in SETTINGS_MAP
+        assert "reranker_prompt" in SETTINGS_MAP
+        assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 

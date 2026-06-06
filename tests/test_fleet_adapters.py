@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
-from lilbee.providers.roles import WorkerRole
+import pytest
+
+from lilbee.core.config.enums import RerankerType
+from lilbee.providers.fleet.adapters import (
+    LLM_RERANK_SPEC,
+    ROLE_SPECS,
+    build_server_argv,
+    rerank_spec,
+    resolve_rerank_mode,
+)
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 
 def test_every_worker_role_has_a_spec() -> None:
@@ -185,3 +194,34 @@ def test_chat_server_spec_enables_jinja() -> None:
     # --jinja is what makes the chat server render the model template and parse
     # native tool calls; tool-calling depends on it being present.
     assert "--jinja" in ROLE_SPECS[WorkerRole.CHAT].extra_args
+
+
+@pytest.mark.parametrize(
+    ("reranker_type", "arch", "expected"),
+    [
+        (RerankerType.AUTO, "qwen3", RerankMode.LLM),
+        (RerankerType.AUTO, "qwen2", RerankMode.LLM),
+        (RerankerType.AUTO, "llama", RerankMode.LLM),
+        (RerankerType.AUTO, "bert", RerankMode.CROSS_ENCODER),
+        (RerankerType.AUTO, "xlm-roberta", RerankMode.CROSS_ENCODER),
+        (RerankerType.AUTO, "nomic-bert", RerankMode.CROSS_ENCODER),
+        (RerankerType.AUTO, None, RerankMode.CROSS_ENCODER),
+        (RerankerType.AUTO, "totally-unknown-arch", RerankMode.CROSS_ENCODER),
+        (RerankerType.CROSS_ENCODER, "qwen3", RerankMode.CROSS_ENCODER),
+        (RerankerType.LLM, "bert", RerankMode.LLM),
+    ],
+)
+def test_resolve_rerank_mode(reranker_type, arch, expected) -> None:
+    assert resolve_rerank_mode(reranker_type, arch) is expected
+
+
+def test_rerank_spec_selects_by_mode() -> None:
+    assert rerank_spec(RerankMode.CROSS_ENCODER) is ROLE_SPECS[WorkerRole.RERANK]
+    assert rerank_spec(RerankMode.LLM) is LLM_RERANK_SPEC
+
+
+def test_llm_rerank_spec_is_generative_chat() -> None:
+    assert LLM_RERANK_SPEC.role is WorkerRole.RERANK
+    assert LLM_RERANK_SPEC.endpoint_path == "/v1/chat/completions"
+    assert LLM_RERANK_SPEC.extra_args == ("--jinja",)
+    assert LLM_RERANK_SPEC.server_capable is True

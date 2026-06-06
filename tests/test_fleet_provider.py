@@ -15,7 +15,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
 
@@ -147,6 +147,22 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     p = FleetProvider()
     p._ensure_swap()
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
+
+
+def test_adopt_swap_threads_rerank_mode(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.RERANK)
+    launch.rerank_mode = RerankMode.LLM
+    captured: dict[str, object] = {}
+
+    def _capture(_endpoint, _model, **kw):
+        captured["rerank_mode"] = kw.get("rerank_mode")
+        return _fake_client()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [launch])
+    FleetProvider()._ensure_swap()
+    assert captured["rerank_mode"] is RerankMode.LLM
 
 
 def test_embed_without_server_raises() -> None:

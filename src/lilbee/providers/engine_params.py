@@ -35,6 +35,16 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
     return min(train_ctx, cfg.chunk_size)
 
 
+_LLM_RERANK_HEADROOM = 512
+"""Tokens reserved above chunk_size for an LLM reranker's query, prompt, and 1-token answer."""
+
+
+def resolve_llm_rerank_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
+    """LLM-reranker context: a query+candidate pair, capped by the model's trained context."""
+    train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
+    return min(train_ctx, cfg.chunk_size + _LLM_RERANK_HEADROOM)
+
+
 _VISION_FALLBACK_N_CTX = 4096
 """Context for a vision load when the GGUF reports no usable context_length."""
 

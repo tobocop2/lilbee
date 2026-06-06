@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+from lilbee.providers.fleet.adapters import (
+    ROLE_SPECS,
+    build_server_argv,
+    rerank_spec,
+    resolve_rerank_mode,
+)
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.vram import estimate_instance_footprint
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -205,16 +210,29 @@ def _role_ctx(
     from lilbee.providers.engine_params import (
         resolve_chat_ctx,
         resolve_embed_ctx,
+        resolve_llm_rerank_ctx,
         resolve_vision_ctx,
     )
 
-    if role in _EMBED_ROLES:
+    if role is WorkerRole.EMBED:
+        return resolve_embed_ctx(meta, model_path)
+    if role is WorkerRole.RERANK:
+        if _rerank_mode_for(meta) is RerankMode.LLM:
+            return resolve_llm_rerank_ctx(meta, model_path)
         return resolve_embed_ctx(meta, model_path)
     if role is WorkerRole.VISION:
         return resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
     return resolve_chat_ctx(model_path, meta, chat_available_bytes, chat_slots)
+
+
+def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
+    """Resolve the RERANK serving mode from cfg + the reranker GGUF arch."""
+    from lilbee.core.config import cfg
+
+    arch = meta.get("architecture") if meta else None
+    return resolve_rerank_mode(cfg.reranker_type, arch)
 
 
 def _role_gpu_layers(role: WorkerRole) -> int:
@@ -437,9 +455,15 @@ def _launch_for(
         unified_budget=unified_budget,
         chat_reservation=chat_reservation,
     )
+    rerank_mode = _rerank_mode_for(meta) if plan.role is WorkerRole.RERANK else None
+    is_llm_rerank = rerank_mode is RerankMode.LLM
+    spec = rerank_spec(rerank_mode) if rerank_mode is not None else ROLE_SPECS[plan.role]
+    # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
+    # is generative and uses the default batching plus flash attention.
+    cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
     argv = build_server_argv(
         binary=binary,
-        spec=ROLE_SPECS[plan.role],
+        spec=spec,
         model_path=model_path,
         devices=plan.devices,
         n_gpu_layers=_role_gpu_layers(plan.role),
@@ -447,9 +471,9 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=_flash_attn_flag() if (is_chat or is_vision) else None,
+        flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
         cache_type=_cache_type_flag() if is_chat else None,
-        batch_size=ctx if plan.role in _EMBED_ROLES else None,
+        batch_size=ctx if cross_encoder_pooled else None,
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
     )
     return InstanceLaunch(
@@ -460,14 +484,16 @@ def _launch_for(
         # Unique per role + replica + owning pid so a concurrent instance's reaper
         # won't touch this server (only a dead parent's orphans get reaped).
         port_file=data_dir / f"llama-server-{plan.role.value}-{plan.replica}-{os.getpid()}.port",
-        # Embed/rerank truncate oversize inputs to just below the per-slot context.
-        token_cap=max(1, ctx - _EMBED_CTX_MARGIN) if plan.role in _EMBED_ROLES else None,
+        # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
+        # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
+        token_cap=max(1, ctx - _EMBED_CTX_MARGIN) if cross_encoder_pooled else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
         weights_bytes=weights_bytes,
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
         slots=slots,
         ctx=ctx,
         replica=plan.replica,
+        rerank_mode=rerank_mode,
     )
 
 

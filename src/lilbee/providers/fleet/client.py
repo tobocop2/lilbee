@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
 
+from lilbee.core.config import cfg
 from lilbee.providers.base import (
     ChatResult,
     ChatToolResult,
@@ -20,11 +23,21 @@ from lilbee.providers.base import (
     ToolCall,
     ToolCallDelta,
 )
+from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
 # Reranker pair format: query and candidate are joined with this separator into
 # one document so a cross-encoder GGUF scores the pair as a single sequence.
 _RERANK_PAIR_SEPARATOR = "</s></s>"
+# LLM reranker: score each candidate by the yes/no first-token logprob.
+_LLM_RERANK_PROMPT = (
+    "Judge whether the document is relevant to the query. "
+    "Answer with only 'yes' or 'no'.\n\nQuery: {query}\nDocument: {document}"
+)
+_LLM_RERANK_TOP_LOGPROBS = 20
+_LLM_RERANK_MAX_WORKERS = 8
+_YES_LABEL = "yes"
+_NO_LABEL = "no"
 # Max sequences per /v1/embeddings request. Like the in-process backstop, a
 # batch is bounded by BOTH the token budget (the server's n_batch, == token_cap)
 # and this sequence count: a corpus of many tiny chunks would otherwise pack one
@@ -121,6 +134,7 @@ class LlamaServerClient:
         http: httpx.Client | None = None,
         token_cap: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
+        rerank_mode: RerankMode | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
@@ -130,6 +144,8 @@ class LlamaServerClient:
         # token-truncated (via the server's tokenizer) before embedding, mirroring
         # the in-process backstop. None for chat/vision, which don't truncate inputs.
         self._token_cap = token_cap
+        # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
+        self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
 
@@ -331,12 +347,39 @@ class LlamaServerClient:
         """
         if not candidates:
             return []
+        if self._rerank_mode is RerankMode.LLM:
+            return self._rerank_llm(query, candidates)
         pairs = [f"{query}{_RERANK_PAIR_SEPARATOR}{candidate}" for candidate in candidates]
         scores: list[float] = []
         for sub_batch in self._truncate_and_subbatch(pairs, estimate=False):
             data = self._embeddings_call(sub_batch)
             scores.extend(_rerank_score(item) for item in data)
         return scores
+
+    def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
+        """Score each candidate by an LLM's yes/no first-token logprob."""
+        template = cfg.reranker_prompt or _LLM_RERANK_PROMPT
+        workers = min(_LLM_RERANK_MAX_WORKERS, len(candidates))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
+
+    def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float:
+        """One chat request scoring a single candidate's relevance to the query."""
+        content = template.format(query=query, document=candidate)
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": True,
+            "top_logprobs": _LLM_RERANK_TOP_LOGPROBS,
+            "stream": False,
+        }
+        with self._track():
+            resp = self._http.post(_CHAT_PATH, json=payload)
+            _raise_for_status(resp)
+            data = resp.json()
+        return _llm_rerank_score(_first_token_top_logprobs(data))
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
@@ -471,6 +514,36 @@ def _rerank_score(item: dict[str, Any]) -> float:
     raise ProviderError(
         f"Reranker returned unexpected score shape: {embedding!r}", provider=_PROVIDER_NAME
     )
+
+
+def _first_token_top_logprobs(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """The first generated token's top_logprobs list from a chat completion, or []."""
+    choices = response.get("choices") or []
+    if not choices:
+        return []
+    content = (choices[0].get("logprobs") or {}).get("content") or []
+    if not content:
+        return []
+    return list(content[0].get("top_logprobs") or [])
+
+
+def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float:
+    """Softmax of the yes vs no logprobs in a token's top_logprobs (case/space-insensitive)."""
+    yes_lp: float | None = None
+    no_lp: float | None = None
+    for entry in top_logprobs:
+        token = str(entry.get("token", "")).strip().lower()
+        logprob = float(entry.get("logprob", 0.0))
+        if token == _YES_LABEL and (yes_lp is None or logprob > yes_lp):
+            yes_lp = logprob
+        elif token == _NO_LABEL and (no_lp is None or logprob > no_lp):
+            no_lp = logprob
+    if yes_lp is None:
+        return 0.0
+    if no_lp is None:
+        return math.exp(yes_lp)
+    yes_e, no_e = math.exp(yes_lp), math.exp(no_lp)
+    return yes_e / (yes_e + no_e)
 
 
 def _parse_sse_delta(line: str) -> str:

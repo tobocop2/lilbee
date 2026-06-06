@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RerankMode, WorkerRole
 
 # Separator between a role and its replica index in a llama-swap model id.
 _REPLICA_SEP = "-"
@@ -30,6 +30,7 @@ class InstanceLaunch:
     slots: int = 1  # --parallel continuous-batching slots; chat concurrency capacity
     ctx: int = 0  # per-slot context the server runs with; what a client should fit to
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
+    rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
 
     @property
     def model_id(self) -> str:

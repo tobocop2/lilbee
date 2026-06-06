@@ -220,6 +220,7 @@ class FleetProvider:
                     launch.model_id,
                     token_cap=launch.token_cap,
                     timeout=_REQUEST_TIMEOUT_S,
+                    rerank_mode=launch.rerank_mode,
                 )
             )
         self._clients = clients
@@ -487,7 +488,7 @@ class FleetProvider:
     # --- model management: registry / GGUF reads, no running server needed ---
 
     def supports_rerank(self) -> bool:
-        """llama-server can always rerank a cross-encoder GGUF via ``--pooling rank``."""
+        """Serve a cross-encoder (rank pooling) or an LLM reranker (yes/no logprob)."""
         return True
 
     def list_models(self) -> list[str]:

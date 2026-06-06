@@ -8,7 +8,13 @@ import httpx
 import pytest
 
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.client import LlamaServerClient, _parse_sse_delta
+from lilbee.providers.fleet.client import (
+    LlamaServerClient,
+    _first_token_top_logprobs,
+    _llm_rerank_score,
+    _parse_sse_delta,
+)
+from lilbee.providers.roles import RerankMode
 
 _STREAM_BODY = (
     'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
@@ -50,6 +56,90 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
     assert scores == [0.0, 1.0, 2.0]
     # mirrors the in-process pairing exactly
     assert seen["input"] == ["q</s></s>a", "q</s></s>b", "q</s></s>c"]
+
+
+def test_llm_rerank_score_softmax_yes_over_no() -> None:
+    top = [{"token": "yes", "logprob": 0.0}, {"token": "no", "logprob": -2.0}]
+    assert 0.8 < _llm_rerank_score(top) < 1.0
+
+
+def test_llm_rerank_score_softmax_no_over_yes() -> None:
+    top = [{"token": "No", "logprob": 0.0}, {"token": " yes", "logprob": -3.0}]
+    assert _llm_rerank_score(top) < 0.2
+
+
+def test_llm_rerank_score_only_yes_present() -> None:
+    assert _llm_rerank_score([{"token": "yes", "logprob": -0.5}]) > 0.0
+
+
+def test_llm_rerank_score_neither_present_is_zero() -> None:
+    assert _llm_rerank_score([{"token": "maybe", "logprob": -0.1}]) == 0.0
+
+
+def test_first_token_top_logprobs_empty_on_missing_fields() -> None:
+    assert _first_token_top_logprobs({}) == []
+    assert _first_token_top_logprobs({"choices": [{}]}) == []
+    assert _first_token_top_logprobs({"choices": [{"logprobs": {"content": []}}]}) == []
+
+
+def _llm_rerank_client(handler) -> LlamaServerClient:
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    return LlamaServerClient("http://gpu0", "rerank-0", http=http, rerank_mode=RerankMode.LLM)
+
+
+def _chat_logprobs_response(yes_lp: float, no_lp: float) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "logprobs": {
+                        "content": [
+                            {
+                                "top_logprobs": [
+                                    {"token": "yes", "logprob": yes_lp},
+                                    {"token": "no", "logprob": no_lp},
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+
+def test_llm_rerank_routes_to_chat_and_ranks_relevant_higher() -> None:
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 1
+        assert body["logprobs"] is True
+        content = body["messages"][0]["content"]
+        if "relevant doc" in content:
+            return _chat_logprobs_response(0.0, -4.0)
+        return _chat_logprobs_response(-4.0, 0.0)
+
+    scores = _llm_rerank_client(handler).rerank("q", ["relevant doc", "off-topic"])
+    assert seen_paths == ["/v1/chat/completions", "/v1/chat/completions"]
+    assert scores[0] > scores[1]
+
+
+def test_llm_rerank_uses_prompt_override(monkeypatch) -> None:
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "reranker_prompt", "Q:{query} D:{document}")
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured.append(body["messages"][0]["content"])
+        return _chat_logprobs_response(0.0, -1.0)
+
+    _llm_rerank_client(handler).rerank("hello", ["world"])
+    assert captured == ["Q:hello D:world"]
 
 
 def test_rerank_empty_candidates_returns_empty() -> None:
