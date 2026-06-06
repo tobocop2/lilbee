@@ -118,6 +118,18 @@ class SseStream:
 
         return _callback
 
+    async def _flush_pending(self) -> AsyncGenerator[str, None]:
+        """Events left behind the sentinel by a producer that outran the consumer.
+
+        A fast producer can enqueue its sentinel before its threadsafe progress
+        callbacks run; one loop tick lets them land.
+        """
+        await asyncio.sleep(0)
+        while not self.queue.empty():
+            leftover = self.queue.get_nowait()
+            if leftover is not None:
+                yield leftover
+
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
@@ -152,6 +164,9 @@ class SseStream:
                 item = getter.result()
                 getter = None
                 if item is None:
+                    async for leftover in self._flush_pending():
+                        last_yielded = time.monotonic()
+                        yield leftover
                     break
                 last_yielded = time.monotonic()
                 yield item

@@ -1414,10 +1414,7 @@ class TestExportRoute:
 
 
 class TestImportRoute:
-    def test_round_trip_streams_done_summary(self, dataset_store, client):
-        # Embed progress events are best-effort and timing-dependent through the
-        # test client; their delivery is pinned in test_app_dataset (on_progress
-        # passthrough) and TestSseStreamDrain (no event loss).
+    def test_round_trip_streams_progress_and_done(self, dataset_store, client):
         data = client.get("/api/export", params={"format": "jsonl"}).content
         dataset_store.delete_by_source("doc.pdf")
 
@@ -1425,6 +1422,7 @@ class TestImportRoute:
         assert resp.status_code == 201
         assert "text/event-stream" in resp.headers["content-type"]
         events = parse_sse_events(resp.content)
+        assert any(name == "embed" for name, _ in events), events
         done = next(payload for name, payload in events if name == "done")
         assert done["command"] == "import"
         assert done["sources"] == ["doc.pdf"]

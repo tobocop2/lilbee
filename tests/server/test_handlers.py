@@ -320,6 +320,19 @@ class TestSseStreamDrain:
         received = [item async for item in sse.drain(task, "drain test")]
         assert len([r for r in received if "tick" in r]) == total
 
+    async def test_drain_flushes_events_behind_the_sentinel(self):
+        """A producer that finishes before drain starts still gets its progress out."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        # Sentinel already queued; the progress callback is still in the loop's
+        # ready callbacks, as happens when the producer outruns the consumer.
+        sse.queue.put_nowait(None)
+        asyncio.get_running_loop().call_soon(sse.queue.put_nowait, "event: embed\ndata: {}\n\n")
+        task = asyncio.create_task(asyncio.sleep(0))
+        received = [item async for item in sse.drain(task, "drain flush test")]
+        assert any("embed" in r for r in received)
+
 
 class TestOptionsPassthrough:
     """Verify generation options are extracted from request body and passed through."""
