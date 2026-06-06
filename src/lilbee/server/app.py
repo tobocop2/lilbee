@@ -16,6 +16,8 @@ from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.chat_completions_api.routes import completions_router
+from lilbee.server.mcp_mount import build_mcp_mount
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -113,10 +115,12 @@ def create_app() -> Litestar:
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
     )
+    mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
-        lifespan=[_lifespan],
+        lifespan=[_lifespan, mcp_session_lifespan],
         middleware=[DefineMiddleware(AuthMiddleware)],
         route_handlers=[
+            mcp_route,
             health_route,
             status_route,
             config_route,
@@ -128,6 +132,7 @@ def create_app() -> Litestar:
             ask_stream_route,
             chat_route,
             chat_stream_route,
+            completions_router,
             sync_route,
             add_route,
             models_list_route,

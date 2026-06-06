@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
+from typing import NoReturn
 
 from litestar import get, post
 from litestar.exceptions import HTTPException, ValidationException
@@ -15,19 +15,19 @@ from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
+from lilbee.server.chat_completions_api.errors import classify_provider_error
+from lilbee.server.chat_dispatch.concurrency import (
+    ChatBusyError,
+    acquire_chat_slot_or_busy,
+    release_chat_slot,
+)
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
 )
 
-# Process-wide lock that gates the two streaming chat endpoints to one
-# in-flight request at a time. The llama-cpp provider already serializes
-# concurrent chat() calls under a thread lock, so a second concurrent
-# stream blocks the client for many seconds with no feedback. Returning
-# 429 + Retry-After fast lets clients surface a real error and decide.
-# The lock binds to the worker's running event loop on first acquire.
-_chat_inflight_lock = asyncio.Lock()
+_SERVICE_UNAVAILABLE_STATUS = 503
 
 
 def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
@@ -49,16 +49,28 @@ def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
     )
 
 
-def _acquire_chat_lock_or_raise() -> None:
-    """Non-blocking acquire on the running loop thread; raise 429 on contention.
+def _raise_chat_http_error(exc: Exception) -> NoReturn:
+    """Translate a chat/RAG failure into the Litestar HTTP envelope.
 
-    Race-free because route handlers run on a single event loop thread and
-    ``Lock.acquire()`` on a free lock returns synchronously without yielding.
-    The check + acquire is atomic from the loop's perspective, no ``await``
-    can intervene between the two calls.
+    ValueError is a 422 validation error; an embedder/index mismatch is a 409
+    conflict; a recognized typed dispatch/provider failure carries its own
+    status; anything else is a 503.
     """
-    if _chat_inflight_lock.locked():
-        raise HTTPException(status_code=429, headers={"Retry-After": "1"})
+    if isinstance(exc, ValueError):
+        raise ValidationException(str(exc)) from exc
+    classified = classify_provider_error(exc)
+    status = classified.http_status if classified is not None else _SERVICE_UNAVAILABLE_STATUS
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+async def _acquire_chat_lock_or_raise() -> None:
+    """Translate the canonical busy signal into Litestar's HTTP 429 envelope."""
+    from lilbee.app.services import get_services
+
+    try:
+        await acquire_chat_slot_or_busy(get_services().provider.max_concurrent_chats())
+    except ChatBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"}) from exc
 
 
 async def _gated_stream(
@@ -74,7 +86,7 @@ async def _gated_stream(
         async for chunk in generator:
             yield chunk
     finally:
-        _chat_inflight_lock.release()
+        await release_chat_slot()
 
 
 @get("/api/search")
@@ -102,6 +114,7 @@ async def search_route(
 @post("/api/ask")
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
+    await _acquire_chat_lock_or_raise()
     try:
         return await handlers.ask(
             question=data.question,
@@ -114,14 +127,15 @@ async def ask_route(data: AskRequest) -> AskResponse:
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        _raise_chat_http_error(exc)
+    finally:
+        await release_chat_slot()
 
 
 @post("/api/ask/stream")
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
-    _acquire_chat_lock_or_raise()
-    await _chat_inflight_lock.acquire()
+    await _acquire_chat_lock_or_raise()
     return Stream(
         _gated_stream(
             handlers.ask_stream(
@@ -138,6 +152,7 @@ async def ask_stream_route(data: AskRequest) -> Stream:
 @post("/api/chat")
 async def chat_route(data: ChatRequest) -> AskResponse:
     """RAG chat with conversation history, returning an answer with sources."""
+    await _acquire_chat_lock_or_raise()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
@@ -151,13 +166,16 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         )
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+    finally:
+        await release_chat_slot()
 
 
 @post("/api/chat/stream")
 async def chat_stream_route(data: ChatRequest) -> Stream:
     """Streaming SSE version of chat with conversation history."""
-    _acquire_chat_lock_or_raise()
-    await _chat_inflight_lock.acquire()
+    await _acquire_chat_lock_or_raise()
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]

@@ -21,13 +21,16 @@ from lilbee.runtime.progress import (
     SseErrorCode,
     SseEvent,
 )
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 
 log = logging.getLogger(__name__)
 
 # Machine-readable ``code`` on an SSE error event. Load-time failures use
-# SseErrorCode; failed provider calls reuse ProviderErrorKind directly rather
-# than mirroring it into a second enum.
-SseErrorCodeValue = SseErrorCode | ProviderErrorKind
+# SseErrorCode; failed provider calls reuse ProviderErrorKind directly; the
+# RAG chat stream reuses the wire-layer CompletionsErrorCode for typed
+# dispatch errors (unknown model, no tool support, context overflow) so a
+# single client-facing vocabulary covers both surfaces.
+SseErrorCodeValue = SseErrorCode | ProviderErrorKind | CompletionsErrorCode
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -48,7 +51,7 @@ def sse_error(
 
 
 _OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
-_NOT_INSTALLED_MARKERS = ("not found in registry", "is not available", "pull it first")
+_NOT_INSTALLED_MARKERS = ("is not installed", "is not available", "pull it first")
 
 
 def classify_load_error(message: str) -> tuple[SseErrorCode | None, str]:
