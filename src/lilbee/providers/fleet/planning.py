@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 _CHAT_SLOTS = 4
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
+# Truncate embed/rerank inputs a few tokens below the per-slot context: the server
+# re-tokenizes the truncated text with add_special, so a truncate-to-exactly-n_ctx
+# input overflows by the re-added BOS (plus detokenize/tokenize round-trip drift).
+_EMBED_CTX_MARGIN = 8
 # Roles whose loaders offload every layer regardless of cfg.n_gpu_layers; only
 # chat honors cfg.n_gpu_layers.
 _ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
@@ -456,8 +460,8 @@ def _launch_for(
         # Unique per role + replica + owning pid so a concurrent instance's reaper
         # won't touch this server (only a dead parent's orphans get reaped).
         port_file=data_dir / f"llama-server-{plan.role.value}-{plan.replica}-{os.getpid()}.port",
-        # Embed/rerank truncate oversize inputs to the per-slot context.
-        token_cap=ctx if plan.role in _EMBED_ROLES else None,
+        # Embed/rerank truncate oversize inputs to just below the per-slot context.
+        token_cap=max(1, ctx - _EMBED_CTX_MARGIN) if plan.role in _EMBED_ROLES else None,
         # Weights size scales the cold-load ready timeout (larger model = longer).
         weights_bytes=weights_bytes,
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.

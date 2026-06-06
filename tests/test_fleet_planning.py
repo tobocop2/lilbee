@@ -614,7 +614,8 @@ class TestBuildFleetWiring:
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
         launch = self._launch_for_role(tmp_path, monkeypatch, role, ctx=8192)
-        assert launch.token_cap == 8192  # embed/rerank truncate to per-slot ctx
+        # Truncate a few tokens below the per-slot ctx so the server's re-added BOS fits.
+        assert launch.token_cap == 8192 - planning_mod._EMBED_CTX_MARGIN
 
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
     def test_launch_for_non_embed_roles_have_no_token_cap(
