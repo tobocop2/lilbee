@@ -1454,6 +1454,99 @@ class TestVisionFallback:
             await ingest_document(f, "cancel.pdf", "pdf", quiet=True)
 
 
+def _write_png(path: Path) -> None:
+    """Write a tiny valid PNG so the image OCR path can open + re-encode it."""
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), color=(255, 255, 255)).save(path, format="PNG")
+
+
+class TestImageOcr:
+    """bb-657: image content_type routes through OCR (vision when configured, else Tesseract)."""
+
+    async def test_image_routed_to_vision_ocr(self, isolated_env, mock_svc):
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = True
+        cfg.ocr_timeout = 30.0
+        mock_svc.provider.vision_ocr.return_value = "Scanned image text. " * 20
+
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        result = await ingest_document(f, "scan.png", "image")
+        # the single-image path is used, not the PDF page loop
+        mock_svc.provider.vision_ocr.assert_called_once()
+        mock_svc.provider.pdf_ocr.assert_not_called()
+        assert len(result) > 0
+        assert result[0]["content_type"] == "image"
+        assert result[0]["page_start"] == 1
+
+    async def test_image_skips_kreuzberg_markdown_extract(self, isolated_env, mock_svc):
+        # The pre-fix bug: an image went through a markdown extract that yields no
+        # text. The image branch must not call kreuzberg.extract_file_sync at all.
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = True
+        mock_svc.provider.vision_ocr.return_value = "text " * 20
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        with mock.patch("kreuzberg.extract_file_sync", new_callable=Mock) as mock_kf:
+            await ingest_document(f, "scan.png", "image")
+        mock_kf.assert_not_called()
+
+    async def test_image_falls_back_to_tesseract_without_vision_model(self, isolated_env, mock_svc):
+        cfg.vision_model = ""
+        cfg.enable_ocr = None  # auto: no vision model -> Tesseract
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
+            mock_tess.return_value = _make_kreuzberg_result("Tesseract image text. " * 20)
+            result = await ingest_document(f, "scan.png", "image")
+        mock_svc.provider.vision_ocr.assert_not_called()
+        assert len(result) > 0
+        assert result[0]["content_type"] == "image"
+
+    async def test_image_vision_ocr_failure_skips_file(self, isolated_env, mock_svc):
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = True
+        mock_svc.provider.vision_ocr.side_effect = RuntimeError("vision down")
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        assert await ingest_document(f, "scan.png", "image") == []
+
+    async def test_image_tesseract_empty_skips_file(self, isolated_env, mock_svc):
+        cfg.vision_model = ""
+        cfg.enable_ocr = None
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
+            mock_tess.return_value = _make_empty_result()
+            assert await ingest_document(f, "scan.png", "image") == []
+
+    def test_image_to_png_bytes_reencodes(self, isolated_env):
+        from lilbee.data.ingest.extract import _image_to_png_bytes
+
+        f = isolated_env / "x.bmp"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color=(1, 2, 3)).save(f, format="BMP")
+        png = _image_to_png_bytes(f)
+        assert png.startswith(b"\x89PNG\r\n")
+
+
 class TestShouldRunOcrAutoDetect:
     def test_auto_detect_vision_model_set(self, isolated_env):
         """When enable_ocr is None, _should_run_ocr reflects cfg.vision_model."""

@@ -29,6 +29,7 @@ class FileToProcess(NamedTuple):
 MIN_MEANINGFUL_CHARS = 50
 
 PDF_CONTENT_TYPE = "pdf"
+IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
 TESSERACT_BACKEND = "tesseract"
 
@@ -124,7 +125,10 @@ DOCUMENT_EXTENSION_MAP: dict[str, str] = {
     ".pdf": PDF_CONTENT_TYPE,
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
-    **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
+    **{
+        ext: IMAGE_CONTENT_TYPE
+        for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")
+    },
     **{ext: "data" for ext in (".csv", ".tsv")},
     ".xml": "xml",
     **{ext: "json" for ext in (".json", ".jsonl")},
