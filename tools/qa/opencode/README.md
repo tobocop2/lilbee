@@ -12,12 +12,26 @@ The reference corpus is the **Godot 4 class XML** (`/root/godot/doc/classes`) so
 
 ## One-time pod setup
 
+On a fresh from-source pod (no `pip install lilbee`), run the bootstrap first. It
+installs the build toolchain + tmux + uv + opencode, syncs a local-disk venv,
+builds the engine once and caches it on `/workspace`, and is idempotent across a
+stop/resume (only /workspace survives a resume, so the engine isn't recompiled):
+
+```bash
+bash tools/qa/opencode/pod_bootstrap.sh        # BACKEND=cu124 by default
+source /root/lilbee_venv/bin/activate
+export PATH=/usr/local/go/bin:$HOME/.local/bin:$HOME/.opencode/bin:$PATH
+export LILBEE_MODELS_DIR=/workspace/models HF_HOME=/workspace/hf
+```
+
+Then the corpus:
+
 ```bash
 # Clone Godot for the reference corpus (depth 1 is fine, classes/ is small)
 git clone --depth 1 https://github.com/godotengine/godot /root/godot
 
 # Pre-index the class reference once, reused by every cell
-LILBEE_DATA=/root/godot_corpus uv run lilbee add /root/godot/doc/classes
+LILBEE_DATA=/root/godot_corpus lilbee add /root/godot/doc/classes
 ```
 
 `/root/godot_corpus/data/lancedb` is the shared lancedb. Each matrix cell starts a fresh workspace and copies that lancedb in (a fast `cp -r` — no per-cell re-embed), so cells stay isolated but share the indexed corpus.
