@@ -1027,6 +1027,35 @@ class TestSetChatModel:
         assert result.model == _CHAT_REF
         assert cfg.chat_model == _CHAT_REF
 
+    async def test_bare_repo_with_two_quants_resolves_deterministically(self, tmp_path, mock_svc):
+        """With several quants installed, the alphabetically-first ref wins."""
+        other = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        mock_svc.provider.list_models.return_value = [_CHAT_REF, other]
+        result = await handlers.set_chat_model("Qwen/Qwen3-0.6B-GGUF")
+        assert result.model == other
+
+    async def test_resolves_bare_non_featured_repo_to_installed_quant(self, tmp_path, mock_svc):
+        """A bare repo outside the featured catalog resolves via the registry.
+
+        This is the post-pull activation path for catalog-search models: the
+        client falls back to the bare repo and the server finds the quant the
+        pull installed.
+        """
+        custom = install_fake_model("org/Search-Hit-GGUF", "search-hit-Q4_K_M.gguf", task="chat")
+        mock_svc.provider.list_models.return_value = [custom]
+        mock_svc.registry.installed_ref_for_repo.return_value = custom
+        result = await handlers.set_chat_model("org/Search-Hit-GGUF")
+        assert result.model == custom
+        assert cfg.chat_model == custom
+
+    async def test_bare_repo_not_routable_stays_rejected(self, tmp_path, mock_svc):
+        """An installed quant the provider doesn't list is not activated."""
+        custom = install_fake_model("org/Search-Hit-GGUF", "search-hit-Q4_K_M.gguf", task="chat")
+        mock_svc.provider.list_models.return_value = []
+        mock_svc.registry.installed_ref_for_repo.return_value = custom
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("org/Search-Hit-GGUF")
+
     async def test_accepts_installed_out_of_catalog_chat_model(self, tmp_path, mock_svc):
         """A non-featured chat model installed locally IS assignable to chat_model.
 
