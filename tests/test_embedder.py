@@ -177,3 +177,42 @@ class TestValidateModel:
                 resolve.assert_not_called()
         finally:
             cfg.embedding_model = old
+
+
+class TestAsymmetricEmbed:
+    """bb-7z8: query vs document embedding gets the configured embedder's instruction."""
+
+    def test_symmetric_model_applies_no_prefix(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "gpustack/bge-m3-GGUF/b.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("hello")
+        assert mock_provider.embed.call_args[0][0] == ["hello"]
+
+    def test_instruct_model_prefixes_query_not_document(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "Qwen/Qwen3-Embedding-8B-GGUF/q.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("astar grid")
+        sent = mock_provider.embed.call_args[0][0][0]
+        assert sent.startswith("Instruct:") and sent.endswith("astar grid")
+
+        mock_provider.reset_mock()
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed("a document")  # qwen3 doc_prefix is empty
+        assert mock_provider.embed.call_args[0][0] == ["a document"]
+
+    def test_e5_model_prefixes_both_sides(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "intfloat/e5-large-v2-GGUF/e.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("q")
+        assert mock_provider.embed.call_args[0][0] == ["query: q"]
+
+        mock_provider.reset_mock()
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_batch(["d"])
+        assert mock_provider.embed.call_args[0][0] == ["passage: d"]
+
+    def test_embed_query_batch_prefixes_each(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "intfloat/e5-large-v2-GGUF/e.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim] * 2
+        embedder.embed_query_batch(["a", "b"])
+        assert mock_provider.embed.call_args[0][0] == ["query: a", "query: b"]

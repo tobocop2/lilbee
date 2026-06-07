@@ -175,13 +175,13 @@ class Searcher:
             if count > 0 and not skip_llm:
                 llm_texts = list(self._llm_expand(question, count))
                 if llm_texts:
-                    llm_vectors = self._embedder.embed_batch(llm_texts)
+                    llm_vectors = self._embedder.embed_query_batch(llm_texts)
                     llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
             llm_variants = self._apply_guardrails(llm_variants, question_vec)
 
             concept_texts = list(self._concept_query_expansion(question))
             if concept_texts:
-                concept_vectors = self._embedder.embed_batch(concept_texts)
+                concept_vectors = self._embedder.embed_query_batch(concept_texts)
                 llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
 
             return llm_variants
@@ -233,7 +233,7 @@ class Searcher:
             text = response.text.strip()
             if not text:
                 return []
-            hyde_vec = self._embedder.embed(text)
+            hyde_vec = self._embedder.embed_query(text)
             return self._store.search(hyde_vec, top_k=top_k, query_text=None)
         except Exception:
             log.debug("HyDE search failed", exc_info=True)
@@ -269,14 +269,14 @@ class Searcher:
         if mode == "term":
             return self._store.bm25_probe(query, top_k=top_k)
         if mode == "vec":
-            query_vec = self._embedder.embed(query)
+            query_vec = self._embedder.embed_query(query)
             return self._store.search(query_vec, top_k=top_k, query_text=None)
         if mode == "hyde":
             return self._hyde_search(query, top_k)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
             effective = chunk_type if chunk_type is not None else ChunkType(mode)
-            query_vec = self._embedder.embed(query)
+            query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=query, chunk_type=effective
             )
@@ -377,7 +377,7 @@ class Searcher:
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
             return self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
-        query_vec = self._embedder.embed(question)
+        query_vec = self._embedder.embed_query(question)
         results = self._store.search(
             query_vec,
             top_k=top_k,
@@ -451,7 +451,7 @@ class Searcher:
         )
         facts: list[MemoryRow] = []
         if self._config.memory_top_k > 0 and self._embedder.embedding_available():
-            vector = self._embedder.embed(question)
+            vector = self._embedder.embed_query(question)
             facts = self._store.search_memories(
                 vector,
                 owner_predicate=owner_predicate,

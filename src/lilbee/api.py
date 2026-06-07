@@ -217,7 +217,7 @@ class Lilbee:
 
         with _swap_config(self._config):
             return self._store.search_memories(
-                self._embedder.embed(query),
+                self._embedder.embed_query(query),
                 owner_predicate=local_owner_predicate(),
                 top_k=self._config.memory_top_k if top_k is None else top_k,
                 max_distance=self._config.memory_max_distance,
