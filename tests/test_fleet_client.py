@@ -58,6 +58,76 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
     assert seen["input"] == ["q</s></s>a", "q</s></s>b", "q</s></s>c"]
 
 
+def test_raise_for_status_maps_429_to_rate_limit() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(429, json={"error": "busy"}))
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+
+
+def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(429, json={"error": "Too many requests"})
+        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
+
+    assert _client(handler).embed(["hello"]) == [[0.1, 0.2]]
+    assert calls["n"] == 3  # two 429s retried, third succeeds
+
+
+def test_embed_gives_up_after_retries_when_persistently_busy(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _BUSY_RETRIES
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json={"error": "busy"})
+
+    with pytest.raises(ProviderError) as excinfo:
+        _client(handler).embed(["x"])
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert calls["n"] == _BUSY_RETRIES
+
+
+def test_embed_does_not_retry_non_busy_errors(monkeypatch) -> None:
+    # A non-RATE_LIMIT failure (e.g. a malformed 500) must surface immediately,
+    # not burn the retry budget.
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(ProviderError):
+        _client(handler).embed(["x"])
+    assert calls["n"] == 1
+
+
+def test_llm_rerank_retries_on_busy(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(429, json={"error": "busy"})
+        return _chat_logprobs_response(0.0, -3.0)
+
+    scores = _llm_rerank_client(handler).rerank("q", ["doc"])
+    assert calls["n"] == 2
+    assert scores[0] > 0.5
+
+
 def test_llm_rerank_score_softmax_yes_over_no() -> None:
     top = [{"token": "yes", "logprob": 0.0}, {"token": "no", "logprob": -2.0}]
     assert 0.8 < _llm_rerank_score(top) < 1.0

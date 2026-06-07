@@ -6,9 +6,10 @@ import json
 import logging
 import math
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
@@ -85,6 +86,15 @@ def _raise_for_status(resp: httpx.Response) -> None:
             provider=_PROVIDER_NAME,
             kind=ProviderErrorKind.CONTEXT_OVERFLOW,
         )
+    # A 429 (slots full) is transient: a cold replica fleet rejects the first ingest
+    # fan-out until its slots load. Tag RATE_LIMIT so the caller backs off and retries
+    # instead of dropping the input.
+    if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
+        raise ProviderError(
+            "llama-server is busy (HTTP 429); replicas may still be warming.",
+            provider=_PROVIDER_NAME,
+            kind=ProviderErrorKind.RATE_LIMIT,
+        )
     detail = f": {body[:600]}" if body else ""
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
@@ -114,12 +124,18 @@ _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _HTTP_BAD_REQUEST = 400
+_HTTP_TOO_MANY_REQUESTS = 429
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
 # Short, separate timeout for /health: a server can wedge under heavy prompt
 # processing, and readiness/monitor polls must not block on the request timeout.
 _HEALTH_TIMEOUT_S = 5.0
+# Retry a server-busy (HTTP 429) response this many times with exponential backoff:
+# a cold replica fleet 429s the first ingest fan-out until its slots load.
+_BUSY_RETRIES = 6
+_BUSY_BACKOFF_BASE_S = 0.5
+_T = TypeVar("_T")
 
 
 class LlamaServerClient:
@@ -375,31 +391,56 @@ class LlamaServerClient:
             "top_logprobs": _LLM_RERANK_TOP_LOGPROBS,
             "stream": False,
         }
-        with self._track():
-            resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
-            data = resp.json()
-        return _llm_rerank_score(_first_token_top_logprobs(data))
+
+        def _call() -> dict[str, Any]:
+            with self._track():
+                resp = self._http.post(_CHAT_PATH, json=payload)
+                _raise_for_status(resp)
+                return dict(resp.json())
+
+        return _llm_rerank_score(_first_token_top_logprobs(self._retry_on_busy(_call)))
+
+    def _retry_on_busy(self, call: Callable[[], _T]) -> _T:
+        """Run *call*, retrying a transient server-busy (RATE_LIMIT) with backoff.
+
+        A cold replica fleet 429s the first ingest fan-out until its slots load;
+        backing off and retrying turns those drops into successes. Non-RATE_LIMIT
+        errors (and a final still-busy response) propagate to the caller.
+        """
+        delay = _BUSY_BACKOFF_BASE_S
+        for _ in range(_BUSY_RETRIES - 1):
+            try:
+                return call()
+            except ProviderError as exc:
+                if exc.kind is not ProviderErrorKind.RATE_LIMIT:
+                    raise
+                time.sleep(delay)
+                delay *= 2
+        return call()
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
-        with self._track():
-            resp = self._http.post(
-                _EMBED_PATH,
-                json={
-                    "model": self._model,
-                    "input": inputs,
-                    "embd_normalize": _EMBD_NORMALIZE_NONE,
-                },
-            )
-            _raise_for_status(resp)
-            data = resp.json()["data"]
-        if len(data) != len(inputs):
-            raise ProviderError(
-                f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
-                provider=_PROVIDER_NAME,
-            )
-        return list(data)
+
+        def _call() -> list[dict[str, Any]]:
+            with self._track():
+                resp = self._http.post(
+                    _EMBED_PATH,
+                    json={
+                        "model": self._model,
+                        "input": inputs,
+                        "embd_normalize": _EMBD_NORMALIZE_NONE,
+                    },
+                )
+                _raise_for_status(resp)
+                data = resp.json()["data"]
+            if len(data) != len(inputs):
+                raise ProviderError(
+                    f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
+                    provider=_PROVIDER_NAME,
+                )
+            return list(data)
+
+        return self._retry_on_busy(_call)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
