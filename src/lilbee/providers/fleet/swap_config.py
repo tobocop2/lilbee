@@ -7,26 +7,28 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from lilbee.providers.fleet.launch import InstanceLaunch
 
 # One group holds every role with swap disabled, so llama-swap brings them all up
 # and never evicts one to load another (the co-residency the fleet needs).
 _GROUP_NAME = "lilbee"
-_START_PORT = 5800
 # Generous cold-load ceiling: a multi-hundred-GB giant can take minutes to map.
 _HEALTH_CHECK_TIMEOUT_S = 600
 _LOG_LEVEL = "info"
-# llama-swap substitutes ${PORT} per member before running the command.
-_PORT_MACRO = "${PORT}"
-_PROXY_URL = "http://localhost:${PORT}"
+# Matches the --host every server argv binds (adapters); "localhost" would have
+# llama-swap dial [::1] first, where another process could hold the same port.
+_PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
 _PORT_FLAG = "--port"
 _TTL_KEEP = 0  # never time a member out; the group keeps it resident
 
 # llama-swap config keys.
-_KEY_START_PORT = "startPort"
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
 _KEY_LOG_LEVEL = "logLevel"
 _KEY_MODELS = "models"
@@ -41,25 +43,28 @@ _KEY_PERSISTENT = "persistent"
 _KEY_MEMBERS = "members"
 
 
-def build_swap_config(launches: list[InstanceLaunch]) -> str:
+def build_swap_config(launches: list[InstanceLaunch], member_ports: Mapping[str, int]) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
     Each role becomes a model whose id is the role name and whose command is the
-    role's llama-server argv plus llama-swap's ${PORT} macro; one ``swap: false``
-    group holds them all co-resident behind the single OpenAI endpoint.
+    role's llama-server argv plus the explicit port from *member_ports*; one
+    ``swap: false`` group holds them all co-resident behind the single OpenAI
+    endpoint. Ports are allocated fresh per start (never llama-swap's fixed
+    ``startPort`` range) so a previous instance's lingering server can't collide
+    with the new fleet's bind.
     """
     models: dict[str, object] = {}
     for launch in launches:
+        port = member_ports[launch.model_id]
         entry: dict[str, object] = {
-            _KEY_CMD: _command_line(launch.argv),
-            _KEY_PROXY: _PROXY_URL,
+            _KEY_CMD: _command_line(launch.argv, port),
+            _KEY_PROXY: _PROXY_URL_TEMPLATE.format(port=port),
             _KEY_TTL: _TTL_KEEP,
         }
         if launch.env_overrides:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in launch.env_overrides.items()]
         models[launch.model_id] = entry
     config: dict[str, object] = {
-        _KEY_START_PORT: _START_PORT,
         _KEY_HEALTH_TIMEOUT: _HEALTH_CHECK_TIMEOUT_S,
         _KEY_LOG_LEVEL: _LOG_LEVEL,
         _KEY_MODELS: models,
@@ -75,10 +80,15 @@ def build_swap_config(launches: list[InstanceLaunch]) -> str:
     return json.dumps(config, indent=2)
 
 
-def _command_line(argv: list[str]) -> str:
-    """Shell command for a member: the role argv plus the ${PORT} macro.
+def _command_line(argv: list[str], port: int) -> str:
+    """Shell command for a member: the role argv plus its explicit port.
 
-    Argv is shell-quoted so a spaced model path survives; the macro is appended
-    literally so llama-swap substitutes the claimed port.
+    Quoting must match how llama-swap splits the command back into argv: MS
+    rules on Windows (POSIX single quotes would stay literal in the paths and
+    the spawn fails with "file does not exist"), POSIX everywhere else.
     """
-    return f"{shlex.join(argv)} {_PORT_FLAG} {_PORT_MACRO}"
+    if sys.platform == "win32":
+        rendered = subprocess.list2cmdline(argv)
+    else:
+        rendered = shlex.join(argv)
+    return f"{rendered} {_PORT_FLAG} {port}"

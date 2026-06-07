@@ -18,6 +18,7 @@ from lilbee.providers.model_cache import (
     free_system_memory,
     get_available_memory,
     kv_bytes_per_token,
+    total_system_memory,
 )
 
 
@@ -209,6 +210,14 @@ class TestFreeSystemMemory:
         fake_psutil.virtual_memory.return_value.available = 7_000_000_000
         monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
         assert free_system_memory() == 7_000_000_000
+
+
+class TestTotalSystemMemory:
+    def test_returns_psutil_total(self, monkeypatch) -> None:
+        fake_psutil = mock.MagicMock()
+        fake_psutil.virtual_memory.return_value.total = 8_000_000_000
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        assert total_system_memory() == 8_000_000_000
 
 
 class TestTryNvidiaMemory:

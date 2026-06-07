@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING
 
 import httpx
+import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
@@ -39,6 +40,8 @@ _RUNNING_PATH = "/running"
 _BOOT_TIMEOUT_S = 30.0
 _BOOT_POLL_S = 0.25
 _STOP_TIMEOUT_S = 10.0
+# Grace for a llama-server that outlived llama-swap before it is force-killed.
+_ORPHAN_STOP_TIMEOUT_S = 5.0
 _PROBE_TIMEOUT_S = 5.0
 _PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
@@ -66,10 +69,18 @@ class SwapManager:
         self._port: int | None = None
 
     def start(self, launches: list[InstanceLaunch]) -> None:
-        """Write the config and spawn llama-swap, waiting for its proxy to answer."""
+        """Write the config and spawn llama-swap, waiting for its proxy to answer.
+
+        The proxy and every member get a freshly allocated free port; a fixed
+        member port range would collide with a previous instance's server that
+        is still shutting down (the new llama-server then fails its bind and
+        llama-swap reports it only as "exited prematurely").
+        """
+        ports = _pick_free_ports(1 + len(launches))
+        member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(build_swap_config(launches))
-        self._port = _pick_free_port()
+        self._config_path.write_text(build_swap_config(launches, member_ports))
+        self._port = ports[0]
         self._proc = subprocess.Popen(  # noqa: S603 - argv[0] is the resolved llama-swap
             [
                 str(resolve_llama_swap()),
@@ -104,10 +115,10 @@ class SwapManager:
         self.start(launches)
 
     def shutdown(self) -> None:
-        """Stop the llama-swap process group (a no-op when not running)."""
+        """Stop llama-swap and every server it spawned (a no-op when not running)."""
         proc = self._proc
         if proc is not None:
-            _terminate_group(proc)
+            _stop_process_tree(proc)
         self._proc = None
         self._port = None
 
@@ -143,21 +154,61 @@ class SwapManager:
         raise ProviderError(message, provider=_PROVIDER, kind=ProviderErrorKind.SERVER)
 
 
-def _pick_free_port() -> int:
-    """Bind an ephemeral localhost port and return it (closed before reuse)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((_HOST, 0))
-        return int(sock.getsockname()[1])
+def _pick_free_ports(count: int) -> list[int]:
+    """Bind *count* ephemeral localhost ports at once and return them.
+
+    All sockets stay open until every port is claimed so the OS cannot hand the
+    same port out twice within one allocation.
+    """
+    sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(count)]
+    try:
+        for sock in sockets:
+            sock.bind((_HOST, 0))
+        return [int(sock.getsockname()[1]) for sock in sockets]
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def _stop_process_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Stop llama-swap and reap any llama-server that outlives it.
+
+    llama-swap starts each server in its own process group (its Setpgid), so
+    signalling llama-swap's group never reaches the servers; a survivor keeps
+    its port bound and that port's next bind fails. The children are captured
+    while llama-swap is still alive, then swept after it stops.
+    """
+    children = _live_children(proc.pid)
+    if sys.platform == "win32":
+        _hard_stop(proc)
+    else:
+        _terminate_group(proc)
+    _reap_survivors(children)
+
+
+def _live_children(pid: int) -> list[psutil.Process]:
+    """The process's current descendants, or none when it already exited."""
+    try:
+        children: list[psutil.Process] = psutil.Process(pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        return []
+    return children
+
+
+def _reap_survivors(children: list[psutil.Process]) -> None:
+    """Terminate then kill any captured child that is still running."""
+    survivors = [child for child in children if child.is_running()]
+    for child in survivors:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            child.terminate()
+    _, alive = psutil.wait_procs(survivors, timeout=_ORPHAN_STOP_TIMEOUT_S)
+    for child in alive:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            child.kill()
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
-    """SIGTERM the process group, escalating to SIGKILL on timeout.
-
-    Windows has no process groups via this path, so it hard-stops the process.
-    """
-    if sys.platform == "win32":
-        _hard_stop(proc)
-        return
+    """SIGTERM the process group, escalating to SIGKILL on timeout."""
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:  # pragma: no cover - process exited between checks

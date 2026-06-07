@@ -152,6 +152,13 @@ def free_system_memory() -> int:
     return int(psutil.virtual_memory().available)
 
 
+def total_system_memory() -> int:
+    """Total installed system RAM in bytes."""
+    import psutil
+
+    return int(psutil.virtual_memory().total)
+
+
 def _try_nvidia_memory() -> int | None:
     """Try to get NVIDIA GPU total memory via pynvml, then nvidia-smi."""
     try:

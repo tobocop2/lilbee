@@ -275,15 +275,26 @@ def test_unified_memory_budget_none_when_discrete_gpu_present() -> None:
 def test_unified_memory_budget_subtracts_os_floor_when_no_gpu(monkeypatch) -> None:
     # No enumerated GPU (Apple Silicon / CPU): budget = free RAM minus the OS floor.
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 20 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 64 * 10**9)
     assert (
         planning_mod._unified_memory_budget([])
-        == 20 * 10**9 - planning_mod._SYSTEM_MEMORY_FLOOR_BYTES
+        == 20 * 10**9 - planning_mod._SYSTEM_MEMORY_FLOOR_CAP_BYTES
     )
+
+
+def test_unified_memory_budget_scales_floor_down_on_small_hosts(monkeypatch) -> None:
+    # An 8 GB host keeps a quarter of RAM for the OS, not the full 4 GiB cap;
+    # otherwise a CI-runner-sized machine refuses to serve even an 80 MB model.
+    total = 8 * 10**9
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 4 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: total)
+    assert planning_mod._unified_memory_budget([]) == 4 * 10**9 - total // 4
 
 
 def test_unified_memory_budget_floors_at_zero_under_pressure(monkeypatch) -> None:
     # Less free than the floor -> budget 0 -> every model unplaceable (no freeze).
     monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 64 * 10**9)
     assert planning_mod._unified_memory_budget([]) == 0
 
 

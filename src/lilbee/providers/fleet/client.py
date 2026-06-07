@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -52,6 +53,12 @@ _EMBED_N_SEQ_MAX = 64
 # query</s></s>candidate pairs are token-dense (the separator is several tokens
 # in a few chars), so char estimation would under-count and over-pack.
 _EMBED_EST_CHARS_PER_TOKEN = 3
+# llama-swap's error body when the spawned llama-server exited before serving.
+_UPSTREAM_DIED_MARKER = "exited prematurely"
+# llama-server's 500 body when one input exceeds the physical batch (n_batch).
+_BATCH_OVERFLOW_MARKER = "too large to process"
+_UPSTREAM_LOG_TAIL_CHARS = 2000
+_UPSTREAM_LOG_TIMEOUT_S = 2.0
 
 log = logging.getLogger(__name__)
 
@@ -96,10 +103,50 @@ def _raise_for_status(resp: httpx.Response) -> None:
             kind=ProviderErrorKind.RATE_LIMIT,
         )
     detail = f": {body[:600]}" if body else ""
+    # llama-swap reports a dead server only as "exited prematurely"; log the
+    # server's own captured output so the actual exit reason is diagnosable.
+    if _UPSTREAM_DIED_MARKER in body:
+        _log_upstream_tail(resp)
+    # An input past the server's n_batch is a 500 whose body says "too large to
+    # process"; tagged CONTEXT_OVERFLOW so the embed path re-truncates exactly.
+    kind = (
+        ProviderErrorKind.CONTEXT_OVERFLOW
+        if _BATCH_OVERFLOW_MARKER in body
+        else ProviderErrorKind.UNKNOWN
+    )
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
+        kind=kind,
     )
+
+
+def _log_upstream_tail(resp: httpx.Response) -> None:
+    """Log the dead upstream's recent output from llama-swap's log stream."""
+    with contextlib.suppress(httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError):
+        base = str(resp.request.url).split("/v1/")[0]
+        model = json.loads(resp.request.content)["model"]
+        tail = _fetch_log_tail(f"{base}/logs/stream/{model}")
+        if tail:
+            log.warning("%s exited prematurely; recent server output:\n%s", model, tail)
+
+
+def _fetch_log_tail(url: str) -> str:
+    """The last ``_UPSTREAM_LOG_TAIL_CHARS`` of llama-swap's log stream for one model.
+
+    The stream replays the upstream's buffered output then stays open; the read
+    timeout is the cutoff once the replay is drained.
+    """
+    chunks: list[str] = []
+    with (
+        contextlib.suppress(httpx.HTTPError),
+        httpx.stream("GET", url, timeout=_UPSTREAM_LOG_TIMEOUT_S) as stream,
+    ):
+        for chunk in stream.iter_text():
+            chunks.append(chunk)
+            if sum(len(piece) for piece in chunks) > _UPSTREAM_LOG_TAIL_CHARS:
+                break
+    return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
 # Match the in-process embedder: llama-cpp-python's create_embedding does not
