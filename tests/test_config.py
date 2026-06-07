@@ -1543,6 +1543,13 @@ class TestValidateModelTaskAssignment:
         )
         assert result == ref
 
+    def test_bare_non_featured_repo_without_install_rejected(self, _task_validation_enabled):
+        """A bare non-featured repo with no installed quant is rejected as not installed."""
+        from lilbee.modelhub.role_validator import validate_model_task_assignment
+
+        with pytest.raises(ValueError, match="not installed"):
+            validate_model_task_assignment("chat_model", "org/Never-Pulled-GGUF")
+
     def test_installed_non_featured_wrong_role_rejected(self, _task_validation_enabled):
         """An installed non-featured chat model in the reranker slot raises TaskMismatchError."""
         from lilbee.catalog.types import ModelTask

@@ -1027,6 +1027,13 @@ class TestSetChatModel:
         assert result.model == _CHAT_REF
         assert cfg.chat_model == _CHAT_REF
 
+    async def test_bare_repo_with_two_quants_resolves_deterministically(self, tmp_path, mock_svc):
+        """With several quants installed, the alphabetically-first ref wins."""
+        other = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        mock_svc.provider.list_models.return_value = [_CHAT_REF, other]
+        result = await handlers.set_chat_model("Qwen/Qwen3-0.6B-GGUF")
+        assert result.model == other
+
     async def test_resolves_bare_non_featured_repo_to_installed_quant(self, tmp_path, mock_svc):
         """A bare repo outside the featured catalog resolves via the registry.
 
