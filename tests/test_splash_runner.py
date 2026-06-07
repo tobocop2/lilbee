@@ -306,3 +306,22 @@ def test_main_valid_fd():
 
     with patch("sys.argv", ["_splash_runner", str(r)]):
         main()
+
+
+def test_animation_loop_sleeps_during_startup_then_exits(monkeypatch):
+    """The startup poll loop sleeps while the pipe is open, then returns once it
+    closes. Covers the poll/sleep path deterministically; before this the line
+    was hit only by the timing-dependent e2e subprocess test."""
+    import lilbee.runtime._splash_runner as sr
+
+    sleeps: list[float] = []
+    polls = {"n": 0}
+
+    def fake_closed(_fd: int) -> bool:
+        polls["n"] += 1
+        return polls["n"] > 1  # open on the first poll, closed afterward
+
+    monkeypatch.setattr(sr.time, "sleep", lambda interval: sleeps.append(interval))
+    monkeypatch.setattr(sr, "pipe_closed", fake_closed)
+    sr.animation_loop(0)
+    assert sleeps == [sr.POLL_INTERVAL]

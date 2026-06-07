@@ -19,6 +19,7 @@ from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
+from lilbee.retrieval.query.formatting import cited_subset
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -106,6 +107,7 @@ async def ask(
     return AskResponse(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
+        cited_sources=[CleanedChunk(**clean_result(s)) for s in result.cited_sources],
     )
 
 
@@ -271,6 +273,7 @@ async def chat(
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
+        cited_sources=[CleanedChunk(**clean_result(s)) for s in cited_subset(answer, sources)],
     )
 
 

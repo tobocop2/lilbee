@@ -201,13 +201,18 @@ class TestEnsureVectorIndex:
             assert store.ensure_vector_index() is True
         optimize_spy.assert_called_once()
 
-    def test_build_failure_returns_false(self, store, test_config):
+    def test_build_failure_warns_and_returns_false(self, store, test_config, caplog):
+        """bb-con: a real ANN build failure at scale is surfaced as a warning with
+        the flat-search impact, not swallowed at debug."""
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
-        with mock.patch.object(
-            type(table), "create_index", side_effect=RuntimeError("too few rows")
+        with (
+            mock.patch.object(type(table), "create_index", side_effect=RuntimeError("boom")),
+            caplog.at_level("WARNING"),
         ):
             assert store.ensure_vector_index(force=True) is False
+        assert "ANN index build failed" in caplog.text
+        assert "flat scan" in caplog.text
 
     def test_has_vector_index_swallows_list_indices_errors(self, store):
         from lilbee.data.store.lance_helpers import _has_vector_index

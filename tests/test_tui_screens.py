@@ -7845,6 +7845,7 @@ async def test_chat_tab_in_input_inserts_literal_tab():
         assert inp.has_focus
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_chat_tab_cycles_through_all_four_model_buttons():
     """Tab walks all four role buttons in order: chat -> embed -> vision -> rerank."""
     from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -9834,6 +9835,7 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             assert screen.focused is last
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_catalog_grid_leave_up_focuses_previous():
     """LeaveUp on a NON-first grid moves focus to the previous grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen

@@ -1912,6 +1912,9 @@ class TestAskJson:
         assert len(data["sources"]) == 1
         assert "vector" not in data["sources"][0]
         assert "distance" in data["sources"][0]
+        # bb-ky3: cited_sources is present and empty when the answer cited nothing,
+        # so a JSON consumer can tell a grounded answer from an off-corpus one.
+        assert data["cited_sources"] == []
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
@@ -1925,6 +1928,32 @@ class TestAskJson:
         data = json.loads(result.output.strip())
         assert data["sources"] == []
         assert "No relevant" in data["answer"]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_reports_cited_subset(self, mock_sync, mock_svc):
+        """bb-ky3: cited_sources carries only the source the answer actually cited."""
+        from lilbee.retrieval.query import AskResult
+
+        cited = SearchChunk(
+            source="manual.pdf",
+            content_type="pdf",
+            page_start=1,
+            page_end=1,
+            line_start=0,
+            line_end=0,
+            chunk="oil",
+            chunk_index=0,
+            distance=0.3,
+            vector=[0.1],
+        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="5 quarts [1]", sources=[cited], cited_sources=[cited]
+        )
+        result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert [s["source"] for s in data["cited_sources"]] == ["manual.pdf"]
+        assert "vector" not in data["cited_sources"][0]
 
 
 class TestAskModelNotFound:
