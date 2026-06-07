@@ -112,11 +112,6 @@ def _hf_search_value(search: str) -> str:
     return " ".join(tokens)
 
 
-def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
-    """Return True if the sibling list contains at least one .gguf file."""
-    return any(s.rfilename.endswith(".gguf") for s in siblings)
-
-
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
     """Concrete GGUF filename for a repo's sibling list, or ``GGUF_GLOB``.
 

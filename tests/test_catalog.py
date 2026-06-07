@@ -277,17 +277,21 @@ class TestIsRerankRef:
         assert is_rerank_ref("bogus/not-real") is False
 
 
-class TestHasGgufSiblings:
-    def test_returns_true_when_gguf_present(self) -> None:
-        siblings = [RepoSibling(rfilename="model-Q4_K_M.gguf"), RepoSibling(rfilename="README.md")]
-        assert _hf_client._has_gguf_siblings(siblings) is True
+class TestResolveSiblingGguf:
+    def test_picks_preferred_quant(self) -> None:
+        siblings = [
+            RepoSibling(rfilename="model-Q8_0.gguf"),
+            RepoSibling(rfilename="model-Q4_K_M.gguf"),
+            RepoSibling(rfilename="README.md"),
+        ]
+        assert _hf_client._resolve_sibling_gguf(siblings) == "model-Q4_K_M.gguf"
 
-    def test_returns_false_when_no_gguf(self) -> None:
+    def test_no_gguf_returns_glob(self) -> None:
         siblings = [RepoSibling(rfilename="model.bin"), RepoSibling(rfilename="config.json")]
-        assert _hf_client._has_gguf_siblings(siblings) is False
+        assert _hf_client._resolve_sibling_gguf(siblings) == GGUF_GLOB
 
-    def test_returns_false_for_empty_list(self) -> None:
-        assert _hf_client._has_gguf_siblings([]) is False
+    def test_empty_list_returns_glob(self) -> None:
+        assert _hf_client._resolve_sibling_gguf([]) == GGUF_GLOB
 
 
 class TestEstimateSizeFromSiblings:
