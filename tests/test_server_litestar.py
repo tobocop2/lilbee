@@ -46,6 +46,12 @@ async def mock_async_gen(*events):
         yield e
 
 
+async def mock_failing_gen(*events, exc):
+    for e in events:
+        yield e
+    raise exc
+
+
 class TestHealthRoute:
     @mock.patch(
         "lilbee.server.handlers.health",
@@ -333,6 +339,65 @@ class TestChatStreamRoute:
         )
         assert resp.status_code == 201
         assert mock_stream.call_args.kwargs.get("chunk_type") == "raw"
+
+
+class TestStreamErrorEvents:
+    """A failure inside a streaming handler surfaces as an SSE error event."""
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_chat_stream_failure_yields_sse_error(self, mock_stream, client):
+        mock_stream.return_value = mock_failing_gen(
+            exc=ValueError("Embedding dimension mismatch: expected 768, got 384")
+        )
+        resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        assert resp.status_code == 201
+        assert b"event: error" in resp.content
+        assert b"Embedding dimension mismatch" in resp.content
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_chat_stream_failure_mid_stream_yields_sse_error(self, mock_stream, client):
+        mock_stream.return_value = mock_failing_gen(
+            "event: token\ndata: {}\n\n", exc=RuntimeError("worker died")
+        )
+        resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        assert b"event: token" in resp.content
+        assert b"event: error" in resp.content
+        assert b"worker died" in resp.content
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_ask_stream_failure_yields_sse_error(self, mock_stream, client):
+        mock_stream.return_value = mock_failing_gen(exc=RuntimeError("boom"))
+        resp = client.post("/api/ask/stream", json={"question": "hi"})
+        assert resp.status_code == 201
+        assert b"event: error" in resp.content
+        assert b"boom" in resp.content
+
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_lock_released_after_stream_failure(self, mock_stream, client):
+        mock_stream.return_value = mock_failing_gen(exc=RuntimeError("boom"))
+        client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/chat/stream", json={"question": "hi", "history": []})
+        assert resp.status_code == 201
+        assert b"event: done" in resp.content
+
+
+class TestChatRouteErrorMapping:
+    """chat_route maps errors like ask_route: ValueError 400, others 503."""
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_value_error_maps_to_400(self, mock_chat, client):
+        mock_chat.side_effect = ValueError("Embedding dimension mismatch: expected 768, got 384")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 400
+        assert "Embedding dimension mismatch" in resp.json()["detail"]
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_unexpected_error_maps_to_503(self, mock_chat, client):
+        mock_chat.side_effect = RuntimeError("worker died")
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "worker died" in resp.json()["detail"]
 
 
 class TestStreamSingleFlightGate:

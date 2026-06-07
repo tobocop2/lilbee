@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from typing import NoReturn
 
@@ -21,6 +22,7 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
     release_chat_slot,
 )
+from lilbee.server.handlers.sse import sse_error
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
@@ -28,6 +30,7 @@ from lilbee.server.models import (
 )
 
 _SERVICE_UNAVAILABLE_STATUS = 503
+log = logging.getLogger(__name__)
 
 
 def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
@@ -80,11 +83,16 @@ async def _gated_stream(
 
     The lock must already be held when this is called. Release happens on
     natural completion, exception, and client-disconnect (GeneratorExit
-    fires the ``finally`` block).
+    fires the ``finally`` block). A failure inside the generator becomes an
+    SSE error event; raising after the 201 headers would drop the connection
+    with no body for the client to read.
     """
     try:
         async for chunk in generator:
             yield chunk
+    except Exception as exc:
+        log.exception("streaming chat handler failed")
+        yield sse_error(str(exc))
     finally:
         await release_chat_slot()
 

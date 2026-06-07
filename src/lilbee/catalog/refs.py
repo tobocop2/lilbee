@@ -6,6 +6,24 @@ from __future__ import annotations
 # the filename may add more when a quant lives in a repo subdir (``Q4_K_M/...``).
 NATIVE_GGUF_REF_MIN_SLASHES = 2
 
+GGUF_GLOB = "*.gguf"
+
+_QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
+
+
+def pick_best_gguf(filenames: list[str]) -> str:
+    """Pick the best GGUF file by quantization preference."""
+    for quant in _QUANT_PREFERENCE:
+        for f in filenames:
+            if quant in f:
+                return f
+    return filenames[0]
+
+
+def is_bare_hf_repo(ref: str) -> bool:
+    """True if *ref* has the bare ``<org>/<repo>`` shape (no filename segment)."""
+    return ref.count("/") == 1 and not ref.endswith(".gguf")
+
 
 def hf_repo_from_ref(ref: str) -> str:
     """Return the ``<org>/<repo>`` portion of a native GGUF ref.

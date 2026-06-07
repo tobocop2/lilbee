@@ -23,7 +23,7 @@ from lilbee.catalog import (
     get_catalog,
     get_families,
 )
-from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
 from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
@@ -161,11 +161,26 @@ async def _set_model(
 
 
 def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
-    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*."""
+    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*.
+
+    Sorted scan so the pick is deterministic when several quants are installed.
+    """
     entry = find_catalog_entry(model)
     if entry is None:
         return None
-    return next((ref for ref in available if ref.startswith(f"{entry.hf_repo}/")), None)
+    return next((ref for ref in sorted(available) if ref.startswith(f"{entry.hf_repo}/")), None)
+
+
+def _resolve_via_installed_repo(model: str, available: set[str]) -> str | None:
+    """Resolve a bare ``hf_repo`` to its installed quant, featured or not.
+
+    Only refs the provider also lists are accepted, so remote-only
+    provider modes don't activate a model they can't serve.
+    """
+    if not is_bare_hf_repo(model):
+        return None
+    ref = get_services().registry.installed_ref_for_repo(model)
+    return ref if ref in available else None
 
 
 def _resolve_via_parse(model: str, available: set[str]) -> str | None:
@@ -210,6 +225,7 @@ def _require_model_available(model: str) -> str:
         return model
     hit = (
         _resolve_via_catalog(model, available)
+        or _resolve_via_installed_repo(model, available)
         or _resolve_via_parse(model, available)
         or _resolve_via_provider_key(model)
     )

@@ -87,6 +87,7 @@ def _make_result(
     chunk_index=0,
     distance=0.5,
     relevance_score=None,
+    rerank_score=None,
     vector=None,
 ) -> SearchChunk:
     return SearchChunk(
@@ -101,6 +102,7 @@ def _make_result(
         chunk_index=chunk_index,
         distance=distance,
         relevance_score=relevance_score,
+        rerank_score=rerank_score,
         vector=vector or [0.1],
     )
 
@@ -912,6 +914,29 @@ class TestSelectContext:
         sources = [r.source for r in result]
         assert "b.md" in sources  # cover pick
         assert sources == sorted(sources)
+
+    def test_rerank_scores_make_reranked_order_authoritative(self, mock_svc):
+        # The top reranked chunk shares no query terms; set cover would drop it.
+        chunks = [
+            _make_result(chunk="grounding upgrade big three", source="fix.md", rerank_score=0.9),
+            _make_result(chunk="radio resets at idle", source="radio.md", rerank_score=0.5),
+            _make_result(chunk="headlights dim at idle", source="lights.md", rerank_score=0.4),
+            _make_result(chunk="battery health log", source="battery.md", rerank_score=0.2),
+        ]
+        result = get_services().searcher.select_context(
+            chunks, "radio resets headlights dim", max_sources=2
+        )
+        assert [r.source for r in result] == ["fix.md", "radio.md"]
+
+    def test_partially_scored_results_keep_reranked_order(self, mock_svc):
+        # Remainder chunks beyond the rerank candidate cap carry no score.
+        chunks = [
+            _make_result(chunk="alpha", source="a.md", rerank_score=0.9),
+            _make_result(chunk="beta", source="b.md", rerank_score=0.8),
+            _make_result(chunk="gamma", source="c.md"),
+        ]
+        result = get_services().searcher.select_context(chunks, "alpha beta gamma", max_sources=2)
+        assert [r.source for r in result] == ["a.md", "b.md"]
 
     def test_hyphenated_phrase_splits_into_tokens(self, mock_svc):
         # Regression: the old tokenizer would strip the hyphens and

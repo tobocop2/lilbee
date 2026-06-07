@@ -8,7 +8,7 @@ from huggingface_hub.utils import HFValidationError, validate_repo_id
 from lilbee.app.services import get_services
 from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.catalog.refs import format_native_gguf_ref, hf_repo_from_ref
+from lilbee.catalog.refs import GGUF_GLOB, format_native_gguf_ref, hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
 
@@ -226,7 +226,7 @@ def _is_hf_repo_id(value: str) -> bool:
 def build_adhoc_entry(
     hf_repo: str,
     *,
-    gguf_filename: str = "*.gguf",
+    gguf_filename: str = GGUF_GLOB,
     task: ModelTask = ModelTask.CHAT,
 ) -> CatalogModel:
     """Minimal CatalogModel for a non-featured HuggingFace GGUF repo.

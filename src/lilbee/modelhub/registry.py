@@ -19,7 +19,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES, format_native_gguf_ref
+from lilbee.catalog.refs import (
+    NATIVE_GGUF_REF_MIN_SLASHES,
+    format_native_gguf_ref,
+    is_bare_hf_repo,
+)
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -168,7 +172,7 @@ class ModelRegistry:
         """
         from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
 
-        if not ref.endswith(".gguf") and ref.count("/") == 1:
+        if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
         shards = split_shard_filenames(gguf_filename)
@@ -467,6 +471,15 @@ class ModelRegistry:
         except ValueError:
             return None
         return self._read_manifest(hf_repo, gguf_filename)
+
+    def installed_ref_for_repo(self, hf_repo: str) -> str | None:
+        """Full ``<repo>/<file>.gguf`` ref of an installed quant of *hf_repo*, or None.
+
+        Alphabetical-first when several quants are installed, matching
+        ``_resolve_repo_only``'s determinism.
+        """
+        refs = sorted(m.ref for m in self.list_installed() if m.hf_repo == hf_repo)
+        return refs[0] if refs else None
 
     def _manifest_path(self, hf_repo: str, gguf_filename: str) -> Path:
         repo = _validate_hf_repo(hf_repo)

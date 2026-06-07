@@ -385,6 +385,7 @@ Two query-time effects:
   - Positions 11+: 30% fusion / 70% rerank (reranker has more opportunity to rescue misranked items)
 - **Blending rationale**: derived from learning-to-rank literature (Burges et al. 2005, "[Learning to Rank using Gradient Descent](https://icml.cc/imls/conferences/2005/proceedings/papers/012_Learning_BurgesEtAl.pdf)"). Top positions already have strong signal, so the reranker provides diminishing returns there.
 - **BM25 protection**: if the rank-1 result has a BM25 score above the expansion skip threshold, it is protected from demotion. This prevents the neural reranker from pushing down obvious exact keyword matches.
+- **Context selection**: reranked results carry their blended score (`rerank_score`) and the reranked order decides which chunks become LLM context, taking the top `max_context_sources` directly instead of the set-cover pass below.
 - **Cost**: depends on model and candidate count. ~200-500ms for 20 candidates with a small cross-encoder.
 
 #### Adaptive Distance Threshold
@@ -396,7 +397,7 @@ Two query-time effects:
 - **When it helps**: novel queries or small indexes where strict distance thresholds would return empty results.
 
 #### Adaptive Context Selection
-**On by default.** After search results are ranked, selects which chunks to include as LLM context based on query term coverage rather than just taking the top-k.
+**On by default.** After search results are ranked, selects which chunks to include as LLM context based on query term coverage rather than just taking the top-k. When cross-encoder reranking is active, the reranked order is the more precise signal and replaces this pass.
 
 - **Technique**: greedy set-cover approximation
 - **Algorithm**: tokenize query into terms, greedily select chunks that add the most uncovered terms, stop when coverage reaches 100% or marginal gain drops below 5%
