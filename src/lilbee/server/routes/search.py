@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 
 from litestar import get, post
@@ -15,6 +16,7 @@ from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
+from lilbee.server.handlers.sse import sse_error
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
@@ -27,6 +29,8 @@ from lilbee.server.models import (
 # stream blocks the client for many seconds with no feedback. Returning
 # 429 + Retry-After fast lets clients surface a real error and decide.
 # The lock binds to the worker's running event loop on first acquire.
+log = logging.getLogger(__name__)
+
 _chat_inflight_lock = asyncio.Lock()
 
 
@@ -68,11 +72,16 @@ async def _gated_stream(
 
     The lock must already be held when this is called. Release happens on
     natural completion, exception, and client-disconnect (GeneratorExit
-    fires the ``finally`` block).
+    fires the ``finally`` block). A failure inside the generator becomes an
+    SSE error event; raising after the 201 headers would drop the connection
+    with no body for the client to read.
     """
     try:
         async for chunk in generator:
             yield chunk
+    except Exception as exc:
+        log.exception("streaming chat handler failed")
+        yield sse_error(str(exc))
     finally:
         _chat_inflight_lock.release()
 
@@ -151,6 +160,10 @@ async def chat_route(data: ChatRequest) -> AskResponse:
         )
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @post("/api/chat/stream")
