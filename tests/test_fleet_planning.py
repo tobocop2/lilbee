@@ -154,10 +154,46 @@ def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
 
 
 def test_slots_for_aux_roles_are_single_slot() -> None:
-    # Embed/rerank batch request-side, so their server is always single-slot
-    # (and never invoke the estimator).
+    # Embed and cross-encoder rerank batch request-side, so their server is
+    # single-slot (and never invoke the estimator).
     assert planning_mod._slots_for(WorkerRole.EMBED, Path("/m/e.gguf"), 0) == 1
     assert planning_mod._slots_for(WorkerRole.RERANK, Path("/m/r.gguf"), 0) == 1
+
+
+def test_slots_for_cross_encoder_rerank_stays_single_slot() -> None:
+    n = planning_mod._slots_for(
+        WorkerRole.RERANK, Path("/m/r.gguf"), 1024, rerank_mode=RerankMode.CROSS_ENCODER
+    )
+    assert n == 1
+
+
+def test_slots_for_llm_rerank_uses_full_fanout_when_vram_ample(monkeypatch) -> None:
+    from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
+    monkeypatch.setattr(
+        planning_mod, "estimate_instance_footprint", _slotted_estimator(base=10**8, per_slot=10**7)
+    )
+    n = planning_mod._slots_for(
+        WorkerRole.RERANK, Path("/m/r.gguf"), 1024, rerank_mode=RerankMode.LLM
+    )
+    assert n == LLM_RERANK_CONCURRENCY
+
+
+def test_slots_for_llm_rerank_steps_down_when_vram_tight(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**9)
+    # budget = 1e9 * _LLM_RERANK_VRAM_FRACTION(0.5) = 5e8; 4e8 + 2e8/slot fits only 1.
+    monkeypatch.setattr(
+        planning_mod,
+        "estimate_instance_footprint",
+        _slotted_estimator(base=4 * 10**8, per_slot=2 * 10**8),
+    )
+    n = planning_mod._slots_for(
+        WorkerRole.RERANK, Path("/m/r.gguf"), 1024, rerank_mode=RerankMode.LLM
+    )
+    assert n == 1
 
 
 def test_slots_for_chat_is_vram_aware(monkeypatch) -> None:
@@ -683,6 +719,34 @@ class TestBuildFleetWiring:
         launch = self._launch_rerank(tmp_path, monkeypatch, "bert")
         assert launch.rerank_mode is RerankMode.LLM
         assert "--jinja" in launch.argv
+
+    def test_launch_for_llm_rerank_parallel_matches_fanout(self, tmp_path, monkeypatch) -> None:
+        from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+
+        # ample memory + the autouse fixed-footprint estimator => the full fan-out fits
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 10**12)
+        launch = self._launch_rerank(tmp_path, monkeypatch, "qwen3")
+        assert launch.argv[launch.argv.index("--parallel") + 1] == str(LLM_RERANK_CONCURRENCY)
+
+    def test_estimate_role_rerank_threads_llm_mode_to_slots(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "r.gguf"
+        model.write_bytes(b"x" * 1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda *a, **k: 1024)
+        monkeypatch.setattr(cfg, "reranker_type", RerankerType.AUTO)
+        captured: dict[str, object] = {}
+
+        def _fake_slots(role, path, ctx, **kw):
+            captured["rerank_mode"] = kw.get("rerank_mode")
+            return 8
+
+        monkeypatch.setattr(planning_mod, "_slots_for", _fake_slots)
+        planning_mod._estimate_role(WorkerRole.RERANK, "ref")
+        assert captured["rerank_mode"] is RerankMode.LLM
 
     def test_role_ctx_rerank_llm_uses_llm_rerank_ctx(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "reranker_type", RerankerType.LLM)

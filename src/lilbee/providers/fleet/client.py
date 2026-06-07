@@ -23,6 +23,7 @@ from lilbee.providers.base import (
     ToolCall,
     ToolCallDelta,
 )
+from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
@@ -35,7 +36,6 @@ _LLM_RERANK_PROMPT = (
     "Answer with only 'yes' or 'no'.\n\nQuery: {query}\nDocument: {document}"
 )
 _LLM_RERANK_TOP_LOGPROBS = 20
-_LLM_RERANK_MAX_WORKERS = 8
 _YES_LABEL = "yes"
 _NO_LABEL = "no"
 # Max sequences per /v1/embeddings request. Like the in-process backstop, a
@@ -359,7 +359,7 @@ class LlamaServerClient:
     def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
         """Score each candidate by an LLM's yes/no first-token logprob."""
         template = cfg.reranker_prompt or _LLM_RERANK_PROMPT
-        workers = min(_LLM_RERANK_MAX_WORKERS, len(candidates))
+        workers = min(LLM_RERANK_CONCURRENCY, len(candidates))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
 

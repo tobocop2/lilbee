@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet.adapters import (
+    LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
     build_server_argv,
     rerank_spec,
@@ -66,6 +67,11 @@ _VISION_VRAM_FRACTION = 0.5
 # compute buffers (which the flat overhead term only partly covers).
 _CHAT_VRAM_FRACTION = 0.8
 
+# Cap an LLM reranker's footprint at this fraction of usable VRAM when sizing its
+# slots; its per-slot ctx is tiny, so a normal GPU fits the full fan-out and a
+# small one steps down toward 1.
+_LLM_RERANK_VRAM_FRACTION = 0.5
+
 # RAM kept free for the OS when placing against system memory (no discrete GPU).
 _SYSTEM_MEMORY_FLOOR_BYTES = 4 * 1024**3
 
@@ -78,15 +84,17 @@ def _slots_for(
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    rerank_mode: RerankMode | None = None,
 ) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
     Chat batches concurrent turns; vision batches concurrent OCR pages since a
-    one-page decode underutilizes the GPU; embed/rerank are single-slot (their
-    batching is request-side). Chat and vision are memory-aware (gguf-parser
-    footprint), so a small or shared host drops toward 1 instead of overcommitting.
-    ``unified_budget`` caps sizing against free system RAM with no discrete GPU;
-    ``chat_reservation`` is the search-role footprint held back from chat.
+    one-page decode underutilizes the GPU; an LLM reranker batches its per-candidate
+    chat requests; embed and cross-encoder rerank are single-slot (their batching is
+    request-side). The memory-aware roles drop toward 1 on a small or shared host
+    instead of overcommitting. ``unified_budget`` caps sizing against free system RAM
+    with no discrete GPU; ``chat_reservation`` is the search-role footprint held back
+    from chat.
     """
     if role is WorkerRole.CHAT:
         return _resolve_chat_slots(
@@ -100,6 +108,8 @@ def _slots_for(
         return _resolve_vision_slots(
             model_path, ctx, mmproj_path=mmproj_path, unified_budget=unified_budget
         )
+    if role is WorkerRole.RERANK and rerank_mode is RerankMode.LLM:
+        return _resolve_llm_rerank_slots(model_path, ctx, unified_budget=unified_budget)
     return _AUX_SLOTS
 
 
@@ -147,6 +157,25 @@ def _resolve_vision_slots(
         mmproj_path=mmproj_path,
         unified=unified_budget is not None,
         budget=_slot_budget(_VISION_VRAM_FRACTION, unified_budget),
+    )
+
+
+def _resolve_llm_rerank_slots(
+    model_path: Path,
+    ctx: int,
+    *,
+    unified_budget: int | None = None,
+) -> int:
+    """Largest LLM-reranker slot count (<= ``LLM_RERANK_CONCURRENCY``) that fits the
+    memory budget; 1 when nothing larger fits. Matches the client's request fan-out."""
+    return _fit_slots(
+        LLM_RERANK_CONCURRENCY,
+        WorkerRole.RERANK,
+        model_path,
+        ctx,
+        mmproj_path=None,
+        unified=unified_budget is not None,
+        budget=_slot_budget(_LLM_RERANK_VRAM_FRACTION, unified_budget),
     )
 
 
@@ -329,6 +358,7 @@ def _estimate_role(
             mmproj_path=mmproj,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
+            rerank_mode=_rerank_mode_for(meta) if role is WorkerRole.RERANK else None,
         )
     est = estimate_instance_footprint(
         path,
@@ -445,6 +475,8 @@ def _launch_for(
         else 1
     )
     ctx = _role_ctx(plan.role, model_path, meta, chat_available, chat_slots)
+    rerank_mode = _rerank_mode_for(meta) if plan.role is WorkerRole.RERANK else None
+    is_llm_rerank = rerank_mode is RerankMode.LLM
     # Size slots the same way the estimator did so the launched --parallel matches
     # the placement estimate (chat honors the search reservation; mmproj via gguf-parser).
     slots = _slots_for(
@@ -454,9 +486,8 @@ def _launch_for(
         mmproj_path=mmproj,
         unified_budget=unified_budget,
         chat_reservation=chat_reservation,
+        rerank_mode=rerank_mode,
     )
-    rerank_mode = _rerank_mode_for(meta) if plan.role is WorkerRole.RERANK else None
-    is_llm_rerank = rerank_mode is RerankMode.LLM
     spec = rerank_spec(rerank_mode) if rerank_mode is not None else ROLE_SPECS[plan.role]
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.

@@ -78,6 +78,11 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
     RerankMode.LLM: LLM_RERANK_SPEC,
 }
 
+# An LLM reranker scores one chat request per candidate; this is both the client's
+# per-rerank request fan-out and the server's --parallel slot ceiling, so the
+# server can decode concurrently instead of serializing the fan-out.
+LLM_RERANK_CONCURRENCY = 8
+
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
     """Pick the reranker serving mode from the config setting and GGUF arch.
