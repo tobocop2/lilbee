@@ -63,7 +63,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras
         env:
-          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
+          # GGML_NATIVE=OFF alone still auto-enables AVX2/FMA/BMI2 from the
+          # build host; pin the AVX baseline so the cached wheel runs on any
+          # runner (matches ci.yml).
+          CMAKE_ARGS: >-
+            -DGGML_METAL=OFF
+            -DGGML_NATIVE=OFF
+            -DGGML_BLAS=OFF
+            -DGGML_CUDA=OFF
+            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
+            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
 
       - name: Run pip-audit
         uses: pypa/gh-action-pip-audit@v1.1.0
