@@ -94,7 +94,38 @@ if [ ! -x "$HOME/.opencode/bin/opencode" ] && ! command -v opencode >/dev/null; 
   curl -fsSL https://opencode.ai/install | bash
 fi
 
-# 8. Verify the engine resolves from the bundled wheel (no LD_LIBRARY_PATH hacks).
+# 8. VHS recorder for the demo reels (the cell pane is recorded on the pod, not a Mac).
+#    The "VHS captures 0 frames on the pod" block was two mundane causes, both handled
+#    here: apt's ttyd is 1.6.3 but VHS needs >=1.7.2 (install the 1.7.7 release binary),
+#    and an absolute `Output` path trips VHS's parser (the smoke tape uses a relative
+#    Output run from its own dir). VHS also needs VHS_NO_SANDBOX=true on RunPod (user
+#    namespaces are disabled) and the go-rod headless-chromium runtime libs.
+if ! command -v vhs >/dev/null; then
+  log "installing VHS recorder (ttyd>=1.7.2 + vhs + headless-chromium libs)"
+  curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
+    -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://repo.charm.sh/apt/gpg.key | gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+    > /etc/apt/sources.list.d/charm.list
+  apt-get update -qq
+  apt-get install -y -qq vhs
+  apt-get install -y -qq libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 \
+    libpango-1.0-0 libcairo2 libatspi2.0-0 libxshmfence1 || true
+  apt-get install -y -qq libasound2 2>/dev/null || apt-get install -y -qq libasound2t64 2>/dev/null || true
+fi
+
+# 8b. Smoke-test VHS now so a regression is caught at bootstrap, not at record time
+#     (relative Output + VHS_NO_SANDBOX; a frame count > 1 means the pipeline works).
+log "VHS smoke-test"
+( cd /tmp && printf 'Output vhscheck.gif\nSet Width 800\nSet Height 400\nType "echo vhs-ok"\nEnter\nSleep 1s\n' > vhscheck.tape \
+  && VHS_NO_SANDBOX=true vhs vhscheck.tape >/dev/null 2>&1 \
+  && [ "$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 vhscheck.gif 2>/dev/null)" -gt 1 ] \
+  && log "VHS smoke-test PASS (frames rendered)" \
+  || log "VHS smoke-test FAIL -- retry with: xvfb-run VHS_NO_SANDBOX=true vhs vhscheck.tape" )
+
+# 9. Verify the engine resolves from the bundled wheel (no LD_LIBRARY_PATH hacks).
 log "verifying engine resolution"
 "$VENV_PY" -c "
 from lilbee.providers.fleet.binary import resolve_llama_server, resolve_llama_swap, resolve_gguf_parser
@@ -108,4 +139,6 @@ cat <<EOF
   export PATH=/usr/local/go/bin:\$HOME/.local/bin:\$HOME/.opencode/bin:\$PATH
   export LILBEE_MODELS_DIR=$LILBEE_MODELS_DIR HF_HOME=$HF_HOME
 Then: lilbee model pull <ref>; python tools/qa/opencode/matrix.py --families <fam>
+Recording reels: run VHS as 'VHS_NO_SANDBOX=true vhs <tape>' with a RELATIVE Output
+path, from the output dir (an absolute Output trips VHS's parser).
 EOF

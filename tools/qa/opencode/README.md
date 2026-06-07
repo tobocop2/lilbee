@@ -13,9 +13,11 @@ The reference corpus is the **Godot 4 class XML** (`/root/godot/doc/classes`) so
 ## One-time pod setup
 
 On a fresh from-source pod (no `pip install lilbee`), run the bootstrap first. It
-installs the build toolchain + tmux + uv + opencode, syncs a local-disk venv,
-builds the engine once and caches it on `/workspace`, and is idempotent across a
-stop/resume (only /workspace survives a resume, so the engine isn't recompiled):
+installs the build toolchain + tmux + uv + opencode + VHS (the reel recorder),
+syncs a local-disk venv, builds the engine once and caches it on `/workspace`, and
+is idempotent across a stop/resume (only /workspace survives a resume, so the
+engine isn't recompiled). VHS records on the pod (ttyd 1.7.7 + `VHS_NO_SANDBOX`
++ relative `Output` paths; the bootstrap smoke-tests it):
 
 ```bash
 bash tools/qa/opencode/pod_bootstrap.sh        # BACKEND=cu124 by default
