@@ -189,6 +189,49 @@ def test_rerank_without_server_raises() -> None:
         p.rerank("q", ["a"])
 
 
+def test_fit_chat_context_passthrough_when_ctx_unknown() -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    msgs = [{"role": "user", "content": "hi"}]
+    # _chat_ctx is None until a chat launch is adopted: no windowing, same list.
+    assert p._fit_chat_context(msgs, None, None, "m") is msgs
+
+
+def test_fit_chat_context_windows_overlong_history() -> None:
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 2048
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for _ in range(30):
+        msgs.append({"role": "user", "content": "x" * 500})
+        msgs.append({"role": "assistant", "content": "y" * 500})
+    msgs.append({"role": "user", "content": "final"})
+    out = p._fit_chat_context(msgs, None, None, "m")
+    assert len(out) < len(msgs)
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"] == "final"
+
+
+def test_fit_chat_context_raises_context_overflow_when_unfixable() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 64
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "x" * 9000}]
+    with pytest.raises(ProviderError) as excinfo:
+        p._fit_chat_context(msgs, None, None, "qwen")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_reserves_requested_max_tokens() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 2000
+    # a large num_predict shrinks the prompt budget below what a modest history needs
+    msgs = [{"role": "user", "content": "x" * 3000}]
+    with pytest.raises(ProviderError):
+        p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
+
+
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()

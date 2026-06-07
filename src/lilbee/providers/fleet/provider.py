@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.swap_manager import SwapManager
+from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
+# Tokens held back from the served context for the model's own generation when the
+# request does not cap it, plus a margin for chat-template overhead and estimate drift.
+_DEFAULT_GENERATION_RESERVE = 1024
+_CONTEXT_WINDOW_MARGIN = 128
 # Minimal input used to pre-load a role's upstream during warm-up (llama-swap
 # starts an upstream on its first request, so warming issues one cheap call).
 _WARM_PROMPT = "warm"
@@ -354,7 +359,9 @@ class FleetProvider:
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
-        client = _least_in_flight(self._require_clients(WorkerRole.CHAT))
+        clients = self._require_clients(WorkerRole.CHAT)
+        messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
+        client = _least_in_flight(clients)
         # Translate options exactly as the in-process path did (validate via
         # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
         # honors the same generation settings; a raw passthrough would drop
@@ -384,10 +391,43 @@ class FleetProvider:
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
         clients = self._require_clients(WorkerRole.CHAT)
+        messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
         server_options = chat_options_to_kwargs(options) or None
         return _least_in_flight(clients).chat_tools(
             messages, tools=tools, tool_choice=tool_choice, options=server_options
         )
+
+    def _fit_chat_context(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None,
+        options: dict[str, Any] | None,
+        model: str,
+    ) -> list[ChatMessage]:
+        """Drop oldest turns so the prompt fits the served context.
+
+        Raises ``ProviderError(CONTEXT_OVERFLOW)`` when even the system messages,
+        tools, and the final turn exceed the window; the chat-completions route
+        maps that to a 400 ``context_length_exceeded`` rather than a 500.
+        """
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        # 0/None means the served context is unknown (no chat launch adopted yet);
+        # a real per-slot context is always positive, so skip windowing.
+        if not self._chat_ctx:
+            return messages
+        reserve = (options or {}).get("num_predict") or _DEFAULT_GENERATION_RESERVE
+        budget = self._chat_ctx - reserve - _CONTEXT_WINDOW_MARGIN
+        result = window_messages(messages, tools, budget)
+        if not result.fits:
+            raise ProviderError(
+                f"Prompt of about {result.prompt_tokens} tokens exceeds the "
+                f"{self._chat_ctx}-token context window for {model!r}. Shorten the "
+                "conversation or the system prompt.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+            )
+        return result.messages
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return _least_in_flight(self._require_clients(WorkerRole.EMBED)).embed(texts)
