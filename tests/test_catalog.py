@@ -48,6 +48,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.hf_client import hf_token
 from lilbee.catalog.models import HfPage
+from lilbee.catalog.refs import GGUF_GLOB, is_bare_hf_repo, pick_best_gguf
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
 
@@ -346,6 +347,23 @@ class TestFetchHfModels:
         assert models[0].downloads == 5000
         assert models[0].featured is False
         assert models[0].task == "chat"
+
+    def test_resolves_concrete_gguf_filename_from_siblings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Search rows carry the quant the pull path would pick, not a glob."""
+        mock_resp = httpx.Response(200, json=self._mock_hf_response())
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = get_services().hf_client.fetch_models().models
+        assert models[0].gguf_filename == "model-7b-Q4_K_M.gguf"
+        assert models[1].gguf_filename == "model-13b-Q4_K_M.gguf"
+
+    def test_no_gguf_siblings_keeps_glob_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [{"id": "user/model", "downloads": 1, "siblings": [{"rfilename": "README.md"}]}]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = get_services().hf_client.fetch_models().models
+        assert models[0].gguf_filename == GGUF_GLOB
 
     def test_estimates_size_from_gguf_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
@@ -1052,11 +1070,24 @@ class TestResolveFilename:
 
     def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
         files = ["model-Q8_0.gguf", "model-Q4_K_M.gguf", "model-Q5_K_M.gguf"]
-        assert _download._pick_best_gguf(files) == "model-Q4_K_M.gguf"
+        assert pick_best_gguf(files) == "model-Q4_K_M.gguf"
 
     def test_pick_best_gguf_fallback_first(self) -> None:
         files = ["model-weird.gguf"]
-        assert _download._pick_best_gguf(files) == "model-weird.gguf"
+        assert pick_best_gguf(files) == "model-weird.gguf"
+
+
+class TestIsBareHfRepo:
+    @pytest.mark.parametrize("value", ["Qwen/Qwen3-8B-GGUF", "bartowski/SmolLM2-360M-GGUF"])
+    def test_accepts_bare_repos(self, value: str) -> None:
+        assert is_bare_hf_repo(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["Qwen/Qwen3-8B-GGUF/q4.gguf", "Qwen/file.gguf", "qwen3:0.6b", "a/b/c", ""],
+    )
+    def test_rejects_other_shapes(self, value: str) -> None:
+        assert is_bare_hf_repo(value) is False
 
 
 class TestTaskToPipeline:

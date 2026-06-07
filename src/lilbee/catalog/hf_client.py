@@ -14,6 +14,7 @@ from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
 from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
+from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
 from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
@@ -114,6 +115,18 @@ def _hf_search_value(search: str) -> str:
 def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
     """Return True if the sibling list contains at least one .gguf file."""
     return any(s.rfilename.endswith(".gguf") for s in siblings)
+
+
+def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
+    """Concrete GGUF filename for a repo's sibling list, or ``GGUF_GLOB``.
+
+    Uses the same quant picker as the pull path so the filename a catalog
+    row carries always names the file a pull of that row produces.
+    """
+    gguf_files = [s.rfilename for s in siblings if s.rfilename.endswith(".gguf")]
+    if not gguf_files:
+        return GGUF_GLOB
+    return pick_best_gguf(gguf_files)
 
 
 def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
@@ -230,7 +243,7 @@ class HfClient:
             models.append(
                 CatalogModel(
                     hf_repo=item.id,
-                    gguf_filename="*.gguf",
+                    gguf_filename=_resolve_sibling_gguf(item.siblings or []),
                     size_gb=size_gb,
                     min_ram_gb=round(max(2.0, size_gb * 1.5), 1),
                     description=card_desc[:120] if card_desc else "",

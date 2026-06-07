@@ -399,6 +399,15 @@ class ModelRegistry:
             return None
         return self._read_manifest(hf_repo, gguf_filename)
 
+    def installed_ref_for_repo(self, hf_repo: str) -> str | None:
+        """Full ``<repo>/<file>.gguf`` ref of an installed quant of *hf_repo*, or None.
+
+        Alphabetical-first when several quants are installed, matching
+        ``_resolve_repo_only``'s determinism.
+        """
+        refs = sorted(m.ref for m in self.list_installed() if m.hf_repo == hf_repo)
+        return refs[0] if refs else None
+
     def _manifest_path(self, hf_repo: str, gguf_filename: str) -> Path:
         repo = _validate_hf_repo(hf_repo)
         filename = _validate_gguf_filename(gguf_filename)
