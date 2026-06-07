@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.refs import format_native_gguf_ref
+from lilbee.catalog.refs import format_native_gguf_ref, is_bare_hf_repo
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -148,7 +148,7 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
-        if not ref.endswith(".gguf") and ref.count("/") == 1:
+        if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
         manifest = self._read_manifest(hf_repo, gguf_filename)

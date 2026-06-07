@@ -161,11 +161,14 @@ async def _set_model(
 
 
 def _resolve_via_catalog(model: str, available: set[str]) -> str | None:
-    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*."""
+    """Resolve a bare ``hf_repo`` to whichever quant of it is in *available*.
+
+    Sorted scan so the pick is deterministic when several quants are installed.
+    """
     entry = find_catalog_entry(model)
     if entry is None:
         return None
-    return next((ref for ref in available if ref.startswith(f"{entry.hf_repo}/")), None)
+    return next((ref for ref in sorted(available) if ref.startswith(f"{entry.hf_repo}/")), None)
 
 
 def _resolve_via_installed_repo(model: str, available: set[str]) -> str | None:
