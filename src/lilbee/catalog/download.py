@@ -14,6 +14,7 @@ from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
 from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers, hf_token
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.refs import pick_best_gguf
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -227,9 +228,6 @@ def find_mmproj_file(model_ref: str) -> Path | None:
     return None
 
 
-_QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
-
-
 def resolve_filename(entry: CatalogModel) -> str:
     """Resolve a GGUF filename pattern to the best concrete filename.
     For exact filenames, return as-is. For wildcards, query the HF API
@@ -262,16 +260,7 @@ def resolve_filename(entry: CatalogModel) -> str:
     if not gguf_files:
         raise RuntimeError(f"No GGUF files found in {entry.hf_repo}")
 
-    return _pick_best_gguf(gguf_files)
-
-
-def _pick_best_gguf(filenames: list[str]) -> str:
-    """Pick the best GGUF file by quantization preference."""
-    for quant in _QUANT_PREFERENCE:
-        for f in filenames:
-            if quant in f:
-                return f
-    return filenames[0]
+    return pick_best_gguf(gguf_files)
 
 
 _SIZE_UNKNOWN = 0
@@ -344,6 +333,6 @@ def fetch_model_file_size(hf_repo: str) -> float:
     if not gguf_files:
         return 0.0
 
-    best_name = _pick_best_gguf([name for name, _ in gguf_files])
+    best_name = pick_best_gguf([name for name, _ in gguf_files])
     size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
     return round(size_bytes / (1024**3), 1) if size_bytes else 0.0

@@ -653,6 +653,24 @@ class TestModelRegistryWriteManifestErrors:
         assert leftovers == []
 
 
+class TestInstalledRefForRepo:
+    def test_returns_installed_quant_ref(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        assert registry.installed_ref_for_repo(_REPO) == _REF
+
+    def test_multiple_quants_picks_alphabetical_first(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, "z-Q8_0.gguf", _write_source(tmp_path), _make_manifest())
+        registry.install(_REPO, "a-Q4_K_M.gguf", _write_source(tmp_path), _make_manifest())
+        assert registry.installed_ref_for_repo(_REPO) == f"{_REPO}/a-Q4_K_M.gguf"
+
+    def test_unknown_repo_returns_none(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        assert registry.installed_ref_for_repo("other/Repo-GGUF") is None
+
+
 class TestModelRegistryGetManifest:
     def test_get_manifest(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
