@@ -5,6 +5,7 @@ import sys
 from typing import Any
 
 from lilbee.catalog import find_catalog_entry
+from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager.discovery import reclassify_by_name
@@ -48,9 +49,9 @@ def _model_task_validation_bypassed() -> bool:
     return sys.modules.get("pytest") is not None
 
 
-def _resolve_installed_task(ref: str) -> ModelTask | None:
+def _resolve_installed_task(registry: ModelRegistry, ref: str) -> ModelTask | None:
     """Return the manifest's ``ModelTask`` for *ref*, name-reclassified, or ``None``."""
-    manifest = ModelRegistry(cfg.models_dir).get_manifest(ref)
+    manifest = registry.get_manifest(ref)
     if manifest is None:
         return None
     return ModelTask(reclassify_by_name(ref, manifest.task))
@@ -78,8 +79,15 @@ def _canonical_featured_ref(ref: str, entry: Any, want: ModelTask) -> str:
 
 
 def _validate_installed_ref(ref: str, want: ModelTask) -> str:
-    """Role-check a non-featured ref by consulting the installed registry."""
-    installed_task = _resolve_installed_task(ref)
+    """Role-check a non-featured ref by consulting the installed registry.
+
+    A bare ``<org>/<repo>`` ref canonicalizes to its installed quant's full
+    ref so the persisted value always names the exact GGUF file.
+    """
+    registry = ModelRegistry(cfg.models_dir)
+    if is_bare_hf_repo(ref):
+        ref = registry.installed_ref_for_repo(ref) or ref
+    installed_task = _resolve_installed_task(registry, ref)
     if installed_task is None:
         raise ValueError(
             f"Model '{ref}' is not installed. "
