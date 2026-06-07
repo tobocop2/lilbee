@@ -89,7 +89,7 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
     services = get_services()
     predicate = local_owner_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
     return services.store.search_memories(
-        services.embedder.embed(query),
+        services.embedder.embed_query(query),
         owner_predicate=predicate,
         top_k=cfg.memory_top_k if top_k is None else top_k,
         max_distance=cfg.memory_max_distance,

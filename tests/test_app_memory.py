@@ -94,7 +94,7 @@ class TestRecall:
         cfg.memory_top_k = 7
         cfg.memory_max_distance = 0.4
         app_memory.recall("where is auth")
-        svc.embedder.embed.assert_called_once_with("where is auth")
+        svc.embedder.embed_query.assert_called_once_with("where is auth")
         kwargs = svc.store.search_memories.call_args.kwargs
         assert kwargs["owner_predicate"] == local_owner_predicate()
         assert kwargs["top_k"] == 7

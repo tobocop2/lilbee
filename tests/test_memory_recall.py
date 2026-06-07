@@ -80,7 +80,7 @@ class TestSearcherMemoryBlock:
         embedder.embedding_available.return_value = False
         block = _searcher(store, embedder)._memory_block("q")
         assert "be terse" in block
-        embedder.embed.assert_not_called()
+        embedder.embed_query.assert_not_called()
         store.search_memories.assert_not_called()
 
     def test_facts_recalled_when_embedding_available(self):
@@ -91,10 +91,10 @@ class TestSearcherMemoryBlock:
         store.search_memories.return_value = [_mem("uses rust")]
         embedder = MagicMock()
         embedder.embedding_available.return_value = True
-        embedder.embed.return_value = [0.1, 0.2]
+        embedder.embed_query.return_value = [0.1, 0.2]
         block = _searcher(store, embedder)._memory_block("q")
         assert "uses rust" in block
-        embedder.embed.assert_called_once_with("q")
+        embedder.embed_query.assert_called_once_with("q")
 
     def test_top_k_zero_skips_fact_recall(self):
         cfg.memory_enabled = True
@@ -105,7 +105,7 @@ class TestSearcherMemoryBlock:
         embedder.embedding_available.return_value = True
         _searcher(store, embedder)._memory_block("q")
         store.search_memories.assert_not_called()
-        embedder.embed.assert_not_called()
+        embedder.embed_query.assert_not_called()
 
 
 class TestSystemWithMemory:
