@@ -140,6 +140,10 @@ jobs:
   integration:
     timeout-minutes: 90
     runs-on: ${{ matrix.os }}
+    # Authenticate HF API + model downloads so the runner's shared IP doesn't
+    # hit the unauthenticated rate limit (429) on the featured-model sweep.
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
       matrix:

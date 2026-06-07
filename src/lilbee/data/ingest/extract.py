@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from PIL import Image
 
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
@@ -17,6 +20,7 @@ from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
 from lilbee.data.ingest.types import (
+    IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
     MIN_MEANINGFUL_CHARS,
     PDF_CONTENT_TYPE,
@@ -115,23 +119,21 @@ def _record_page_texts(
     )
 
 
-async def _vision_ocr_fallback(
+async def _vision_ocr_cached(
     path: Path,
     source_name: str,
     content_type: str,
     *,
+    ocr_fn: Callable[[], Awaitable[list[tuple[int, str]]]],
     on_progress: DetailedProgressCallback,
-    quiet: bool,
     page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
-    """Vision OCR via the persistent worker pool, chunk + embed the pages.
+    """Cache-wrapped vision OCR: reuse stored pages, else run *ocr_fn*, then chunk + embed.
 
-    Pool routing is what amortises the multi-second vision-Llama load
-    cost across PDFs. Tesseract has no shared model state and is run
-    inline by ``_tesseract_ocr_fallback``; this helper is vision-only.
-
-    OCR output is cached by file content + model, so a retry after a downstream
-    failure (chunk/embed/store write) reuses the pages instead of re-OCR-ing.
+    Pool routing amortises the multi-second vision-Llama load across files.
+    *ocr_fn* returns the OCR'd pages as ``(page_number, text)`` tuples (a PDF page
+    loop or a single image). Output is cached by file content + model, so a retry
+    after a downstream failure (chunk/embed/store) reuses the pages, not re-OCR-ing.
     """
     key = ocr_cache_key(
         file_hash(path),
@@ -144,6 +146,32 @@ async def _vision_ocr_fallback(
         _record_page_texts(cached, source_name, content_type, page_texts_out)
         return await chunk_and_embed_pages(cached, source_name, content_type, on_progress)
     try:
+        pages = await ocr_fn()
+    except (asyncio.CancelledError, TaskCancelledError):
+        # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
+        # per-page on_progress callback must abort the file, not be logged as an
+        # OCR failure and swallowed.
+        raise
+    except Exception:
+        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
+        return []
+    store_ocr_pages(key, pages)
+    _record_page_texts(pages, source_name, content_type, page_texts_out)
+    return await chunk_and_embed_pages(pages, source_name, content_type, on_progress)
+
+
+async def _vision_ocr_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+    quiet: bool,
+    page_texts_out: list[PageTextRecord] | None = None,
+) -> list[ChunkRecord]:
+    """Vision OCR a scanned PDF: rasterize + OCR each page through the worker pool."""
+
+    async def _ocr() -> list[tuple[int, str]]:
         pages = await asyncio.to_thread(
             get_services().provider.pdf_ocr,
             path,
@@ -153,17 +181,55 @@ async def _vision_ocr_fallback(
             quiet=quiet,
             on_progress=on_progress,
         )
-    except (asyncio.CancelledError, TaskCancelledError):
-        # A user cancel (SIGINT / TUI cancel) raised cooperatively through the
-        # per-page on_progress callback must abort the file, not be logged as an
-        # OCR failure and swallowed.
-        raise
-    except Exception:
-        log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
-        return []
-    store_ocr_pages(key, [(p.page, p.text) for p in pages])
-    _record_page_texts(pages, source_name, content_type, page_texts_out)
-    return await chunk_and_embed_pages(pages, source_name, content_type, on_progress)
+        return [(p.page, p.text) for p in pages]
+
+    return await _vision_ocr_cached(
+        path,
+        source_name,
+        content_type,
+        ocr_fn=_ocr,
+        on_progress=on_progress,
+        page_texts_out=page_texts_out,
+    )
+
+
+async def _vision_image_ocr(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+    page_texts_out: list[PageTextRecord] | None = None,
+) -> list[ChunkRecord]:
+    """Vision OCR a single image (one page) through the worker pool."""
+
+    async def _ocr() -> list[tuple[int, str]]:
+        text = await asyncio.to_thread(_image_ocr_text, path)
+        return [(1, text)]
+
+    return await _vision_ocr_cached(
+        path,
+        source_name,
+        content_type,
+        ocr_fn=_ocr,
+        on_progress=on_progress,
+        page_texts_out=page_texts_out,
+    )
+
+
+def _image_ocr_text(path: Path) -> str:
+    """OCR one image through the vision server (a single chat-completions call)."""
+    return get_services().provider.vision_ocr(
+        _image_to_png_bytes(path), cfg.vision_model, timeout=cfg.ocr_timeout
+    )
+
+
+def _image_to_png_bytes(path: Path) -> bytes:
+    """Load a supported image (png/jpg/tiff/bmp/webp) and re-encode as PNG for the projector."""
+    with Image.open(path) as img:
+        buf = BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return buf.getvalue()
 
 
 def _run_tesseract_sync(path: Path) -> Any:
@@ -343,6 +409,39 @@ async def _handle_scanned_pdf_fallback(
     return chunks
 
 
+async def _handle_image(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    on_progress: DetailedProgressCallback,
+    page_texts_out: list[PageTextRecord] | None = None,
+) -> list[ChunkRecord]:
+    """OCR an image: vision OCR when a vision model is configured, else Tesseract.
+
+    An image has no text layer to extract first, so it routes straight to OCR --
+    the same downstream call a PDF page hits after it is rasterized to an image.
+    """
+    if _should_run_ocr() and cfg.vision_model:
+        log.info("Image: using vision OCR for %s (model=%s)", source_name, cfg.vision_model)
+        return await _vision_image_ocr(
+            path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
+        )
+
+    log.info("Image: falling back to Tesseract OCR for %s", source_name)
+    chunks = await _tesseract_ocr_fallback(
+        path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
+    )
+    if not chunks:
+        log.warning(
+            "Skipped %s: text extraction produced no usable text. "
+            "For better results on images, configure a vision model "
+            "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
+            source_name,
+        )
+    return chunks
+
+
 async def ingest_document(
     path: Path,
     source_name: str,
@@ -357,6 +456,13 @@ async def ingest_document(
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     When ``page_texts_out`` is given, per-page text is appended for export.
     """
+    # An image carries no text layer; route it straight to OCR (vision or Tesseract)
+    # instead of a no-op kreuzberg markdown extract that yields nothing for a scan.
+    if content_type == IMAGE_CONTENT_TYPE:
+        return await _handle_image(
+            path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
+        )
+
     from kreuzberg import extract_file_sync
 
     config = extraction_config(content_type_to_mode(content_type))

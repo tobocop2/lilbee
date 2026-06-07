@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from lilbee.catalog import FEATURED_ALL
+from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers
 
 pytestmark = pytest.mark.slow
 
@@ -21,9 +22,12 @@ pytestmark = pytest.mark.slow
 )
 def test_featured_models_all_have_gguf(entry) -> None:
     """Each featured model's HF repo must contain at least one .gguf file."""
+    # Authenticated request (HF_TOKEN) lifts the unauthenticated rate limit that
+    # otherwise 429s the featured-model sweep from a shared CI IP.
     resp = httpx.get(
-        f"https://huggingface.co/api/models/{entry.hf_repo}",
-        timeout=30.0,
+        f"{HF_API_URL}/{entry.hf_repo}",
+        timeout=DEFAULT_TIMEOUT,
+        headers=hf_headers(),
     )
     resp.raise_for_status()
     siblings = resp.json().get("siblings", [])
