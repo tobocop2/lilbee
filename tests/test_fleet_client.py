@@ -461,6 +461,63 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     assert "context window" in str(excinfo.value).lower()
 
 
+def _premature_exit_response() -> httpx.Response:
+    request = httpx.Request(
+        "POST", "http://127.0.0.1:9100/v1/embeddings", json={"model": "embed-0"}
+    )
+    return httpx.Response(
+        500,
+        text='{"src":"llama-swap", "error": "unspecific error: upstream command'
+        ' exited prematurely"}',
+        request=request,
+    )
+
+
+def test_raise_for_status_logs_upstream_tail_on_premature_exit(monkeypatch, caplog) -> None:
+    # llama-swap masks the dead server's stderr behind "exited prematurely";
+    # the client fetches the upstream's captured output and logs it.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    seen: dict[str, str] = {}
+
+    class _FakeStream:
+        def __enter__(self) -> _FakeStream:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_text(self):
+            # Padded past the tail cap so the read stops at the size limit
+            # instead of waiting out the stream timeout.
+            yield "x" * 2500 + "E srv start: couldn't bind HTTP server socket, port: 5801\n"
+            raise AssertionError("must stop reading once the tail cap is reached")
+
+    def _fake_stream(method: str, url: str, timeout: float) -> _FakeStream:
+        seen["url"] = url
+        return _FakeStream()
+
+    monkeypatch.setattr(client_mod.httpx, "stream", _fake_stream)
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="exited prematurely"):
+        _raise_for_status(_premature_exit_response())
+    assert seen["url"] == "http://127.0.0.1:9100/logs/stream/embed-0"
+    assert "couldn't bind HTTP server socket" in caplog.text
+
+
+def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
+    # A dead log stream must not mask the original ProviderError.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    def _refuse(method: str, url: str, timeout: float) -> object:
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(client_mod.httpx, "stream", _refuse)
+    with pytest.raises(ProviderError, match="exited prematurely"):
+        _raise_for_status(_premature_exit_response())
+
+
 def test_chat_stream_surfaces_server_error_body() -> None:
     # On a streaming request the response body isn't read yet, so the error path
     # must read it before extracting the message (the ResponseNotRead branch).
@@ -923,6 +980,32 @@ def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
     assert out == [[0.5]]
     assert calls["embed"] == 2  # first overflowed, retry succeeded
     assert calls["tokenize"] >= 1  # retry used exact tokenization
+
+
+def test_embed_retries_exact_on_batch_overflow_500() -> None:
+    """An input past the server's n_batch is a 500 saying "too large to process"
+    (not the 400 context shape); it must take the same exact-tokenize retry."""
+    calls = {"embed": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        if path.endswith("/detokenize"):
+            return httpx.Response(200, json={"content": "t"})
+        if path == "/v1/embeddings":
+            calls["embed"] += 1
+            if calls["embed"] == 1:
+                return httpx.Response(
+                    500,
+                    text='{"error":{"code":500,"message":"input (136 tokens) is too large'
+                    ' to process. increase the physical batch size","type":"server_error"}}',
+                )
+            return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+        return httpx.Response(404)
+
+    assert _capped_client(handler, 10).embed(["dense"]) == [[0.5]]
+    assert calls["embed"] == 2
 
 
 def test_embed_does_not_retry_on_non_overflow_error() -> None:

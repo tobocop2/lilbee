@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from lilbee.providers.fleet.client import LlamaServerClient
-from lilbee.providers.fleet.swap_manager import _pick_free_port
+from lilbee.providers.fleet.swap_manager import _pick_free_ports
 
 _STUB = Path(__file__).parent / "_llama_server_stub.py"
 
@@ -26,7 +26,7 @@ _STUB = Path(__file__).parent / "_llama_server_stub.py"
 @pytest.fixture
 def stub_client() -> Iterator[LlamaServerClient]:
     """A LlamaServerClient pointed at a freshly spawned stub llama-server."""
-    port = _pick_free_port()
+    (port,) = _pick_free_ports(1)
     proc = subprocess.Popen([sys.executable, str(_STUB), "--port", str(port)])
     base = f"http://127.0.0.1:{port}"
     try:

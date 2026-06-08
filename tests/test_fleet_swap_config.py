@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
@@ -28,8 +31,12 @@ def _launch(
     )
 
 
+_BASE_PORT = 5900
+
+
 def _config(launches: list[InstanceLaunch]) -> dict:
-    return json.loads(build_swap_config(launches))
+    ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
+    return json.loads(build_swap_config(launches, ports))
 
 
 def test_instance_launch_rerank_mode_defaults_none() -> None:
@@ -39,7 +46,7 @@ def test_instance_launch_rerank_mode_defaults_none() -> None:
 class TestBuildSwapConfig:
     def test_emits_valid_json_with_top_level_keys(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server", "--model", "/m/c.gguf"])])
-        assert cfg["startPort"] == 5800
+        assert "startPort" not in cfg  # members carry explicit ports, never a fixed range
         assert cfg["healthCheckTimeout"] >= 1
         assert "logLevel" in cfg
 
@@ -87,22 +94,46 @@ class TestBuildSwapConfig:
             _mid(WorkerRole.RERANK),
         }
 
-    def test_command_carries_port_macro_and_role_argv(self) -> None:
+    def test_command_carries_explicit_port_and_role_argv(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server", "--jinja"])])
         cmd = cfg["models"][_mid(WorkerRole.CHAT)]["cmd"]
         assert "--jinja" in cmd
-        assert cmd.endswith("--port ${PORT}")
-        assert cfg["models"][_mid(WorkerRole.CHAT)]["proxy"] == "http://localhost:${PORT}"
+        assert cmd.endswith(f"--port {_BASE_PORT}")
+        assert cfg["models"][_mid(WorkerRole.CHAT)]["proxy"] == f"http://127.0.0.1:{_BASE_PORT}"
+
+    def test_each_member_gets_its_own_port(self) -> None:
+        cfg = _config(
+            [
+                _launch(WorkerRole.CHAT, ["/bin/llama-server"]),
+                _launch(WorkerRole.EMBED, ["/bin/llama-server", "--embeddings"]),
+            ]
+        )
+        chat = cfg["models"][_mid(WorkerRole.CHAT)]
+        embed = cfg["models"][_mid(WorkerRole.EMBED)]
+        assert chat["cmd"].endswith(f"--port {_BASE_PORT}")
+        assert embed["cmd"].endswith(f"--port {_BASE_PORT + 1}")
+        assert embed["proxy"] == f"http://127.0.0.1:{_BASE_PORT + 1}"
 
     def test_embed_command_keeps_embeddings_flag(self) -> None:
         cfg = _config([_launch(WorkerRole.EMBED, ["/bin/llama-server", "--embeddings"])])
         assert "--embeddings" in cfg["models"][_mid(WorkerRole.EMBED)]["cmd"]
 
-    def test_spaced_model_path_is_quoted(self) -> None:
+    def test_spaced_model_path_is_quoted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(swap_config_mod.sys, "platform", "linux")
         argv = ["/bin/llama-server", "--model", "/Application Support/lilbee/m.gguf"]
         cfg = _config([_launch(WorkerRole.CHAT, argv)])
         cmd = cfg["models"][_mid(WorkerRole.CHAT)]["cmd"]
         assert "'/Application Support/lilbee/m.gguf'" in cmd  # shell-quoted, survives the space
+
+    def test_windows_uses_ms_quoting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # llama-swap splits cmd with MS rules on Windows; POSIX single quotes
+        # would stay literal in the paths and the server spawn fails.
+        monkeypatch.setattr(swap_config_mod.sys, "platform", "win32")
+        argv = ["C:\\llama\\llama-server.exe", "--model", "C:\\Program Files\\lilbee\\m.gguf"]
+        cmd = _config([_launch(WorkerRole.CHAT, argv)])["models"][_mid(WorkerRole.CHAT)]["cmd"]
+        assert "'" not in cmd
+        assert '"C:\\Program Files\\lilbee\\m.gguf"' in cmd
+        assert cmd.startswith("C:\\llama\\llama-server.exe")
 
     def test_env_overrides_become_env_list_when_present(self) -> None:
         cfg = _config(

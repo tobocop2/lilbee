@@ -72,8 +72,11 @@ _CHAT_VRAM_FRACTION = 0.8
 # small one steps down toward 1.
 _LLM_RERANK_VRAM_FRACTION = 0.5
 
-# RAM kept free for the OS when placing against system memory (no discrete GPU).
-_SYSTEM_MEMORY_FLOOR_BYTES = 4 * 1024**3
+# RAM kept free for the OS when placing against system memory (no discrete GPU):
+# a quarter of total RAM, capped at 4 GiB. A fixed 4 GiB floor leaves a small
+# host (7-8 GB) with no budget at all, refusing to serve even tiny models.
+_SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
+_SYSTEM_MEMORY_FLOOR_DIVISOR = 4
 
 
 def _slots_for(
@@ -550,9 +553,13 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     RAM is not the constraint there."""
     if devices:
         return None
-    from lilbee.providers.model_cache import free_system_memory
+    from lilbee.providers.model_cache import free_system_memory, total_system_memory
 
-    return max(0, free_system_memory() - _SYSTEM_MEMORY_FLOOR_BYTES)
+    floor = min(
+        _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
+        total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
+    )
+    return max(0, free_system_memory() - floor)
 
 
 def plan_launches(
