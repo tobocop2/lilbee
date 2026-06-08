@@ -359,6 +359,10 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 
+## Support
+
+lilbee is built and maintained by one person. If it is useful to you, you can chip in via [PayPal](https://paypal.me/lilbeedotsh). Bug reports and pull requests help just as much.
+
 ## License
 
 Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
