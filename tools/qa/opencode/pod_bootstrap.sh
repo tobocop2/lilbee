@@ -133,12 +133,30 @@ for f in (resolve_llama_server, resolve_llama_swap, resolve_gguf_parser):
     print('  engine:', f())
 "
 
+# 10. Write a complete, sourceable env file. Printing partial exports left every
+#     shell to re-derive the environment and rediscover the non-obvious bits --
+#     UV_PROJECT_ENVIRONMENT/UV_NO_SYNC (without which the matrix's `uv run lilbee`
+#     re-syncs and the engine-wheel rebuild fails), the persistent models/HF dirs,
+#     and the corpus path. One `source` now sets all of it.
+log "writing $WORKSPACE/qa_env.sh"
+cat > "$WORKSPACE/qa_env.sh" <<EOF
+source $UV_PROJECT_ENVIRONMENT/bin/activate
+export PATH=/usr/local/go/bin:\$HOME/.local/bin:\$HOME/.opencode/bin:\$PATH
+export UV_PROJECT_ENVIRONMENT=$UV_PROJECT_ENVIRONMENT
+export UV_CACHE_DIR=$UV_CACHE_DIR
+export UV_LINK_MODE=copy
+export UV_NO_SYNC=1
+export LILBEE_MODELS_DIR=$LILBEE_MODELS_DIR
+export HF_HOME=$HF_HOME
+export LILBEE_QA_CORPUS=\${LILBEE_QA_CORPUS:-$WORKSPACE/godot_corpus}
+# export HF_TOKEN=...   # set per shell for model pulls; never commit it
+EOF
+
 cat <<EOF
-[bootstrap] ready. For each shell:
-  source $UV_PROJECT_ENVIRONMENT/bin/activate
-  export PATH=/usr/local/go/bin:\$HOME/.local/bin:\$HOME/.opencode/bin:\$PATH
-  export LILBEE_MODELS_DIR=$LILBEE_MODELS_DIR HF_HOME=$HF_HOME
-Then: lilbee model pull <ref>; python tools/qa/opencode/matrix.py --families <fam>
+[bootstrap] ready. Source the generated env, then run the matrix:
+  source $WORKSPACE/qa_env.sh
+  export HF_TOKEN=...                       # for model pulls
+  python tools/qa/opencode/matrix.py --families <fam>
 Recording reels: run VHS as 'VHS_NO_SANDBOX=true vhs <tape>' with a RELATIVE Output
 path, from the output dir (an absolute Output trips VHS's parser).
 EOF
