@@ -179,10 +179,15 @@ class HealthResponse(BaseModel):
 
 
 class AskResponse(BaseModel):
-    """Response for /api/ask and /api/chat."""
+    """Response for /api/ask and /api/chat.
+
+    ``sources`` is the full retrieved set; ``cited_sources`` is the subset the answer
+    actually cited, so a client can tell a grounded answer from an off-corpus one.
+    """
 
     answer: str
     sources: list[CleanedChunk]
+    cited_sources: list[CleanedChunk] = Field(default_factory=list)
 
 
 class SetModelResponse(BaseModel):

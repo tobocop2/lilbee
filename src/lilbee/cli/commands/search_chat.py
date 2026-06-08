@@ -188,6 +188,7 @@ def ask(
                     "question": question,
                     "answer": result.answer,
                     "sources": [clean_result(s) for s in result.sources],
+                    "cited_sources": [clean_result(s) for s in result.cited_sources],
                 }
             )
             return

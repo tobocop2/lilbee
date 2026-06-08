@@ -16,7 +16,12 @@ from lilbee.retrieval.query import (
     strip_llm_citations,
 )
 from lilbee.retrieval.query.dedup import _relevance_weight
-from lilbee.retrieval.query.formatting import _extract_cited_indices, _format_citation
+from lilbee.retrieval.query.formatting import (
+    _extract_cited_indices,
+    _format_citation,
+    cited_subset,
+)
+from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL
 from tests.conftest import make_citation
 
 
@@ -516,6 +521,93 @@ class TestExpandQuery:
         assert concept_batch == ["kubernetes", "scheduling"]
 
 
+class TestFormattingHelpers:
+    def test_cited_subset_maps_markers_in_order(self):
+        sources = [_make_result(source="a.pdf"), _make_result(source="b.pdf")]
+        assert [s.source for s in cited_subset("see [2], then [2] again", sources)] == ["b.pdf"]
+
+    def test_cited_subset_empty_when_no_markers(self):
+        assert cited_subset("no markers here", [_make_result()]) == []
+
+    def test_cited_subset_ignores_out_of_range_markers(self):
+        assert cited_subset("[5] does not exist", [_make_result()]) == []
+
+
+class TestCitedSources:
+    """bb-ky3: ask_raw exposes the answer's cited subset so JSON consumers get
+    the same citation truth the string method computes."""
+
+    def test_ask_raw_cited_sources_is_the_cited_subset(self, mock_svc):
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", distance=0.2),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("As shown in [2].")
+        result = get_services().searcher.ask_raw("q")
+        assert len(result.sources) == 2
+        assert [s.source for s in result.cited_sources] == ["b.pdf"]
+
+    def test_ask_raw_cited_sources_empty_when_uncited(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(chunk="alpha")]
+        mock_svc.provider.chat.return_value = _text_result("No markers in this answer.")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources
+        assert result.cited_sources == []
+
+    def test_ask_lists_only_the_cited_source(self, mock_svc):
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", distance=0.2),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("From [1] we learn the answer.")
+        answer = get_services().searcher.ask("q")
+        assert "a.pdf" in answer
+        assert "b.pdf" not in answer
+
+
+class TestContextBudget:
+    """bb-6kt: RAG sources are trimmed to fit num_ctx instead of overflow-erroring."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_ctx(self):
+        old = (cfg.num_ctx, cfg.chat_n_ctx_target)
+        yield
+        cfg.num_ctx, cfg.chat_n_ctx_target = old
+
+    def test_trims_lowest_ranked_sources_to_fit(self, mock_svc):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert 0 < len(kept) < len(results)
+        assert kept == results[: len(kept)]  # keeps the top-ranked prefix
+
+    def test_keeps_all_when_budget_ample(self, mock_svc):
+        cfg.num_ctx = 100_000
+        results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
+        assert get_services().searcher._fit_context_budget(results, "sys", "q", None) == results
+
+    def test_keeps_top_source_even_if_alone_over_budget(self, mock_svc):
+        cfg.num_ctx = 1
+        results = [_make_result(source="big.pdf", chunk="x" * 9000), _make_result(source="b.pdf")]
+        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert len(kept) == 1
+
+    def test_history_counts_against_the_budget(self, mock_svc):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        history = [{"role": "user", "content": "h" * 600}]
+        no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
+        assert len(with_hist) < len(no_hist)
+
+    def test_logs_when_trimming(self, mock_svc, caplog):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        with caplog.at_level("INFO"):
+            get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert "to fit the model context window" in caplog.text
+
+
 class TestAskRaw:
     def test_returns_structured_result(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
@@ -525,18 +617,16 @@ class TestAskRaw:
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
-    def test_no_results_falls_through_to_general_chat(self, mock_svc):
-        """Zero RAG hits route through the general system prompt (no canned
-        message, no citation grammar). Sources stay empty so callers can tell
-        the response was not grounded."""
+    def test_no_results_returns_grounded_refusal(self, mock_svc):
+        """Zero RAG hits in RAG mode return a grounded refusal instead of
+        free-wheeling on the model's parametric knowledge (bb-0i0). The model is
+        never called, and sources stay empty."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = _text_result("general answer")
         result = get_services().searcher.ask_raw("anything")
-        assert result.answer == "general answer"
+        assert result.answer == _GROUNDED_REFUSAL
         assert result.sources == []
-        sent = mock_svc.provider.chat.call_args[0][0]
-        assert sent[0]["role"] == "system"
-        assert sent[0]["content"] == cfg.general_system_prompt
+        assert result.cited_sources == []
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -578,14 +668,13 @@ class TestAsk:
         assert "Sources:" in answer
         assert "test.pdf" in answer
 
-    def test_no_results_falls_through_to_general_chat(self, mock_svc):
-        """ask() also falls through to general chat when retrieval is empty."""
+    def test_no_results_returns_grounded_refusal(self, mock_svc):
+        """ask() surfaces the grounded refusal verbatim, with no Sources block (bb-0i0)."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = _text_result("general answer")
         answer = get_services().searcher.ask("anything")
-        assert "general answer" in answer
-        # No citations are appended for an ungrounded answer.
+        assert answer == _GROUNDED_REFUSAL
         assert "Sources:" not in answer
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -609,15 +698,15 @@ class TestAskStream:
         assert "Hello world" in combined
         assert "Sources:" in combined
 
-    def test_empty_results_falls_through_to_general_chat(self, mock_svc):
-        """Zero RAG hits stream a general-prompt response, no canned message."""
+    def test_empty_results_streams_grounded_refusal(self, mock_svc):
+        """Zero RAG hits stream a single grounded-refusal token, no Sources block,
+        and never call the model (bb-0i0)."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = iter(["general", " answer"])
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
-        assert "general answer" in combined
-        # No Sources block when there are no grounding chunks.
+        assert combined == _GROUNDED_REFUSAL
         assert "Sources:" not in combined
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_stream_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1643,15 +1732,16 @@ class TestAskRawChatMode:
         finally:
             cfg.chat_mode = old
 
-    def test_search_mode_empty_results_falls_through(self, mock_svc):
+    def test_search_mode_empty_results_returns_grounded_refusal(self, mock_svc):
+        """Search mode is a RAG path, so zero hits refuse rather than free-wheel (bb-0i0)."""
         old = cfg.chat_mode
         cfg.chat_mode = "search"
         try:
             mock_svc.store.search.return_value = []
-            mock_svc.provider.chat.return_value = _text_result("general answer")
             result = get_services().searcher.ask_raw("question")
-            assert result.answer == "general answer"
+            assert result.answer == _GROUNDED_REFUSAL
             assert result.sources == []
+            mock_svc.provider.chat.assert_not_called()
         finally:
             cfg.chat_mode = old
 

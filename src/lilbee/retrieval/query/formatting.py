@@ -95,6 +95,12 @@ def _extract_cited_indices(text: str) -> set[int]:
     return {int(m.group(1)) for m in _CITE_REF_RE.finditer(text)}
 
 
+def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
+    """The sources the answer actually cited via [n] markers, in order (empty if none)."""
+    cited = _extract_cited_indices(answer)
+    return [sources[i - 1] for i in sorted(cited) if 1 <= i <= len(sources)]
+
+
 def strip_llm_citations(text: str) -> str:
     """Remove LLM-generated trailing citation blocks from answer text."""
     return _LLM_CITATION_BLOCK_RE.sub("", text).rstrip()

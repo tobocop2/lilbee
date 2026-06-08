@@ -505,6 +505,7 @@ async def test_action_select_tab_swallows_missing_tabs(monkeypatch) -> None:
         screen.action_select_tab(2)
 
 
+@pytest.mark.xdist_group("tui_pilot")
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="ModelList population race on Windows Textual; passes on Linux/macOS",

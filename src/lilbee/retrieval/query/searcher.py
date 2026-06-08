@@ -7,7 +7,7 @@ from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
@@ -33,10 +33,11 @@ from lilbee.retrieval.query.dedup import (
 from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
-    _extract_cited_indices,
     build_context,
+    cited_subset,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.history_window import estimate_text_tokens
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
@@ -57,6 +58,18 @@ log = logging.getLogger(__name__)
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
 
+# RAG mode answer when retrieval finds no usable sources: a grounded refusal
+# instead of free-wheeling on the model's parametric knowledge. Users who want
+# off-corpus answers can switch to chat mode.
+_GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
+
+# Token reserve for the generated answer when budgeting RAG context to num_ctx.
+_ANSWER_RESERVE_TOKENS = 1024
+# Approximate token cost of the Context/Question template wrapper.
+_CONTEXT_TEMPLATE_TOKENS = 16
+# Approximate per-source overhead: the "[i] " marker plus blank-line separator.
+_PER_SOURCE_TOKENS = 8
+
 
 class ChatMessage(TypedDict):
     """A single chat message with role and content."""
@@ -66,10 +79,16 @@ class ChatMessage(TypedDict):
 
 
 class AskResult(BaseModel):
-    """Structured result from ask_raw -- answer text + raw search results."""
+    """Structured result from ask_raw: answer text, retrieved sources, and the cited subset.
+
+    ``sources`` is the full retrieved/reranked set; ``cited_sources`` is the subset the
+    answer actually referenced via [n] markers (empty when it cited nothing), so a JSON
+    consumer can tell whether the answer was grounded without re-parsing the text.
+    """
 
     answer: str
     sources: list[SearchChunk]
+    cited_sources: list[SearchChunk] = Field(default_factory=list)
 
 
 class Searcher:
@@ -417,18 +436,53 @@ class Searcher:
             results = self._reranker.rerank(question, results)
         results = self._apply_temporal_filter(results, question)
         results = self.select_context(results, question)
+        system = self._system_with_memory(self._config.rag_system_prompt, question)
+        results = self._fit_context_budget(results, system, question, history)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-        messages: list[ChatMessage] = [
-            {
-                "role": "system",
-                "content": self._system_with_memory(self._config.rag_system_prompt, question),
-            }
-        ]
+        messages: list[ChatMessage] = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         return results, messages
+
+    def _fit_context_budget(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+    ) -> list[SearchChunk]:
+        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
+
+        ``max_context_sources`` caps by count; this caps by tokens so a
+        retrieval-heavy query degrades gracefully instead of erroring with
+        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+        """
+        ctx = self._config.num_ctx or self._config.chat_n_ctx_target
+        reserve = (
+            estimate_text_tokens(system)
+            + estimate_text_tokens(question)
+            + sum(estimate_text_tokens(m["content"]) for m in history or [])
+            + _ANSWER_RESERVE_TOKENS
+            + _CONTEXT_TEMPLATE_TOKENS
+        )
+        budget = ctx - reserve
+        kept: list[SearchChunk] = []
+        used = 0
+        for r in results:
+            cost = estimate_text_tokens(r.chunk) + _PER_SOURCE_TOKENS
+            if kept and used + cost > budget:
+                break
+            kept.append(r)
+            used += cost
+        if len(kept) < len(results):
+            log.info(
+                "Kept %d of %d sources to fit the model context window.",
+                len(kept),
+                len(results),
+            )
+        return kept
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
@@ -511,14 +565,14 @@ class Searcher:
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            return AskResult(answer=self._direct_chat(question, history, options), sources=[])
+            return AskResult(answer=_GROUNDED_REFUSAL, sources=[])
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         result = self._provider.chat(provider_messages, options=opts or None)
         raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results)
+        return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))
 
     def ask(
         self,
@@ -535,10 +589,8 @@ class Searcher:
         )
         if not result.sources:
             return result.answer
-        cited = _extract_cited_indices(result.answer)
-        used = [result.sources[i - 1] for i in sorted(cited) if 1 <= i <= len(result.sources)]
         answer = strip_llm_citations(result.answer)
-        source_list = used if used else result.sources
+        source_list = result.cited_sources if result.cited_sources else result.sources
         citations = deduplicate_sources(source_list)
         return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
@@ -584,7 +636,7 @@ class Searcher:
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            yield from self._stream_direct(question, history, options)
+            yield StreamToken(content=_GROUNDED_REFUSAL, is_reasoning=False)
             return
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
@@ -609,8 +661,7 @@ class Searcher:
         # retroactively stripped. The system prompt discourages them; this
         # only filters the code-appended Sources block to cited chunks.
         full_answer = "".join(answer_parts)
-        cited = _extract_cited_indices(full_answer)
-        used = [results[i - 1] for i in sorted(cited) if 1 <= i <= len(results)]
+        used = cited_subset(full_answer, results)
         source_list = used if used else results
         citations = deduplicate_sources(source_list)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)

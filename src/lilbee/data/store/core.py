@@ -377,7 +377,14 @@ class Store:
                 log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
                 return True
             except Exception:
-                log.debug("Vector index build failed (too few rows?)", exc_info=True)
+                log.warning(
+                    "Vector ANN index build failed on '%s' at %d rows; search falls back "
+                    "to exact flat scan, which is slow at this scale. Free up memory/disk "
+                    "and re-run to rebuild the index.",
+                    CHUNKS_TABLE,
+                    table.count_rows(),
+                    exc_info=True,
+                )
                 return False
 
     def add_chunks(self, records: list[dict]) -> int:

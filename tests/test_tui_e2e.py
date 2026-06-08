@@ -2956,6 +2956,7 @@ class TestCatalogGridFocus:
                     "Tab focus on a ModelGrid must auto-highlight the first card"
                 )
 
+    @pytest.mark.xdist_group("tui_pilot")
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="Textual highlighted-row update timing is flaky on Windows runners",

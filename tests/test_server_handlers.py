@@ -193,29 +193,29 @@ class TestAsk:
     async def test_returns_answer_and_sources(self, mock_svc):
         from lilbee.retrieval.query import AskResult
 
+        chunk = SearchChunk(
+            source="doc.pdf",
+            content_type="pdf",
+            page_start=1,
+            page_end=1,
+            line_start=0,
+            line_end=0,
+            chunk="c",
+            chunk_index=0,
+            distance=0.1,
+            rerank_score=0.8,
+            vector=[0.1],
+        )
         mock_svc.searcher.ask_raw.return_value = AskResult(
-            answer="42",
-            sources=[
-                SearchChunk(
-                    source="doc.pdf",
-                    content_type="pdf",
-                    page_start=1,
-                    page_end=1,
-                    line_start=0,
-                    line_end=0,
-                    chunk="c",
-                    chunk_index=0,
-                    distance=0.1,
-                    rerank_score=0.8,
-                    vector=[0.1],
-                )
-            ],
+            answer="42 [1]", sources=[chunk], cited_sources=[chunk]
         )
         result = await handlers.ask("what?")
-        assert result.answer == "42"
+        assert result.answer == "42 [1]"
         assert len(result.sources) == 1
         assert result.sources[0].distance == 0.1
         assert result.sources[0].rerank_score == 0.8
+        # bb-ky3: the HTTP response mirrors the cited subset too.
+        assert [s.source for s in result.cited_sources] == ["doc.pdf"]
 
     async def test_no_sources(self, mock_svc):
         from lilbee.retrieval.query import AskResult
@@ -490,6 +490,31 @@ class TestChat:
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         await handlers.chat("q", [], chunk_type="raw")
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_populates_cited_sources(self, mock_svc, monkeypatch):
+        """bb-ky3: /chat mirrors /ask and carries the answer's cited subset."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="The answer is in [1].")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert len(result.sources) == 1
+        assert [s.source for s in result.cited_sources] == [result.sources[0].source]
 
     async def test_retrieval_ran_but_no_context_falls_back_to_direct_chat(
         self, mock_svc, monkeypatch

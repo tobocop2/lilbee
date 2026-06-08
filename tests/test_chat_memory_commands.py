@@ -133,13 +133,16 @@ def _patch_active_tasks(monkeypatch, queue, tasks):
 
 
 async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
-    from types import SimpleNamespace
+    from lilbee.cli.tui.task_queue import Task, TaskType
 
     cfg.memory_enabled = True
     cfg.memory_auto_extract = True
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        _patch_active_tasks(monkeypatch, app.task_bar.queue, [SimpleNamespace(task_type="sync")])
+        # A real Task carries every field the task-bar timer reads when a tick
+        # lands mid-test; a bare SimpleNamespace stub raced the timer (bb-5ze).
+        task = Task(task_id="t1", name="Indexing", task_type=TaskType.SYNC.value, fn=lambda: None)
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [task])
         with patch.object(app.screen, "_extract_memories_worker") as worker:
             app.screen._maybe_extract_memories("q", "a")
             await pilot.pause()
