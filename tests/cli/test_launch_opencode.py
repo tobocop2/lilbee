@@ -804,3 +804,37 @@ def test_launch_opencode_propagates_opencode_exit_code():
     ):
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 42
+
+
+def test_run_launcher_disables_eager_warm_in_launcher_process():
+    """The launcher delegates inference to the spawned `lilbee serve`, so it must
+    turn off the eager fleet warm in its own process. Otherwise get_services()
+    starts a second llama-swap that races the server's for the model's port and the
+    loser gets connection-refused. Regression for the opencode double-spawn."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+    from lilbee.core.config import cfg
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    old = cfg.worker_pool_eager_start
+    cfg.worker_pool_eager_start = True
+    try:
+        with (
+            patch(
+                "lilbee.cli.launchers.launcher.ensure_server_running",
+                return_value=(("tok", 1234), None),
+            ),
+            patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+            patch(
+                "lilbee.cli.launchers.launcher.subprocess.run",
+                return_value=MagicMock(returncode=0),
+            ),
+            pytest.raises(typer.Exit),
+        ):
+            run_launcher(launcher)
+        assert cfg.worker_pool_eager_start is False
+    finally:
+        cfg.worker_pool_eager_start = old
