@@ -21,9 +21,8 @@ engine isn't recompiled). VHS records on the pod (ttyd 1.7.7 + `VHS_NO_SANDBOX`
 
 ```bash
 bash tools/qa/opencode/pod_bootstrap.sh        # BACKEND=cu124 by default
-source /root/lilbee_venv/bin/activate
-export PATH=/usr/local/go/bin:$HOME/.local/bin:$HOME/.opencode/bin:$PATH
-export LILBEE_MODELS_DIR=/workspace/models HF_HOME=/workspace/hf
+source /workspace/qa_env.sh                     # complete env the bootstrap wrote
+export HF_TOKEN=...                              # for model pulls
 ```
 
 Then the corpus:

@@ -301,6 +301,8 @@ def apply_settings_update(
             )
     _validate(updates)
     embed_in_batch = "embedding_model" in updates
+    # Derived (not user-writable) fields applied alongside the validated batch.
+    effective_updates = dict(updates)
     if embed_in_batch:
         # Pin the OLD ref into store meta before mutation, otherwise the
         # next read lazy-initializes meta from the NEW cfg and silently
@@ -308,7 +310,12 @@ def apply_settings_update(
         # so a legacy meta row is always canonicalized on the first swap
         # attempt.
         _pin_legacy_store_meta()
-    to_persist, to_delete, snapshot = _apply_with_rollback(updates)
+        # Track the new embedder's output width so a fresh index is built at
+        # the right dimension (embedding_dim is derived, not in SETTINGS_MAP).
+        dim = _embedder_dim_from_gguf(updates["embedding_model"])
+        if dim is not None:
+            effective_updates["embedding_dim"] = dim
+    to_persist, to_delete, snapshot = _apply_with_rollback(effective_updates)
     try:
         if to_persist:
             persistent_settings.update_values(cfg.data_root, to_persist)
@@ -317,7 +324,7 @@ def apply_settings_update(
     except OSError:
         _restore_snapshot(snapshot)
         raise
-    _invalidate_caches(set(updates))
+    _invalidate_caches(set(effective_updates))
     reindex_required = bool(REINDEX_FIELDS & set(updates))
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required(updates["embedding_model"])
@@ -333,6 +340,35 @@ def _pin_legacy_store_meta() -> None:
     from lilbee.app.services import get_services
 
     get_services().store.initialize_meta_if_legacy()
+
+
+def _embedder_dim_from_gguf(ref: str) -> int | None:
+    """The embedder's output width from its GGUF header (``<arch>.embedding_length``).
+
+    Keeps ``embedding_dim`` in step with ``embedding_model`` so a fresh index is
+    built at the right vector width: without it a non-768 embedder (e.g.
+    Qwen3-Embedding's 4096) fails every ingest with a dimension mismatch against
+    the 768 default. None when the model can't be resolved or the header lacks the
+    field, leaving the existing dim untouched. Cheap: a cached header read, no load.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    try:
+        # resolve_model_path raises ProviderError for a non-native (ollama/SDK) ref,
+        # which has no local GGUF -- those embedders carry no width to derive here.
+        meta = read_gguf_metadata(resolve_model_path(ref))
+    except (ProviderError, ValueError, OSError, RuntimeError, TypeError):
+        return None
+    raw = meta.get("embedding_length") if meta else None
+    if not raw:
+        return None
+    try:
+        dim = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return dim if dim > 0 else None
 
 
 def _embed_reindex_required(new_ref: str) -> bool:

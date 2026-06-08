@@ -129,6 +129,81 @@ def test_embed_and_rerank_model_change_reloads_only_those_roles():
         _restore_services()
 
 
+def test_embedding_model_change_derives_embedding_dim(monkeypatch):
+    """Switching embedding_model also persists the model's output width (from its
+    GGUF header), so a fresh index is built at the right dimension instead of the
+    768 default -- the gap that broke a Qwen3-Embedding (4096) corpus build."""
+    from lilbee.app import settings as settings_mod
+
+    _install_recording_provider()
+    try:
+        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: 4096)
+        apply_settings_update({"embedding_model": "Qwen/Qwen3-Embedding-8B-GGUF/x.gguf"})
+        assert cfg.embedding_dim == 4096
+    finally:
+        _restore_services()
+
+
+def test_embedding_model_change_leaves_dim_when_unreadable(monkeypatch):
+    """An unresolvable/headerless embedder leaves embedding_dim untouched (no crash)."""
+    from lilbee.app import settings as settings_mod
+
+    _install_recording_provider()
+    cfg.embedding_dim = 768
+    try:
+        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: None)
+        apply_settings_update({"embedding_model": "some/unreadable.gguf"})
+        assert cfg.embedding_dim == 768
+    finally:
+        _restore_services()
+
+
+def test_embedder_dim_from_gguf_reads_embedding_length(monkeypatch):
+    from pathlib import Path
+
+    from lilbee.app.settings import _embedder_dim_from_gguf
+
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/x.gguf")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"architecture": "bert", "embedding_length": "384"},
+    )
+    assert _embedder_dim_from_gguf("ref") == 384
+
+
+def test_embedder_dim_from_gguf_handles_unresolvable_and_missing(monkeypatch):
+    from pathlib import Path
+
+    from lilbee.app.settings import _embedder_dim_from_gguf
+
+    def boom(_ref):
+        raise OSError("not installed")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", boom)
+    assert _embedder_dim_from_gguf("ref") is None
+
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/x.gguf")
+    )
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "bert"}
+    )
+    assert _embedder_dim_from_gguf("ref") is None
+
+    # Non-integer or non-positive embedding_length is junk -> leave dim untouched.
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"embedding_length": "notanint"},
+    )
+    assert _embedder_dim_from_gguf("ref") is None
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"embedding_length": "0"}
+    )
+    assert _embedder_dim_from_gguf("ref") is None
+
+
 def test_chat_and_vision_model_change_reloads_those_roles():
     """A chat_model / vision_model swap reloads that role's server so the next
     request uses the new model. The fleet serves the configured model per role
