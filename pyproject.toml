@@ -10,8 +10,10 @@ keywords = [
     "rag", "local-llm", "local-ai",
     "mcp", "mcp-server",
     "semantic-search", "vector-search", "retrieval",
-    "embeddings", "knowledge-base",
+    "embeddings", "knowledge-base", "knowledge-management",
     "huggingface", "ocr", "web-crawler",
+    "model-manager", "llama-cpp", "gguf", "ollama", "lm-studio",
+    "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
