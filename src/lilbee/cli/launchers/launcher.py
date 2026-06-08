@@ -13,6 +13,7 @@ from lilbee.cli.launchers.server import (
     stop_spawned_server,
     wait_for_chat_warm,
 )
+from lilbee.core.config import cfg
 
 
 class Launcher(Protocol):
@@ -46,6 +47,11 @@ def run_launcher(launcher: Launcher) -> None:
     if binary is None:
         typer.secho(launcher.install_hint, err=True, fg=typer.colors.RED)
         raise typer.Exit(1)
+    # The launcher only reads the registry and talks to the spawned `lilbee serve`
+    # over HTTP; it runs no inference itself. Skip the eager warm so get_services()
+    # here doesn't start a second llama-swap that races the server's for the model
+    # port (the loser gets connection-refused). The spawned serve warms its own.
+    cfg.worker_pool_eager_start = False
     (token, port), spawned = ensure_server_running()
     model_refs = installed_chat_model_refs()
     if not model_refs:
