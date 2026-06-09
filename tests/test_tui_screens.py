@@ -4563,6 +4563,21 @@ async def test_catalog_load_more_noop_when_exhausted():
                 assert screen._hf_offset_by_task[ModelTask.CHAT] == old_offset
 
 
+def test_catalog_load_more_short_circuits_without_more_pages():
+    """_load_more's guard returns without fetching or arming the loading flag when
+    the active task has no more pages. Constructed without a pilot so coverage of the
+    guard is deterministic across platforms, not subject to TUI mount timing."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._active_tab_id_cache = "chat"
+    screen._hf_has_more_by_task[ModelTask.CHAT] = False
+    with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
+        screen._load_more()
+    assert not fetch.called
+    assert screen._loading_more is False
+
+
 async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
     """Newly-arrived HF rows mount to the list view via append_rows."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
