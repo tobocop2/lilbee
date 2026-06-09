@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from harness_config import (
-    _LILBEE_PROVIDER_ID,
     _OPENCODE_BOOT_SETTLE_S,
     _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
@@ -37,31 +36,6 @@ def scope_opencode_tools() -> None:
     cfg["tools"] = {tool: False for tool in _TOOLS_OFF}
     _OPENCODE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     _OPENCODE_CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-
-
-def pin_opencode_default_model(model_ref: str) -> None:
-    """Rewrite opencode's picker state so *model_ref* is recent[0].
-
-    ``lilbee launch opencode`` prepends every installed model to the
-    ``recent`` list. Without this step opencode's default session model
-    is non-deterministic across QA runs; with it the cell loads the
-    intended model.
-    """
-    _OPENCODE_PICKER_STATE.parent.mkdir(parents=True, exist_ok=True)
-    state: dict = {"recent": [], "favorite": [], "variant": {}}
-    if _OPENCODE_PICKER_STATE.exists():
-        with contextlib.suppress(OSError, json.JSONDecodeError):
-            state = json.loads(_OPENCODE_PICKER_STATE.read_text(encoding="utf-8"))
-    recent = [e for e in state.get("recent", []) if isinstance(e, dict)]
-    target_entry = {"providerID": _LILBEE_PROVIDER_ID, "modelID": model_ref}
-    recent = [
-        e
-        for e in recent
-        if not (e.get("modelID") == model_ref and e.get("providerID") == _LILBEE_PROVIDER_ID)
-    ]
-    recent.insert(0, target_entry)
-    state["recent"] = recent
-    _OPENCODE_PICKER_STATE.write_text(json.dumps(state, indent=2))
 
 
 def tmux_session_exists(name: str) -> bool:
@@ -163,8 +137,8 @@ def reset_opencode_session_state() -> None:
        to it for the next cell whose own ref isn't pulled yet -- and the
        smoke ends up testing the WRONG model with a fake PASS.
 
-    :func:`pin_opencode_default_model` rewrites the picker after this scrub
-    so the cell's intended model wins the default.
+    ``lilbee launch opencode`` rewrites the picker on the next boot with the
+    cell's configured chat model as the default, so the scrub is safe.
     """
     if _OPENCODE_SHARE_DIR.exists():
         shutil.rmtree(_OPENCODE_SHARE_DIR)
