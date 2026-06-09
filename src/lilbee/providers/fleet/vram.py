@@ -26,6 +26,9 @@ _FLAG_CACHE_V = "--cache-type-v"
 _FLAG_MMPROJ = "--mmproj-path"
 _FLAG_FLASH = "--flash-attention"
 _FLAG_NO_FLASH = "--no-flash-attention"
+_FLAG_TENSOR_SPLIT = "--tensor-split"
+_FLAG_SPLIT_MODE = "--split-mode"
+_SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
 
 # gguf-parser JSON keys (estimate.items[0] carries the per-instance footprint).
@@ -40,10 +43,19 @@ _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
 _CACHE_SIZE = 64
 
+# Mirrors vLLM's gpu_memory_utilization default: never charge a GPU past 90% of
+# its free VRAM, leaving headroom for allocator fragmentation and driver overhead.
+USABLE_VRAM_FRACTION = 0.9
+
 
 @dataclass(frozen=True)
 class GgufVramEstimate:
-    """One instance's footprint from gguf-parser, for both memory models."""
+    """One instance's footprint from gguf-parser, for both memory models.
+
+    ``per_device_*`` carry the per-GPU breakdown gguf-parser returns once a
+    ``tensor_split`` is supplied. A tensor-split instance OOMs on its busiest card,
+    so the planner fits/charges ``peak_footprint`` (the max device), never the sum.
+    """
 
     vram_bytes: int
     """Discrete-GPU model: bytes resident in device VRAM (summed over devices)."""
@@ -51,10 +63,23 @@ class GgufVramEstimate:
     """Discrete-GPU model: host RAM bytes (mmap pages, compute buffers)."""
     unified_bytes: int
     """Unified-memory model: total resident footprint (RAM + would-be VRAM)."""
+    per_device_vram: tuple[int, ...] = ()
+    """Discrete-GPU VRAM per device (gguf-parser ``vrams[].nonuma``)."""
+    per_device_unified: tuple[int, ...] = ()
+    """Unified-memory footprint per device (``vrams[].uma``)."""
 
     def footprint(self, *, unified: bool) -> int:
-        """Bytes to charge against the budget for this host's memory model."""
+        """Total bytes to charge against a shared budget for this memory model."""
         return self.unified_bytes if unified else self.vram_bytes
+
+    def peak_footprint(self, *, unified: bool) -> int:
+        """The busiest single device's bytes -- what must fit on one GPU.
+
+        Falls back to the total when there is no per-device breakdown (a
+        single-device estimate, or an estimate run without a tensor split).
+        """
+        per_device = self.per_device_unified if unified else self.per_device_vram
+        return max(per_device) if per_device else self.footprint(unified=unified)
 
 
 def estimate_instance_footprint(
@@ -66,8 +91,14 @@ def estimate_instance_footprint(
     flash_attn: bool,
     kv_cache_type: KvCacheType,
     mmproj_path: Path | None = None,
+    tensor_split: tuple[int, ...] = (),
 ) -> GgufVramEstimate:
-    """gguf-parser's UMA-aware footprint for one llama-server instance."""
+    """gguf-parser's UMA-aware footprint for one llama-server instance.
+
+    Pass *tensor_split* (the per-device proportions a multi-GPU instance launches
+    with) so gguf-parser reports the real per-device breakdown; without it the
+    estimate is single-device and the per-GPU peak that actually OOMs is invisible.
+    """
     mmproj = str(mmproj_path) if mmproj_path is not None else None
     mmproj_mtime = mmproj_path.stat().st_mtime_ns if mmproj_path is not None else 0
     return _cached_footprint(
@@ -80,6 +111,7 @@ def estimate_instance_footprint(
         kv_cache_type.value,
         mmproj,
         mmproj_mtime,
+        tensor_split,
     )
 
 
@@ -94,6 +126,7 @@ def _cached_footprint(
     kv_cache_type: str,
     mmproj: str | None,
     _mmproj_mtime_ns: int,
+    tensor_split: tuple[int, ...],
 ) -> GgufVramEstimate:
     """Memoised gguf-parser run keyed on path + mtime + sizing.
 
@@ -117,6 +150,15 @@ def _cached_footprint(
         _FLAG_FLASH if flash_attn else _FLAG_NO_FLASH,
         _FLAG_JSON,
     ]
+    if tensor_split:
+        # The split proportions are gguf-parser's only signal for the device count,
+        # so it returns one ``vrams[]`` entry per GPU instead of a single total.
+        argv += [
+            _FLAG_TENSOR_SPLIT,
+            ",".join(str(p) for p in tensor_split),
+            _FLAG_SPLIT_MODE,
+            _SPLIT_MODE_LAYER,
+        ]
     if mmproj is not None:
         argv += [_FLAG_MMPROJ, mmproj]
     return _parse_estimate(_run_parser(argv, path_str), path_str)
@@ -143,12 +185,14 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
         item = json.loads(stdout)[_KEY_ESTIMATE][_KEY_ITEMS][0]
         ram = item[_KEY_RAM]
         vrams = item[_KEY_VRAMS]
-        vram_nonuma = sum(int(v[_KEY_NONUMA]) for v in vrams)
-        vram_uma = sum(int(v[_KEY_UMA]) for v in vrams)
+        per_device_vram = tuple(int(v[_KEY_NONUMA]) for v in vrams)
+        per_device_unified = tuple(int(v[_KEY_UMA]) for v in vrams)
         return GgufVramEstimate(
-            vram_bytes=vram_nonuma,
+            vram_bytes=sum(per_device_vram),
             ram_bytes=int(ram[_KEY_NONUMA]),
-            unified_bytes=int(ram[_KEY_UMA]) + vram_uma,
+            unified_bytes=int(ram[_KEY_UMA]) + sum(per_device_unified),
+            per_device_vram=per_device_vram,
+            per_device_unified=per_device_unified,
         )
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ProviderError(

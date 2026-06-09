@@ -174,14 +174,21 @@ flowchart TD
   subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
   discrete-GPU footprint (`nonuma`, what lands in device VRAM) and a unified-memory
   footprint (`uma`, total resident on an Apple Silicon / shared-RAM host); the
-  planner charges whichever matches the host. This replaced a hand-rolled
+  planner charges whichever matches the host. For a multi-GPU tensor-split it passes
+  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; the planner
+  fits and charges the busiest card (`peak_footprint`), because a split OOMs on
+  whichever GPU is fullest, not on the summed total. This replaced a hand-rolled
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
 - **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
-  model too big for one GPU is tensor-split **proportionally to each card's free
-  VRAM** (so unequal GPUs don't OOM the smaller one). On a single CPU/Metal box this
+  model too big for one GPU is tensor-split across the **fewest cards whose per-device
+  footprint each fits**, proportionally to each card's free VRAM (so unequal GPUs
+  don't OOM the smaller one). A split chat's context is then sized
+  (`ctx.fit_split_ctx`, a binary search over the gguf-parser estimate) against the
+  **busiest card's** headroom, not the combined pool, so the per-GPU compute buffer
+  can't overflow device 0. On a single CPU/Metal box this
   is a fleet-of-one against one shared pool, where the **search-critical roles
   (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
   context are sized against the budget *minus* the search footprint, and the shared
