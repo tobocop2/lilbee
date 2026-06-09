@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lilbee.app.services import get_services
+
+if TYPE_CHECKING:
+    from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
 from lilbee.providers.base import ProviderError, ProviderErrorKind, filter_options
@@ -74,13 +77,15 @@ def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
     return filtered
 
 
-def resolve_model_path(model: str) -> Path:
+def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Path:
     """Resolve a model name to a .gguf file path.
 
     Resolution order: (1) registry (canonical source for installed models),
-    (2) an absolute path to an existing file.
+    (2) an absolute path to an existing file. Pass *registry* to resolve without
+    reaching for ``get_services()`` (callers running inside its construction).
     """
-    registry = get_services().registry
+    if registry is None:
+        registry = get_services().registry
     try:
         return registry.resolve(model)
     except (KeyError, ValueError):

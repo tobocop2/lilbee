@@ -5,7 +5,7 @@ from __future__ import annotations
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from pydantic_core import PydanticUndefined
 
@@ -22,6 +22,9 @@ from lilbee.core.config.keys import (
     PROVIDER_API_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+
+if TYPE_CHECKING:
+    from lilbee.modelhub.registry import ModelRegistry
 
 _MIN_CHUNK_SIZE = 64
 
@@ -342,14 +345,12 @@ def _pin_legacy_store_meta() -> None:
     get_services().store.initialize_meta_if_legacy()
 
 
-def _embedder_dim_from_gguf(ref: str) -> int | None:
+def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> int | None:
     """The embedder's output width from its GGUF header (``<arch>.embedding_length``).
 
-    Keeps ``embedding_dim`` in step with ``embedding_model`` so a fresh index is
-    built at the right vector width: without it a non-768 embedder (e.g.
-    Qwen3-Embedding's 4096) fails every ingest with a dimension mismatch against
-    the 768 default. None when the model can't be resolved or the header lacks the
-    field, leaving the existing dim untouched. Cheap: a cached header read, no load.
+    None when the model can't be resolved or the header lacks the field. Cheap: a
+    cached header read, no load. *registry* is forwarded to resolve the GGUF without
+    ``get_services()`` (callers running inside its construction).
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
@@ -358,7 +359,7 @@ def _embedder_dim_from_gguf(ref: str) -> int | None:
     try:
         # resolve_model_path raises ProviderError for a non-native (ollama/SDK) ref,
         # which has no local GGUF -- those embedders carry no width to derive here.
-        meta = read_gguf_metadata(resolve_model_path(ref))
+        meta = read_gguf_metadata(resolve_model_path(ref, registry))
     except (ProviderError, ValueError, OSError, RuntimeError, TypeError):
         return None
     raw = meta.get("embedding_length") if meta else None
@@ -369,6 +370,14 @@ def _embedder_dim_from_gguf(ref: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return dim if dim > 0 else None
+
+
+def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
+    """Pin ``cfg.embedding_dim`` to the native embedder's GGUF width before the store
+    is built; no-op for non-native embedders or an already-matching dim."""
+    dim = _embedder_dim_from_gguf(cfg.embedding_model, registry)
+    if dim is not None and dim != cfg.embedding_dim:
+        cfg.embedding_dim = dim
 
 
 def _embed_reindex_required(new_ref: str) -> bool:

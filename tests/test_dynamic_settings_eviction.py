@@ -164,7 +164,8 @@ def test_embedder_dim_from_gguf_reads_embedding_length(monkeypatch):
     from lilbee.app.settings import _embedder_dim_from_gguf
 
     monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/x.gguf")
+        "lilbee.providers.engine_params.resolve_model_path",
+        lambda _ref, _registry=None: Path("/x.gguf"),
     )
     monkeypatch.setattr(
         "lilbee.providers.gguf_meta.read_gguf_metadata",
@@ -178,14 +179,15 @@ def test_embedder_dim_from_gguf_handles_unresolvable_and_missing(monkeypatch):
 
     from lilbee.app.settings import _embedder_dim_from_gguf
 
-    def boom(_ref):
+    def boom(_ref, _registry=None):
         raise OSError("not installed")
 
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", boom)
     assert _embedder_dim_from_gguf("ref") is None
 
     monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/x.gguf")
+        "lilbee.providers.engine_params.resolve_model_path",
+        lambda _ref, _registry=None: Path("/x.gguf"),
     )
     monkeypatch.setattr(
         "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "bert"}
@@ -202,6 +204,72 @@ def test_embedder_dim_from_gguf_handles_unresolvable_and_missing(monkeypatch):
         "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"embedding_length": "0"}
     )
     assert _embedder_dim_from_gguf("ref") is None
+
+
+def test_resolve_model_path_with_registry_skips_get_services(monkeypatch):
+    """A passed registry resolves WITHOUT reaching for get_services -- the re-entrancy
+    break that lets reconcile_embedding_dim run inside get_services' own construction."""
+    from pathlib import Path
+
+    from lilbee.providers import engine_params
+
+    def explode():
+        raise AssertionError("get_services must not be called when a registry is passed")
+
+    monkeypatch.setattr(engine_params, "get_services", explode)
+    fake_registry = mock.MagicMock()
+    fake_registry.resolve.return_value = Path("/m/embed.gguf")
+    assert engine_params.resolve_model_path("ref", fake_registry) == Path("/m/embed.gguf")
+    fake_registry.resolve.assert_called_once_with("ref")
+
+
+def test_embedder_dim_from_gguf_forwards_registry(monkeypatch):
+    """_embedder_dim_from_gguf forwards the registry to resolve_model_path so the
+    config-load reconcile never re-enters get_services."""
+    from pathlib import Path
+
+    from lilbee.app.settings import _embedder_dim_from_gguf
+
+    seen: dict[str, object] = {}
+
+    def fake_resolve(_ref, registry=None):
+        seen["registry"] = registry
+        return Path("/x.gguf")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", fake_resolve)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"embedding_length": "1024"}
+    )
+    sentinel = mock.MagicMock()
+    assert _embedder_dim_from_gguf("ref", sentinel) == 1024
+    assert seen["registry"] is sentinel
+
+
+def test_reconcile_embedding_dim_pins_native_width(monkeypatch):
+    """A config-loaded embedding_model with no embedding_dim gets the store width pinned
+    from the embedder GGUF, where the 768 default would build the index at the wrong width."""
+    from lilbee.app import settings as settings_mod
+
+    cfg.embedding_model = "Qwen/Qwen3-Embedding-8B-GGUF/x.gguf"
+    cfg.embedding_dim = 768
+    monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref, _reg=None: 4096)
+    settings_mod.reconcile_embedding_dim()
+    assert cfg.embedding_dim == 4096
+
+
+def test_reconcile_embedding_dim_leaves_dim_when_unreadable_or_matching(monkeypatch):
+    """A non-native embedder (no GGUF width) or an already-correct dim is left as-is."""
+    from lilbee.app import settings as settings_mod
+
+    cfg.embedding_model = "ollama/test-embed-model:v1"
+    cfg.embedding_dim = 768
+    monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref, _reg=None: None)
+    settings_mod.reconcile_embedding_dim()
+    assert cfg.embedding_dim == 768  # unreadable -> untouched
+
+    monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref, _reg=None: 768)
+    settings_mod.reconcile_embedding_dim()
+    assert cfg.embedding_dim == 768  # already matches -> untouched
 
 
 def test_chat_and_vision_model_change_reloads_those_roles():

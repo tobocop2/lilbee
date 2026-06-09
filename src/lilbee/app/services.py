@@ -127,6 +127,7 @@ def get_services() -> Services:
     if _svc is not None:
         return _svc
 
+    from lilbee.app.settings import reconcile_embedding_dim
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import cfg
     from lilbee.data.store import Store
@@ -142,12 +143,16 @@ def get_services() -> Services:
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = create_provider(cfg)
+    registry = ModelRegistry(cfg.models_dir)
+    # A config-file embedding_model with no embedding_dim would otherwise build the
+    # store at the stale 768 default; pin the width to the embedder before Store().
+    # Pass the registry so resolution doesn't re-enter this half-built get_services.
+    reconcile_embedding_dim(registry)
     store = Store(cfg)
     embedder = Embedder(cfg, provider)
     reranker = Reranker(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
-    registry = ModelRegistry(cfg.models_dir)
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
