@@ -31,7 +31,6 @@ from models import (
 )
 from opencode_driver import (
     launch_opencode_in_tmux,
-    pin_opencode_default_model,
     reset_opencode_session_state,
     scope_opencode_tools,
     tmux_capture,
@@ -72,8 +71,6 @@ def setup_cell(
     print(f"[{cell.family}] seeded Godot corpus from {_GODOT_CORPUS}")
     print(f"[{cell.family}] scoping opencode tools to lilbee_search")
     scope_opencode_tools()
-    print(f"[{cell.family}] pinning opencode default model")
-    pin_opencode_default_model(cell.ref)
     return workspace, port, None
 
 

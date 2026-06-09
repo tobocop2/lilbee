@@ -62,7 +62,6 @@ _TOOLS_OFF = (
     "todoread",
     "task",
 )
-_LILBEE_PROVIDER_ID = "lilbee"
 
 # Substrings whose appearance in the pane means the cell can't recover --
 # record the scenario as FAIL immediately instead of polling to timeout.

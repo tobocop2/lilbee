@@ -119,20 +119,29 @@ def _install_lilbee_skill() -> Path | None:
     return dest
 
 
-def _update_opencode_picker_state(model_refs: list[str]) -> Path | None:
-    """Make lilbee models appear in opencode's model picker on first run.
+def _update_opencode_picker_state(model_refs: list[str], default_ref: str) -> Path | None:
+    """Put lilbee models in opencode's picker, the configured chat model first.
 
-    opencode uses the same XDG-style state path on every platform, so this runs
-    everywhere; a no-op when there are no installed models.
+    opencode opens on ``recent[0]``; leading with *default_ref* makes it select the
+    chat model lilbee actually serves instead of the alphabetically-first installed
+    one (which otherwise leaves opencode on its own fallback provider). No-op when no
+    models are installed; same XDG-style state path on every platform.
     """
     if not model_refs:
         return None
     path = _opencode_state_file()
     state = _read_opencode_state(path)
-    state["recent"] = _merge_recent(state.get("recent"), model_refs)
+    state["recent"] = _merge_recent(state.get("recent"), _default_first(model_refs, default_ref))
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(path, state)
     return path
+
+
+def _default_first(model_refs: list[str], default_ref: str) -> list[str]:
+    """Order so *default_ref* leads, leaving the rest in their existing order."""
+    if default_ref not in model_refs:
+        return model_refs
+    return [default_ref, *(ref for ref in model_refs if ref != default_ref)]
 
 
 def _read_opencode_state(path: Path) -> PickerState:
@@ -230,7 +239,7 @@ class OpencodeLauncher:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
         _install_lilbee_skill()
-        _update_opencode_picker_state(model_refs)
+        _update_opencode_picker_state(model_refs, str(cfg.chat_model))
         block = opencode_config(
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,

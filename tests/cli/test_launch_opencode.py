@@ -357,6 +357,26 @@ def test_launch_opencode_updates_picker_state_on_unix(tmp_path):
     assert state["recent"][0] == {"providerID": "lilbee", "modelID": _CHAT_REF}
 
 
+def test_default_first_leads_with_configured_model():
+    from lilbee.cli.launchers.opencode import _default_first
+
+    refs = ["aaa/x.gguf", "zzz/y.gguf", "mmm/z.gguf"]
+    assert _default_first(refs, "mmm/z.gguf") == ["mmm/z.gguf", "aaa/x.gguf", "zzz/y.gguf"]
+    # A default that isn't installed leaves the order untouched.
+    assert _default_first(refs, "not/installed.gguf") == refs
+
+
+def test_picker_state_leads_with_configured_default_not_alphabetically_first(tmp_path):
+    from lilbee.cli.launchers.opencode import _update_opencode_picker_state
+
+    # "zzz" sorts last but is the configured chat model -> it must be recent[0],
+    # otherwise opencode opens on "aaa" and ignores the model lilbee serves.
+    _update_opencode_picker_state(["aaa/x.gguf", "zzz/y.gguf"], "zzz/y.gguf")
+    state = json.loads((tmp_path / ".local" / "state" / "opencode" / "model.json").read_text())
+    assert state["recent"][0] == {"providerID": "lilbee", "modelID": "zzz/y.gguf"}
+    assert {e["modelID"] for e in state["recent"]} == {"aaa/x.gguf", "zzz/y.gguf"}
+
+
 def test_launch_opencode_picker_state_dedupes_prior_lilbee_entries(tmp_path):
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
