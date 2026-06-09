@@ -443,7 +443,11 @@ def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> N
 
 
 def test_placement_estimate_slots_per_role(monkeypatch) -> None:
-    assert planning_mod._placement_estimate_slots(WorkerRole.CHAT, {}) == planning_mod._CHAT_SLOTS
+    # A tensor-split chat reserves for one full-context sequence, not _CHAT_SLOTS.
+    assert (
+        planning_mod._placement_estimate_slots(WorkerRole.CHAT, {})
+        == planning_mod._SPLIT_CHAT_SLOTS
+    )
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 3)
     assert planning_mod._placement_estimate_slots(WorkerRole.VISION, {}) == 3
     assert planning_mod._placement_estimate_slots(WorkerRole.EMBED, {}) == planning_mod._AUX_SLOTS
@@ -499,6 +503,29 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     estimate = planning_mod._peak_estimator({WorkerRole.VISION: "ref"})
     assert estimate(WorkerRole.VISION, (1, 1)) == (5, 5)
     assert seen["mmproj"] == Path("/m/mmproj.gguf")
+
+
+def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatch) -> None:
+    # Regression (bb-xly): a tensor-split chat reserves the per-sequence ceiling as the
+    # total --ctx-size (slots=1), not ceiling x _CHAT_SLOTS, which would over-reserve KV
+    # no launch allocates and wrongly mark a large-context giant unplaceable.
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 196608)
+    seen: dict = {}
+
+    def _est(_path, *, ctx, slots, tensor_split, **_k) -> GgufVramEstimate:
+        seen.update(ctx=ctx, slots=slots)
+        return GgufVramEstimate(
+            vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(5, 5, 5)
+        )
+
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+    planning_mod._peak_estimator({WorkerRole.CHAT: "ref"})(WorkerRole.CHAT, (1, 1, 1))
+    assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS
+    assert seen["ctx"] == 196608  # ceiling x 1, not ceiling x _CHAT_SLOTS
 
 
 class TestBuildFleetWiring:
@@ -692,7 +719,6 @@ class TestBuildFleetWiring:
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(cfg, "num_ctx", None)
-        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 2)
         seen: dict = {}
 
         def _fit(_model_path, *, slots, ratio, per_device_free_bytes, **_k) -> int:
@@ -707,18 +733,21 @@ class TestBuildFleetWiring:
             plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
         )
         assert launch.ctx == 5000
-        assert seen["slots"] == 2 and seen["ratio"] == (1, 1)
+        # A multi-card chat serves one full-context slot, fit against per-device free.
+        assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS and seen["ratio"] == (1, 1)
         assert seen["free"] == [70 * _GB, 60 * _GB]  # per-device free, not the summed pool
-        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(5000 * 2)
+        assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
+        ctx_total = 5000 * planning_mod._SPLIT_CHAT_SLOTS
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(ctx_total)
 
-    def test_launch_for_split_chat_honors_num_ctx_pin(self, tmp_path, monkeypatch) -> None:
-        # A cfg.num_ctx pin overrides the per-device fit even across multiple GPUs.
+    def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
+        # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
+        # so --ctx-size matches the single-sequence footprint the planner reserved.
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(cfg, "num_ctx", 8192)
-        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 2)
 
         def _fail(*_a, **_k) -> int:
             raise AssertionError("fit_split_ctx must not run when cfg.num_ctx pins the context")
@@ -731,6 +760,7 @@ class TestBuildFleetWiring:
             plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
         )
         assert launch.ctx == 8192
+        assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
 
     def _launch_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096) -> list[str]:
         return self._launch_for_role(tmp_path, monkeypatch, role, ctx).argv

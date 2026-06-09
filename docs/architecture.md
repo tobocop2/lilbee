@@ -185,10 +185,14 @@ flowchart TD
   A model that fits one GPU is a single pinned instance; small models co-locate; a
   model too big for one GPU is tensor-split across the **fewest cards whose per-device
   footprint each fits**, proportionally to each card's free VRAM (so unequal GPUs
-  don't OOM the smaller one). A split chat's context is then sized
-  (`ctx.fit_split_ctx`, a binary search over the gguf-parser estimate) against the
-  **busiest card's** headroom, not the combined pool, so the per-GPU compute buffer
-  can't overflow device 0. On a single CPU/Metal box this
+  don't OOM the smaller one). A tensor-split chat serves **one full-context sequence**
+  (`--parallel 1`): a giant filling several cards has no room to divide its context
+  across batching slots, so the planner reserves and launches it at the single-sequence
+  footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is
+  for a chat that fits one card). Its context is then sized (`ctx.fit_split_ctx`, a
+  binary search over the gguf-parser estimate) against the **busiest card's** headroom,
+  not the combined pool, so the per-GPU compute buffer can't overflow device 0. On a
+  single CPU/Metal box this
   is a fleet-of-one against one shared pool, where the **search-critical roles
   (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
   context are sized against the budget *minus* the search footprint, and the shared

@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
+# A tensor-split chat fills its cards with one full-context sequence; concurrent
+# slots are for a chat that fits a single GPU, not a multi-card giant.
+_SPLIT_CHAT_SLOTS = 1
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 # Truncate embed/rerank inputs a few tokens below the per-slot context: the server
@@ -46,9 +49,6 @@ _ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _DEFAULT_THREADS = 4
-# Nominal context for bootstrapping a tensor-split chat's slot count before its real
-# per-slot context is known; small enough that weights dominate the footprint.
-_SPLIT_BOOTSTRAP_CTX = 512
 # Roles to which flash attention applies; embed/rerank run without it.
 _FLASH_ROLES = (WorkerRole.CHAT, WorkerRole.VISION)
 
@@ -377,11 +377,7 @@ def _estimate_role(
 
 
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
-    """Per-slot ctx ceiling for the placement estimate: the most a launch can use.
-
-    fit_split_ctx caps the launched per-slot ctx at this same ceiling, so estimating
-    here keeps the per-device reservation an upper bound on the launched footprint.
-    """
+    """Per-slot context the placement estimate sizes a role against (the launch ceiling)."""
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import chat_ctx_ceiling
 
@@ -391,16 +387,15 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
 
 
 def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> int:
-    """The launch ceiling on a role's batching slots, for a conservative estimate.
+    """The slot count a role launches with, so the estimate's total ctx matches the launch.
 
-    Returning the maximum (_slots_for never launches more) keeps the reservation an
-    upper bound: estimated total ctx (per-slot ceiling x these slots) is the most a
-    launch can hold, so the launched per-device footprint cannot exceed it.
+    A tensor-split chat serves a single full-context sequence, so the placement total
+    is the per-sequence ceiling, not ``ceiling x _CHAT_SLOTS`` (KV no launch allocates).
     """
     from lilbee.core.config import cfg
 
     if role is WorkerRole.CHAT:
-        return _CHAT_SLOTS
+        return _SPLIT_CHAT_SLOTS
     if role is WorkerRole.VISION:
         return max(1, cfg.vision_ocr_concurrency)
     if role is WorkerRole.RERANK and _rerank_mode_for(meta) is RerankMode.LLM:
@@ -526,21 +521,18 @@ def _launch_for(
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
     mmproj = _vision_mmproj(model_ref) if is_vision else None
-    # A tensor-split chat's context is sized against the busiest card's headroom,
-    # not one GPU's; the slot count divides the shared --ctx-size, so bootstrap it
-    # first. A cfg.num_ctx pin overrides the fit (handled by _role_ctx).
-    split_chat = is_chat and len(chosen) > 1 and cfg.num_ctx is None
+    # A tensor-split chat serves one full-context sequence sized against the busiest
+    # card's headroom. A cfg.num_ctx pin overrides the fit (handled by _role_ctx).
+    multi_card_chat = is_chat and len(chosen) > 1
+    split_chat = multi_card_chat and cfg.num_ctx is None
     if split_chat:
         # circular: fleet.ctx -> engine_params -> app.services
         from lilbee.providers.fleet.ctx import fit_split_ctx
 
-        chat_slots = _slots_for(
-            WorkerRole.CHAT, model_path, _SPLIT_BOOTSTRAP_CTX, chat_reservation=chat_reservation
-        )
         ctx = fit_split_ctx(
             model_path,
             meta=meta,
-            slots=chat_slots,
+            slots=_SPLIT_CHAT_SLOTS,
             ratio=plan.tensor_split,
             per_device_free_bytes=[d.free_bytes for d in chosen],
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
@@ -551,16 +543,20 @@ def _launch_for(
         ctx = _role_ctx(plan.role, model_path, meta)
     rerank_mode = _rerank_mode_for(meta) if plan.role is WorkerRole.RERANK else None
     is_llm_rerank = rerank_mode is RerankMode.LLM
-    # Size slots the same way the estimator did so the launched --parallel matches
-    # the placement estimate (chat honors the search reservation; mmproj via gguf-parser).
-    slots = _slots_for(
-        plan.role,
-        model_path,
-        ctx,
-        mmproj_path=mmproj,
-        unified_budget=unified_budget,
-        chat_reservation=chat_reservation,
-        rerank_mode=rerank_mode,
+    # A multi-card chat runs one slot; other roles size --parallel against the budget
+    # the same way the estimator did so the launch matches the placement reservation.
+    slots = (
+        _SPLIT_CHAT_SLOTS
+        if multi_card_chat
+        else _slots_for(
+            plan.role,
+            model_path,
+            ctx,
+            mmproj_path=mmproj,
+            unified_budget=unified_budget,
+            chat_reservation=chat_reservation,
+            rerank_mode=rerank_mode,
+        )
     )
     spec = rerank_spec(rerank_mode) if rerank_mode is not None else ROLE_SPECS[plan.role]
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
