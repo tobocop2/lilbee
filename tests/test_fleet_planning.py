@@ -426,6 +426,81 @@ def test_search_reservation_scales_with_replicas() -> None:
     assert planning_mod._search_reservation(inputs) == 3 * 2 * _GB + 1 * _GB
 
 
+def test_placement_estimate_ctx_chat_uses_ceiling(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 131072
+
+
+def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", 16384)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
+
+
+def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m: 512)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}) == 512
+
+
+def test_placement_estimate_slots_per_role(monkeypatch) -> None:
+    assert planning_mod._placement_estimate_slots(WorkerRole.CHAT, {}) == planning_mod._CHAT_SLOTS
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 3)
+    assert planning_mod._placement_estimate_slots(WorkerRole.VISION, {}) == 3
+    assert planning_mod._placement_estimate_slots(WorkerRole.EMBED, {}) == planning_mod._AUX_SLOTS
+
+
+def test_placement_estimate_slots_rerank_modes(monkeypatch) -> None:
+    from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+
+    monkeypatch.setattr(planning_mod, "_rerank_mode_for", lambda _m: RerankMode.LLM)
+    assert planning_mod._placement_estimate_slots(WorkerRole.RERANK, {}) == LLM_RERANK_CONCURRENCY
+    monkeypatch.setattr(planning_mod, "_rerank_mode_for", lambda _m: RerankMode.CROSS_ENCODER)
+    assert planning_mod._placement_estimate_slots(WorkerRole.RERANK, {}) == planning_mod._AUX_SLOTS
+
+
+def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 2)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
+    seen: dict = {}
+
+    def _est(_path, *, ctx, slots, tensor_split, mmproj_path=None, **_k) -> GgufVramEstimate:
+        seen.update(ctx=ctx, slots=slots, ratio=tensor_split, mmproj=mmproj_path)
+        return GgufVramEstimate(
+            vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(11, 22)
+        )
+
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+    estimate = planning_mod._peak_estimator({WorkerRole.CHAT: "ref"})
+    assert estimate(WorkerRole.CHAT, (1, 1)) == (11, 22)
+    # --ctx-size is per-slot x slots, so the estimate is run at that total.
+    assert seen["ctx"] == 2000 and seen["slots"] == 2 and seen["ratio"] == (1, 1)
+    assert seen["mmproj"] is None  # chat carries no projector
+
+
+def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+    monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 1)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 100)
+    seen: dict = {}
+
+    def _est(_path, *, mmproj_path=None, **_k) -> GgufVramEstimate:
+        seen["mmproj"] = mmproj_path
+        return GgufVramEstimate(vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(5, 5))
+
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+    estimate = planning_mod._peak_estimator({WorkerRole.VISION: "ref"})
+    assert estimate(WorkerRole.VISION, (1, 1)) == (5, 5)
+    assert seen["mmproj"] == Path("/m/mmproj.gguf")
+
+
 class TestBuildFleetWiring:
     def test_server_model_inputs_skips_unconfigured_optional_roles(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -608,6 +683,54 @@ class TestBuildFleetWiring:
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout
+
+    def test_launch_for_split_chat_sizes_ctx_against_per_device_headroom(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 2)
+        seen: dict = {}
+
+        def _fit(_model_path, *, slots, ratio, per_device_free_bytes, **_k) -> int:
+            seen.update(slots=slots, ratio=ratio, free=per_device_free_bytes)
+            return 5000
+
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
+        d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        launch = planning_mod._launch_for(
+            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
+        )
+        assert launch.ctx == 5000
+        assert seen["slots"] == 2 and seen["ratio"] == (1, 1)
+        assert seen["free"] == [70 * _GB, 60 * _GB]  # per-device free, not the summed pool
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(5000 * 2)
+
+    def test_launch_for_split_chat_honors_num_ctx_pin(self, tmp_path, monkeypatch) -> None:
+        # A cfg.num_ctx pin overrides the per-device fit even across multiple GPUs.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", 8192)
+        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 2)
+
+        def _fail(*_a, **_k) -> int:
+            raise AssertionError("fit_split_ctx must not run when cfg.num_ctx pins the context")
+
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fail)
+        d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        launch = planning_mod._launch_for(
+            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
+        )
+        assert launch.ctx == 8192
 
     def _launch_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096) -> list[str]:
         return self._launch_for_role(tmp_path, monkeypatch, role, ctx).argv
@@ -807,7 +930,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod,
             "plan_placement",
-            lambda inputs, devices, *, unified_budget=None: Placement(
+            lambda inputs, devices, *, estimate_peak, unified_budget=None: Placement(
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
@@ -833,7 +956,7 @@ class TestBuildFleetWiring:
             ),
         )
 
-        def _capture(inputs, devices, *, unified_budget=None):
+        def _capture(inputs, devices, *, estimate_peak, unified_budget=None):
             seen["devices"] = devices
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 

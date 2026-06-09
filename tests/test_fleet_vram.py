@@ -131,6 +131,33 @@ class TestEstimateInstanceFootprint:
         assert "--flash-attention" in argv
         assert "--mmproj-path" not in argv
 
+    def test_tensor_split_passes_ratio_and_returns_per_device(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A multi-GPU split sends the ratio so gguf-parser breaks the estimate out
+        # per card; the peak (busiest card) gates placement, not the summed total.
+        calls: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=2, vrams=[(10, 100), (10, 110), (10, 120)]),
+            recorder=calls,
+        )
+        est = estimate_instance_footprint(
+            model_file,
+            ctx=131072,
+            slots=4,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+            tensor_split=(1, 1, 1),
+        )
+        argv = calls[0]
+        assert argv[argv.index("--tensor-split") + 1] == "1,1,1"
+        assert argv[argv.index("--split-mode") + 1] == "layer"
+        assert est.per_device_vram == (100, 110, 120)
+        assert est.peak_footprint(unified=False) == 120
+        assert est.vram_bytes == 100 + 110 + 120
+
     def test_disabled_flash_passes_no_flash_flag(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -113,25 +113,21 @@ def _kv_elem_bytes_for_cfg() -> int:
     return KV_CACHE_TYPE_BYTES[cfg.kv_cache_type]
 
 
-def resolve_chat_ctx(
-    model_path: Path,
-    meta: dict[str, str] | None,
-    available_bytes: int | None = None,
-    slots: int = 1,
-) -> int:
-    """Pick n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
+def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
+    """Hard upper bound on a chat per-slot n_ctx: trained context, capped by ``cfg.num_ctx_max``."""
+    training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
+    if cfg.num_ctx_max is not None:
+        return min(training_ctx, cfg.num_ctx_max)
+    return training_ctx
+
+
+def resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """Pick a single-GPU n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
     When ``cfg.num_ctx_max`` is ``None`` the model's training_ctx is the only
     ceiling, so a long-context model can grow past the target if the host has
-    the RAM to back it. Setting ``num_ctx_max`` explicitly caps below
-    training_ctx for per-host policy reasons.
-
-    *available_bytes* / *slots* are set by the fleet for a model tensor-split
-    across multiple GPUs: *available_bytes* is the combined free VRAM of those
-    GPUs and *slots* is ``--parallel``. A single-GPU read (the default) under-
-    budgets a split giant and collapses its context to the floor; and because the
-    fleet serves ``--ctx-size = per_slot x slots``, the per-slot value must be the
-    total KV budget divided by *slots*. See :func:`split_chat_ctx`.
+    the RAM to back it. A multi-GPU tensor-split chat is sized separately by the
+    fleet against its per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
     """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
@@ -139,14 +135,6 @@ def resolve_chat_ctx(
     try:
         model_bytes = model_path.stat().st_size
         kv_per_tok = kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg())
-        if available_bytes is not None:
-            return split_chat_ctx(
-                combined_free_bytes=available_bytes,
-                model_bytes=model_bytes,
-                kv_bytes_per_tok=kv_per_tok,
-                slots=slots,
-                upper=min(training_ctx, ceiling),
-            )
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
             available_bytes=get_available_memory(cfg.gpu_memory_fraction),
@@ -158,39 +146,6 @@ def resolve_chat_ctx(
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
         return min(training_ctx, cfg.chat_n_ctx_target)
-
-
-def split_chat_ctx(
-    *,
-    combined_free_bytes: int,
-    model_bytes: int,
-    kv_bytes_per_tok: int,
-    slots: int,
-    upper: int,
-) -> int:
-    """Per-slot n_ctx for a chat model tensor-split across GPUs.
-
-    Sizes the per-slot context so the total KV cache (``per_slot x slots``) fits
-    the same budget the placement planner reserves: the usable fraction of the
-    combined free VRAM, minus the weights and the flat per-instance overhead.
-    Staying inside the planner's budget keeps the launched context placeable, and
-    dividing by *slots* accounts for ``--ctx-size`` being shared across the
-    continuous-batching slots. A dedicated giant therefore uses its real
-    headroom instead of the conservative single-GPU target.
-    """
-    from lilbee.providers.fleet.placement import _MODEL_OVERHEAD_BYTES, _VRAM_USABLE_FRACTION
-    from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
-
-    if kv_bytes_per_tok <= 0:
-        return max(_DYNAMIC_CTX_FLOOR, upper)
-    kv_budget = (
-        int(combined_free_bytes * _VRAM_USABLE_FRACTION) - model_bytes - _MODEL_OVERHEAD_BYTES
-    )
-    if kv_budget <= 0:
-        return _DYNAMIC_CTX_FLOOR
-    per_slot = kv_budget // (max(1, slots) * kv_bytes_per_tok)
-    bounded = max(_DYNAMIC_CTX_FLOOR, min(per_slot, upper))
-    return max(_DYNAMIC_CTX_FLOOR, (bounded // _DYNAMIC_CTX_QUANTUM) * _DYNAMIC_CTX_QUANTUM)
 
 
 def resolve_n_gpu_layers(*, embedding: bool) -> int:

@@ -117,57 +117,17 @@ class TestResolveChatCtx:
         # A nonexistent path makes .stat() raise OSError -> static min(training, target).
         assert ep.resolve_chat_ctx(Path("/nonexistent/x.gguf"), None) == 4096
 
-    def test_uses_split_sizing_when_available_bytes_given(self, tmp_path, monkeypatch) -> None:
-        # The fleet passes combined free VRAM + slots for a tensor-split giant, so
-        # resolve routes to split_chat_ctx instead of the single-GPU dynamic path.
-        model = tmp_path / "m.gguf"
-        model.write_bytes(b"x" * 100)
+
+class TestChatCtxCeiling:
+    def test_returns_training_ctx_without_num_ctx_max(self, monkeypatch) -> None:
         monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
-        monkeypatch.setattr(ep, "kv_bytes_per_token", lambda _meta, _b: 1000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
-        seen: dict = {}
+        assert ep.chat_ctx_ceiling({"arch": "x"}, Path("/m.gguf")) == 8192
 
-        def _capture(**kwargs):
-            seen.update(kwargs)
-            return 7777
-
-        monkeypatch.setattr(ep, "split_chat_ctx", _capture)
-        result = ep.resolve_chat_ctx(model, {"arch": "x"}, available_bytes=10**11, slots=4)
-        assert result == 7777
-        assert seen["slots"] == 4 and seen["combined_free_bytes"] == 10**11
-
-
-class TestSplitChatCtx:
-    def test_zero_kv_per_token_returns_upper(self) -> None:
-        # No KV cost (degenerate metadata) -> the upper bound, floored.
-        assert ep.split_chat_ctx(
-            combined_free_bytes=10**11, model_bytes=0, kv_bytes_per_tok=0, slots=1, upper=8192
-        ) == max(8192, 0)
-
-    def test_negative_budget_returns_floor(self) -> None:
-        from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR
-
-        # Weights alone exceed the usable VRAM, so there is no KV budget.
-        assert (
-            ep.split_chat_ctx(
-                combined_free_bytes=1, model_bytes=10**12, kv_bytes_per_tok=100, slots=1, upper=8192
-            )
-            == _DYNAMIC_CTX_FLOOR
-        )
-
-    def test_divides_budget_across_slots_and_quantizes(self) -> None:
-        from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
-
-        result = ep.split_chat_ctx(
-            combined_free_bytes=10**11,
-            model_bytes=0,
-            kv_bytes_per_tok=1000,
-            slots=4,
-            upper=32768,
-        )
-        assert result >= _DYNAMIC_CTX_FLOOR
-        assert result % _DYNAMIC_CTX_QUANTUM == 0
-        assert result <= 32768
+    def test_caps_at_num_ctx_max_when_lower(self, monkeypatch) -> None:
+        monkeypatch.setattr(ep, "train_ctx_from_meta", lambda *a, **k: 8192)
+        monkeypatch.setattr(cfg, "num_ctx_max", 4096)
+        assert ep.chat_ctx_ceiling({"arch": "x"}, Path("/m.gguf")) == 4096
 
 
 class TestResolveNGpuLayers:

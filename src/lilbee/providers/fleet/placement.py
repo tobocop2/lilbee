@@ -9,18 +9,20 @@ that fits nowhere gets no server (its calls error). See docs/architecture.md.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import WorkerRole
 
-# Mirrors vLLM's gpu_memory_utilization default: never pack a GPU past 90%.
-_VRAM_USABLE_FRACTION = 0.9
-# Flat per-instance overhead (CUDA context, compute buffers) reserved on top of
-# weights when sizing a tensor-split chat's per-slot context (see split_chat_ctx).
-_MODEL_OVERHEAD_BYTES = 1024**3
 # Search-critical roles reserved ahead of the elastic chat model in a shared pool,
 # so a large chat can never crowd embed/rerank out (which would 503 every search).
 _SEARCH_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
+
+# (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
+# vector aligned to that ratio. A split is accepted only when every card's entry
+# fits its own headroom, and each card is charged its own entry, not the sum.
+PeakEstimator = Callable[[WorkerRole, tuple[int, ...]], tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -68,14 +70,15 @@ def plan_placement(
     models: list[ModelPlacementInput],
     devices: list[tuple[int, int]],
     *,
+    estimate_peak: PeakEstimator,
     unified_budget: int | None = None,
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
     First-fit-decreasing by footprint with a 90% headroom per GPU. A model that
     fits one GPU takes a single instance; one too big for any single GPU is
-    tensor-split across the fewest GPUs whose combined headroom fits; a model that
-    fits nowhere is returned as an unplaceable role (it gets no server).
+    tensor-split across the fewest GPUs whose per-device share (from
+    *estimate_peak*) each fits; a model that fits nowhere is an unplaceable role.
 
     No GPU devices is the CPU/unified-memory case (a GPU-less host, or an Apple
     Silicon box where the probe found nothing): roles run as single un-pinned
@@ -94,7 +97,7 @@ def plan_placement(
                 unplaceable_roles=(),
             )
         return _place_shared_memory(models, unified_budget)
-    remaining: dict[int, float] = {idx: vram * _VRAM_USABLE_FRACTION for idx, vram in devices}
+    remaining: dict[int, float] = {idx: vram * USABLE_VRAM_FRACTION for idx, vram in devices}
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
 
@@ -103,7 +106,7 @@ def plan_placement(
     singles = [m for m in models if m.replicas <= 1]
     replicated = [m for m in models if m.replicas > 1]
     for model in sorted(singles, key=lambda m: m.est_vram_bytes, reverse=True):
-        plan = _place_single(model, remaining)
+        plan = _place_single(model, remaining, estimate_peak)
         if plan is None:
             unplaceable.append(model.role)
         else:
@@ -118,17 +121,40 @@ def plan_placement(
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
 
 
-def _place_single(model: ModelPlacementInput, remaining: dict[int, float]) -> InstancePlan | None:
+def _place_single(
+    model: ModelPlacementInput,
+    remaining: dict[int, float],
+    estimate_peak: PeakEstimator,
+) -> InstancePlan | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
     if single is not None:
         remaining[single] -= model.est_vram_bytes
         return InstancePlan(role=model.role, devices=(single,))
-    split = _devices_for_split(model.est_vram_bytes, remaining)
-    if split is not None:
-        ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in split)
-        _charge_split(model.est_vram_bytes, split, remaining)
-        return InstancePlan(role=model.role, devices=tuple(split), tensor_split=ratio)
+    return _place_split(model, remaining, estimate_peak)
+
+
+def _place_split(
+    model: ModelPlacementInput,
+    remaining: dict[int, float],
+    estimate_peak: PeakEstimator,
+) -> InstancePlan | None:
+    """Tensor-split across the fewest most-free GPUs whose per-device share each fits.
+
+    Charges each chosen card its own entry from *estimate_peak*'s vector, so the
+    busiest card (which OOMs first) is what gates the split, not the summed pool.
+    """
+    by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
+    for count in range(2, len(by_free) + 1):
+        chosen = by_free[:count]
+        ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in chosen)
+        per_device = estimate_peak(model.role, ratio)
+        if len(per_device) == count and all(
+            peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
+        ):
+            for idx, peak in zip(chosen, per_device, strict=True):
+                remaining[idx] -= peak
+            return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
     return None
 
 
@@ -191,23 +217,3 @@ def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:
     if not candidates:
         return None
     return max(candidates, key=lambda idx: remaining[idx])
-
-
-def _devices_for_split(need: int, remaining: dict[int, float]) -> list[int] | None:
-    """Fewest devices (most-free first) whose combined headroom fits *need*."""
-    by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
-    chosen: list[int] = []
-    total = 0.0
-    for idx in by_free:
-        chosen.append(idx)
-        total += remaining[idx]
-        if total >= need:
-            return chosen
-    return None
-
-
-def _charge_split(need: int, split: list[int], remaining: dict[int, float]) -> None:
-    """Debit *need* across *split* in proportion to each device's free VRAM."""
-    total_free = sum(remaining[idx] for idx in split)
-    for idx in split:
-        remaining[idx] -= need * (remaining[idx] / total_free)
