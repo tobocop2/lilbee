@@ -347,7 +347,7 @@ lilbee --json sync                             # re-index after edits to the doc
 lilbee --json rebuild                          # nuke the index and re-ingest everything
 lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
 lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
-lilbee --json ask "question"                   # full local RAG (llama-cpp or SDK backend)
+lilbee --json ask "question"                   # full local RAG (local llama-server fleet or remote backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
 lilbee --json model rm <ref>                   # delete an installed model
@@ -420,8 +420,8 @@ the [REST API reference](https://lilbee.sh/api/).
 >    project's data than you expect.
 > 2. **Know where your agent sends data.** If the agent uses a cloud-hosted
 >    model, your document chunks will leave your machine. Use a local model
->    (native GGUF via llama-cpp or a local SDK backend) if your documents must
->    stay private.
+>    (native GGUF on the managed llama-server fleet, or a local
+>    OpenAI-compatible server) if your documents must stay private.
 
 ## Per-project libraries
 
@@ -725,6 +725,10 @@ effect on already-indexed material.
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
+| `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
+| `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
+| `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
+| `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
 
 ### Generation
 
@@ -744,6 +748,7 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
+| `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary. Empty = the binary bundled with the `lilbee-engine` wheel, else one found on `PATH` |
 
 ### Server
 
@@ -780,8 +785,9 @@ reason the defaults are the defaults.
 
 ## Optional extras
 
-lilbee works out of the box with llama-cpp for local inference. These optional
-extras add capabilities that require heavier dependencies:
+lilbee works out of the box with its managed llama-server fleet for local
+inference. These optional extras add capabilities that require heavier
+dependencies:
 
 ```bash
 # pip
@@ -954,8 +960,9 @@ export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
-Provider options: `auto` (default, routes intelligently), `llama-cpp` (local
-only), `remote` (hosted only).
+Provider options: `auto` (default; native GGUF models run on the local managed
+llama-server fleet, remote model names route to the SDK backend) and `remote`
+(everything goes to an external OpenAI-compatible endpoint).
 
 ---
 

@@ -162,7 +162,7 @@ def _read_opencode_state(path: Path) -> PickerState:
 
 
 def _merge_recent(existing: object, model_refs: list[str]) -> list[PickerEntry]:
-    """Prepend lilbee entries, drop stale lilbee entries, cap the list length."""
+    """Prepend lilbee entries, de-duplicating prior copies, and cap the list length."""
     prior: list = existing if isinstance(existing, list) else []
     new_set = set(model_refs)
     kept = [

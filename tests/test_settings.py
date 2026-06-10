@@ -210,6 +210,26 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is True  # None = auto/all
         assert get_default("n_gpu_layers") is None
 
+    def test_vision_ocr_max_tokens_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["vision_ocr_max_tokens"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is int
+        assert defn.group == "Ingest"
+        assert get_default("vision_ocr_max_tokens") == 4096
+
+    def test_vision_ocr_concurrency_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["vision_ocr_concurrency"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is int
+        assert defn.group == "Ingest"
+        assert get_default("vision_ocr_concurrency") == 4
+
 
 class TestOverlayPersistedSettings:
     def test_empty_string_value_is_skipped(self, tmp_path):

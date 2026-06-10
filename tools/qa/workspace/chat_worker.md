@@ -1,3 +1,3 @@
-# Chat worker
+# Chat engine
 
-The chat worker subprocess in lilbee runs llama-cpp inference. It receives ChatRequest payloads over a pipe transport and streams tokens back via SSE. Cancellation is enforced through an abort flag in shared memory.
+Chat inference in lilbee runs on a managed llama-server fleet. llama-swap supervises the server processes behind an OpenAI-compatible proxy, gguf-parser estimates each model's memory footprint for placement, and tokens stream back via SSE.

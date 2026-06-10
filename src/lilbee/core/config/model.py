@@ -147,7 +147,6 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     # Path to a llama-server binary. Empty = use the bundled lilbee-engine
     # wheel binary, else a llama-server on PATH.
     llama_server_path: str = ConfigField(default="", writable=True)
@@ -350,8 +349,8 @@ class Config(BaseSettings):
     # to back it. Set explicitly to cap below the model's training_ctx.
     num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
-    # Flash attention. None (default) = on with TypeError fallback for
-    # older llama-cpp-python builds, True = force on, False = off.
+    # Flash attention. None (default) = on, True = force on, False = off
+    # for backends or models where it misbehaves.
     # Resolves the 'padding V cache to 1024' warning on models with
     # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
     flash_attention: bool | None = ConfigField(default=None, writable=True)
