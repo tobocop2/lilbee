@@ -159,16 +159,28 @@ def total_system_memory() -> int:
     return int(psutil.virtual_memory().total)
 
 
+def has_nvidia_gpu() -> bool:
+    """Whether an NVIDIA GPU is detectable on this host (NVML or nvidia-smi)."""
+    return _try_nvidia_memory() is not None
+
+
 def _try_nvidia_memory() -> int | None:
-    """Try to get NVIDIA GPU total memory via pynvml, then nvidia-smi."""
+    """NVIDIA GPU total memory via pynvml, then nvidia-smi.
+
+    Takes the MINIMUM total across visible devices: sizing against the smallest
+    card is conservative on a heterogeneous-GPU host.
+    """
     try:
         import pynvml  # type: ignore[import-untyped]
 
         pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        totals = [
+            int(pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(i)).total)
+            for i in range(pynvml.nvmlDeviceGetCount())
+        ]
         pynvml.nvmlShutdown()
-        return int(info.total)
+        if totals:
+            return min(totals)
     except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
         pass
 
@@ -184,8 +196,9 @@ def _try_nvidia_memory() -> int | None:
             timeout=5,
         )
         if result.returncode == 0:
-            mib = int(result.stdout.strip().split("\n")[0])
-            return mib * 1024 * 1024
+            mibs = [int(line) for line in result.stdout.strip().splitlines() if line.strip()]
+            if mibs:
+                return min(mibs) * 1024 * 1024
     except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
         pass
 

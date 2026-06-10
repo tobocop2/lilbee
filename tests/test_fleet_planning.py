@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -670,9 +669,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         plan = InstancePlan(role=WorkerRole.VISION, devices=(0,))
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
-        )
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
         assert "--mmproj" in launch.argv
         assert str(Path("/m/mmproj.gguf")) in launch.argv
 
@@ -700,13 +697,9 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
-        )
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
         assert launch.role == WorkerRole.CHAT
         assert launch.env_overrides == visible_env((device,))
-        # port file is stamped with the owning pid so reaping is instance-safe
-        assert launch.port_file == Path(f"/data/llama-server-chat-0-{os.getpid()}.port")
         assert "--model" in launch.argv
         assert "--port" not in launch.argv  # claimed at spawn, not here
         assert launch.weights_bytes == 2048  # model file size scales the ready timeout
@@ -729,9 +722,7 @@ class TestBuildFleetWiring:
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
-        )
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
         assert launch.ctx == 5000
         # A multi-card chat serves one full-context slot, fit against per-device free.
         assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS and seen["ratio"] == (1, 1)
@@ -756,9 +747,7 @@ class TestBuildFleetWiring:
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
-        launch = planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: d0, 1: d1}
-        )
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
         assert launch.ctx == 8192
         assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
 
@@ -807,9 +796,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
-        return planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
-        )
+        return planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
@@ -851,9 +838,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.RERANK, devices=(0,))
-        return planning_mod._launch_for(
-            plan, "ref", Path("/bin/llama-server"), Path("/data"), {0: device}
-        )
+        return planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
 
     def test_launch_for_rerank_decoder_arch_serves_generatively(
         self, tmp_path, monkeypatch
@@ -993,3 +978,145 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
         planning_mod.plan_all_launches()
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback
+
+
+class TestResolveDevicesProbeFailureWarning:
+    def test_warns_when_probe_finds_nothing_on_an_nvidia_host(self, monkeypatch, caplog) -> None:
+        # A driver hiccup on a CUDA pod must not silently fall into the unified
+        # shared-memory path; the operator needs a loud signal of what to check.
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
+        with caplog.at_level("WARNING", logger=planning_mod.__name__):
+            devices = planning_mod.resolve_devices(Path("/bin/llama-server"))
+        assert devices == []
+        assert any("shared-memory mode" in record.message for record in caplog.records)
+
+    def test_no_warning_without_an_nvidia_gpu(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
+        with caplog.at_level("WARNING", logger=planning_mod.__name__):
+            planning_mod.resolve_devices(Path("/bin/llama-server"))
+        assert not any("shared-memory mode" in record.message for record in caplog.records)
+
+    def test_no_warning_when_probe_succeeds(self, monkeypatch, caplog) -> None:
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        with caplog.at_level("WARNING", logger=planning_mod.__name__):
+            assert planning_mod.resolve_devices(Path("/bin/llama-server")) == [device]
+        assert not caplog.records
+
+
+def _parse_flags(argv: list[str]) -> dict[str, str | None]:
+    """Map each ``--flag`` in *argv* to its value token (None for bare flags)."""
+    flags: dict[str, str | None] = {}
+    for position, token in enumerate(argv):
+        if not token.startswith("--"):
+            continue
+        following = argv[position + 1] if position + 1 < len(argv) else None
+        flags[token] = None if following is None or following.startswith("--") else following
+    return flags
+
+
+# Launch flags with no memory-sizing effect; everything else must map below.
+_NON_SIZING_LAUNCH_FLAGS = {
+    "--model",
+    "--host",
+    "--cont-batching",
+    "--jinja",
+    "--embeddings",
+    "--pooling",
+    "--threads",
+    "--threads-batch",
+}
+# Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
+_SIZING_FLAG_TO_ESTIMATOR_FLAG = {
+    "--ctx-size": "--ctx-size",
+    "--parallel": "--parallel",
+    "--n-gpu-layers": "--gpu-layers",
+    "--batch-size": "--batch-size",
+    "--ubatch-size": "--ubatch-size",
+    "--tensor-split": "--tensor-split",
+    "--cache-type-k": "--cache-type-k",
+    "--cache-type-v": "--cache-type-v",
+    "--mmproj": "--mmproj-path",
+}
+_FLASH_LAUNCH_FLAG = "--flash-attn"
+
+
+class TestEstimateLaunchParity:
+    """Every sizing-relevant flag the launch argv carries must be reflected in the
+    gguf-parser argv the placement estimate ran with, or the estimate diverges
+    from what the server allocates (the embed/rerank ubatch OOM)."""
+
+    @pytest.mark.parametrize(
+        "role",
+        [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION],
+    )
+    def test_launch_sizing_flags_reflected_in_estimator_argv(
+        self, role: WorkerRole, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.fleet import vram as vram_mod
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 64)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "bert"}
+        )
+        monkeypatch.setattr(cfg, "num_ctx", 4096)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
+        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+        captured: dict[str, object] = {}
+
+        def _capture(path, **kwargs) -> GgufVramEstimate:
+            captured.update(kwargs, path=path)
+            return GgufVramEstimate(
+                vram_bytes=1, ram_bytes=0, unified_bytes=1, per_device_vram=(1, 1)
+            )
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _capture)
+        is_chat = role is WorkerRole.CHAT
+        ratio = (1, 1) if is_chat else ()
+        planning_mod._peak_estimator({role: "ref"})(role, ratio)
+        devices = (0, 1) if is_chat else (0,)
+        by_index = {
+            0: FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB),
+            1: FleetDevice("CUDA", 1, "gpu", 24 * _GB, 23 * _GB),
+        }
+        plan = InstancePlan(role=role, devices=devices, tensor_split=ratio)
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), by_index)
+        estimator_argv = vram_mod.estimator_argv(
+            str(captured["path"]),
+            ctx=captured["ctx"],  # type: ignore[arg-type]
+            slots=captured["slots"],  # type: ignore[arg-type]
+            gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
+            flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
+            kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
+            mmproj=str(captured["mmproj_path"]) if captured.get("mmproj_path") else None,
+            tensor_split=captured.get("tensor_split", ()),  # type: ignore[arg-type]
+            batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
+        )
+        launch_flags = _parse_flags(launch.argv)
+        estimator_flags = _parse_flags(estimator_argv)
+        for flag, value in launch_flags.items():
+            if flag in _NON_SIZING_LAUNCH_FLAGS:
+                continue
+            if flag == _FLASH_LAUNCH_FLAG:
+                expected = "--flash-attention" if value == "on" else "--no-flash-attention"
+                assert expected in estimator_argv, f"{role}: flash mismatch"
+                continue
+            estimator_flag = _SIZING_FLAG_TO_ESTIMATOR_FLAG.get(flag)
+            assert estimator_flag is not None, (
+                f"{role}: launch flag {flag} is unclassified; add it to the sizing map "
+                "(and thread it into the gguf-parser estimate) or the non-sizing set"
+            )
+            assert estimator_flags.get(estimator_flag) == value, (
+                f"{role}: launch {flag}={value} not reflected as estimator "
+                f"{estimator_flag}={estimator_flags.get(estimator_flag)}"
+            )

@@ -7,12 +7,15 @@ process and exposes its endpoint and readiness. See docs/architecture.md.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -24,13 +27,19 @@ from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import build_swap_config
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.roles import WorkerRole
 
 _HOST = "127.0.0.1"
 _CONFIG_FILENAME = "llama-swap.json"
+# Cross-run reaping: the state file records the live swap's pid/pgid so the next
+# start can kill a dead parent's surviving llama-swap (it holds VRAM otherwise).
+_STATE_FILENAME = "llama-swap.state.json"
+_STATE_KEY_PID = "pid"
+_STATE_KEY_PGID = "pgid"
+_STATE_KEY_STARTED_AT = "started_at"
+_STATE_KEY_NAME = "name"
+_LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
@@ -60,11 +69,20 @@ _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
+@dataclass(frozen=True)
+class _SwapState:
+    """A previous run's llama-swap identity, read back for cross-run reaping."""
+
+    pid: int
+    pgid: int | None
+
+
 class SwapManager:
     """Owns one llama-swap process fronting every configured role co-resident."""
 
     def __init__(self, data_dir: Path) -> None:
         self._config_path = data_dir / _CONFIG_FILENAME
+        self._state_path = data_dir / _STATE_FILENAME
         self._proc: subprocess.Popen[bytes] | None = None
         self._port: int | None = None
 
@@ -76,6 +94,7 @@ class SwapManager:
         is still shutting down (the new llama-server then fails its bind and
         llama-swap reports it only as "exited prematurely").
         """
+        self._reap_previous()
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +111,37 @@ class SwapManager:
             start_new_session=True,
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
+        self._write_state()
         self._await_health()
+
+    def _reap_previous(self) -> None:
+        """Kill a dead parent's surviving llama-swap before starting a new one.
+
+        An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
+        so the next run would plan against artificially reduced free memory.
+        The cmdline match guards against pid reuse by an unrelated process.
+        """
+        state = _load_state(self._state_path)
+        self._state_path.unlink(missing_ok=True)
+        if state is not None and _is_live_llama_swap(state.pid):
+            _stop_stale_swap(state)
+
+    def _write_state(self) -> None:
+        """Record the live swap's pid/pgid so the next run can reap it if we die."""
+        proc = self._proc
+        if proc is None:
+            return
+        pgid: int | None = None
+        if sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError):
+                pgid = os.getpgid(proc.pid)
+        state = {
+            _STATE_KEY_PID: proc.pid,
+            _STATE_KEY_PGID: pgid,
+            _STATE_KEY_STARTED_AT: time.time(),
+            _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
+        }
+        self._state_path.write_text(json.dumps(state))
 
     def endpoint(self) -> str:
         """Base URL of the llama-swap OpenAI-compatible proxy."""
@@ -119,6 +168,7 @@ class SwapManager:
         proc = self._proc
         if proc is not None:
             _stop_process_tree(proc)
+            self._state_path.unlink(missing_ok=True)
         self._proc = None
         self._port = None
 
@@ -227,3 +277,52 @@ def _hard_stop(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_STOP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+def _load_state(path: Path) -> _SwapState | None:
+    """Parse a state file into a :class:`_SwapState`; ``None`` when absent/corrupt."""
+    try:
+        payload = json.loads(path.read_text())
+        raw_pgid = payload.get(_STATE_KEY_PGID)
+        return _SwapState(
+            pid=int(payload[_STATE_KEY_PID]),
+            pgid=int(raw_pgid) if raw_pgid is not None else None,
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _is_live_llama_swap(pid: int) -> bool:
+    """True when *pid* is alive and its binary is llama-swap (pid-reuse guard)."""
+    try:
+        cmdline = psutil.Process(pid).cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    binary = Path(next(iter(cmdline), "")).name
+    return _LLAMA_SWAP_PROCESS_NAME in binary
+
+
+def _stop_stale_swap(state: _SwapState) -> None:
+    """TERM-then-KILL a stale llama-swap's group and reap the servers it spawned."""
+    children = _live_children(state.pid)
+    try:
+        proc = psutil.Process(state.pid)
+    except psutil.NoSuchProcess:
+        proc = None
+    if proc is not None:
+        _signal_stale(state, signal.SIGTERM)
+        try:
+            proc.wait(timeout=_ORPHAN_STOP_TIMEOUT_S)
+        except psutil.TimeoutExpired:
+            _signal_stale(state, _SIGKILL)
+    _reap_survivors(children)
+
+
+def _signal_stale(state: _SwapState, sig: int) -> None:
+    """Signal the stale swap's process group, or the pid where groups don't apply."""
+    if state.pgid is not None and sys.platform != "win32":
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(state.pgid, sig)
+        return
+    with contextlib.suppress(psutil.NoSuchProcess):
+        psutil.Process(state.pid).send_signal(sig)

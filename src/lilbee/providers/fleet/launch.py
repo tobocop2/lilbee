@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -24,7 +23,6 @@ class InstanceLaunch:
     argv: list[str]  # llama-server command WITHOUT --port; the runner appends it
     env_overrides: dict[str, str]  # backend-specific device-pinning env
     model: str
-    port_file: Path
     token_cap: int | None = None  # per-slot ctx for embed/rerank input truncation
     weights_bytes: int = 0  # model file size on disk; scales the cold-load timeout
     slots: int = 1  # --parallel continuous-batching slots; chat concurrency capacity

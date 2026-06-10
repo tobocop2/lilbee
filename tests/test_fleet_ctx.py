@@ -74,3 +74,44 @@ class TestFitSplitCtx:
         assert (result - _DYNAMIC_CTX_FLOOR) % _DYNAMIC_CTX_QUANTUM == 0
         assert result * 4 <= budget
         assert (result + _DYNAMIC_CTX_QUANTUM) * 4 > budget
+
+    def test_each_device_share_is_checked_against_its_own_headroom(self, monkeypatch) -> None:
+        # Unequal cards with a matching unequal split: the big card's share must be
+        # allowed to exceed the SMALL card's headroom, as long as each share fits
+        # its own card. Comparing the max share to the min headroom would
+        # under-size this fit.
+        big_free, small_free = 40000, 10000
+
+        def fake(_model_path: Path, **kw: object) -> GgufVramEstimate:
+            total = int(kw["ctx"])  # type: ignore[arg-type]
+            shares = (total * 4 // 5, total // 5)  # 4:1 split across the two cards
+            return GgufVramEstimate(
+                vram_bytes=total, ram_bytes=0, unified_bytes=0, per_device_vram=shares
+            )
+
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", fake)
+        result = _fit(
+            Path("/m.gguf"),
+            slots=1,
+            ratio=(4, 1),
+            per_device_free_bytes=[big_free, small_free],
+        )
+        # Old peak-vs-min sizing would cap total ctx at min_headroom (9000) so the
+        # per-slot result would sit below 9000; per-device sizing allows the big
+        # card's 0.8 share to use its own 36000 headroom (total up to 45000).
+        assert result > int(small_free * 0.9)
+        # Invariant: the estimate at the returned ctx fits every device's headroom.
+        accepted = fake(Path("/m.gguf"), ctx=result)
+        headrooms = [int(big_free * 0.9), int(small_free * 0.9)]
+        assert all(
+            share <= room for share, room in zip(accepted.per_device_vram, headrooms, strict=True)
+        )
+
+    def test_falls_back_to_peak_when_breakdown_is_missing(self, monkeypatch) -> None:
+        # An estimate with no usable per-device breakdown gates the peak against
+        # the tightest card (the conservative direction).
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda c: c))
+        result = _fit(Path("/m.gguf"), slots=1, per_device_free_bytes=[40000, 10000])
+        assert result <= int(10000 * 0.9)

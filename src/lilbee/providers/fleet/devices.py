@@ -17,6 +17,14 @@ from pathlib import Path
 
 _LIST_DEVICES_TIMEOUT_S = 60.0
 _MIB = 1024 * 1024
+# Per-backend visible-devices env vars (the probe inherits them; the children
+# re-emit them, composed through any parent restriction).
+_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
+_CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
+_PCI_BUS_ID_ORDER = "PCI_BUS_ID"
+_ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
+_HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
+_VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
@@ -38,8 +46,14 @@ class FleetDevice:
 
 
 def _probe_env() -> dict[str, str]:
-    """Env for the probe: stable PCI ordering so CUDA indices match what we pin."""
-    return {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+    """Env for the probe: stable PCI ordering so CUDA indices match what we pin.
+
+    A preset ``CUDA_DEVICE_ORDER`` is respected; ``visible_env`` re-emits the same
+    order var, so the probe and the spawned servers see one device ordering.
+    """
+    env = dict(os.environ)
+    env.setdefault(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER)
+    return env
 
 
 def probe_devices(binary: Path) -> list[FleetDevice]:
@@ -88,22 +102,43 @@ def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     return [d for d in ranked if d.backend == backend]
 
 
+def _compose_visible(indices: list[int], parent_value: str | None) -> str:
+    """Visible-devices value naming the same physical devices the probe saw.
+
+    When the parent env already restricts the var, the probe's indices are
+    relative to that comma-separated list (integer or UUID entries), so each
+    index maps through it; the child's value then names the same physical
+    devices instead of being re-interpreted as absolute.
+    """
+    if parent_value is None:
+        return ",".join(str(i) for i in indices)
+    entries = [entry.strip() for entry in parent_value.split(",") if entry.strip()]
+    return ",".join(entries[i] if i < len(entries) else str(i) for i in indices)
+
+
 def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     """Env that pins a child to *devices* via the right var for their backend.
 
-    Indices are the backend-native ones from ``probe_devices`` paired with the
-    matching visible-devices variable, so no cross-API index translation occurs.
+    Indices are the backend-native ones from ``probe_devices``, composed through
+    any parent visible-devices restriction so the child names the same physical
+    devices the probe enumerated; no cross-API index translation occurs.
     """
     if not devices:
         return {}
     backend = devices[0].backend
-    ids = ",".join(str(d.index) for d in devices)
+    indices = [d.index for d in devices]
     if backend == "CUDA":
-        return {"CUDA_VISIBLE_DEVICES": ids, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+        return {
+            _CUDA_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_CUDA_VISIBLE_VAR)),
+            _CUDA_ORDER_VAR: os.environ.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
+        }
     if backend in ("ROCm", "HIP"):
-        return {"ROCR_VISIBLE_DEVICES": ids, "HIP_VISIBLE_DEVICES": ids}
+        return {
+            _ROCR_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_ROCR_VISIBLE_VAR)),
+            _HIP_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_HIP_VISIBLE_VAR)),
+        }
     if backend == "Vulkan":
-        return {"GGML_VK_VISIBLE_DEVICES": ids}
+        return {_VK_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_VK_VISIBLE_VAR))}
     if backend == "SYCL":
         return {"ONEAPI_DEVICE_SELECTOR": "level_zero:" + ",".join(str(d.index) for d in devices)}
     return {}
