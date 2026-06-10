@@ -14,6 +14,10 @@ from harness_config import (
     _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
     _OPENCODE_SHARE_DIR,
+    _OPENCODE_UI_MARKER,
+    _OPENCODE_UI_TIMEOUT_S,
+    _PANE_EXCERPT_TAIL,
+    _POLL_INTERVAL_S,
     _POST_SEND_SLEEP_S,
     _TMUX_HISTORY_LINES,
     _TMUX_WINDOW_COLS,
@@ -116,7 +120,28 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
         ],
         check=True,
     )
-    time.sleep(_OPENCODE_BOOT_SETTLE_S)
+    _wait_for_opencode_ui(session)
+
+
+def _wait_for_opencode_ui(session: str) -> None:
+    """Block until opencode's TUI paints, then let the boot/prefill settle.
+
+    ``lilbee launch opencode`` holds a "Warming the chat model" spinner until
+    its warm gate passes, and a giant's cold load legitimately runs for many
+    minutes (the fleet's health budget scales with the weights). Starting the
+    scenario clock during that spinner reads as an idle pane and times the
+    cell out before opencode even exists, so wait for the TUI footer first.
+    """
+    deadline = time.monotonic() + _OPENCODE_UI_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _OPENCODE_UI_MARKER in tmux_capture(session):
+            time.sleep(_OPENCODE_BOOT_SETTLE_S)
+            return
+        time.sleep(_POLL_INTERVAL_S)
+    raise RuntimeError(
+        f"opencode TUI did not appear within {_OPENCODE_UI_TIMEOUT_S:.0f}s; "
+        f"pane tail: {tmux_capture(session)[-_PANE_EXCERPT_TAIL:]}"
+    )
 
 
 def reset_opencode_session_state() -> None:

@@ -23,6 +23,11 @@ _POST_SEND_SLEEP_S = 0.1
 _SERVE_BOOT_TIMEOUT_S = 30.0
 _SERVE_TERMINATE_TIMEOUT_S = 10.0
 _OPENCODE_BOOT_SETTLE_S = 30.0  # boot + first-prompt prefill warmup
+_OPENCODE_UI_MARKER = "OpenCode"  # TUI footer; absent during the launcher's warm spinner
+# Launcher warm gate (600s) plus a giant's cold load inside the fleet's
+# weights-scaled health budget can hold the warm spinner for many minutes
+# before opencode execs; only then may the scenario clock start.
+_OPENCODE_UI_TIMEOUT_S = 1200.0
 _INDEX_TIMEOUT_S = 120.0
 _MODEL_PULL_TIMEOUT_S = 3600.0  # residential bandwidth, multi-quant repos can run 30+ min
 _POLL_INTERVAL_S = 2.0

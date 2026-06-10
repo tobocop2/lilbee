@@ -28,6 +28,7 @@ from models import (
     cleanup_cell_model,
     ensure_embedding_model_pulled,
     load_models,
+    prewarm_model_blobs,
     suspend_other_chat_manifests,
 )
 from opencode_driver import (
@@ -63,11 +64,17 @@ def setup_cell(
         print(f"[{cell.family}] pulling {pull_ref}")
         _run_pull_with_group_kill(pull_ref)
         installed = _installed_ref_for_repo(pull_ref)
-        if installed is not None and installed != cell.ref:
+        if installed is None:
+            # Without a registered model the launcher serves zero models and the
+            # client silently falls back to its own provider; fail the cell now.
+            raise RuntimeError(f"pull of {pull_ref} completed but no model is registered")
+        if installed != cell.ref:
             print(
                 f"[{cell.family}] pull installed {installed}; using it (models.toml had {cell.ref})"
             )
             cell.ref = installed
+    print(f"[{cell.family}] prewarming model blobs into page cache")
+    prewarm_model_blobs(cell.ref)
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     print(f"[{cell.family}] seeded Godot corpus from {_GODOT_CORPUS}")
     print(f"[{cell.family}] scoping opencode tools to lilbee_search")

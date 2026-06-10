@@ -44,6 +44,40 @@ def _ref_for_manifest(path: Path) -> str:
     return f"{repo}/{rest}"
 
 
+_PREWARM_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+def prewarm_model_blobs(ref: str) -> None:
+    """Read the cell's GGUF shards once so the fleet's cold load hits page cache.
+
+    On a network-volume models dir the first sequential read is the slow,
+    fault-prone path; a giant read cold from the volume can outlast the
+    fleet's health budget. Reading the shards here (outside any product
+    timeout) leaves them in RAM, and the printed rate doubles as a volume
+    health probe.
+    """
+    import time
+
+    from lilbee.catalog.download import split_shard_filenames
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry, parse_hf_ref
+
+    first = ModelRegistry(Path(cfg.models_dir)).resolve(ref)
+    _repo, filename = parse_hf_ref(ref)
+    shard_names = [Path(s).name for s in split_shard_filenames(Path(filename).name)]
+    total = 0
+    start = time.monotonic()
+    for name in shard_names:
+        shard = first.parent / name
+        if not shard.exists():
+            continue
+        with shard.open("rb") as f:
+            while chunk := f.read(_PREWARM_CHUNK_BYTES):
+                total += len(chunk)
+    elapsed = max(time.monotonic() - start, 1e-6)
+    print(f"prewarmed {total / 1e9:.1f} GB in {elapsed:.0f}s ({total / 1e6 / elapsed:.0f} MB/s)")
+
+
 def _installed_ref_for_repo(repo: str) -> str | None:
     """Return the chat model ref actually installed under *repo*, if any.
 
@@ -136,11 +170,19 @@ def ensure_embedding_model_pulled() -> None:
     _run_pull_with_group_kill(_EMBED_PULL_REF)
 
 
+_PULL_ATTEMPTS = 3
+"""Pulls resume from partial downloads, so retries convert transient volume
+I/O errors (network-FS Errno 5 on multi-GB shards) into incremental progress."""
+
+
 def _run_pull_with_group_kill(pull_ref: str) -> None:
     """Run ``lilbee model pull`` in its own process group so a timeout reaps the
     full tree (otherwise ``uv``'s child python orphans and keeps the download
     running, contending for bandwidth with the next cell's pull).
 
+    A non-zero exit is retried, then raised: a cell must never proceed past a
+    failed pull (the launcher would serve zero models and the scenario would
+    burn its full timeout against the client's fallback provider).
     Progress bars are suppressed so the matrix stdout stays grep-able.
     """
     import os
@@ -148,19 +190,24 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
 
     env = os.environ.copy()
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    proc = subprocess.Popen(
-        ["uv", "run", "lilbee", "model", "pull", pull_ref],
-        cwd=REPO_ROOT,
-        env=env,
-        start_new_session=True,
-    )
-    try:
-        proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
-        raise
+    for attempt in range(1, _PULL_ATTEMPTS + 1):
+        proc = subprocess.Popen(
+            ["uv", "run", "lilbee", "model", "pull", pull_ref],
+            cwd=REPO_ROOT,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+            raise
+        if proc.returncode == 0:
+            return
+        print(f"pull of {pull_ref} exited {proc.returncode} (attempt {attempt}/{_PULL_ATTEMPTS})")
+    raise RuntimeError(f"pull of {pull_ref} failed after {_PULL_ATTEMPTS} attempts")
 
 
 def cleanup_cell_model(cell: ModelCell) -> None:
