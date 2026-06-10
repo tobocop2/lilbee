@@ -7,6 +7,7 @@ Run before tagging. Not for CI. ``--families <list>`` narrows the matrix;
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -148,6 +149,24 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     return result
 
 
+def arm_pod_watchdog() -> subprocess.Popen[bytes] | None:
+    """On a pod, stop it when the run stalls (no log/model writes, idle GPUs).
+
+    A hung or dead run leaves the pod billing for nothing; the watchdog powers
+    it off instead of letting it idle. No-op off-pod (RUNPOD_POD_ID unset).
+    """
+    if not os.environ.get("RUNPOD_POD_ID"):
+        return None
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    watch_paths = [str(LOG_DIR)]
+    for env_var in ("LILBEE_MODELS_DIR", "HF_HOME"):
+        path = os.environ.get(env_var)
+        if path:
+            watch_paths.append(path)
+    print(f"arming pod idle watchdog on {', '.join(watch_paths)}")
+    return subprocess.Popen(["bash", str(QA_DIR / "pod_watchdog.sh"), *watch_paths])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--families", help="comma-separated family allowlist")
@@ -178,9 +197,14 @@ def main() -> int:
         return 2
 
     print(f"running QA matrix for {len(cells)} model(s)")
-    if not args.no_pull:
-        ensure_embedding_model_pulled()
-    results = [run_cell(c, args) for c in cells]
+    watchdog = arm_pod_watchdog()
+    try:
+        if not args.no_pull:
+            ensure_embedding_model_pulled()
+        results = [run_cell(c, args) for c in cells]
+    finally:
+        if watchdog is not None:
+            watchdog.terminate()
     (RESULTS_DIR / "results.md").write_text(render_report(results))
     print(f"\nreport: {RESULTS_DIR / 'results.md'}")
 

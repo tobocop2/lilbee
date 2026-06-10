@@ -50,6 +50,15 @@ uv run python tools/qa/opencode/matrix.py --families qwen3
 uv run python tools/qa/opencode/matrix.py --families qwen3 --no-pull
 ```
 
+On a pod (`RUNPOD_POD_ID` set), the matrix arms `pod_watchdog.sh` automatically:
+if nothing is written under the logs/models/HF paths and the GPUs sit idle for
+30 minutes, the watchdog stops the pod instead of letting a hung run bill for
+nothing. It can also be run standalone against any log path:
+
+```bash
+IDLE_MIN=30 tools/qa/opencode/pod_watchdog.sh /workspace/qa_matrix.log
+```
+
 ## What runs, per cell
 
 1. `lilbee model pull` the target GGUF (unless `--no-pull`).

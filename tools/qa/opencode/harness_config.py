@@ -31,11 +31,10 @@ _SCENARIO_TIMEOUT_S = (
 )
 _MULTI_TOOL_TIMEOUT_S = 600.0
 _INTER_SCENARIO_SETTLE_S = 15.0  # let opencode finish the prior turn before queuing the next
-# Fail-fast: declare a scenario dead when the pane stops changing for this long
-# AFTER the model has emitted at least one ``Build · …`` activity marker. Keeps
-# a quiet model from eating the full timeout. Set high enough that a giant MoE on
-# Metal (static "thinking" spinner reads as an idle pane) isn't killed mid-reason
-# before it emits its first tool call.
+# Fail-fast: declare a scenario dead when the pane stops changing (any output) for
+# this long. Keeps a quiet model from eating the full timeout. Set high enough that
+# a giant MoE on Metal (static "thinking" spinner reads as an idle pane) isn't
+# killed mid-reason before it emits its first tool call.
 _PANE_IDLE_TIMEOUT_S = 480.0
 
 _PANE_EXCERPT_TAIL = 2000
