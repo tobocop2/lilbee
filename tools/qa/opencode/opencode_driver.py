@@ -14,15 +14,17 @@ from harness_config import (
     _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
     _OPENCODE_SHARE_DIR,
-    _OPENCODE_UI_MARKER,
+    _OPENCODE_UI_MARKERS,
     _OPENCODE_UI_TIMEOUT_S,
     _PANE_EXCERPT_TAIL,
     _POLL_INTERVAL_S,
     _POST_SEND_SLEEP_S,
+    _TMUX_COMMAND_TIMEOUT_S,
     _TMUX_HISTORY_LINES,
     _TMUX_WINDOW_COLS,
     _TMUX_WINDOW_ROWS,
     _TOOLS_OFF,
+    _UI_WAIT_HEARTBEAT_S,
 )
 
 
@@ -57,12 +59,19 @@ def tmux_kill(name: str) -> None:
 
 
 def tmux_capture(name: str) -> str:
-    result = subprocess.run(
-        ["tmux", "capture-pane", "-t", name, "-p", "-S", f"-{_TMUX_HISTORY_LINES}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # A wedged tmux server blocks capture-pane forever, which freezes the whole
+    # matrix without a single log line; bound it and treat a hang as "no pane".
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", name, "-p", "-S", f"-{_TMUX_HISTORY_LINES}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"tmux capture-pane timed out after {_TMUX_COMMAND_TIMEOUT_S:.0f}s for {name}")
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -130,13 +139,24 @@ def _wait_for_opencode_ui(session: str) -> None:
     its warm gate passes, and a giant's cold load legitimately runs for many
     minutes (the fleet's health budget scales with the weights). Starting the
     scenario clock during that spinner reads as an idle pane and times the
-    cell out before opencode even exists, so wait for the TUI footer first.
+    cell out before opencode even exists, so wait for the TUI to paint first.
+    Any-of markers because opencode's footer text changes between releases
+    (it self-updates); the heartbeat keeps the wait visible in the matrix log
+    so a stall here can never read as a dead run.
     """
     deadline = time.monotonic() + _OPENCODE_UI_TIMEOUT_S
+    started = time.monotonic()
+    next_heartbeat = started + _UI_WAIT_HEARTBEAT_S
     while time.monotonic() < deadline:
-        if _OPENCODE_UI_MARKER in tmux_capture(session):
+        pane = tmux_capture(session)
+        if any(marker in pane for marker in _OPENCODE_UI_MARKERS):
             time.sleep(_OPENCODE_BOOT_SETTLE_S)
             return
+        if time.monotonic() >= next_heartbeat:
+            elapsed = time.monotonic() - started
+            tail = " | ".join(pane.strip().splitlines()[-2:]) if pane.strip() else "(empty pane)"
+            print(f"waiting for opencode UI ({elapsed:.0f}s): {tail}")
+            next_heartbeat = time.monotonic() + _UI_WAIT_HEARTBEAT_S
         time.sleep(_POLL_INTERVAL_S)
     raise RuntimeError(
         f"opencode TUI did not appear within {_OPENCODE_UI_TIMEOUT_S:.0f}s; "
