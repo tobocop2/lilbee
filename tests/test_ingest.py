@@ -1171,6 +1171,39 @@ class TestExtractionConfig:
             assert config.chunking.topic_threshold == pytest.approx(0.42, abs=1e-5)
 
 
+class TestClassifyKreuzbergParityFormats:
+    """Formats kreuzberg extracts that the map must not silently drop."""
+
+    @pytest.mark.parametrize(
+        "filename, expected",
+        [
+            ("anim.gif", "image"),
+            ("scan.jp2", "image"),
+            ("scan.j2k", "image"),
+            ("scan.j2c", "image"),
+            ("scan.jpx", "image"),
+            ("page.htm", "text"),
+            ("memo.doc", "doc"),
+            ("deck.ppt", "ppt"),
+            ("ledger.xls", "xls"),
+            ("letter.rtf", "rtf"),
+            ("memo.odt", "odt"),
+            ("ledger.ods", "ods"),
+            ("mail.eml", "eml"),
+            ("mail.msg", "msg"),
+            ("table.dbf", "data"),
+            # Containers stay unsupported on purpose: one file fans out to many
+            # inner documents, which the source/citation model can't express yet.
+            ("archive.pst", None),
+            ("archive.7z", None),
+        ],
+    )
+    def test_classify(self, filename, expected):
+        from lilbee.data.ingest import classify_file
+
+        assert classify_file(Path(filename)) == expected
+
+
 class TestClassifyStructuredFormats:
     @pytest.mark.parametrize(
         "filename, expected",
