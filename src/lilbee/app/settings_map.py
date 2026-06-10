@@ -118,6 +118,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
         ),
     ),
+    "vision_ocr_max_tokens": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Hard cap on tokens generated per OCR page (bounds runaway repetition loops)",
+    ),
+    "vision_ocr_concurrency": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
+    ),
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,
@@ -217,9 +229,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Flash attention. Empty (auto) tries it on with a fallback for older "
-            "llama-cpp-python builds; resolves the V-cache padding warning on "
-            "models with uneven per-layer V dims."
+            "Flash attention. Empty (auto) enables it; disable for backends or "
+            "models where it misbehaves. Resolves the V-cache padding warning "
+            "on models with uneven per-layer V dims."
         ),
     ),
     "kv_cache_type": SettingDef(

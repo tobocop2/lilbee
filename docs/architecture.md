@@ -263,30 +263,26 @@ flowchart TD
 
 ### Chat context-window management
 
-The chat worker windows the request prompt to fit the loaded model's
-`n_ctx` before inference. Two estimates are subtracted from the budget:
-`_DEFAULT_RESPONSE_BUDGET` (1024 tokens for the response), and a
-chat-template-inflated tools-overhead figure.
+The fleet provider windows the request messages to fit the served chat
+context before sending them to llama-server (`_fit_chat_context` in
+`providers/fleet/provider.py`, the fitting logic in
+`providers/fleet/windowing.py`). The budget is the served `n_ctx` minus
+a generation reserve (the request's `num_predict`, else a default) and
+a safety margin; the oldest conversation turns are dropped until the
+estimated prompt fits. System messages and the most recent turn are
+always kept, and a kept suffix never starts with an orphan tool result
+whose originating call was dropped.
 
-The tools-overhead figure (`count_tools_overhead`) does not tokenize the
-real rendered prompt (llama-cpp-python doesn't expose chat-template
-rendering as a tokenization step); it inflates the bare
-`json.dumps(tools)` token count by `_TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER`
-(1.5x) and adds `_TOOLS_TEMPLATE_PREAMBLE_TOKENS` (256). The multiplier
-is calibrated from observed rendering across Qwen3, Mistral, Gemma 4,
-GLM, and Llama 3 chat templates, which typically inflate the bare JSON
-by 1.3–1.7x once descriptions, `<tools>`/`# Tools` wrapping, and
-schema-field repetition are accounted for. 1.5 is the conservative
-middle. The preamble allowance covers the introductory text that most
-templates inject (e.g. "You may call one or more functions to assist
-with the user query.").
+The estimate does not tokenize the real rendered prompt (llama-server
+renders the chat template server-side at inference time); it counts
+characters at a conservative 3 chars per token and adds a per-message
+overhead for role markers and template wrappers, so the window errs
+toward dropping more rather than overflowing.
 
-The pre-flight is intentionally conservative: better to raise a clean
-400 `context_length_exceeded` than to reach llama-cpp's runtime
-`ValueError`. A safety net in `_ChatSession.chat` also catches that
-`ValueError` (matched by regex against llama-cpp's exact phrasing) and
-re-raises as `ContextWindowExceededError`, so the user-facing 400 still
-fires even when the inflated pre-flight is too optimistic.
+When even the system messages, tools, and the final turn exceed the
+budget, the provider raises a `CONTEXT_OVERFLOW` `ProviderError`, which
+the chat-completions route maps to a clean 400 `context_length_exceeded`
+rather than a 500 from the server.
 
 ---
 
@@ -521,7 +517,7 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
-- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, write a paste-ready client config and a priming `AGENTS.md`, exec the client, clean up on exit
+- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, merge the lilbee provider into the client's config, install the lilbee skill, seed the model picker, exec the client, clean up on exit
 - `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the same client config block for hand-wired setups
 - `--json` / `-j` on any command for structured output
 
@@ -680,7 +676,6 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, remote | auto = SDK backend for remote refs, the local `llama-server` engine for native GGUF refs |
-| `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | |
 | `LILBEE_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (blank uses the default) | |
 | `LILBEE_LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio server URL (blank uses the default) | |
 

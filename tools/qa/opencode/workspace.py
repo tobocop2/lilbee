@@ -29,25 +29,26 @@ def seed_shared_workspace() -> Path:
     SHARED_WORKSPACE.mkdir(parents=True, exist_ok=True)
     fixtures = {
         "chat_worker.md": (
-            "# Chat worker\n\n"
-            "The chat worker subprocess in lilbee runs llama-cpp inference. "
-            "It receives ChatRequest payloads over a pipe transport and "
-            "streams tokens back via SSE. Cancellation is enforced through "
-            "an abort flag in shared memory."
+            "# Chat engine\n\n"
+            "Chat inference in lilbee runs on a managed llama-server fleet. "
+            "llama-swap supervises the server processes behind an "
+            "OpenAI-compatible proxy, gguf-parser estimates each model's "
+            "memory footprint for placement, and tokens stream back via SSE."
         ),
         "dispatch.md": (
             "# Dispatch layer\n\n"
             "chat_dispatch.dispatch_chat is the canonical entry point that "
             "the OpenAI-compatible route forwards to. It resolves the model "
             "through KnownModelCache, enforces tool capability, and routes "
-            "to either the native llama-cpp worker or the SDK backend."
+            "to either the local llama-server fleet or the SDK backend."
         ),
         "tool_extraction.md": (
             "# Tool extraction\n\n"
-            "Lilbee uses a schema-driven response parser based on the "
-            "HuggingFace transformers chat_parsing_utils.recursive_parse. "
-            "Each supported family ships a JSON schema under "
-            "providers/worker/response_parser/schemas/."
+            "Lilbee launches llama-server with --jinja, so the server renders "
+            "each model's own chat template and parses its native tool-call "
+            "syntax into structured message.tool_calls. A recovery pass in "
+            "providers/fleet/client.py catches bare-JSON tool calls that "
+            "models emit as plain content."
         ),
     }
     for filename, content in fixtures.items():

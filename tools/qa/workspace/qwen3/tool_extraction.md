@@ -1,3 +1,3 @@
 # Tool extraction
 
-Lilbee uses a schema-driven response parser based on the HuggingFace transformers chat_parsing_utils.recursive_parse. Each supported family ships a JSON schema under providers/worker/response_parser/schemas/.
+Lilbee launches llama-server with --jinja, so the server renders each model's own chat template and parses its native tool-call syntax into structured message.tool_calls. A recovery pass in providers/fleet/client.py catches bare-JSON tool calls that models emit as plain content.
