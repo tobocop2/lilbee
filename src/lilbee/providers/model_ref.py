@@ -44,6 +44,17 @@ def is_native_gguf_ref(raw: str) -> bool:
     return raw.endswith(".gguf") and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
 
 
+def routes_to_native_gguf(raw: str) -> bool:
+    """True when *raw* is a native GGUF shape not claimed by a local-server prefix.
+
+    Local-server prefixes (``ollama/``, ``lm_studio/``) are exempt from the
+    shape rule: those servers report model ids that can themselves look like
+    GGUF paths, so the prefix wins over the shape.
+    """
+    first_segment = raw.split("/", 1)[0]
+    return first_segment not in LOCAL_SERVER_KEYS and is_native_gguf_ref(raw)
+
+
 @dataclass(frozen=True)
 class ProviderModelRef:
     """Parsed model reference with provider routing information."""
@@ -108,8 +119,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     (LM Studio 0.2.x uses full relative GGUF paths), so the prefix wins there.
     Remote providers use prefixes from :data:`PROVIDER_PREFIXES`.
     """
-    first_segment = raw.split("/", 1)[0]
-    if first_segment not in LOCAL_SERVER_KEYS and is_native_gguf_ref(raw):
+    if routes_to_native_gguf(raw):
         return ProviderModelRef(raw=raw, provider="local", name=raw)
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
@@ -124,6 +134,20 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     if spec is not None:
         return ProviderModelRef(raw=raw, provider=spec.key, name=spec.normalize_name(rest))
     return ProviderModelRef(raw=raw, provider="local", name=raw)
+
+
+def with_configured_remote_chat(refs: list[str], configured: str) -> list[str]:
+    """Return *refs* with *configured* prepended when it is a remote ref not already listed.
+
+    A remote-configured chat model (``ollama/...``, ``openai/...``) is served
+    through known-model resolution without appearing in the native registry;
+    prepending it keeps a model listing truthful and puts the model lilbee
+    actually serves first. *configured* must parse; ``cfg.chat_model`` is
+    validated and canonicalized at the write boundary.
+    """
+    if configured in refs or not parse_model_ref(configured).is_remote:
+        return list(refs)
+    return [configured, *refs]
 
 
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:

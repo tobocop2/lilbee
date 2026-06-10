@@ -80,7 +80,10 @@ def _populate_known_models(services: Any, installed: list[MagicMock]) -> None:
 
 
 @pytest.fixture
-def services_with_chat_model():
+def services_with_chat_model(monkeypatch):
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", INSTALLED_REF)
     provider = MagicMock()
     provider.chat.return_value = ChatResult(
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
@@ -200,12 +203,45 @@ class TestListModelsEndpoint:
         assert by_id[INSTALLED_REF]["context_window"] == 40960
         assert by_id["z/Other/o.gguf"]["context_window"] is None
 
-    async def test_subdir_native_model_listed_and_servable(self, _auth_token):
+    async def test_remote_configured_chat_model_is_listed_first(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """A remote-configured chat model is served without a registry entry, so
+        the listing includes it (same rule the launcher applies to its picker)."""
+        from lilbee.core.config import cfg
+
+        remote_ref = "ollama/qwen3:8b"
+        monkeypatch.setattr(cfg, "chat_model", remote_ref)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        ids = [m["id"] for m in resp.json()["data"]]
+        assert ids == [remote_ref, INSTALLED_REF]
+        by_id = {m["id"]: m for m in resp.json()["data"]}
+        assert by_id[remote_ref]["created"] == 0
+
+    async def test_remote_configured_chat_model_is_not_duplicated(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.core.config import cfg
+
+        remote_ref = "ollama/qwen3:8b"
+        monkeypatch.setattr(cfg, "chat_model", remote_ref)
+        services_with_chat_model.registry.list_installed = MagicMock(
+            return_value=[_installed_chat_model(remote_ref)]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        assert [m["id"] for m in resp.json()["data"]] == [remote_ref]
+
+    async def test_subdir_native_model_listed_and_servable(self, _auth_token, monkeypatch):
         """F6: a registered subdir-filename giant is advertised by /v1/models and
         resolves for a completion (its abs-path inconsistency was a symptom of it
         not being registerable; once F2 registers it, the surface is consistent).
         """
+        from lilbee.core.config import cfg
+
         subdir_ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        monkeypatch.setattr(cfg, "chat_model", subdir_ref)
         provider = MagicMock()
         provider.chat.return_value = ChatResult(
             text="ok", tool_calls=(), finish_reason=FinishReason.STOP
@@ -686,6 +722,53 @@ class TestNonStreamingCompletion:
         assert "set it as the chat model and reload" in body["error"]["message"]
         assert chat_gate().in_flight == 0
 
+    async def test_non_stream_not_configured_model_rejected_at_preflight(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The preflight rejects an installed-but-not-configured local model
+        before the provider is ever called, mirroring the fleet's own guard."""
+        other_ref = "vendor/Other-GGUF/other-Q4.gguf"
+        installed = [_installed_chat_model(), _installed_chat_model(other_ref)]
+        services_with_chat_model.registry.list_installed = MagicMock(return_value=installed)
+        _populate_known_models(services_with_chat_model, installed)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": other_ref,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_request"
+        assert "set it as the chat model and reload" in body["error"]["message"]
+        services_with_chat_model.provider.chat.assert_not_called()
+        assert chat_gate().in_flight == 0
+
+    async def test_remote_ref_not_subject_to_configured_model_preflight(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A remote ref differing from the configured chat model dispatches normally."""
+        remote_ref = "ollama/qwen3:8b"
+        refs = {INSTALLED_REF, remote_ref}
+        services_with_chat_model.known_models.refs = MagicMock(return_value=refs)
+        services_with_chat_model.known_models.resolve = MagicMock(
+            side_effect=lambda model: model if model in refs else None
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": remote_ref,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "hello"
+
 
 class TestStreamingCompletion:
     async def test_stream_emits_role_content_done(self, services_with_chat_model, _auth_token):
@@ -749,6 +832,34 @@ class TestStreamingCompletion:
         assert resp.status_code == 404
         body = resp.json()
         assert body["error"]["code"] == "model_not_found"
+        assert chat_gate().in_flight == 0
+
+    async def test_stream_installed_but_not_configured_model_returns_400_preflush(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A local model that is installed but not the configured chat model is
+        rejected with the actionable 400 before headers flush, not a 200 SSE body."""
+        other_ref = "vendor/Other-GGUF/other-Q4.gguf"
+        installed = [_installed_chat_model(), _installed_chat_model(other_ref)]
+        services_with_chat_model.registry.list_installed = MagicMock(return_value=installed)
+        _populate_known_models(services_with_chat_model, installed)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": other_ref,
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": True,
+                },
+            )
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/json")
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_request"
+        assert "set it as the chat model and reload" in body["error"]["message"]
+        assert INSTALLED_REF in body["error"]["message"]
+        services_with_chat_model.provider.chat.assert_not_called()
         assert chat_gate().in_flight == 0
 
     async def test_stream_tools_against_non_tool_model_returns_400_preflush(

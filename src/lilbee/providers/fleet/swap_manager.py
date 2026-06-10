@@ -42,12 +42,13 @@ _STATE_FILENAME_SUFFIX = ".json"
 _STATE_FILE_GLOB = f"{_STATE_FILENAME_PREFIX}*"
 _STATE_KEY_PID = "pid"
 _STATE_KEY_PGID = "pgid"
+_STATE_KEY_CREATED_AT = "created_at"
 _STATE_KEY_OWNER_PID = "owner_pid"
 _STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
-# Owner pid reuse guard: a live process at the owner pid whose create time differs
-# from the recorded one by more than this is a different process (the owner died).
-_OWNER_CREATE_TIME_TOLERANCE_S = 1.0
+# Pid reuse guard: a live process at a recorded pid whose create time differs
+# from the recorded one by more than this is a different process.
+_CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
@@ -91,6 +92,7 @@ class _SwapState:
     pgid: int | None
     owner_pid: int | None
     owner_created_at: float | None
+    created_at: float | None = None
 
 
 class SwapManager:
@@ -111,7 +113,9 @@ class SwapManager:
         is still shutting down (the new llama-server then fails its bind and
         llama-swap reports it only as "exited prematurely").
         """
-        self._reap_previous()
+        # Idempotent safety net; the provider reaps before planning so the GPU
+        # probe already saw the real free memory.
+        self.reap_stale()
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,28 +135,29 @@ class SwapManager:
         self._write_state()
         self._await_health()
 
-    def _reap_previous(self) -> None:
-        """Kill every dead owner's surviving llama-swap before starting a new one.
+    def reap_stale(self) -> None:
+        """Kill every dead owner's surviving llama-swap.
 
         An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
-        so the next run would plan against artificially reduced free memory.
-        Every state file in the data dir is scanned (including the legacy
-        shared-name file): a dead owner's swap is reaped and its file removed; a
-        live owner's swap and file are left alone, so a second lilbee at the
-        same data_dir (e.g. ``lilbee sync`` beside the server) never kills the
-        live owner's healthy swap. The owner's recorded create time guards
-        against owner-pid reuse; the cmdline match guards against swap-pid reuse.
+        so planning would otherwise see artificially reduced free memory; the
+        provider calls this before its GPU probe. Every state file in the data
+        dir is scanned (including the legacy shared-name file): a dead owner's
+        swap is reaped and its file removed; a live owner's swap and file are
+        left alone, so a second lilbee at the same data_dir (e.g. ``lilbee
+        sync`` beside the server) never kills the live owner's healthy swap.
+        Recorded create times guard against owner- and swap-pid reuse; the
+        cmdline match covers legacy files without a swap create time.
         """
         for state_path in sorted(self._data_dir.glob(_STATE_FILE_GLOB)):
             state = _load_state(state_path)
             if state is not None and _owner_alive(state.owner_pid, state.owner_created_at):
                 continue
             state_path.unlink(missing_ok=True)
-            if state is not None and _is_live_llama_swap(state.pid):
+            if state is not None and _is_live_llama_swap(state):
                 _stop_stale_swap(state)
 
     def _write_state(self) -> None:
-        """Record the swap's pid/pgid plus our pid and create time in our own file."""
+        """Record the swap's pid/pgid/create time plus our pid and create time."""
         proc = self._proc
         if proc is None:
             return
@@ -160,9 +165,13 @@ class SwapManager:
         if sys.platform != "win32":
             with contextlib.suppress(ProcessLookupError):
                 pgid = os.getpgid(proc.pid)
+        created_at: float | None = None
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            created_at = psutil.Process(proc.pid).create_time()
         state = {
             _STATE_KEY_PID: proc.pid,
             _STATE_KEY_PGID: pgid,
+            _STATE_KEY_CREATED_AT: created_at,
             _STATE_KEY_OWNER_PID: os.getpid(),
             _STATE_KEY_OWNER_CREATED_AT: psutil.Process().create_time(),
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
@@ -319,12 +328,14 @@ def _load_state(path: Path) -> _SwapState | None:
         payload = json.loads(path.read_text())
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_owner = payload.get(_STATE_KEY_OWNER_PID)
-        raw_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
+        raw_owner_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
+        raw_created = payload.get(_STATE_KEY_CREATED_AT)
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             owner_pid=int(raw_owner) if raw_owner is not None else None,
-            owner_created_at=float(raw_created) if raw_created is not None else None,
+            owner_created_at=float(raw_owner_created) if raw_owner_created is not None else None,
+            created_at=float(raw_created) if raw_created is not None else None,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -344,16 +355,27 @@ def _owner_alive(pid: int | None, created_at: float | None) -> bool:
         create_time = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    if created_at is not None and abs(create_time - created_at) > _OWNER_CREATE_TIME_TOLERANCE_S:
+    if created_at is not None and abs(create_time - created_at) > _CREATE_TIME_TOLERANCE_S:
         return False
     return status != str(psutil.STATUS_ZOMBIE)
 
 
-def _is_live_llama_swap(pid: int) -> bool:
-    """True when *pid* is alive and its binary is llama-swap (pid-reuse guard)."""
+def _is_live_llama_swap(state: _SwapState) -> bool:
+    """True when the recorded pid is alive and is the recorded llama-swap.
+
+    A recorded create time that differs from the live process's is pid reuse,
+    even when the recycled pid runs another instance's llama-swap; a legacy
+    state file without one falls back to the cmdline match alone.
+    """
     try:
-        cmdline = psutil.Process(pid).cmdline()
+        proc = psutil.Process(state.pid)
+        cmdline = proc.cmdline()
+        create_time = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    if state.created_at is not None and abs(create_time - state.created_at) > (
+        _CREATE_TIME_TOLERANCE_S
+    ):
         return False
     binary = Path(next(iter(cmdline), "")).name
     return _LLAMA_SWAP_PROCESS_NAME in binary

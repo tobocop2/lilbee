@@ -317,11 +317,19 @@ def _own_state_path(tmp_path: Path) -> Path:
     return tmp_path / sm._state_filename(os.getpid())
 
 
+def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm._SwapState:
+    """A minimal _SwapState for swap-liveness checks."""
+    return sm._SwapState(
+        pid=pid, pgid=None, owner_pid=None, owner_created_at=None, created_at=created_at
+    )
+
+
 def _write_state(
     tmp_path: Path,
     *,
     pid: int = 7777,
     pgid: int | None = 7777,
+    created_at: float | None = None,
     owner_pid: int | None = None,
     owner_created_at: float | None = None,
     filename: str = "llama-swap.state.json",
@@ -332,6 +340,7 @@ def _write_state(
             {
                 "pid": pid,
                 "pgid": pgid,
+                "created_at": created_at,
                 "owner_pid": owner_pid,
                 "owner_created_at": owner_created_at,
                 "name": "llama-swap",
@@ -470,14 +479,67 @@ class TestCrossRunReaping:
 
     def test_is_live_llama_swap_false_for_dead_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_psutil_process(monkeypatch, {})
-        assert sm._is_live_llama_swap(123) is False
+        assert sm._is_live_llama_swap(_swap_state(pid=123)) is False
 
     def test_is_live_llama_swap_false_for_empty_cmdline(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A zombie reports an empty cmdline; never treat it as our process.
         _patch_psutil_process(monkeypatch, {123: _FakePsProcess(123, cmdline=[])})
-        assert sm._is_live_llama_swap(123) is False
+        assert sm._is_live_llama_swap(_swap_state(pid=123)) is False
+
+    def test_is_live_llama_swap_true_when_swap_create_time_matches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = _FakePsProcess(123, cmdline=["/opt/llama-swap"], create_time=42.0)
+        _patch_psutil_process(monkeypatch, {123: live})
+        assert sm._is_live_llama_swap(_swap_state(pid=123, created_at=42.0)) is True
+
+    def test_swap_pid_reused_by_another_instances_swap_is_not_killed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The recycled pid runs llama-swap, but a DIFFERENT instance's: the
+        # create-time mismatch must veto the cmdline match.
+        _write_state(tmp_path, pid=7777, created_at=42.0)
+        other_swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)
+        _patch_psutil_process(monkeypatch, {7777: other_swap})
+        stopped: list[object] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
+        SwapManager(tmp_path).reap_stale()
+        assert stopped == []
+
+    def test_swap_with_matching_create_time_is_killed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_state(tmp_path, pid=7777, created_at=42.0)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        stopped: list[sm._SwapState] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
+        SwapManager(tmp_path).reap_stale()
+        assert [state.pid for state in stopped] == [7777]
+
+    def test_legacy_state_without_swap_create_time_falls_back_to_cmdline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_state(tmp_path, pid=7777, created_at=None)
+        stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)
+        _patch_psutil_process(monkeypatch, {7777: stale})
+        stopped: list[sm._SwapState] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
+        SwapManager(tmp_path).reap_stale()
+        assert [state.pid for state in stopped] == [7777]
+
+    def test_start_records_the_swap_create_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_psutil_process(
+            monkeypatch, {4321: _FakePsProcess(4321, cmdline=["llama-swap"], create_time=777.0)}
+        )
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
+        assert json.loads(_own_state_path(tmp_path).read_text())["created_at"] == 777.0
 
     def test_start_records_the_owner_lilbee_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -503,7 +565,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {999: owner, 7777: swap})
         stopped: list[object] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert stopped == []
         assert state_path.read_text() == original  # the live owner still needs it
 
@@ -529,7 +591,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {999: zombie, 7777: swap})
         stopped: list[sm._SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert [state.pid for state in stopped] == [7777]
 
     def test_owner_alive_false_for_missing_owner_pid(self) -> None:
@@ -574,7 +636,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {999: impostor, 7777: swap})
         stopped: list[sm._SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert [state.pid for state in stopped] == [7777]
         assert not (tmp_path / sm._state_filename(999)).exists()
 
@@ -612,7 +674,7 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
         stopped: list[sm._SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert [state.pid for state in stopped] == [7777]
         assert not state_path.exists()
 
@@ -625,10 +687,10 @@ class TestCrossRunReaping:
         _patch_psutil_process(monkeypatch, {7777: swap})
         stopped: list[sm._SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert [state.pid for state in stopped] == [7777]
         assert not legacy.exists()
-        SwapManager(tmp_path)._reap_previous()
+        SwapManager(tmp_path).reap_stale()
         assert len(stopped) == 1  # nothing left to reap a second time
 
 

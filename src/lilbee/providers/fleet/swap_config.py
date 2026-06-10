@@ -82,12 +82,21 @@ def build_swap_config(launches: list[InstanceLaunch], member_ports: Mapping[str,
     return json.dumps(config, indent=2)
 
 
+def cold_load_timeout_s(weights_bytes: int) -> int:
+    """Cold-load ceiling for one member's weights at a conservative disk rate, floored.
+
+    The single source of the scaling formula: llama-swap's health-check timeout
+    and the provider's per-client request timeout both derive from it, so a model
+    whose load llama-swap would wait out can never time out the client first.
+    """
+    return max(_HEALTH_CHECK_TIMEOUT_FLOOR_S, weights_bytes // _COLD_LOAD_BYTES_PER_S)
+
+
 def _health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
-    """Cold-load ceiling scaled to the heaviest member's weights at a conservative
-    disk rate, floored at ten minutes; the timeout is proxy-global in llama-swap,
-    so the slowest possible load sets it."""
+    """Cold-load ceiling of the heaviest member; the timeout is proxy-global in
+    llama-swap, so the slowest possible load sets it."""
     heaviest = max((launch.weights_bytes for launch in launches), default=0)
-    return max(_HEALTH_CHECK_TIMEOUT_FLOOR_S, heaviest // _COLD_LOAD_BYTES_PER_S)
+    return cold_load_timeout_s(heaviest)
 
 
 def _command_line(argv: list[str], port: int) -> str:

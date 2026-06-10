@@ -19,7 +19,7 @@ from lilbee.providers.base import (
     ProviderError,
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
-from lilbee.providers.model_ref import ProviderModelRef, is_native_gguf_ref, parse_model_ref
+from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
 from lilbee.providers.roles import OcrBackend, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.vision import PageText
@@ -339,14 +339,15 @@ def _is_native_rerank_ref(model: str) -> bool:
 
     1. The ref resolves to a featured rerank catalog entry.
     2. The ref has the native HuggingFace GGUF shape
-       ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix). This
-       lets users point ``cfg.reranker_model`` at any installed native GGUF
-       reranker instead of only the ones that ship in ``FEATURED_ALL``.
-       Non-GGUF refs without a known SDK prefix still raise downstream
-       through ``parse_model_ref``.
+       ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix) and is
+       not claimed by a local-server prefix (``ollama/``, ``lm_studio/``),
+       matching :func:`parse_model_ref`'s exemption. This lets users point
+       ``cfg.reranker_model`` at any installed native GGUF reranker instead of
+       only the ones that ship in ``FEATURED_ALL``. Non-GGUF refs without a
+       known SDK prefix still raise downstream through ``parse_model_ref``.
     """
     if not model:
         return False
     if is_rerank_ref(model):
         return True
-    return is_native_gguf_ref(model)
+    return routes_to_native_gguf(model)

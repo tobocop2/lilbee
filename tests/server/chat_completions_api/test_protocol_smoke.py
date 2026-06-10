@@ -33,10 +33,12 @@ def _installed_chat_model(ref: str = _MOCK_MODEL_REF) -> MagicMock:
 
 
 @pytest.fixture
-def services_with_chat_model():
+def services_with_chat_model(monkeypatch):
     """Install a mock services container with one chat model and a canned reply."""
+    from lilbee.core.config import cfg
     from tests.conftest import make_mock_services
 
+    monkeypatch.setattr(cfg, "chat_model", _MOCK_MODEL_REF)
     provider = MagicMock()
     provider.chat.return_value = ChatResult(
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP

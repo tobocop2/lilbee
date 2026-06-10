@@ -85,6 +85,48 @@ def mock_svc():
     svc_mod.set_services(None)
 
 
+def _install_real_store():
+    """Swap the autouse mock store for a real LanceDB-backed one."""
+    from lilbee.data.store import Store
+    from tests.conftest import make_mock_services
+
+    store = Store(cfg)
+    svc_mod.set_services(make_mock_services(store=store))
+    return store
+
+
+def _real_ingest_result(name, *, file_hash, page_text="page one of a.pdf", stat=None):
+    """A store-schema _IngestResult with one chunk and one page-text row."""
+    from lilbee.data.ingest.types import _IngestResult
+    from lilbee.data.store import PageTextRecord
+
+    records = [
+        {
+            "source": name,
+            "content_type": "pdf",
+            "chunk_type": "raw",
+            "page_start": 1,
+            "page_end": 1,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": f"{name} {file_hash} chunk",
+            "chunk_index": 0,
+            "vector": [0.1] * cfg.embedding_dim,
+        }
+    ]
+    return _IngestResult(
+        name=name,
+        path=Path(name),
+        chunk_count=1,
+        error=None,
+        file_hash=file_hash,
+        records=records,
+        needs_cleanup=True,
+        page_texts=[PageTextRecord(source=name, page=1, text=page_text, content_type="pdf")],
+        stat=stat,
+    )
+
+
 def _make_kreuzberg_result(
     text="Some extracted text. " * 20,
     num_chunks=1,
@@ -413,90 +455,60 @@ class TestSync:
         retry = await sync(quiet=True)
         assert "doc.txt" in retry.added
 
-    def test_flush_batch_writes_page_texts_before_the_source_row(self, _mock_extract_file):
-        # Page texts must already be persisted when write_chunks_batch lands the
-        # source row, so a page-text failure leaves the row stale.
-        from lilbee.app.services import get_services
+    def test_flush_path_persists_page_texts_through_cleanup(self, _mock_extract_file):
+        # Real store: the flush's cleanup delete runs in the same transaction as
+        # the page-text write, so a needs_cleanup re-ingest must not wipe the
+        # page texts it just wrote.
         from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.types import _IngestResult
-        from lilbee.data.store import PageTextRecord
 
-        store = get_services().store
-        order: list[str] = []
-        store.add_page_texts.side_effect = lambda rows: order.append("page_texts")
-        store.write_chunks_batch.side_effect = lambda items: order.append("chunks")
-        result = _IngestResult(
-            name="a.txt",
-            path=Path("a.txt"),
-            chunk_count=1,
-            error=None,
-            file_hash="h",
-            records=[{"text": "x"}],
-            page_texts=[PageTextRecord(source="a.txt", page=0, text="x", content_type="text")],
-        )
-        pipeline._flush_batch([result])
-        assert order == ["page_texts", "chunks"]
+        store = _install_real_store()
+        result = _real_ingest_result("a.pdf", file_hash="h1")
+        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, set())
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one of a.pdf"]
 
-    def test_page_text_write_failure_keeps_the_source_row_stale(self, _mock_extract_file):
-        # A failed add_page_texts aborts the flush unit before write_chunks_batch,
-        # so the source row never lands and the file replans next sync.
-        from lilbee.app.services import get_services
+        replanned = _real_ingest_result("a.pdf", file_hash="h2", page_text="page one, edited")
+        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, set())
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["a.pdf"]["file_hash"] == "h2"
+
+    def test_page_text_write_failure_keeps_source_row_at_old_hash_and_stat(
+        self, _mock_extract_file
+    ):
+        # Real store: a page-text failure inside the batched transaction must
+        # leave the source row at the old hash/stat so the file replans next sync.
+        import lilbee.data.store.core as core_mod
+        from lilbee.core.config import PAGE_TEXTS_TABLE
         from lilbee.data.ingest import pipeline
-        from lilbee.data.ingest.types import _IngestResult
-        from lilbee.data.store import PageTextRecord
+        from lilbee.data.store import SourceStat, source_stat
 
-        store = get_services().store
-        store.add_page_texts.side_effect = RuntimeError("page table corrupt")
-        result = _IngestResult(
-            name="a.txt",
-            path=Path("a.txt"),
-            chunk_count=1,
-            error=None,
-            file_hash="h",
-            records=[{"text": "x"}],
-            page_texts=[PageTextRecord(source="a.txt", page=0, text="x", content_type="text")],
+        store = _install_real_store()
+        old_stat = SourceStat(11, 22, 33)
+        first = _real_ingest_result("a.pdf", file_hash="h1", stat=old_stat)
+        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, set())
+
+        real_ensure = core_mod.ensure_table
+
+        def _failing_ensure(db, name, schema):
+            if name == PAGE_TEXTS_TABLE:
+                raise RuntimeError("page table corrupt")
+            return real_ensure(db, name, schema)
+
+        replanned = _real_ingest_result(
+            "a.pdf", file_hash="h2", page_text="edited", stat=SourceStat(99, 88, 77)
         )
-
-        buffer = [result]
-        added: dict[str, None] = {"a.txt": None}
+        added: dict[str, None] = {"a.pdf": None}
         failed: dict[str, None] = {}
         flush_failed: set[str] = set()
-        pipeline._flush_writes(buffer, added, {}, failed, flush_failed)
+        with mock.patch.object(core_mod, "ensure_table", _failing_ensure):
+            pipeline._flush_writes([replanned], added, {}, failed, flush_failed)
 
-        store.write_chunks_batch.assert_not_called()
         assert added == {}
-        assert list(failed) == ["a.txt"]
-        assert flush_failed == {"a.txt"}
-        assert buffer == []
-
-    async def test_page_text_flush_failure_replans_with_no_skip_marker(
-        self, _mock_extract_file, isolated_env
-    ):
-        # End-to-end: a page-text failure on the second sync leaves the source
-        # row at the OLD hash, writes no skip marker, and still yields a
-        # SyncResult, so the next sync replans the file.
-        from lilbee.app.services import get_services
-        from lilbee.data.ingest import sync
-        from lilbee.data.ingest.skip_marker import load_skip_markers
-
-        doc = isolated_env / "doc.txt"
-        doc.write_text("original content")
-        await sync(quiet=True)
-        store = get_services().store
-        old_hash = {s["filename"]: s for s in store.get_sources()}["doc.txt"]["file_hash"]
-
-        doc.write_text("edited content!!")
-        store.add_page_texts.side_effect = RuntimeError("page table corrupt")
-        result = await sync(quiet=True)
-        assert "doc.txt" in result.failed
-        assert "doc.txt" not in load_skip_markers(cfg.data_root)
-        sources = {s["filename"]: s for s in store.get_sources()}
-        assert sources["doc.txt"]["file_hash"] == old_hash
-
-        # Next sync re-plans the file: the stale row's hash no longer matches.
-        store.add_page_texts.side_effect = None
-        retry = await sync(quiet=True)
-        assert "doc.txt" in retry.updated
+        assert list(failed) == ["a.pdf"]
+        assert flush_failed == {"a.pdf"}
+        record = {s["filename"]: s for s in store.get_sources()}["a.pdf"]
+        assert record["file_hash"] == "h1"
+        assert source_stat(record) == old_stat
 
     async def test_ingest_pdf(self, mock_extract_file, isolated_env):
         from reportlab.lib.pagesizes import letter

@@ -14,15 +14,19 @@ from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
-from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     ChatSlotGuard,
     acquire_chat_slot_or_busy,
     release_chat_slot,
+)
+from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
 )
 from lilbee.server.handlers.sse import sse_error
 from lilbee.server.models import (
@@ -31,7 +35,21 @@ from lilbee.server.models import (
     ChatRequest,
 )
 
+_BAD_REQUEST_STATUS = 400
+_NOT_FOUND_STATUS = 404
 _SERVICE_UNAVAILABLE_STATUS = 503
+
+# Statuses for the non-stream /api chat surface, mirroring the stream path's
+# _STREAM_KIND_CODES. Kinds absent here (AUTH, RATE_LIMIT, CONNECTION, SERVER,
+# BAD_REQUEST) stay on the generic 503: shipped /api clients read 401/403 as a
+# lilbee session-token failure and 429 as their own stream rate limit, so an
+# upstream-backend failure must not borrow those statuses. The /v1 surface
+# applies its own completions-envelope mapping in chat_completions_api.errors.
+_API_PROVIDER_KIND_STATUSES: dict[ProviderErrorKind, int] = {
+    ProviderErrorKind.CONTEXT_OVERFLOW: _BAD_REQUEST_STATUS,
+    ProviderErrorKind.NOT_FOUND: _NOT_FOUND_STATUS,
+}
+
 log = logging.getLogger(__name__)
 
 
@@ -57,15 +75,24 @@ def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
 def _raise_chat_http_error(exc: Exception) -> NoReturn:
     """Translate a chat/RAG failure into the Litestar HTTP envelope.
 
-    ValueError is a 422 validation error; an embedder/index mismatch is a 409
-    conflict; a recognized typed dispatch/provider failure carries its own
-    status; anything else is a 503.
+    ValueError is a 422 validation error; a typed dispatch error or a
+    kind-mapped ProviderError carries its own status; anything else is a
+    503 carrying the failure message.
     """
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
-    classified = classify_provider_error(exc)
-    status = classified.http_status if classified is not None else _SERVICE_UNAVAILABLE_STATUS
-    raise HTTPException(status_code=status, detail=str(exc)) from exc
+    raise HTTPException(status_code=_api_chat_error_status(exc), detail=str(exc)) from exc
+
+
+def _api_chat_error_status(exc: Exception) -> int:
+    """HTTP status for a non-stream /api chat failure; unmapped kinds stay 503."""
+    if isinstance(exc, ModelNotFoundError):
+        return _NOT_FOUND_STATUS
+    if isinstance(exc, ModelDoesNotSupportToolsError):
+        return _BAD_REQUEST_STATUS
+    if isinstance(exc, ProviderError):
+        return _API_PROVIDER_KIND_STATUSES.get(exc.kind, _SERVICE_UNAVAILABLE_STATUS)
+    return _SERVICE_UNAVAILABLE_STATUS
 
 
 async def _acquire_chat_lock_or_raise() -> None:

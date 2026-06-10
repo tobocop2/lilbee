@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.providers.model_ref import format_remote_ref, parse_model_ref, translate_options
+from lilbee.providers.model_ref import (
+    format_remote_ref,
+    parse_model_ref,
+    routes_to_native_gguf,
+    translate_options,
+    with_configured_remote_chat,
+)
 
 # Canonical native HF ref for tests that need a local model.
 _LOCAL_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -122,6 +128,35 @@ class TestParseModelRef:
     def test_empty_string_rejected(self) -> None:
         with pytest.raises(ValueError):
             parse_model_ref("")
+
+
+class TestRoutesToNativeGguf:
+    """The exemption-aware shape check shared by parsing and rerank routing."""
+
+    def test_native_gguf_shape_routes_native(self) -> None:
+        assert routes_to_native_gguf(_LOCAL_REF) is True
+
+    def test_local_server_prefix_is_exempt_from_shape_rule(self) -> None:
+        assert routes_to_native_gguf("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf") is False
+        assert routes_to_native_gguf("ollama/some/dir/model.gguf") is False
+
+    def test_non_gguf_ref_does_not_route_native(self) -> None:
+        assert routes_to_native_gguf("openai/gpt-4o") is False
+
+
+class TestWithConfiguredRemoteChat:
+    """A model listing includes a remote-configured chat model."""
+
+    def test_remote_configured_chat_model_is_prepended(self) -> None:
+        refs = with_configured_remote_chat(["a/b/c.gguf"], "ollama/qwen3:8b")
+        assert refs == ["ollama/qwen3:8b", "a/b/c.gguf"]
+
+    def test_native_configured_chat_model_is_untouched(self) -> None:
+        assert with_configured_remote_chat(["a/b/c.gguf"], "a/b/c.gguf") == ["a/b/c.gguf"]
+
+    def test_already_listed_remote_ref_is_not_duplicated(self) -> None:
+        refs = with_configured_remote_chat(["ollama/qwen3:8b"], "ollama/qwen3:8b")
+        assert refs == ["ollama/qwen3:8b"]
 
 
 class TestProviderModelRefProperties:

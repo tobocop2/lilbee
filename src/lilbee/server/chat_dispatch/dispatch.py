@@ -11,7 +11,17 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.app.services import get_services
-from lilbee.providers.base import ChatResult, FinishReason, TokenUsage, ToolCallDelta
+from lilbee.core.config import cfg
+from lilbee.providers.base import (
+    ChatResult,
+    FinishReason,
+    ProviderError,
+    ProviderErrorKind,
+    TokenUsage,
+    ToolCallDelta,
+)
+from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -283,15 +293,32 @@ def _ensure_tool_capability(req: CanonicalChatRequest, model: str) -> None:
         raise ModelDoesNotSupportToolsError(model)
 
 
+def _ensure_configured_local_model(canonical: str) -> None:
+    """Reject a local-route model that is not the configured chat model.
+
+    Mirrors the fleet's own configured-model guard (which stays in place as
+    defense in depth for direct provider users) so streaming clients get a
+    clean 400 before headers instead of an SSE error frame mid-stream.
+    """
+    if not parse_model_ref(canonical).is_local or canonical == cfg.chat_model:
+        return
+    raise ProviderError(
+        f"This engine serves the configured {WorkerRole.CHAT} model ({cfg.chat_model}). "
+        f"To use {canonical!r}, set it as the {WorkerRole.CHAT} model and reload.",
+        kind=ProviderErrorKind.BAD_REQUEST,
+    )
+
+
 def preflight_chat_request(req: CanonicalChatRequest) -> str:
     """Synchronously validate *req* before any streaming response starts.
 
-    Raises ``ModelNotFoundError`` or ``ModelDoesNotSupportToolsError``
-    so the route layer can return a real 4xx HTTP status instead of
-    burying the failure in an SSE error frame after headers flush.
-    Returns the resolved canonical model ref.
+    Raises ``ModelNotFoundError``, ``ModelDoesNotSupportToolsError``, or a
+    ``BAD_REQUEST`` ``ProviderError`` so the route layer can return a real
+    4xx HTTP status instead of burying the failure in an SSE error frame
+    after headers flush. Returns the resolved canonical model ref.
     """
     canonical = _resolve_canonical_model(req.model)
+    _ensure_configured_local_model(canonical)
     _ensure_tool_capability(req, canonical)
     return canonical
 

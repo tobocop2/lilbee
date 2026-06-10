@@ -117,24 +117,6 @@ class TestHealthProbes:
         assert server_mod.wait_for_chat_warm(8080, timeout_s=0.0) is False
 
 
-class TestWithConfiguredRemoteChat:
-    """The launcher's model set includes a remote-configured chat model."""
-
-    def test_remote_configured_chat_model_is_prepended(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "chat_model", "ollama/qwen3:8b")
-        refs = server_mod.with_configured_remote_chat(["a/b/c.gguf"])
-        assert refs == ["ollama/qwen3:8b", "a/b/c.gguf"]
-
-    def test_native_configured_chat_model_is_untouched(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "chat_model", "a/b/c.gguf")
-        assert server_mod.with_configured_remote_chat(["a/b/c.gguf"]) == ["a/b/c.gguf"]
-
-    def test_already_listed_remote_ref_is_not_duplicated(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "chat_model", "ollama/qwen3:8b")
-        refs = server_mod.with_configured_remote_chat(["ollama/qwen3:8b"])
-        assert refs == ["ollama/qwen3:8b"]
-
-
 class TestEnsureServerRunningRetries:
     """A port stolen between free_port() and bind gets a fresh port on retry."""
 

@@ -109,6 +109,11 @@ _ANN_REFINE_FACTOR = 10
 # are migrated in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
 
+# Stat backfills are replaced this many source rows per locked write: the first
+# sync after a stat-column upgrade backfills every source, and an unchunked
+# replace would join millions of filenames into one delete predicate.
+_SOURCE_STAT_BATCH_ROWS = 2000
+
 
 def _ann_nprobes(row_count: int) -> int:
     """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
@@ -729,20 +734,21 @@ class Store:
         self._invalidate_source_cache()
 
     def update_source_stats(self, backfills: list[SourceStatBackfill]) -> None:
-        """Record size/mtime for already-tracked sources in one batched write."""
+        """Record size/mtime for already-tracked sources in batched locked writes."""
         if not backfills:
             return
-        rows = [
-            {
-                **bf.record,
-                "size_bytes": bf.stat.size_bytes,
-                "mtime_ns": bf.stat.mtime_ns,
-                "stat_captured_ns": bf.stat.captured_ns,
-            }
-            for bf in backfills
-        ]
-        with write_lock():
-            self._replace_source_rows_unlocked(rows)
+        for start in range(0, len(backfills), _SOURCE_STAT_BATCH_ROWS):
+            rows = [
+                {
+                    **bf.record,
+                    "size_bytes": bf.stat.size_bytes,
+                    "mtime_ns": bf.stat.mtime_ns,
+                    "stat_captured_ns": bf.stat.captured_ns,
+                }
+                for bf in backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
+            ]
+            with write_lock():
+                self._replace_source_rows_unlocked(rows)
         self._invalidate_source_cache()
 
     def optimize_sources(self) -> None:
@@ -763,9 +769,12 @@ class Store:
         transaction per document. This folds many documents into a single
         ``table.add`` plus one source-table update pass, so the lock is taken once
         per batch and held only for the write -- never across extract or embed,
-        which run before this is called. Each document's cleanup delete and source
-        upsert run inside the same lock, so a reader never observes a half-applied
-        batch (stronger than the per-file path's separate lock per delete/add/upsert).
+        which run before this is called. Each document's cleanup delete, page
+        texts, and source upsert run inside the same lock, so a reader never
+        observes a half-applied batch; the page texts land after the cleanup
+        delete (which clears the source's old page-text rows) and before the
+        source row, so a page-text failure leaves the row stale and the file
+        replans next sync.
 
         The embedding-identity gate and per-vector dimension check mirror
         ``add_chunks``; a dimension mismatch raises and the whole batch is rejected,
@@ -791,6 +800,9 @@ class Store:
             for it in items:
                 if it.needs_cleanup:
                     self._delete_by_source_unlocked(it.source)
+            page_rows = [row for it in items for row in (it.page_texts or [])]
+            if page_rows:
+                ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
             table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
             table.add(all_records)
             if self.get_meta() is None:

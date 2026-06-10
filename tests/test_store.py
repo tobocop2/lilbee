@@ -322,6 +322,31 @@ class TestWriteChunksBatch:
         assert store.write_chunks_batch([ChunkWrite("x.md", "h", [], needs_cleanup=False)]) == 0
         assert store.get_sources() == []
 
+    def test_page_texts_land_in_the_batch_and_survive_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        page = {"source": "a.pdf", "page": 1, "text": "page one", "content_type": "pdf"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h1", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[page]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one"]
+
+        # Re-ingest: the same transaction's cleanup delete clears the old page
+        # rows, then the fresh ones land, so nothing the batch wrote is wiped.
+        edited = {**page, "text": "page one, edited"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h2", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[edited]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
+
     def test_dimension_mismatch_rejects_whole_batch(self, store):
         from lilbee.data.store import ChunkWrite
 
@@ -1648,6 +1673,37 @@ class TestSourceStatColumns:
         assert source_stat(records["a.md"]) == SourceStat(1, 2)
         assert source_stat(records["b.md"]) == SourceStat(3, 4)
         assert records["a.md"]["file_hash"] == "ha"
+
+    def test_update_source_stats_chunks_huge_backfills(self, store):
+        # A whole-corpus backfill must not join every filename into one delete
+        # predicate: rows are replaced in slices, each its own locked write.
+        import math
+
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
+
+        total, batch_rows = 5, 2
+        for i in range(total):
+            store.upsert_source(f"f{i}.md", f"h{i}", 1)
+        records = {r["filename"]: r for r in store.get_sources()}
+        backfills = [
+            SourceStatBackfill(records[f"f{i}.md"], SourceStat(i, i + 1)) for i in range(total)
+        ]
+        with (
+            mock.patch.object(core_mod, "_SOURCE_STAT_BATCH_ROWS", batch_rows),
+            mock.patch.object(
+                store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            ) as spy,
+        ):
+            store.update_source_stats(backfills)
+        assert spy.call_count == math.ceil(total / batch_rows)
+        assert all(len(call.args[0]) <= batch_rows for call in spy.call_args_list)
+
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert len(records) == total
+        for i in range(total):
+            assert source_stat(records[f"f{i}.md"]) == SourceStat(i, i + 1)
+            assert records[f"f{i}.md"]["file_hash"] == f"h{i}"
 
     def test_update_source_stats_empty_is_noop(self, store):
         store.update_source_stats([])

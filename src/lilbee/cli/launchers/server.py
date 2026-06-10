@@ -18,8 +18,6 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
-from lilbee.core.config import cfg
-from lilbee.providers.model_ref import parse_model_ref
 from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
@@ -64,21 +62,6 @@ def installed_chat_model_refs() -> list[str]:
     """Return sorted refs for every chat-task model in the registry."""
     registry = get_services().registry
     return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
-
-
-def with_configured_remote_chat(refs: list[str]) -> list[str]:
-    """Return *refs* with the configured chat model prepended when it is remote.
-
-    A remote-configured chat model (``ollama/...``, ``openai/...``) is served by
-    the daemon through known-model resolution without appearing in the native
-    registry; prepending it keeps the launched client's picker truthful and puts
-    the model lilbee actually serves first. ``cfg.chat_model`` is validated and
-    canonicalized at the write boundary, so it always parses.
-    """
-    configured = str(cfg.chat_model)
-    if configured in refs or not parse_model_ref(configured).is_remote:
-        return list(refs)
-    return [configured, *refs]
 
 
 def free_port() -> int:

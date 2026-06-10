@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import WorkerRole
@@ -54,15 +55,25 @@ _WARM_MAX_TOKENS = 1
 # Per-role client request budget. llama-swap loads an upstream lazily on the first
 # request and holds it open during the cold load (up to its own health timeout), so
 # unlike the old supervisor -- which waited for ready before routing -- the first
-# request here covers load + generation. Sized to cover both so a large model's
-# cold load doesn't time out the first call.
-_REQUEST_TIMEOUT_S = 900.0
+# request here covers load + generation. The floor covers generation on any model;
+# a heavier model's weights-scaled cold-load budget plus the margin raises it so
+# the first request rides out the load instead of timing out mid-load.
+_REQUEST_TIMEOUT_FLOOR_S = 900.0
+_REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
 _T = TypeVar("_T")
+
+
+def _request_timeout_s(weights_bytes: int) -> float:
+    """Per-client request budget: the floor, or the cold-load budget plus margin."""
+    return max(
+        _REQUEST_TIMEOUT_FLOOR_S,
+        cold_load_timeout_s(weights_bytes) + _REQUEST_TIMEOUT_GENERATION_MARGIN_S,
+    )
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -83,8 +94,8 @@ def _call_with_failover(
     """Run *call* on the least-busy healthy client, retrying once on another replica.
 
     A connection-level failure (dead replica, "exited prematurely") marks the
-    client unhealthy so the router skips it for the cool-down (after which its
-    next routed request is the recovery probe); the call retries once on a
+    client unhealthy so the router skips it for the cool-down (after which it is
+    probed by live traffic, unmetered); the call retries once on a
     different replica, preferring a healthy one but probing an unhealthy one
     when none are (the same fallback ``_least_in_flight`` applies). The retry
     replica is marked the same way if it also fails at the connection level.
@@ -287,10 +298,13 @@ class FleetProvider:
                     return self._swap
             from lilbee.core.config import cfg
 
+            swap = SwapManager(cfg.data_dir)
+            # A dead owner's surviving llama-swap holds VRAM; reap before planning
+            # so the device probe sees the real free memory.
+            swap.reap_stale()
             launches = planning.plan_all_launches()
             if not launches:
                 return None  # no installed/configured model -> serve nothing, spawn nothing
-            swap = SwapManager(cfg.data_dir)
             swap.start(launches)
             with self._lock:
                 self._adopt_swap(swap, launches)
@@ -314,7 +328,7 @@ class FleetProvider:
                     endpoint,
                     launch.model_id,
                     token_cap=launch.token_cap,
-                    timeout=_REQUEST_TIMEOUT_S,
+                    timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                 )
             )
@@ -870,6 +884,8 @@ class FleetProvider:
                 swap = self._swap
             if swap is None:
                 return
+            # Reap dead owners' swaps before re-planning, same as the first build.
+            swap.reap_stale()
             launches = planning.plan_all_launches()
             swap.reload(launches)
             with self._lock:

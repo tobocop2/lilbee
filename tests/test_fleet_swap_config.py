@@ -173,3 +173,16 @@ class TestHealthCheckTimeoutScaling:
         cfg = _config([small, giant])
         expected = (300 * 1024**3) // swap_config_mod._COLD_LOAD_BYTES_PER_S
         assert cfg["healthCheckTimeout"] == expected
+
+    def test_cold_load_timeout_floors_small_weights(self) -> None:
+        # The shared per-member helper; the provider's client timeout derives from it.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        assert cold_load_timeout_s(0) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+        assert cold_load_timeout_s(4 * 1024**3) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+
+    def test_cold_load_timeout_scales_giant_weights(self) -> None:
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 300 * 1024**3
+        assert cold_load_timeout_s(weights) == weights // swap_config_mod._COLD_LOAD_BYTES_PER_S

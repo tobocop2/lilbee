@@ -3235,6 +3235,16 @@ class TestClassifyStreamError:
         assert code == "connection"
         assert "unreachable" in msg
 
+    def test_rate_limit_provider_error_keeps_kind_code(self):
+        """A RATE_LIMIT ProviderError keeps "rate_limit", not the /v1 429 mapping."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend is out of quota.", kind=ProviderErrorKind.RATE_LIMIT)
+        code, msg = _classify_stream_error(exc)
+        assert code == "rate_limit"
+        assert "out of quota" in msg
+
     def test_server_provider_error_keeps_kind_code(self):
         """A SERVER ProviderError stays "server", distinct from "connection"."""
         from lilbee.providers.base import ProviderError, ProviderErrorKind

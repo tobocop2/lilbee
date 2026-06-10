@@ -26,11 +26,14 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     return client
 
 
-def _fake_launch(role: WorkerRole, *, slots: int = 1, ctx: int = 0) -> MagicMock:
+def _fake_launch(
+    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0
+) -> MagicMock:
     launch = MagicMock()
     launch.role = role
     launch.slots = slots
     launch.ctx = ctx
+    launch.weights_bytes = weights_bytes
     return launch
 
 
@@ -39,10 +42,14 @@ class _FakeSwap:
 
     def __init__(self) -> None:
         self.started: list[list] = []
+        self.reaps = 0
         self.reloads = 0
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
+
+    def reap_stale(self) -> None:
+        self.reaps += 1
 
     def start(self, launches: list) -> None:
         self.started.append(launches)
@@ -597,6 +604,56 @@ def test_ensure_swap_defaults_chat_slots_without_chat_launch(monkeypatch) -> Non
     assert p._chat_ctx is None
 
 
+class _OrderedReapSwap(_FakeSwap):
+    """A fake swap appending reap events to a shared order log."""
+
+    def __init__(self, order: list[str]) -> None:
+        super().__init__()
+        self._order = order
+
+    def reap_stale(self) -> None:
+        super().reap_stale()
+        self._order.append("reap")
+
+
+def _ordered_planner(order: list[str], launches: list) -> object:
+    """A plan_all_launches stand-in appending to the shared order log."""
+
+    def _plan() -> list:
+        order.append("plan")
+        return launches
+
+    return _plan
+
+
+def test_ensure_swap_reaps_stale_swaps_before_planning(monkeypatch) -> None:
+    # An OOM-survivor llama-swap holds VRAM; reaping after planning would let
+    # the device probe see artificially reduced free memory and misplace.
+    order: list[str] = []
+    swap = _OrderedReapSwap(order)
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: swap)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
+    )
+    FleetProvider()._ensure_swap()
+    assert order == ["reap", "plan"]
+
+
+def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
+    order: list[str] = []
+    swap = _OrderedReapSwap(order)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
+    )
+    p = FleetProvider()
+    p._swap = swap
+    p._reload_pass()
+    assert order == ["reap", "plan"]
+    assert swap.reloads == 1
+
+
 def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
@@ -615,12 +672,8 @@ def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     assert p._clients == {}
 
 
-def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
-    # Each role's client carries the launch token_cap (embed/rerank input truncation,
-    # the in-process backstop) and a timeout long enough for a cold upstream load,
-    # matching the old supervisor's client construction.
-    launch = _fake_launch(WorkerRole.EMBED)
-    launch.token_cap = 2048
+def _captured_client_kwargs(monkeypatch, launch) -> dict:
+    """Build the engine around *launch* and return the client constructor kwargs."""
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: _FakeSwap())
     monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [launch])
     captured: list[dict] = []
@@ -631,8 +684,38 @@ def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
     FleetProvider()._ensure_swap()
-    assert captured[0]["token_cap"] == 2048
-    assert captured[0]["timeout"] == prov_mod._REQUEST_TIMEOUT_S
+    return captured[0]
+
+
+def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
+    # Each role's client carries the launch token_cap (embed/rerank input truncation,
+    # the in-process backstop) and a timeout long enough for a cold upstream load,
+    # matching the old supervisor's client construction.
+    launch = _fake_launch(WorkerRole.EMBED)
+    launch.token_cap = 2048
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["token_cap"] == 2048
+    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+
+
+def test_small_model_client_keeps_the_floor_timeout(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=4 * _GB)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+
+
+def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
+    # A split-GGUF giant loads longer than the fixed floor; the client request
+    # timeout must ride out the cold load llama-swap itself is willing to wait
+    # for, or the first chat marks the replica unhealthy mid-load.
+    from lilbee.providers.fleet import swap_config as swap_config_mod
+
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=300 * _GB)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    health_timeout = swap_config_mod._health_check_timeout_s([launch])
+    assert health_timeout > prov_mod._REQUEST_TIMEOUT_FLOOR_S
+    assert kwargs["timeout"] >= health_timeout
+    assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
 
 
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:

@@ -318,6 +318,33 @@ class TestChatRoute:
         assert resp.status_code == 503
         assert "downstream broke" in resp.text
 
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_upstream_auth_error_stays_503(self, mock_chat, client):
+        """An upstream AUTH failure keeps the generic 503, never the /v1 401: the
+        shipped /api client reads 401/403 as a lilbee session-token failure and
+        would tell the user to reconnect instead of fixing the backend API key."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_chat.side_effect = ProviderError(
+            "gemini/m rejected your API key.", kind=ProviderErrorKind.AUTH
+        )
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "rejected your API key" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_upstream_rate_limit_error_stays_503(self, mock_chat, client):
+        """An upstream RATE_LIMIT failure keeps the generic 503, never the /v1 429:
+        the shipped /api client reads 429 as its own stream-in-flight limit."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_chat.side_effect = ProviderError(
+            "gemini/m is rate-limited or out of quota.", kind=ProviderErrorKind.RATE_LIMIT
+        )
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "rate-limited" in resp.text
+
 
 class TestChatStreamRoute:
     @mock.patch("lilbee.server.handlers.chat_stream")

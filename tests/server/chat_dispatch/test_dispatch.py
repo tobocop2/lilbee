@@ -45,8 +45,10 @@ from lilbee.server.chat_dispatch.dispatch import (
 @pytest.fixture
 def services_with_model(monkeypatch):
     """Install a mock services container with one installed model."""
+    from lilbee.core.config import cfg
     from tests.conftest import make_mock_services
 
+    monkeypatch.setattr(cfg, "chat_model", "vendor/model::Q4")
     provider = MagicMock()
     provider.chat.return_value = ChatResult(
         text="hello", tool_calls=(), finish_reason=FinishReason.STOP
@@ -420,6 +422,48 @@ class _FakeStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class TestConfiguredModelPreflight:
+    """An installed-but-not-configured local model is rejected before dispatch."""
+
+    def test_local_model_not_configured_rejected_before_provider_call(
+        self, services_with_model, monkeypatch
+    ) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        monkeypatch.setattr(cfg, "chat_model", "vendor/other::Q4")
+        with pytest.raises(ProviderError) as exc_info:
+            dispatch_chat(_req())
+        assert exc_info.value.kind is ProviderErrorKind.BAD_REQUEST
+        assert "set it as the chat model and reload" in str(exc_info.value)
+        assert "vendor/other::Q4" in str(exc_info.value)
+        services_with_model.provider.chat.assert_not_called()
+
+    def test_configured_local_model_passes_preflight(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
+
+        assert preflight_chat_request(_req()) == "vendor/model::Q4"
+
+    def test_remote_ref_differing_from_configured_passes_preflight(
+        self, services_with_model
+    ) -> None:
+        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
+
+        assert preflight_chat_request(_req(model="ollama/gemma4:26b")) == "ollama/gemma4:26b"
+
+    async def test_stream_rejects_not_configured_model_before_yielding(
+        self, services_with_model, monkeypatch
+    ) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "chat_model", "vendor/other::Q4")
+        gen = dispatch_chat_stream(_req())
+        with pytest.raises(ProviderError, match="set it as the chat model and reload"):
+            await gen.__anext__()
+        services_with_model.provider.chat.assert_not_called()
 
 
 class TestDispatchChatStream:

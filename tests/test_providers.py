@@ -3404,6 +3404,28 @@ class TestRoutingProviderRerank:
 
         assert _is_native_rerank_ref("cohere/rerank-english-v3.0") is False
 
+    def test_lm_studio_gguf_path_reranker_is_not_native(self) -> None:
+        """A local-server-prefixed GGUF path keeps the prefix exemption, like chat refs."""
+        from lilbee.providers.routing_provider import _is_native_rerank_ref
+
+        assert _is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf") is False
+
+    def test_rerank_routes_lm_studio_gguf_path_to_sdk(self) -> None:
+        """An ``lm_studio/`` reranker whose id looks like a GGUF path goes to LM Studio."""
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.supports_rerank.return_value = True
+        mock_sdk.rerank.return_value = [0.7, 0.3]
+        rp._local = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.reranker_model = "lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf"
+        scores = rp.rerank("q", ["a", "b"])
+        assert scores == [0.7, 0.3]
+        mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
+        mock_llama.rerank.assert_not_called()
+
     def test_rerank_with_empty_model_raises_provider_error(self) -> None:
         """rerank() raises ProviderError when cfg.reranker_model is empty."""
         from lilbee.providers.base import ProviderError

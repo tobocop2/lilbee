@@ -12,9 +12,9 @@ from lilbee.cli.launchers.server import (
     installed_chat_model_refs,
     stop_spawned_server,
     wait_for_chat_warm,
-    with_configured_remote_chat,
 )
 from lilbee.core.config import cfg
+from lilbee.providers.model_ref import with_configured_remote_chat
 
 
 class Launcher(Protocol):
@@ -55,7 +55,7 @@ def run_launcher(launcher: Launcher) -> None:
     cfg.worker_pool_eager_start = False
     (token, port), spawned = ensure_server_running()
     native_refs = installed_chat_model_refs()
-    model_refs = with_configured_remote_chat(native_refs)
+    model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
     if not model_refs:
         # The client provider is written with no models, so it cannot use lilbee.
         # Some clients (e.g. opencode) then silently fall back to their own default

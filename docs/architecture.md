@@ -241,11 +241,13 @@ flowchart TD
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
   on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
-  (named with its pid) recording the running llama-swap's pid, process group, and the
-  owner's pid and create time; the next start scans every state file and reaps each
-  dead owner's surviving llama-swap and its servers (guarded against pid reuse by a
-  command-line match for the swap and a create-time match for the owner, and left
-  alone while the owning lilbee is still alive); clean shutdown removes only the
+  (named with its pid) recording the running llama-swap's pid, process group, and
+  create time plus the owner's pid and create time; before the next build plans
+  placement (so the device probe sees the real free VRAM), every state file is
+  scanned and each dead owner's surviving llama-swap and its servers are reaped
+  (guarded against pid reuse by create-time matches for both the swap and the owner,
+  falling back to a command-line match for legacy files, and left alone while the
+  owning lilbee is still alive); clean shutdown removes only the
   owner's own file. A background monitor restarts a dead server with
   backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
   then SIGKILL).
@@ -253,8 +255,9 @@ flowchart TD
   rerank reuses the client's rank-pooling embeddings call and vision the chat call
   with image content. A connection-level failure marks the replica unhealthy and the
   embed/rerank call retries once on a different replica; an unhealthy replica rejoins
-  the pool after a short cool-down, where its next routed request is the recovery
-  probe (a success restores it, another connection failure re-starts the cool-down).
+  the pool after a short cool-down, where recovery is probed by live traffic and
+  unmetered: every caller that routes to it once cooled is a probe (a success
+  restores it, another connection failure re-starts the cool-down).
   A per-call model that differs from the role's configured model
   is rejected (switching models is a config change that respawns the server), and a
   role with no healthy server surfaces a `ProviderError`. Fleet build is single-flight

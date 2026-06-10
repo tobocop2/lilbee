@@ -20,6 +20,8 @@ class ChunkWrite(NamedTuple):
 
     ``Store.write_chunks_batch`` folds many of these into a single locked
     transaction so bulk ingest doesn't pay a write-lock acquisition per document.
+    ``page_texts`` rows land in the same transaction, after the cleanup delete
+    and before the source row.
     """
 
     source: str
@@ -27,6 +29,7 @@ class ChunkWrite(NamedTuple):
     records: list[dict]
     needs_cleanup: bool
     stat: SourceStat | None = None
+    page_texts: list[dict] | None = None
 
 
 class ChunkType(StrEnum):

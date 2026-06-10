@@ -181,6 +181,8 @@ def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
     """
     if (stored.size_bytes, stored.mtime_ns) != (current.size_bytes, current.mtime_ns):
         return False
+    # Unknown capture or mtime >= capture hashes anyway; clock skew can only widen
+    # hashing, never widen skipping past the pre-existing same-tick window.
     return stored.captured_ns != SOURCE_STAT_UNKNOWN and current.mtime_ns < stored.captured_ns
 
 
@@ -748,18 +750,15 @@ def _retry_after_lock_timeout(write: Callable[[], object]) -> None:
 
 
 def _flush_batch(buffer: list[_IngestResult]) -> None:
-    """Persist one flush unit: page texts first, then chunks + source rows.
+    """Persist one flush unit in a single locked ``write_chunks_batch`` transaction.
 
-    The source row (with its fresh stat) lands in ``write_chunks_batch``, so the
-    page texts must already be persisted by then: a page-text failure leaves the
-    source row stale and the file replans next sync instead of losing its pages
-    forever behind the stat short-circuit. Each write retries once on a lock
-    timeout; the cleanup delete on replan removes any rows a partial flush left.
+    Page texts travel inside each :class:`ChunkWrite` so the store writes them
+    after the cleanup delete (which clears the source's old page-text rows) and
+    before the source row: a page-text failure leaves the row stale and the file
+    replans next sync instead of losing its pages forever behind the stat
+    short-circuit. The write retries once on a lock timeout.
     """
     store = get_services().store
-    page_texts = [pt for r in buffer for pt in (r.page_texts or [])]
-    if page_texts:
-        _retry_after_lock_timeout(lambda: store.add_page_texts(cast(list[dict], page_texts)))
     items = [
         ChunkWrite(
             source=r.name,
@@ -767,6 +766,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
             records=cast(list[dict], r.records or []),
             needs_cleanup=r.needs_cleanup,
             stat=r.stat,
+            page_texts=cast(list[dict], r.page_texts or []),
         )
         for r in buffer
     ]
