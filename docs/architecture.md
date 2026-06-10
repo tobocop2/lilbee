@@ -167,8 +167,13 @@ flowchart TD
   index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
   so we never cross them; the Vulkan VRAM probe (`gpu_select`) is only a fallback.
 - **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
-  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, ROCm via
+  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
+  environment presets another order), ROCm via
   `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
+  When the parent environment already restricts a visible-devices var (a pod preset
+  like `CUDA_VISIBLE_DEVICES=2,3`), the probe's indices are relative to that list,
+  so the child env maps them back through it (integer or UUID entries) and keeps
+  naming the same physical cards the probe saw.
 - **VRAM estimation** (`vram.py`): each instance's footprint comes from
   **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
   subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
@@ -177,7 +182,10 @@ flowchart TD
   planner charges whichever matches the host. For a multi-GPU tensor-split it passes
   `--tensor-split`, so gguf-parser returns the **per-device** breakdown; the planner
   fits and charges the busiest card (`peak_footprint`), because a split OOMs on
-  whichever GPU is fullest, not on the summed total. This replaced a hand-rolled
+  whichever GPU is fullest, not on the summed total. The estimate also carries the
+  same `--batch-size`/`--ubatch-size` the launch will use (pooled embed/rerank raise
+  them to the full context), so the compute-buffer estimate matches what the server
+  actually allocates. This replaced a hand-rolled
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
@@ -190,8 +198,9 @@ flowchart TD
   across batching slots, so the planner reserves and launches it at the single-sequence
   footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is
   for a chat that fits one card). Its context is then sized (`ctx.fit_split_ctx`, a
-  binary search over the gguf-parser estimate) against the **busiest card's** headroom,
-  not the combined pool, so the per-GPU compute buffer can't overflow device 0. On a
+  binary search over the gguf-parser estimate) so **each card's own share fits that
+  card's own headroom**, never the combined pool, so the per-GPU compute buffer can't
+  overflow device 0 even when the cards are unequal. On a
   single CPU/Metal box this
   is a fleet-of-one against one shared pool, where the **search-critical roles
   (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
@@ -228,12 +237,19 @@ flowchart TD
   in fleet mode.
 - **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
-  the model loads); a `pid`/`port` file lets the next start reap a crashed parent's
-  orphaned servers. A background monitor restarts a dead server with backoff, and the
-  router serves only healthy clients. Teardown group-kills (SIGTERM then SIGKILL).
+  the model loads); the cold-load health timeout scales with the heaviest member's
+  weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
+  on a slow volume isn't killed mid-load. A state file records the running llama-swap's
+  pid and process group so the next start can reap a crashed parent's surviving
+  llama-swap and its servers (guarded against pid reuse by a command-line match);
+  clean shutdown removes the file. A background monitor restarts a dead server with
+  backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
+  then SIGKILL).
 - **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;
   rerank reuses the client's rank-pooling embeddings call and vision the chat call
-  with image content. A per-call model that differs from the role's configured model
+  with image content. A connection-level failure marks the replica unhealthy (skipped
+  until it answers again) and the embed/rerank call retries once on a different
+  healthy replica. A per-call model that differs from the role's configured model
   is rejected (switching models is a config change that respawns the server), and a
   role with no healthy server surfaces a `ProviderError`. Fleet build is single-flight
   and the in-flight counter is atomic, because the HTTP and MCP servers route concurrently.

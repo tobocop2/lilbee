@@ -260,3 +260,68 @@ class TestEstimateInstanceFootprint:
                 flash_attn=True,
                 kv_cache_type=KvCacheType.F16,
             )
+
+
+class TestBatchSizeFlags:
+    def test_batch_size_adds_batch_and_ubatch_flags(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=recorder,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=False,
+            kv_cache_type=KvCacheType.F16,
+            batch_size=2048,
+        )
+        (argv,) = recorder
+        assert argv[argv.index("--batch-size") + 1] == "2048"
+        assert argv[argv.index("--ubatch-size") + 1] == "2048"
+
+    def test_no_batch_flags_by_default(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=recorder,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=False,
+            kv_cache_type=KvCacheType.F16,
+        )
+        (argv,) = recorder
+        assert "--batch-size" not in argv
+        assert "--ubatch-size" not in argv
+
+    def test_batch_size_participates_in_the_memo_key(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=recorder,
+        )
+        common = {
+            "ctx": 2048,
+            "slots": 1,
+            "gpu_layers": -1,
+            "flash_attn": False,
+            "kv_cache_type": KvCacheType.F16,
+        }
+        estimate_instance_footprint(model_file, **common)
+        estimate_instance_footprint(model_file, **common, batch_size=2048)
+        assert len(recorder) == 2  # a different batch size is a different estimate

@@ -107,3 +107,65 @@ def test_visible_env_sycl_uses_oneapi_selector() -> None:
 def test_visible_env_metal_and_empty_pin_nothing() -> None:
     assert visible_env(()) == {}
     assert visible_env((FleetDevice("Metal", 0, "", 0, 0),)) == {}
+
+
+class TestPresetVisibleDeviceComposition:
+    """A pod-preset visible-devices var makes probe indices RELATIVE; the child
+    env must map them back through the parent list to the same physical devices."""
+
+    def test_cuda_integer_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+        env = visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
+        assert env["CUDA_VISIBLE_DEVICES"] == "2,3"
+
+    def test_cuda_integer_parent_subset_picks_the_right_physical_gpu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+        env = visible_env((FleetDevice("CUDA", 1, "", 0, 0),))
+        assert env["CUDA_VISIBLE_DEVICES"] == "3"  # relative 1 -> physical 3
+
+    def test_cuda_uuid_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-aaa, GPU-bbb")
+        env = visible_env((FleetDevice("CUDA", 1, "", 0, 0),))
+        assert env["CUDA_VISIBLE_DEVICES"] == "GPU-bbb"
+
+    def test_cuda_index_past_parent_list_falls_back_to_relative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+        env = visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
+        assert env["CUDA_VISIBLE_DEVICES"] == "2,1"
+
+    def test_cuda_clean_env_emits_relative_ids(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+        env = visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
+        assert env == {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
+    def test_preset_cuda_device_order_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        env = visible_env((FleetDevice("CUDA", 0, "", 0, 0),))
+        assert env["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"  # same order the probe used
+
+    def test_probe_env_defaults_order_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+        assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+    def test_rocm_parent_lists_compose_per_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "4,5")
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+        env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
+        assert env == {"ROCR_VISIBLE_DEVICES": "5", "HIP_VISIBLE_DEVICES": "1"}
+
+    def test_hip_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "6,7")
+        env = visible_env((FleetDevice("HIP", 0, "", 0, 0),))
+        assert env == {"ROCR_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "6"}
+
+    def test_vulkan_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
+        env = visible_env((FleetDevice("Vulkan", 1, "", 0, 0),))
+        assert env == {"GGML_VK_VISIBLE_DEVICES": "2"}

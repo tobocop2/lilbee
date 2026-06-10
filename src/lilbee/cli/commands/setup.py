@@ -158,7 +158,6 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
         argv=argv,
         env_overrides=llama_server_runtime_env(),
         model=str(model_path),
-        port_file=work_dir / f"{role.value}.port",
         token_cap=ctx if is_embed else None,
     )
     swap = SwapManager(work_dir)
