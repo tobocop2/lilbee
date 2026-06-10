@@ -14,7 +14,6 @@ from harness_config import (
     _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
     _OPENCODE_SHARE_DIR,
-    _OPENCODE_UI_MARKERS,
     _OPENCODE_UI_TIMEOUT_S,
     _PANE_EXCERPT_TAIL,
     _POLL_INTERVAL_S,
@@ -132,28 +131,47 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     _wait_for_opencode_ui(session)
 
 
+def _pane_in_alternate_screen(session: str) -> bool:
+    """True once the pane's terminal is in the alternate screen.
+
+    A full-screen TUI flips the terminal into the alternate screen when it
+    takes over; the launcher's inline warm spinner never does. tmux exposes
+    the flag directly, so this is a content- and version-independent "the TUI
+    has painted" signal (footer text shifts between opencode releases).
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", session, "#{alternate_on}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
 def _wait_for_opencode_ui(session: str) -> None:
-    """Block until opencode's TUI paints, then let the boot/prefill settle.
+    """Block until opencode's TUI takes the terminal, then let the boot settle.
 
     ``lilbee launch opencode`` holds a "Warming the chat model" spinner until
     its warm gate passes, and a giant's cold load legitimately runs for many
     minutes (the fleet's health budget scales with the weights). Starting the
     scenario clock during that spinner reads as an idle pane and times the
-    cell out before opencode even exists, so wait for the TUI to paint first.
-    Any-of markers because opencode's footer text changes between releases
-    (it self-updates); the heartbeat keeps the wait visible in the matrix log
-    so a stall here can never read as a dead run.
+    cell out before opencode even exists. The heartbeat keeps the wait visible
+    in the matrix log so a stall here can never read as a dead run.
     """
     deadline = time.monotonic() + _OPENCODE_UI_TIMEOUT_S
     started = time.monotonic()
     next_heartbeat = started + _UI_WAIT_HEARTBEAT_S
     while time.monotonic() < deadline:
-        pane = tmux_capture(session)
-        if any(marker in pane for marker in _OPENCODE_UI_MARKERS):
+        if _pane_in_alternate_screen(session):
             time.sleep(_OPENCODE_BOOT_SETTLE_S)
             return
         if time.monotonic() >= next_heartbeat:
             elapsed = time.monotonic() - started
+            pane = tmux_capture(session)
             tail = " | ".join(pane.strip().splitlines()[-2:]) if pane.strip() else "(empty pane)"
             print(f"waiting for opencode UI ({elapsed:.0f}s): {tail}")
             next_heartbeat = time.monotonic() + _UI_WAIT_HEARTBEAT_S
