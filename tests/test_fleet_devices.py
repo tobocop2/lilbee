@@ -99,7 +99,8 @@ def test_visible_env_vulkan_uses_ggml_var() -> None:
     assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {"GGML_VK_VISIBLE_DEVICES": "0"}
 
 
-def test_visible_env_sycl_uses_oneapi_selector() -> None:
+def test_visible_env_sycl_uses_oneapi_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising=False)
     env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
     assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}
 
@@ -169,3 +170,16 @@ class TestPresetVisibleDeviceComposition:
         monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
         env = visible_env((FleetDevice("Vulkan", 1, "", 0, 0),))
         assert env == {"GGML_VK_VISIBLE_DEVICES": "2"}
+
+    def test_sycl_level_zero_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:2,3")
+        env = visible_env((FleetDevice("SYCL", 1, "", 0, 0),))
+        assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:3"}  # relative 1 -> physical 3
+
+    def test_sycl_non_level_zero_parent_emits_absolute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only the level_zero:i,j shape is composable; other shapes pass through.
+        monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "opencl:0,1")
+        env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
+        assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}

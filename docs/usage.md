@@ -748,7 +748,7 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
-| `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary. Empty = the binary bundled with the `lilbee-engine` wheel, else one found on `PATH` |
+| `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
 
 ### Server
 

@@ -69,8 +69,8 @@ _CHARS_PER_TOKEN = 4
 # so we suppress it whenever the provider reports the capability.
 _NO_THINK_DIRECTIVE = "/no_think"
 
-# Capability string returned by llama-cpp providers for reasoning models
-# (Qwen3, DeepSeek-R1). Defined locally so wiki.generation doesn't
+# Capability string a provider's get_capabilities reports for reasoning
+# models (Qwen3, DeepSeek-R1). Defined locally so wiki.generation doesn't
 # depend on a specific provider-layer constant name.
 _CAPABILITY_THINKING = "thinking"
 

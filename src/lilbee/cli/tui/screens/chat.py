@@ -82,8 +82,8 @@ _HISTORY_TOKEN_BUDGET_FRACTION = 0.5
 The other half of the working context is for the system prompt, the current
 turn's RAG context (~8 chunks), the user question, and reasoning headroom.
 The windower drops oldest user/assistant pairs once history exceeds this
-fraction so the assembled prompt never approaches ``n_ctx`` and llama-cpp
-never errors with "Requested tokens exceed context window."
+fraction so the assembled prompt never approaches ``n_ctx`` and the chat
+server never rejects the request for exceeding the context window.
 """
 
 # Auto-follow tolerance, in lines: the user counts as "at the bottom" within

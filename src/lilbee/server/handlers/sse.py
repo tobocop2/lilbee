@@ -95,7 +95,7 @@ SSE_QUEUE_MAX_EVENTS = 1000
 
 # Progress-class event types: high-frequency, safe to coalesce under
 # backpressure. Everything else (done, errors, crawl/setup lifecycle) must land.
-_DROPPABLE_EVENT_TYPES = frozenset(
+_DROPPABLE_EVENT_TYPES: frozenset[EventType | SseEvent] = frozenset(
     {
         EventType.FILE_START,
         EventType.FILE_DONE,
@@ -104,6 +104,7 @@ _DROPPABLE_EVENT_TYPES = frozenset(
         EventType.EXTRACT,
         EventType.CRAWL_PAGE,
         EventType.SETUP_PROGRESS,
+        SseEvent.PROGRESS,
     }
 )
 
@@ -154,7 +155,7 @@ class SseEventQueue(asyncio.Queue[str | None]):
         self._put_droppable = False
         super().put_nowait(item)
 
-    def put_event_nowait(self, payload: str, event_type: EventType) -> None:
+    def put_event_nowait(self, payload: str, event_type: EventType | SseEvent) -> None:
         """Enqueue a progress-protocol event, shedding progress when full."""
         if event_type not in _DROPPABLE_EVENT_TYPES:
             self.put_nowait(payload)

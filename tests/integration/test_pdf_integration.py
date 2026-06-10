@@ -32,7 +32,7 @@ SCANNED_PDF = FIXTURES_DIR / "scanned_maintenance.pdf"
 def pdf_pipeline(tmp_path_factory, _integration_loop):
     """Set up a pipeline with the scanned PDF fixture.
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
-    Uses llama-cpp with real models so the full RAG pipeline works.
+    Uses the llama-server fleet with real models so the full RAG pipeline works.
     """
     from lilbee.app.services import reset_services
     from lilbee.catalog import FEATURED_EMBEDDING, download_model

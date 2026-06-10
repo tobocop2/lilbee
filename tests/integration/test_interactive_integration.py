@@ -1,6 +1,6 @@
 """Real integration tests with actual models -- no mocked embeddings or LLM.
 
-Exercises the full CLI pipeline with real llama-cpp inference:
+Exercises the full CLI pipeline with real llama-server inference:
 - nomic-embed-text for embeddings
 - Qwen3 0.6B for chat
 - crawl4ai against pytest-httpserver

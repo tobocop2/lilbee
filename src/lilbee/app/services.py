@@ -119,7 +119,7 @@ def get_services() -> Services:
     Service modules are imported inside the function to keep CLI
     startup fast: ``services`` is on every CLI import path, and the
     concrete service modules transitively pull in heavy libraries
-    (llama-cpp, lancedb, kreuzberg). Deferring the loads until first
+    (lancedb, kreuzberg). Deferring the loads until first
     ``get_services()`` call makes ``lilbee --help`` and TUI splash
     render in milliseconds instead of seconds.
     """

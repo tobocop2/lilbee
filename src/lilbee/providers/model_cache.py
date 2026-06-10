@@ -1,4 +1,4 @@
-"""Llama-cpp loader-mode constants and dynamic-context / GPU-memory helpers."""
+"""Loader-mode constants and dynamic-context / GPU-memory helpers for llama-server."""
 
 from __future__ import annotations
 

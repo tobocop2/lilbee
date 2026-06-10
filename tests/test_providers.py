@@ -2395,10 +2395,9 @@ class TestFilterOptions:
 class TestTrainCtxFromMeta:
     """``train_ctx_from_meta`` is the single guard against ``context_length=0``.
 
-    All three native llama-cpp loaders (chat, embed, vision) route through
-    it. Each verifies its own integration test in TestLoadLlama /
-    TestMtmdBackend; these tests cover the helper in isolation so an
-    edge case can be added here without instantiating a Llama mock.
+    Every ctx resolver in ``engine_params`` (chat, embed/rerank, vision)
+    routes through it; these tests cover the helper in isolation so an
+    edge case can be added here without a full GGUF fixture.
     """
 
     @staticmethod
@@ -3299,7 +3298,7 @@ class TestSdkRerank:
 
 
 class TestRoutingProviderRerank:
-    """Routing-level rerank dispatch between native llama-cpp and hosted SDK."""
+    """Routing-level rerank dispatch between the native fleet and hosted SDK."""
 
     def _make_provider(self):
         from lilbee.providers.routing_provider import RoutingProvider

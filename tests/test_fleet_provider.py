@@ -1095,6 +1095,62 @@ class TestReplicaHealthRouting:
         assert p.rerank("q", ["c"]) == [0.5]
         assert alive.calls == 1
 
+    def test_retry_connection_failure_marks_the_second_replica_unhealthy(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        also_dead = _FakeReplica(in_flight=5, fail=_httpx.ConnectError("refused"))
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, also_dead]})
+        with pytest.raises(_httpx.ConnectError):
+            p.embed(["a"])
+        assert dead.healthy is False
+        assert also_dead.healthy is False  # the retry target is taken out too
+
+    def test_retry_model_error_propagates_without_marking(self) -> None:
+        import httpx as _httpx
+
+        from lilbee.providers.base import ProviderError
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input", provider="llama-server"))
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, broken]})
+        with pytest.raises(ProviderError, match="bad input"):
+            p.embed(["a"])
+        assert broken.healthy is True  # not a connection failure, stays in the pool
+
+    def test_cooled_down_replica_gets_traffic_again_and_recovers(self, monkeypatch) -> None:
+        import httpx as _httpx
+
+        from lilbee.providers.fleet import client as client_mod
+        from lilbee.providers.fleet.client import LlamaServerClient
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock["now"])
+        calls: dict[str, int] = {"recovered": 0, "sibling": 0}
+
+        def _handler(name: str):
+            def handler(_request: _httpx.Request) -> _httpx.Response:
+                calls[name] += 1
+                return _httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+
+            return handler
+
+        def _real_client(name: str) -> LlamaServerClient:
+            http = _httpx.Client(
+                transport=_httpx.MockTransport(_handler(name)), base_url="http://gpu"
+            )
+            return LlamaServerClient("http://gpu", name, http=http)
+
+        recovered, sibling = _real_client("recovered"), _real_client("sibling")
+        recovered.mark_unhealthy()
+        p = _provider_with_clients({WorkerRole.EMBED: [recovered, sibling]})
+        p.embed(["a"])  # within the cool-down: routed to the sibling only
+        assert (calls["recovered"], calls["sibling"]) == (0, 1)
+        clock["now"] = client_mod._UNHEALTHY_RETRY_S
+        p.embed(["b"])  # cooled down: the replica is routable again (the probe)
+        assert calls["recovered"] == 1
+        assert recovered.healthy is True  # the successful probe restored it
+
 
 class TestVisionTimeout:
     def test_wedged_vision_call_times_out_within_budget(self) -> None:
@@ -1164,6 +1220,52 @@ class TestReloadSingleFlight:
         p.reload_role(WorkerRole.CHAT)
         p.reload_role(WorkerRole.EMBED)  # racing call while the first is in flight
         assert len(threads) == 1
+        assert p._reload_pending is True  # queued for the in-flight thread, not dropped
+
+    def test_reload_requested_mid_flight_runs_a_second_pass(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True  # an in-flight reload that already snapshotted its plan
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p.reload_role(WorkerRole.EMBED)  # the second settings change arrives mid-flight
+        assert p._reload_pending is True
+        p._reload_blocking()  # the in-flight thread runs to completion
+        assert swap.reloads == 2  # one pass per request: the change was applied
+        assert p._reloading is False
+        assert p._reload_pending is False
+
+    def test_fresh_reload_clears_a_stale_pending_flag(self, monkeypatch) -> None:
+        threads: list[object] = []
+
+        class _RecordingThread:
+            def __init__(self, *, target, name, daemon) -> None:
+                threads.append(self)
+
+            def start(self) -> None:
+                return None
+
+        monkeypatch.setattr(prov_mod.threading, "Thread", _RecordingThread)
+        p = _provider_with_clients({})
+        p._reload_pending = True  # left over; the fresh pass plans from current cfg
+        p.reload_role(WorkerRole.CHAT)
+        assert len(threads) == 1
+        assert p._reload_pending is False
+
+    def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
+        class _ExplodingSwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                raise RuntimeError("respawn failed")
+
+        p = FleetProvider()
+        p._swap = _ExplodingSwap()
+        p._reloading = True
+        p._reload_pending = True
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        with pytest.raises(RuntimeError, match="respawn failed"):
+            p._reload_blocking()
+        assert p._reloading is False
+        assert p._reload_pending is False
 
     def test_reload_clears_the_guard_when_done(self, monkeypatch) -> None:
         swap = _FakeSwap()

@@ -1,4 +1,4 @@
-"""Tests for the llama-cpp loader-mode helpers (kv-size, dynamic ctx, available memory)."""
+"""Tests for the loader-mode helpers (kv-size, dynamic ctx, available memory)."""
 
 from __future__ import annotations
 

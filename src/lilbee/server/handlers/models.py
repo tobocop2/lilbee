@@ -562,7 +562,7 @@ async def models_pull(
             if sse.cancel.is_set():
                 return
             payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+            sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
         try:
             manager.pull(

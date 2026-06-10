@@ -25,6 +25,8 @@ _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
 _ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
 _HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
 _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
+_ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
+_LEVEL_ZERO_PREFIX = "level_zero:"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
@@ -140,5 +142,18 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     if backend == "Vulkan":
         return {_VK_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_VK_VISIBLE_VAR))}
     if backend == "SYCL":
-        return {"ONEAPI_DEVICE_SELECTOR": "level_zero:" + ",".join(str(d.index) for d in devices)}
+        return {_ONEAPI_SELECTOR_VAR: _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))}
     return {}
+
+
+def _compose_sycl(indices: list[int], parent_value: str | None) -> str:
+    """``ONEAPI_DEVICE_SELECTOR`` value naming the same devices the probe saw.
+
+    A parent selector shaped ``level_zero:i,j`` makes the probe's indices
+    relative to its post-colon list, so each index maps through that list like
+    :func:`_compose_visible`; any other shape (or none) emits absolute indices.
+    """
+    if parent_value is not None and parent_value.startswith(_LEVEL_ZERO_PREFIX):
+        parent_list = parent_value[len(_LEVEL_ZERO_PREFIX) :]
+        return _LEVEL_ZERO_PREFIX + _compose_visible(indices, parent_list)
+    return _LEVEL_ZERO_PREFIX + ",".join(str(i) for i in indices)

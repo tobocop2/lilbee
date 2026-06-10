@@ -220,9 +220,9 @@ class Config(BaseSettings):
         "just write the passage.\n\nQuestion: {question}"
     )
 
-    # Reranker model ref. Empty disables reranking. Native GGUFs use
-    # llama-cpp rank pooling; hosted refs (cohere/voyage/jina/together/hf-tei)
-    # need the backend extra.
+    # Reranker model ref. Empty disables reranking. Native GGUFs run on
+    # llama-server (rank pooling or LLM logprob scoring); hosted refs
+    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.

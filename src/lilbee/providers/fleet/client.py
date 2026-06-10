@@ -164,12 +164,11 @@ def _fetch_log_tail(url: str) -> str:
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
-# Match the in-process embedder: llama-cpp-python's create_embedding does not
-# normalize (normalize=False), but llama-server normalizes pooled embeddings with
-# embd_normalize=2 (L2) by default. We send -1 (no normalization) per request so
-# the fleet returns the same raw vectors, and so rank-pooling rerank scores (a
-# single value per pair) are not collapsed to +-1 by L2 normalization. The server
-# only exposes this per request body, not as a startup flag.
+# llama-server L2-normalizes pooled embeddings by default (embd_normalize=2);
+# every embeddings request sends embd_normalize=-1 so the engine returns raw
+# vectors, and so a rank-pooling rerank score (a single value per pair) is not
+# collapsed to +-1 by normalization. The server only exposes this per request
+# body, not as a startup flag.
 _EMBD_NORMALIZE_NONE = -1
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
@@ -197,6 +196,10 @@ _HEALTH_TIMEOUT_S = 5.0
 # a cold replica fleet 429s the first ingest fan-out until its slots load.
 _BUSY_RETRIES = 6
 _BUSY_BACKOFF_BASE_S = 0.5
+# Half-open recovery: a replica marked unhealthy becomes routable again after
+# this cool-down, so one live request probes it (success restores it, another
+# connection failure re-stamps the cool-down).
+_UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
 
 
@@ -227,22 +230,33 @@ class LlamaServerClient:
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
         # Routing health: cleared on a connection-level failure so the router
-        # skips this replica; restored by a successful call or health probe.
+        # skips this replica; restored by a successful call, or half-open after
+        # the cool-down (the next routed request is the probe).
         self._healthy = True
+        # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
+        self._unhealthy_since = 0.0
 
     @property
     def healthy(self) -> bool:
-        """Whether the router should offer this replica traffic."""
+        """Whether the router should offer this replica traffic.
+
+        An unhealthy replica becomes routable again ``_UNHEALTHY_RETRY_S`` after
+        it was marked, so one live request probes it: a success marks it healthy,
+        another connection failure re-stamps the cool-down.
+        """
         with self._in_flight_lock:
-            return self._healthy
+            if self._healthy:
+                return True
+            return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
         with self._in_flight_lock:
             self._healthy = False
+            self._unhealthy_since = time.monotonic()
 
     def mark_healthy(self) -> None:
-        """Restore the replica to the routing pool after a successful call/probe."""
+        """Restore the replica to the routing pool after a successful call."""
         with self._in_flight_lock:
             self._healthy = True
 

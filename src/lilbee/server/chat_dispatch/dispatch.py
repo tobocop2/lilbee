@@ -157,12 +157,12 @@ async def _async_iter_provider_stream(
 ) -> AsyncIterator[str | ToolCallDelta | TokenUsage]:
     """Iterate a provider chat stream without blocking the event loop.
 
-    The llama-cpp pool wrapper implements both Iterator and AsyncIterator so
-    its async path runs without thread hops. The SDK provider's streaming
-    method is a plain sync generator; iterating it inline on the event loop
-    would block, so each ``next()`` runs in a worker thread via
-    ``asyncio.to_thread``. ``LLMProvider.chat`` cannot narrow this distinction
-    in the Protocol because the SDK backend has no async-native path.
+    An async-native stream is consumed directly, without thread hops. The
+    fleet and SDK providers stream via plain sync generators; iterating one
+    inline on the event loop would block, so each ``next()`` runs in a
+    worker thread via ``asyncio.to_thread``. ``LLMProvider.chat`` cannot
+    narrow this distinction in the Protocol because the SDK backend has no
+    async-native path.
     """
     if isinstance(stream, AsyncIterable):
         async for frame in stream:

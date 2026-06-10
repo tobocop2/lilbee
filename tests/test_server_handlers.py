@@ -1201,6 +1201,33 @@ class TestSseEventQueue:
             queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
         assert queue.get_nowait() is None
 
+    def _download_progress_payload(self, i: int) -> str:
+        return f'event: progress\ndata: {{"current": {i}, "total": 100}}\n\n'
+
+    async def test_download_progress_sheds_under_pressure(self):
+        from lilbee.runtime.progress import SseEvent
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=5)
+        for i in range(100):
+            queue.put_event_nowait(self._download_progress_payload(i), SseEvent.PROGRESS)
+        assert queue.qsize() == 5
+        assert queue.dropped_events == 95
+
+    async def test_download_done_and_error_always_delivered_when_full(self):
+        from lilbee.runtime.progress import SseEvent
+        from lilbee.server.handlers.sse import SseEventQueue, sse_error
+
+        queue = SseEventQueue(max_events=3)
+        for i in range(30):
+            queue.put_event_nowait(self._download_progress_payload(i), SseEvent.PROGRESS)
+        error_payload = sse_error("download failed")
+        queue.put_nowait(error_payload)
+        queue.put_nowait(None)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert error_payload in drained
+        assert drained[-1] is None
+
     async def test_non_droppable_progress_event_types_always_land(self):
         from lilbee.runtime.progress import EventType
         from lilbee.server.handlers.sse import SseEventQueue

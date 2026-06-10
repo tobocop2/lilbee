@@ -252,6 +252,49 @@ def test_in_flight_counter_is_atomic_under_threads() -> None:
     assert c.in_flight == 0
 
 
+class TestHealthHalfOpen:
+    def _clocked_client(self, monkeypatch: pytest.MonkeyPatch) -> tuple[LlamaServerClient, dict]:
+        from lilbee.providers.fleet import client as client_mod
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock["now"])
+        return _client(), clock
+
+    def test_unhealthy_within_cooldown_is_not_routable(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S - 0.1
+        assert c.healthy is False
+
+    def test_unhealthy_becomes_routable_after_cooldown(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S
+        assert c.healthy is True  # half-open: the next routed request is the probe
+
+    def test_refailure_restamps_the_cooldown(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S
+        c.mark_unhealthy()  # the probe-by-traffic failed again
+        clock["now"] = 2 * _UNHEALTHY_RETRY_S - 0.1
+        assert c.healthy is False
+        clock["now"] = 2 * _UNHEALTHY_RETRY_S
+        assert c.healthy is True
+
+    def test_mark_healthy_restores_immediately(self, monkeypatch) -> None:
+        c, _clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        c.mark_healthy()
+        assert c.healthy is True
+
+
 def test_health_true_on_200() -> None:
     assert _client().health() is True
 

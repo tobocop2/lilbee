@@ -21,10 +21,9 @@ T_co = TypeVar("T_co", covariant=True)
 class ClosableIterator(Iterator[T_co], Protocol[T_co]):
     """An iterator that releases resources when ``close()`` is called.
 
-    Streaming chat responses use this to guarantee the upstream model lock
-    is released even when callers truncate the stream before exhaustion.
-    Generators satisfy this implicitly; explicit wrappers (e.g. the llama-cpp
-    chat-lock iterator) implement it directly.
+    Streaming chat responses use this to guarantee upstream resources (the
+    fleet's in-flight request slot) are released even when callers truncate
+    the stream before exhaustion. Generators satisfy this implicitly.
     """
 
     def close(self) -> None: ...
@@ -292,8 +291,9 @@ class LLMProvider(Protocol):
         """List frontier chat models the provider is aware of for *provider*.
 
         Returns the unfiltered upstream catalog (whatever litellm
-        exposes for API providers; an empty list for backends like
-        native llama-cpp that have no notion of external catalogs).
+        exposes for API providers; an empty list for local backends
+        like the llama-server fleet that have no notion of external
+        catalogs).
         """
         ...
 

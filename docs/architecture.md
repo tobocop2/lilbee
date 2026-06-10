@@ -180,8 +180,9 @@ flowchart TD
   discrete-GPU footprint (`nonuma`, what lands in device VRAM) and a unified-memory
   footprint (`uma`, total resident on an Apple Silicon / shared-RAM host); the
   planner charges whichever matches the host. For a multi-GPU tensor-split it passes
-  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; the planner
-  fits and charges the busiest card (`peak_footprint`), because a split OOMs on
+  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; placement
+  then charges each card its own share and gates on each card's headroom, with the
+  busiest card (`peak_footprint`) as the binding constraint, because a split OOMs on
   whichever GPU is fullest, not on the summed total. The estimate also carries the
   same `--batch-size`/`--ubatch-size` the launch will use (pooled embed/rerank raise
   them to the full context), so the compute-buffer estimate matches what the server
@@ -240,16 +241,19 @@ flowchart TD
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
   on a slow volume isn't killed mid-load. A state file records the running llama-swap's
-  pid and process group so the next start can reap a crashed parent's surviving
-  llama-swap and its servers (guarded against pid reuse by a command-line match);
+  pid, process group, and owning lilbee pid so the next start can reap a crashed
+  owner's surviving llama-swap and its servers (guarded against pid reuse by a
+  command-line match, and left alone while the owning lilbee is still alive);
   clean shutdown removes the file. A background monitor restarts a dead server with
   backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
   then SIGKILL).
 - **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;
   rerank reuses the client's rank-pooling embeddings call and vision the chat call
-  with image content. A connection-level failure marks the replica unhealthy (skipped
-  until it answers again) and the embed/rerank call retries once on a different
-  healthy replica. A per-call model that differs from the role's configured model
+  with image content. A connection-level failure marks the replica unhealthy and the
+  embed/rerank call retries once on a different replica; an unhealthy replica rejoins
+  the pool after a short cool-down, where its next routed request is the recovery
+  probe (a success restores it, another connection failure re-starts the cool-down).
+  A per-call model that differs from the role's configured model
   is rejected (switching models is a config change that respawns the server), and a
   role with no healthy server surfaces a `ProviderError`. Fleet build is single-flight
   and the in-flight counter is atomic, because the HTTP and MCP servers route concurrently.

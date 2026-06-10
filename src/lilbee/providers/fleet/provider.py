@@ -83,8 +83,10 @@ def _call_with_failover(
     """Run *call* on the least-busy healthy client, retrying once on another replica.
 
     A connection-level failure (dead replica, "exited prematurely") marks the
-    client unhealthy so the router skips it until it recovers; the call retries
-    once on a different healthy replica. With none left the failure surfaces.
+    client unhealthy so the router skips it for the cool-down (after which its
+    next routed request is the recovery probe); the call retries once on a
+    different healthy replica, which is marked the same way if it also fails at
+    the connection level. With none left the failure surfaces.
     """
     client = _least_in_flight(clients)
     try:
@@ -96,7 +98,15 @@ def _call_with_failover(
         others = [c for c in clients if c is not client and c.healthy]
         if not others:
             raise _no_healthy_replica_error() from exc
-        return call(_least_in_flight(others))
+        retry = _least_in_flight(others)
+        try:
+            retry_result = call(retry)
+        except Exception as retry_exc:
+            if is_connection_failure(retry_exc):
+                retry.mark_unhealthy()
+            raise
+        retry.mark_healthy()
+        return retry_result
     client.mark_healthy()
     return result
 
@@ -245,9 +255,12 @@ class FleetProvider:
         # never starts a second swap and double-allocates GPU memory.
         self._warming = False
         # Single-flight guard for the off-thread reload: a second reload_role
-        # while one is in flight is a no-op (the running reload re-plans all
-        # roles from current cfg, so it already covers the second request).
+        # while one is in flight sets the pending flag instead of dispatching,
+        # and the in-flight thread re-runs the plan loop once per pending flag.
         self._reloading = False
+        # Set when a reload arrives mid-reload: the in-flight pass may have
+        # already snapshotted its plan, so the change must be re-applied.
+        self._reload_pending = False
 
     def _ensure_swap(self) -> SwapManager | None:
         """Start the llama-swap process exactly once across concurrent callers.
@@ -773,13 +786,18 @@ class FleetProvider:
         respawn + wait-ready) must not block the settings/model-picker callback.
         llama-swap reloads the whole proxy, so every role is re-planned. If the swap
         isn't up yet, the next use starts it with current cfg. Single-flight: a
-        reload while one is in flight is a no-op (the running reload re-plans every
-        role from current cfg already).
+        reload while one is in flight sets the pending flag (the in-flight pass may
+        have already snapshotted its plan), and the in-flight thread runs one more
+        pass per pending flag so the change is applied, not dropped.
         """
         with self._lock:
-            if self._swap is None or self._reloading:
+            if self._swap is None:
+                return
+            if self._reloading:
+                self._reload_pending = True
                 return
             self._reloading = True
+            self._reload_pending = False
         threading.Thread(
             target=self._reload_blocking,
             name=f"fleet-reload-{role.value}",
@@ -787,24 +805,40 @@ class FleetProvider:
         ).start()
 
     def _reload_blocking(self) -> None:
-        """Re-plan all roles and restart llama-swap; runs off the caller's thread.
+        """Run reload passes until no further reload arrived mid-pass.
+
+        The pending check and the guard release happen under one lock acquisition,
+        so a reload_role landing between them cannot be acknowledged and dropped.
+        """
+        while True:
+            try:
+                self._reload_pass()
+            except BaseException:
+                with self._lock:
+                    self._reloading = False
+                    self._reload_pending = False
+                raise
+            with self._lock:
+                if not self._reload_pending:
+                    self._reloading = False
+                    return
+                self._reload_pending = False
+
+    def _reload_pass(self) -> None:
+        """One re-plan/restart of llama-swap from current cfg.
 
         Runs under the build lock so a racing shutdown/build can't interleave with
         the restart and leak a live llama-swap holding GPU memory.
         """
-        try:
-            with self._build_lock:
-                with self._lock:
-                    swap = self._swap
-                if swap is None:
-                    return
-                launches = planning.plan_all_launches()
-                swap.reload(launches)
-                with self._lock:
-                    self._adopt_swap(swap, launches)
-        finally:
+        with self._build_lock:
             with self._lock:
-                self._reloading = False
+                swap = self._swap
+            if swap is None:
+                return
+            launches = planning.plan_all_launches()
+            swap.reload(launches)
+            with self._lock:
+                self._adopt_swap(swap, launches)
 
     def add_spawn_listener(
         self,
