@@ -18,7 +18,7 @@ from litestar.response import Response, Stream
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import with_configured_remote_chat
+from lilbee.providers.model_ref import default_first, with_configured_remote_chat
 from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 @get("/v1/models")
 @read_only
 async def list_models_endpoint(request: Request) -> Response:
-    """Return all installed chat models in the ``/v1/models`` shape."""
+    """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
     auth_error = _auth_failure(request)
     if auth_error is not None:
         return auth_error
@@ -66,13 +66,20 @@ async def list_models_endpoint(request: Request) -> Response:
     served_ctx = services.provider.served_chat_ctx()
     installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
     # A remote-configured chat model is served without a registry entry;
-    # listing it keeps the picker truthful (same rule as the launcher).
-    refs = with_configured_remote_chat(sorted(installed), cfg.chat_model)
+    # listing it keeps the picker truthful (same rule as the launcher). The
+    # configured model leads either way, mirroring the launcher's picker order.
+    listed = with_configured_remote_chat(sorted(installed), cfg.chat_model)
+    refs = default_first(listed, cfg.chat_model)
+    # A ref without a registry entry carries the newest native timestamp so a
+    # client sorting by created desc does not bury the model lilbee serves.
+    fallback_created = max((_parse_created(m.downloaded_at) for m in installed.values()), default=0)
     payload = ModelsListResponse(
         data=[
             ModelEntry(
                 id=ref,
-                created=_parse_created(installed[ref].downloaded_at) if ref in installed else 0,
+                created=_parse_created(installed[ref].downloaded_at)
+                if ref in installed
+                else fallback_created,
                 context_window=served_ctx if ref == cfg.chat_model else None,
             )
             for ref in refs

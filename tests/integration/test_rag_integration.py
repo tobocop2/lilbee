@@ -319,7 +319,7 @@ class TestConceptGraph:
         reset_provider()
 
         # Force rebuild so concept indexing runs for all files
-        # (a plain sync skips unchanged files and never calls _index_concepts)
+        # (a plain sync skips unchanged files and never builds concept records)
         run_async(sync(quiet=True, force_rebuild=True))
 
         yield

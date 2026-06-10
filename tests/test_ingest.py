@@ -325,6 +325,35 @@ class TestSync:
         items = mock_svc.store.write_chunks_batch.call_args.args[0]
         assert sorted(it.source for it in items) == [f"f{i}.txt" for i in range(5)]
 
+    async def test_concept_writes_batched_per_flush(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        # Concept rows ride the flush: one write_concept_records call carries
+        # every flushed file's merged rows, not one store write per file.
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import ConceptRecords
+
+        cfg.concept_graph = True
+        for i in range(3):
+            (isolated_env / f"f{i}.txt").write_text(f"content {i}")
+        mock_svc.concepts.extract_concepts_batch.side_effect = lambda texts: [
+            ["alpha", "beta"] for _ in texts
+        ]
+        mock_svc.concepts.build_concept_records.side_effect = lambda chunk_ids, lists: (
+            ConceptRecords(
+                nodes=[{"concept": chunk_ids[0][0], "cluster_id": 0, "degree": 1}],
+                edges=[],
+                chunk_concepts=[],
+            )
+        )
+
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
+            result = await sync(quiet=True)
+        assert len(result.added) == 3
+        mock_svc.concepts.write_concept_records.assert_called_once()
+        merged = mock_svc.concepts.write_concept_records.call_args.args[0]
+        assert sorted(n["concept"] for n in merged.nodes) == ["f0.txt", "f1.txt", "f2.txt"]
+
     async def test_midstream_flush_when_chunk_threshold_crossed(
         self, mock_extract_file, isolated_env, mock_svc, monkeypatch
     ):
@@ -878,6 +907,42 @@ class TestSkipMarkerLifecycle:
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
 
 
+class TestZeroChunkPageTextPersistence:
+    """A zero-chunk file with page texts persists both and stops replanning."""
+
+    @staticmethod
+    async def _pages_no_chunks(
+        path, source_name, content_type, *, quiet=False, on_progress=None, page_texts_out=None
+    ):
+        if page_texts_out is not None:
+            page_texts_out.append(
+                {"source": source_name, "page": 1, "text": " ", "content_type": "pdf"}
+            )
+        return []
+
+    async def test_pages_and_source_row_persist_and_replan_stops(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "blank.pdf").write_bytes(b"%PDF-1.4 whitespace only")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline._produce_records", side_effect=self._pages_no_chunks
+        ):
+            first = await sync(quiet=True)
+            assert "blank.pdf" in first.added
+            assert "blank.pdf" not in first.skipped
+            items = mock_svc.store.write_chunks_batch.call_args.args[0]
+            item = next(it for it in items if it.source == "blank.pdf")
+            assert item.records == []
+            assert [page["page"] for page in item.page_texts] == [1]
+            # Next sync: the hash matches the persisted source row -> unchanged.
+            mock_svc.store.write_chunks_batch.reset_mock()
+            second = await sync(quiet=True)
+            assert second.unchanged == 1
+            assert "blank.pdf" not in second.added
+            assert "blank.pdf" not in second.skipped
+            mock_svc.store.write_chunks_batch.assert_not_called()
+
+
 class TestDetectPending:
     """Cheap detection: filesystem walk + hash compare against the sources table."""
 
@@ -1277,6 +1342,26 @@ class TestClassifyResult:
         assert "scanned.pdf" not in updated
         assert "scanned.pdf" not in failed
         assert "scanned.pdf" in skipped
+
+    def test_zero_chunks_with_page_texts_stays_for_flush(self):
+        # Whitespace-only OCR: no chunks, but the pages and source row must
+        # persist so the file stops replanning, so the result stays INGESTED.
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.ingest.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        added: dict[str, None] = {"blank.pdf": None}
+        skipped: dict[str, None] = {}
+        result = _IngestResult(
+            "blank.pdf",
+            Path("blank.pdf"),
+            chunk_count=0,
+            error=None,
+            page_texts=[{"source": "blank.pdf", "page": 1, "text": " ", "content_type": "pdf"}],
+        )
+        assert _classify_result(result, added, {}, {}, skipped) is BatchStatus.INGESTED
+        assert "blank.pdf" in added
+        assert "blank.pdf" not in skipped
 
     def test_nonzero_chunks_stay_for_flush(self):
         # A successful file is reported INGESTED and left in added; persistence
@@ -2479,6 +2564,28 @@ class TestConceptIndexing:
     @mock.patch(
         "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
     )
+    async def test_concept_write_failure_does_not_fail_files(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A failing batched concept write is logged; the files still ingest."""
+        from lilbee.data.store import ConceptRecords
+
+        cfg.concept_graph = True
+        (isolated_env / "concept_write.txt").write_text("Content for write test.")
+
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts_batch.return_value = [["test"]]
+        mock_svc.concepts.build_concept_records.return_value = ConceptRecords([], [], [])
+        mock_svc.concepts.write_concept_records.side_effect = RuntimeError("disk full")
+        from lilbee.data.ingest import sync
+
+        result = await sync(quiet=True)
+        assert "concept_write.txt" in result.added
+        assert result.failed == []
+
+    @mock.patch(
+        "kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result()
+    )
     async def test_cluster_rebuild_called_after_sync(
         self, mock_extract_file, isolated_env, mock_svc
     ):
@@ -2548,7 +2655,7 @@ class TestConceptIndexing:
     async def test_concepts_unavailable_skips_indexing(
         self, mock_extract_file, isolated_env, mock_svc
     ):
-        """When concepts_available() returns False, _index_concepts is a no-op."""
+        """When concepts_available() returns False, _build_concept_records is a no-op."""
         cfg.concept_graph = True
         (isolated_env / "unavail_index.txt").write_text("Content for unavailable index test.")
 

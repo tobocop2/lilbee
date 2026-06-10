@@ -241,13 +241,18 @@ flowchart TD
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
   on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
-  (named with its pid) recording the running llama-swap's pid, process group, and
-  create time plus the owner's pid and create time; before the next build plans
-  placement (so the device probe sees the real free VRAM), every state file is
+  (named with its pid, written atomically so a concurrent scan never reads a torn
+  file) recording the running llama-swap's pid, process group, and create time, the
+  member servers' ports, plus the owner's pid and create time; before the next build
+  plans placement (so the device probe sees the real free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped
   (guarded against pid reuse by create-time matches for both the swap and the owner,
   falling back to a command-line match for legacy files, and left alone while the
-  owning lilbee is still alive); clean shutdown removes only the
+  owning lilbee is still alive; an unparseable file is skipped, never deleted, since
+  it may be a sibling's in-flight write). Servers that outlive a dead swap (each runs
+  in its own process group) are matched by binary name plus recorded port and stopped
+  the same way; force-killed processes are waited on so the VRAM probe sees their
+  memory actually freed. Clean shutdown removes only the
   owner's own file. A background monitor restarts a dead server with
   backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
   then SIGKILL).

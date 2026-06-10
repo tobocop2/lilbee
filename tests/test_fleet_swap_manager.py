@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -199,6 +200,7 @@ class _FakeChild:
     """A stand-in psutil.Process that records the signals it receives."""
 
     def __init__(self, *, running: bool = True) -> None:
+        self.pid = 999
         self.running = running
         self.terminated = False
         self.killed = False
@@ -281,6 +283,36 @@ class TestProcessTeardown:
         assert stubborn.terminated is True
         assert stubborn.killed is True
 
+    def test_reap_survivors_waits_for_killed_processes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A TERM-ignoring server gets KILLed; the reap must then wait for it to
+        # actually exit (VRAM teardown) before the caller probes free memory.
+        stubborn = _FakeChild(running=True)
+        waits: list[tuple[list, float]] = []
+        results = iter([([], [stubborn]), ([stubborn], [])])
+
+        def _wait_procs(procs: list[object], timeout: float) -> tuple[list, list]:
+            waits.append((list(procs), timeout))
+            return next(results)
+
+        monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
+        sm._reap_survivors([stubborn])
+        assert stubborn.killed is True
+        assert waits == [
+            ([stubborn], sm._ORPHAN_STOP_TIMEOUT_S),
+            ([stubborn], sm._KILL_WAIT_TIMEOUT_S),
+        ]
+
+    def test_reap_survivors_warns_when_sigkill_is_survived(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        immortal = _FakeChild(running=True)
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], [immortal]))
+        with caplog.at_level(logging.WARNING, logger=sm.__name__):
+            sm._reap_survivors([immortal])
+        assert "survived SIGKILL" in caplog.text
+
     def test_reap_survivors_skips_already_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
         dead = _FakeChild(running=False)
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
@@ -332,6 +364,7 @@ def _write_state(
     created_at: float | None = None,
     owner_pid: int | None = None,
     owner_created_at: float | None = None,
+    member_ports: list[int] | None = None,
     filename: str = "llama-swap.state.json",
 ) -> Path:
     state_path = tmp_path / filename
@@ -343,6 +376,7 @@ def _write_state(
                 "created_at": created_at,
                 "owner_pid": owner_pid,
                 "owner_created_at": owner_created_at,
+                "member_ports": member_ports,
                 "name": "llama-swap",
             }
         )
@@ -464,15 +498,24 @@ class TestCrossRunReaping:
         SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
         assert stopped == []
 
-    def test_corrupt_state_file_is_ignored_and_replaced(
+    def test_corrupt_state_file_is_skipped_not_deleted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        (tmp_path / "llama-swap.state.json").write_text("{not json")
+        # An unparseable file may be a sibling's in-flight write; deleting it
+        # would erase a LIVE owner's cross-run reap record.
+        corrupt = tmp_path / "llama-swap.state.json"
+        corrupt.write_text("{not json")
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
-        assert not (tmp_path / "llama-swap.state.json").exists()
+        assert corrupt.read_text() == "{not json"
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
+
+    def test_torn_state_file_is_left_in_place_by_reap(self, tmp_path: Path) -> None:
+        torn = tmp_path / "llama-swap.state.json"
+        torn.write_text('{"pid": 77')  # a sibling's write, caught mid-flight
+        SwapManager(tmp_path).reap_stale()
+        assert torn.read_text() == '{"pid": 77'
 
     def test_load_state_returns_none_when_absent(self, tmp_path: Path) -> None:
         assert sm._load_state(tmp_path / "missing.json") is None
@@ -719,10 +762,19 @@ class TestStopStaleSwap:
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
         signals: list[int] = []
         monkeypatch.setattr(sm.os, "killpg", lambda _pgid, sig: signals.append(sig), raising=False)
+        waits: list[list[object]] = []
+
+        def _wait_procs(procs: list[object], timeout: float) -> tuple[list, list]:
+            waits.append(list(procs))
+            return ([], [])
+
+        monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
         sm._stop_stale_swap(
             sm._SwapState(pid=7777, pgid=8888, owner_pid=None, owner_created_at=None)
         )
         assert signals == [sm.signal.SIGTERM, sm._SIGKILL]
+        # The KILLed swap is awaited so its VRAM is free before the next probe.
+        assert [stale] in waits
 
     def test_signals_the_pid_when_no_pgid_recorded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
@@ -754,6 +806,111 @@ class TestStopStaleSwap:
             sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
         )
         assert survivor.terminated is True
+
+
+class TestAtomicStateWrite:
+    def test_write_state_lands_via_replace_with_no_tmp_leftovers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        replaced: list[str] = []
+        real_replace = os.replace
+
+        def _spy(src: object, dst: object) -> None:
+            replaced.append(str(dst))
+            real_replace(src, dst)
+
+        monkeypatch.setattr(sm.os, "replace", _spy)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
+        assert replaced == [str(_own_state_path(tmp_path))]
+        assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
+        assert [path for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
+
+    def test_half_written_tmp_file_is_invisible_to_the_reap_scan(self, tmp_path: Path) -> None:
+        # A crash between write and replace leaves the dotted tmp file behind;
+        # the scan's glob must never pick it up.
+        leftover = tmp_path / ".llama-swap.state.123.json.tmp"
+        leftover.write_text('{"pid":')
+        SwapManager(tmp_path).reap_stale()
+        assert leftover.exists()
+
+
+class _FakeServerProc:
+    """A stand-in psutil.Process for the orphan-server sweep."""
+
+    def __init__(self, pid: int, cmdline: list[str], *, cmdline_raises: bool = False) -> None:
+        self.pid = pid
+        self._cmdline = cmdline
+        self._cmdline_raises = cmdline_raises
+        self.terminated = False
+        self.killed = False
+
+    def cmdline(self) -> list[str]:
+        if self._cmdline_raises:
+            raise sm.psutil.NoSuchProcess(self.pid)
+        return self._cmdline
+
+    def is_running(self) -> bool:
+        return True
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class TestOrphanServerReaping:
+    def test_start_records_member_ports_in_the_state_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path).start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        config = json.loads((tmp_path / "llama-swap.json").read_text())
+        expected = sorted(
+            int(entry["cmd"].rsplit(" ", 1)[-1]) for entry in config["models"].values()
+        )
+        assert json.loads(_own_state_path(tmp_path).read_text())["member_ports"] == expected
+
+    def test_dead_swap_live_server_is_killed_by_name_and_port_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The servers outlive a SIGKILLed swap in their own process groups; the
+        # sweep must stop exactly the ones on the recorded ports.
+        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _patch_psutil_process(monkeypatch, {})  # owner and swap are both gone
+        orphan = _FakeServerProc(1, ["/opt/llama-server", "-m", "x.gguf", "--port", "5001"])
+        recycled = _FakeServerProc(2, ["/usr/bin/python3", "serve.py", "--port", "5002"])
+        other_port = _FakeServerProc(3, ["/opt/llama-server", "--port", "9999"])
+        no_port = _FakeServerProc(4, ["/opt/llama-server"])
+        vanished = _FakeServerProc(5, [], cmdline_raises=True)
+        monkeypatch.setattr(
+            sm.psutil,
+            "process_iter",
+            lambda: iter([orphan, recycled, other_port, no_port, vanished]),
+        )
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
+        SwapManager(tmp_path).reap_stale()
+        assert orphan.terminated is True
+        assert recycled.terminated is False  # recycled port, foreign binary
+        assert other_port.terminated is False
+        assert no_port.terminated is False
+        assert not (tmp_path / "llama-swap.state.json").exists()
+
+    def test_legacy_state_without_ports_sweeps_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_state(tmp_path, pid=7777, owner_pid=999)
+        _patch_psutil_process(monkeypatch, {})
+
+        def _forbidden() -> object:
+            raise AssertionError("process_iter must not run without recorded ports")
+
+        monkeypatch.setattr(sm.psutil, "process_iter", _forbidden)
+        SwapManager(tmp_path).reap_stale()
+        assert not (tmp_path / "llama-swap.state.json").exists()
 
 
 def test_write_state_is_noop_without_a_process(tmp_path: Path) -> None:

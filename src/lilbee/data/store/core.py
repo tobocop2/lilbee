@@ -109,7 +109,16 @@ _ANN_REFINE_FACTOR = 10
 # are migrated in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
 
-# Stat backfills are replaced this many source rows per locked write: the first
+# (table, source column) pairs deleted when a source's rows are replaced. The
+# concept nodes/edges tables carry no source column (corpus-level aggregates),
+# so only the per-chunk concept mapping is source-scoped.
+_PER_SOURCE_TABLES = (
+    (CHUNKS_TABLE, "source"),
+    (PAGE_TEXTS_TABLE, "source"),
+    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+)
+
+# Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
@@ -119,6 +128,17 @@ def _ann_nprobes(row_count: int) -> int:
     """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
     partitions = math.isqrt(max(row_count, 0))
     return max(_ANN_NPROBES_FLOOR, math.ceil(partitions * _ANN_NPROBES_PARTITION_FRACTION))
+
+
+def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
+    """Raise ``ValueError`` when any record's vector is not *embedding_dim* wide."""
+    for rec in records:
+        vec = rec.get("vector", [])
+        if len(vec) != embedding_dim:
+            raise ValueError(
+                f"Vector dimension mismatch: expected {embedding_dim}, "
+                f"got {len(vec)} (source={rec.get('source', '?')})"
+            )
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -426,13 +446,7 @@ class Store:
             self._fts_ready = False
             if not records:
                 return 0
-            for rec in records:
-                vec = rec.get("vector", [])
-                if len(vec) != embedding_dim:
-                    raise ValueError(
-                        f"Vector dimension mismatch: expected {embedding_dim}, "
-                        f"got {len(vec)} (source={rec.get('source', '?')})"
-                    )
+            _check_vector_dims(records, embedding_dim)
             db = self.get_db()
             table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
             table.add(records)
@@ -595,23 +609,22 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
-    def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete a source's chunks, page texts, and chunk-concept rows.
+    def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
+        """Delete the sources' chunks, page texts, and chunk-concept rows.
 
-        Caller must hold ``write_lock()``. The concept nodes/edges tables carry
-        no source column (they are corpus-level aggregates), so only the
-        per-chunk concept mapping is source-scoped.
+        Caller must hold ``write_lock()``. One ``IN`` delete per table covers
+        every source, so a batched flush pays a constant number of predicate
+        deletes instead of one set per document.
         """
-        escaped = escape_sql_string(source)
-        per_source_tables = (
-            (CHUNKS_TABLE, "source"),
-            (PAGE_TEXTS_TABLE, "source"),
-            (CHUNK_CONCEPTS_TABLE, "chunk_source"),
-        )
-        for name, column in per_source_tables:
+        quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
+        for name, column in _PER_SOURCE_TABLES:
             table = self.open_table(name)
             if table is not None:
-                _safe_delete_unlocked(table, f"{column} = '{escaped}'")
+                _safe_delete_unlocked(table, f"{column} IN ({quoted})")
+
+    def _delete_by_source_unlocked(self, source: str) -> None:
+        """Delete a single source's chunks, page texts, and chunk-concept rows."""
+        self._delete_by_sources_unlocked([source])
 
     def delete_by_source(self, source: str) -> None:
         """Delete a source's chunks and page texts."""
@@ -769,18 +782,20 @@ class Store:
         transaction per document. This folds many documents into a single
         ``table.add`` plus one source-table update pass, so the lock is taken once
         per batch and held only for the write -- never across extract or embed,
-        which run before this is called. Each document's cleanup delete, page
-        texts, and source upsert run inside the same lock, so a reader never
-        observes a half-applied batch; the page texts land after the cleanup
-        delete (which clears the source's old page-text rows) and before the
-        source row, so a page-text failure leaves the row stale and the file
-        replans next sync.
+        which run before this is called. The batch's cleanup deletes, page
+        texts, and source upserts run inside the same lock, so a reader never
+        observes a half-applied batch; the cleanup is one ``IN`` delete per
+        table covering every flagged document, the page texts land after it
+        (it clears the sources' old page-text rows) and before the source
+        rows, so a page-text failure leaves the rows stale and the files
+        replan next sync. A document with no chunks still persists its page
+        texts and source row, so a chunkless-but-processed file (e.g.
+        whitespace-only OCR) stops replanning.
 
         The embedding-identity gate and per-vector dimension check mirror
         ``add_chunks``; a dimension mismatch raises and the whole batch is rejected,
         which the caller treats as a per-batch failure.
         """
-        items = [it for it in items if it.records]
         if not items:
             return 0
         with write_lock():
@@ -789,26 +804,21 @@ class Store:
             self._ensure_embedding_compat()
             self._fts_ready = False
             all_records = [rec for it in items for rec in it.records]
-            for rec in all_records:
-                vec = rec.get("vector", [])
-                if len(vec) != embedding_dim:
-                    raise ValueError(
-                        f"Vector dimension mismatch: expected {embedding_dim}, "
-                        f"got {len(vec)} (source={rec.get('source', '?')})"
-                    )
+            _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
-            for it in items:
-                if it.needs_cleanup:
-                    self._delete_by_source_unlocked(it.source)
+            cleanup_sources = [it.source for it in items if it.needs_cleanup]
+            if cleanup_sources:
+                self._delete_by_sources_unlocked(cleanup_sources)
             page_rows = [row for it in items for row in (it.page_texts or [])]
             if page_rows:
                 ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
-            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
-            table.add(all_records)
-            if self.get_meta() is None:
-                self._write_meta_unlocked(
-                    embedding_model=embedding_model, embedding_dim=embedding_dim
-                )
+            if all_records:
+                table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+                table.add(all_records)
+                if self.get_meta() is None:
+                    self._write_meta_unlocked(
+                        embedding_model=embedding_model, embedding_dim=embedding_dim
+                    )
             source_rows = [
                 self._source_row(
                     it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat

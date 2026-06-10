@@ -136,6 +136,13 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     return ProviderModelRef(raw=raw, provider="local", name=raw)
 
 
+def default_first(refs: list[str], default_ref: str) -> list[str]:
+    """Order so *default_ref* leads, leaving the rest in their existing order."""
+    if default_ref not in refs:
+        return list(refs)
+    return [default_ref, *(ref for ref in refs if ref != default_ref)]
+
+
 def with_configured_remote_chat(refs: list[str], configured: str) -> list[str]:
     """Return *refs* with *configured* prepended when it is a remote ref not already listed.
 

@@ -40,6 +40,7 @@ from lilbee.data.ingest.types import (
 from lilbee.data.store import (
     SOURCE_STAT_UNKNOWN,
     ChunkWrite,
+    ConceptRecords,
     PageTextRecord,
     SourceRecord,
     SourceStat,
@@ -108,22 +109,30 @@ async def _rebuild_concept_clusters() -> None:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
 
-async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
-    """Extract and index concepts for ingested chunks. No-op if disabled."""
+async def _build_concept_records(
+    records: list[ChunkRecord], source_name: str
+) -> ConceptRecords | None:
+    """Extract concepts for ingested chunks and build their table rows. None if disabled.
+
+    Pure record building, no store access: the rows are buffered on the file's
+    ingest result and written once per flush (see :func:`_flush_concept_records`),
+    so a large sync pays one concept-table write per flush, not per file.
+    """
     if not cfg.concept_graph or not records:
-        return
+        return None
     from lilbee.retrieval.concepts import concepts_available
 
     if not concepts_available():
-        return
+        return None
     try:
         cg = get_services().concepts
         texts = [r["chunk"] for r in records]
         concept_lists = await asyncio.to_thread(cg.extract_concepts_batch, texts)
         chunk_ids = [(source_name, r["chunk_index"]) for r in records]
-        await asyncio.to_thread(cg.build_from_chunks, chunk_ids, concept_lists)
+        return await asyncio.to_thread(cg.build_concept_records, chunk_ids, concept_lists)
     except Exception:
-        log.warning("Concept indexing failed for %s", source_name, exc_info=True)
+        log.warning("Concept extraction failed for %s", source_name, exc_info=True)
+        return None
 
 
 async def _produce_records(
@@ -141,7 +150,6 @@ async def _produce_records(
     in a batched flush (see :func:`_flush_writes`), so bulk ingest pays one
     write-lock acquisition per batch instead of one per file. The per-page text
     dataset rows land in ``page_texts_out`` and are written by the same flush.
-    Concept indexing runs here because it reads the in-memory records, not the store.
     """
     records: list[ChunkRecord]
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
@@ -159,7 +167,6 @@ async def _produce_records(
             page_texts_out=page_texts,
         )
 
-    await _index_concepts(records, source_name)
     return records
 
 
@@ -509,6 +516,7 @@ async def ingest_batch(
                     on_progress=on_progress,
                     page_texts_out=page_texts,
                 )
+                concept_records = await _build_concept_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=len(records)),
@@ -523,6 +531,7 @@ async def ingest_batch(
                     needs_cleanup=entry.needs_cleanup,
                     page_texts=page_texts,
                     stat=entry.stat,
+                    concept_records=concept_records,
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -720,11 +729,13 @@ def _classify_result(
         updated.pop(result.name, None)
         failed[result.name] = None
         return BatchStatus.FAILED
-    if result.chunk_count == 0:
-        # No chunks produced (e.g. scanned PDF without vision model, or
-        # vision OCR returned no text). Don't record as a source so it
-        # gets retried on next sync, and surface as skipped so the user
-        # knows the file did not actually land in the store.
+    if result.chunk_count == 0 and not result.page_texts:
+        # Nothing extracted at all (e.g. scanned PDF without vision model).
+        # Don't record as a source so it gets retried on next sync, and
+        # surface as skipped so the user knows it did not land in the store.
+        # A zero-chunk file WITH page texts (whitespace-only OCR) stays
+        # ingested: the flush persists its pages and source row so it stops
+        # replanning every sync.
         added.pop(result.name, None)
         updated.pop(result.name, None)
         skipped[result.name] = None
@@ -771,6 +782,24 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
         for r in buffer
     ]
     _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
+    _flush_concept_records(buffer)
+
+
+def _flush_concept_records(buffer: list[_IngestResult]) -> None:
+    """Write the flush unit's buffered concept rows in one batched pass.
+
+    Runs after the chunk write so a failed flush (files moved to ``failed``
+    and replanned) never lands concept rows for unwritten chunks. A concept
+    write failure is logged and never fails the files, matching the
+    per-file extraction failure semantics.
+    """
+    batches = [r.concept_records for r in buffer if r.concept_records is not None]
+    if not batches:
+        return
+    try:
+        get_services().concepts.write_concept_records(ConceptRecords.merged(batches))
+    except Exception:
+        log.warning("Concept indexing failed for %d-file batch", len(batches), exc_info=True)
 
 
 def _flush_writes(

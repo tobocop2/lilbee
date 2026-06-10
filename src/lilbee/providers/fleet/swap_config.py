@@ -27,7 +27,9 @@ _LOG_LEVEL = "info"
 # Matches the --host every server argv binds (adapters); "localhost" would have
 # llama-swap dial [::1] first, where another process could hold the same port.
 _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
-_PORT_FLAG = "--port"
+# Shared with the swap manager, whose orphan-server sweep matches this flag's
+# value in survivor cmdlines.
+PORT_FLAG = "--port"
 _TTL_KEEP = 0  # never time a member out; the group keeps it resident
 
 # llama-swap config keys.
@@ -110,4 +112,4 @@ def _command_line(argv: list[str], port: int) -> str:
         rendered = subprocess.list2cmdline(argv)
     else:
         rendered = shlex.join(argv)
-    return f"{rendered} {_PORT_FLAG} {port}"
+    return f"{rendered} {PORT_FLAG} {port}"

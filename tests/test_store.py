@@ -315,12 +315,62 @@ class TestWriteChunksBatch:
         )
         assert len(store.get_chunks_by_source("a.md")) == 2
 
-    def test_empty_batch_and_empty_records_are_noops(self, store):
+    def test_empty_batch_is_noop(self, store):
+        assert store.write_chunks_batch([]) == 0
+        assert store.get_sources() == []
+
+    def test_zero_chunk_item_persists_page_texts_and_source_row(self, store):
+        # A processed file with no chunkable text (whitespace-only OCR) keeps
+        # its pages and source row so it stops replanning every sync.
         from lilbee.data.store import ChunkWrite
 
-        assert store.write_chunks_batch([]) == 0
-        assert store.write_chunks_batch([ChunkWrite("x.md", "h", [], needs_cleanup=False)]) == 0
-        assert store.get_sources() == []
+        page = {"source": "scan.pdf", "page": 1, "text": "  ", "content_type": "pdf"}
+        items = [ChunkWrite("scan.pdf", "h", [], needs_cleanup=True, page_texts=[page])]
+        assert store.write_chunks_batch(items) == 0
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["scan.pdf"]["chunk_count"] == 0
+        assert sources["scan.pdf"]["file_hash"] == "h"
+        assert [row["page"] for row in store.get_page_texts("scan.pdf")] == [1]
+        # Read paths stay healthy with a zero-chunk source present.
+        assert store.get_chunks_by_source("scan.pdf") == []
+        assert store.search([0.0] * cfg.embedding_dim) == []
+
+    def test_cleanup_deletes_are_constant_per_flush(self, store):
+        # N cleanup items issue one IN-delete per per-source table plus the
+        # batched source-row replace, never one delete set per item.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        total = 4
+        for i in range(total):
+            store.add_chunks(_records_for(f"f{i}.md", 1))
+        store.add_page_texts(
+            [
+                {"source": f"f{i}.md", "page": 1, "text": "old", "content_type": "pdf"}
+                for i in range(total)
+            ]
+        )
+        items = [
+            ChunkWrite(
+                f"f{i}.md",
+                f"h{i}",
+                _records_for(f"f{i}.md", 2),
+                needs_cleanup=True,
+                page_texts=[
+                    {"source": f"f{i}.md", "page": 1, "text": "new", "content_type": "pdf"}
+                ],
+            )
+            for i in range(total)
+        ]
+        with mock.patch.object(
+            core_mod, "_safe_delete_unlocked", wraps=core_mod._safe_delete_unlocked
+        ) as spy:
+            store.write_chunks_batch(items)
+        assert spy.call_count <= len(core_mod._PER_SOURCE_TABLES) + 1
+        # End state matches the per-item behavior: replaced rows, no orphans.
+        for i in range(total):
+            assert len(store.get_chunks_by_source(f"f{i}.md")) == 2
+            assert [row["text"] for row in store.get_page_texts(f"f{i}.md")] == ["new"]
 
     def test_page_texts_land_in_the_batch_and_survive_cleanup(self, store):
         from lilbee.data.store import ChunkWrite

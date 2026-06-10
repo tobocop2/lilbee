@@ -358,12 +358,12 @@ def test_launch_opencode_updates_picker_state_on_unix(tmp_path):
 
 
 def test_default_first_leads_with_configured_model():
-    from lilbee.cli.launchers.opencode import _default_first
+    from lilbee.providers.model_ref import default_first
 
     refs = ["aaa/x.gguf", "zzz/y.gguf", "mmm/z.gguf"]
-    assert _default_first(refs, "mmm/z.gguf") == ["mmm/z.gguf", "aaa/x.gguf", "zzz/y.gguf"]
+    assert default_first(refs, "mmm/z.gguf") == ["mmm/z.gguf", "aaa/x.gguf", "zzz/y.gguf"]
     # A default that isn't installed leaves the order untouched.
-    assert _default_first(refs, "not/installed.gguf") == refs
+    assert default_first(refs, "not/installed.gguf") == refs
 
 
 def test_picker_state_leads_with_configured_default_not_alphabetically_first(tmp_path):

@@ -23,7 +23,7 @@ from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failu
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import WorkerRole, configured_model_message
 
 log = logging.getLogger(__name__)
 
@@ -434,8 +434,7 @@ class FleetProvider:
             from lilbee.providers.base import ProviderError, ProviderErrorKind
 
             raise ProviderError(
-                f"This engine serves the configured {role} model ({configured}). "
-                f"To use {model!r}, set it as the {role} model and reload.",
+                configured_model_message(role, configured, model),
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.BAD_REQUEST,
             )

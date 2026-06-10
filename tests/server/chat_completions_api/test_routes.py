@@ -217,7 +217,29 @@ class TestListModelsEndpoint:
         ids = [m["id"] for m in resp.json()["data"]]
         assert ids == [remote_ref, INSTALLED_REF]
         by_id = {m["id"]: m for m in resp.json()["data"]}
-        assert by_id[remote_ref]["created"] == 0
+        # The unregistered remote ref carries the newest native timestamp so
+        # clients sorting by created desc don't bury the model lilbee serves.
+        newest_native = int(datetime.fromisoformat("2026-05-15T00:00:00+00:00").timestamp())
+        assert by_id[remote_ref]["created"] == newest_native
+
+    async def test_local_configured_chat_model_is_listed_first(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """A configured local model leads the listing even when it is not
+        alphabetically first, mirroring the launcher's picker order."""
+        from lilbee.core.config import cfg
+
+        configured = "z/Last/z.gguf"
+        services_with_chat_model.registry.list_installed = MagicMock(
+            return_value=[
+                _installed_chat_model("a/Model/a.gguf"),
+                _installed_chat_model(configured),
+            ]
+        )
+        monkeypatch.setattr(cfg, "chat_model", configured)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.get("/v1/models", headers=_h())
+        assert [m["id"] for m in resp.json()["data"]] == [configured, "a/Model/a.gguf"]
 
     async def test_remote_configured_chat_model_is_not_duplicated(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -719,7 +741,7 @@ class TestNonStreamingCompletion:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "invalid_request"
-        assert "set it as the chat model and reload" in body["error"]["message"]
+        assert "set it as the chat model in lilbee settings" in body["error"]["message"]
         assert chat_gate().in_flight == 0
 
     async def test_non_stream_not_configured_model_rejected_at_preflight(
@@ -743,7 +765,7 @@ class TestNonStreamingCompletion:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "invalid_request"
-        assert "set it as the chat model and reload" in body["error"]["message"]
+        assert "set it as the chat model in lilbee settings" in body["error"]["message"]
         services_with_chat_model.provider.chat.assert_not_called()
         assert chat_gate().in_flight == 0
 
@@ -857,7 +879,7 @@ class TestStreamingCompletion:
         assert resp.headers["content-type"].startswith("application/json")
         body = resp.json()
         assert body["error"]["code"] == "invalid_request"
-        assert "set it as the chat model and reload" in body["error"]["message"]
+        assert "set it as the chat model in lilbee settings" in body["error"]["message"]
         assert INSTALLED_REF in body["error"]["message"]
         services_with_chat_model.provider.chat.assert_not_called()
         assert chat_gate().in_flight == 0

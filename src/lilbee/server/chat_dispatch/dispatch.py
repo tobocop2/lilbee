@@ -21,7 +21,7 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import WorkerRole, configured_model_message
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -303,8 +303,7 @@ def _ensure_configured_local_model(canonical: str) -> None:
     if not parse_model_ref(canonical).is_local or canonical == cfg.chat_model:
         return
     raise ProviderError(
-        f"This engine serves the configured {WorkerRole.CHAT} model ({cfg.chat_model}). "
-        f"To use {canonical!r}, set it as the {WorkerRole.CHAT} model and reload.",
+        configured_model_message(WorkerRole.CHAT, cfg.chat_model, canonical),
         kind=ProviderErrorKind.BAD_REQUEST,
     )
 

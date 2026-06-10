@@ -19,7 +19,7 @@ from lilbee.core.config import (
     CONCEPT_NODES_TABLE,
     Config,
 )
-from lilbee.data.store import Store, escape_sql_string
+from lilbee.data.store import ConceptRecords, Store, escape_sql_string
 from lilbee.retrieval.concepts.community import Community, _compute_pmi, _leiden_partition
 from lilbee.retrieval.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
 from lilbee.retrieval.concepts.schema import (
@@ -87,16 +87,10 @@ class ConceptGraph:
         max_concepts = self._config.concept_max_per_chunk
         return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
 
-    def build_from_chunks(
+    def build_concept_records(
         self, chunk_ids: list[tuple[str, int]], concept_lists: list[list[str]]
-    ) -> None:
-        """Build co-occurrence graph from chunk concepts, compute PMI, store tables."""
-        from lilbee.data.store import ensure_table
-        from lilbee.runtime.lock import write_lock
-
-        if not chunk_ids:
-            return
-
+    ) -> ConceptRecords:
+        """Build co-occurrence graph rows (PMI-weighted) from chunk concepts; no store access."""
         cooccurrences: Counter[tuple[str, str]] = Counter()
         concept_counts: Counter[str] = Counter()
         chunk_concept_records: list[dict[str, Any]] = []
@@ -113,14 +107,19 @@ class ConceptGraph:
                     cooccurrences[pair] += 1
 
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, len(chunk_ids))
+        return ConceptRecords(
+            nodes=[
+                {"concept": c, "cluster_id": 0, "degree": count}
+                for c, count in concept_counts.items()
+            ],
+            edges=[{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()],
+            chunk_concepts=chunk_concept_records,
+        )
 
-        edge_records = [
-            {"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()
-        ]
-
-        node_records = [
-            {"concept": c, "cluster_id": 0, "degree": count} for c, count in concept_counts.items()
-        ]
+    def write_concept_records(self, records: ConceptRecords) -> None:
+        """Write batched concept rows: one lock acquisition, at most one add per table."""
+        from lilbee.data.store import ensure_table
+        from lilbee.runtime.lock import write_lock
 
         with write_lock():
             db = self._store.get_db()
@@ -129,12 +128,12 @@ class ConceptGraph:
             nodes_tbl = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
             edges_tbl = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
             cc_tbl = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-            if node_records:
-                nodes_tbl.add(node_records)
-            if edge_records:
-                edges_tbl.add(edge_records)
-            if chunk_concept_records:
-                cc_tbl.add(chunk_concept_records)
+            if records.nodes:
+                nodes_tbl.add(records.nodes)
+            if records.edges:
+                edges_tbl.add(records.edges)
+            if records.chunk_concepts:
+                cc_tbl.add(records.chunk_concepts)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
         """Boost search results whose chunks overlap with query concepts."""

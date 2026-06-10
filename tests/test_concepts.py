@@ -319,18 +319,108 @@ class TestGracefulDegradation:
         assert cg.expand_query("python frameworks") == []
 
 
-class TestBuildFromChunks:
-    @patch("lilbee.runtime.lock.write_lock")
-    def test_build_from_chunks(self, mock_lock, cg):
-        mock_lock.return_value.__enter__ = MagicMock()
-        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
-
+class TestBuildConceptRecords:
+    def test_builds_rows_without_store_access(self, cg, mock_svc):
         chunk_ids = [("doc.md", 0), ("doc.md", 1)]
         concept_lists = [["python", "machine learning"], ["python", "deep learning"]]
-        cg.build_from_chunks(chunk_ids, concept_lists)
+        records = cg.build_concept_records(chunk_ids, concept_lists)
+        node_by_concept = {n["concept"]: n for n in records.nodes}
+        assert set(node_by_concept) == {"python", "machine learning", "deep learning"}
+        assert node_by_concept["python"]["degree"] == 2
+        assert {(e["source"], e["target"]) for e in records.edges} == {
+            ("machine learning", "python"),
+            ("deep learning", "python"),
+        }
+        assert len(records.chunk_concepts) == 4
+        mock_svc.store.get_db.assert_not_called()
 
-    def test_build_empty_chunks(self, cg):
-        cg.build_from_chunks([], [])
+    def test_build_empty_chunks_returns_empty_records(self, cg):
+        records = cg.build_concept_records([], [])
+        assert (records.nodes, records.edges, records.chunk_concepts) == ([], [], [])
+
+    def test_merged_concatenates_per_file_records(self, cg):
+        from lilbee.data.store import ConceptRecords
+
+        per_file = [
+            cg.build_concept_records([("a.md", 0)], [["python", "rust"]]),
+            cg.build_concept_records([("b.md", 0)], [["python", "go"]]),
+        ]
+        merged = ConceptRecords.merged(per_file)
+        assert merged.nodes == per_file[0].nodes + per_file[1].nodes
+        assert merged.edges == per_file[0].edges + per_file[1].edges
+        assert merged.chunk_concepts == per_file[0].chunk_concepts + per_file[1].chunk_concepts
+
+
+class TestWriteConceptRecords:
+    def _records(self):
+        from lilbee.data.store import ConceptRecords
+
+        return ConceptRecords(
+            nodes=[{"concept": "python", "cluster_id": 0, "degree": 1}],
+            edges=[{"source": "a", "target": "b", "weight": 1.0}],
+            chunk_concepts=[{"chunk_source": "doc.md", "chunk_index": 0, "concept": "python"}],
+        )
+
+    @patch("lilbee.runtime.lock.write_lock")
+    @patch("lilbee.data.store.ensure_table")
+    def test_one_add_per_table(self, mock_ensure, mock_lock, cg, mock_svc):
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        tables = [MagicMock(), MagicMock(), MagicMock()]
+        mock_ensure.side_effect = tables
+        mock_svc.store.get_db.return_value = MagicMock()
+
+        cg.write_concept_records(self._records())
+        for table in tables:
+            table.add.assert_called_once()
+
+    @patch("lilbee.runtime.lock.write_lock")
+    @patch("lilbee.data.store.ensure_table")
+    def test_empty_records_still_create_tables(self, mock_ensure, mock_lock, cg, mock_svc):
+        from lilbee.data.store import ConceptRecords
+
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        tables = [MagicMock(), MagicMock(), MagicMock()]
+        mock_ensure.side_effect = tables
+        mock_svc.store.get_db.return_value = MagicMock()
+
+        cg.write_concept_records(ConceptRecords(nodes=[], edges=[], chunk_concepts=[]))
+        assert mock_ensure.call_count == 3
+        for table in tables:
+            table.add.assert_not_called()
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_batched_write_rebuilds_same_clusters_as_per_file(self, mock_leiden, mock_svc):
+        """End-state regression: one merged write equals per-file writes."""
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+        from lilbee.data.store import ConceptRecords, Store
+        from lilbee.retrieval.concepts import ConceptGraph
+
+        per_file = [
+            ConceptGraph(cfg, MagicMock()).build_concept_records([(name, 0)], [concepts])
+            for name, concepts in (("a.md", ["python", "rust"]), ("b.md", ["python", "go"]))
+        ]
+        mock_leiden.side_effect = lambda edge_rows: (
+            {c: 0 for row in edge_rows for c in (row["source"], row["target"])},
+            {c: 1 for row in edge_rows for c in (row["source"], row["target"])},
+        )
+
+        def _rebuild(write_units: list[ConceptRecords], lancedb_dir) -> list[dict]:
+            cfg.lancedb_dir = lancedb_dir
+            store = Store(cfg)
+            graph = ConceptGraph(cfg, store)
+            for unit in write_units:
+                graph.write_concept_records(unit)
+            graph.rebuild_clusters()
+            table = store.open_table(CONCEPT_NODES_TABLE)
+            rows = table.search().limit(None).to_list()
+            return sorted(rows, key=lambda r: r["concept"])
+
+        per_file_rows = _rebuild(per_file, cfg.data_dir / "per_file")
+        batched_rows = _rebuild([ConceptRecords.merged(per_file)], cfg.data_dir / "batched")
+        assert batched_rows == per_file_rows
+        assert len(batched_rows) > 0
 
 
 class TestBoostResults:

@@ -437,7 +437,7 @@ class TestConfiguredModelPreflight:
         with pytest.raises(ProviderError) as exc_info:
             dispatch_chat(_req())
         assert exc_info.value.kind is ProviderErrorKind.BAD_REQUEST
-        assert "set it as the chat model and reload" in str(exc_info.value)
+        assert "set it as the chat model in lilbee settings" in str(exc_info.value)
         assert "vendor/other::Q4" in str(exc_info.value)
         services_with_model.provider.chat.assert_not_called()
 
@@ -461,7 +461,7 @@ class TestConfiguredModelPreflight:
 
         monkeypatch.setattr(cfg, "chat_model", "vendor/other::Q4")
         gen = dispatch_chat_stream(_req())
-        with pytest.raises(ProviderError, match="set it as the chat model and reload"):
+        with pytest.raises(ProviderError, match="set it as the chat model in lilbee settings"):
             await gen.__anext__()
         services_with_model.provider.chat.assert_not_called()
 

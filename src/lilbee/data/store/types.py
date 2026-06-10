@@ -15,6 +15,24 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
 
+@dataclass
+class ConceptRecords:
+    """Rows for the three concept tables, built from one or more files' chunks."""
+
+    nodes: list[dict]
+    edges: list[dict]
+    chunk_concepts: list[dict]
+
+    @classmethod
+    def merged(cls, batches: list[ConceptRecords]) -> ConceptRecords:
+        """Concatenate several record sets into one batched write unit."""
+        return cls(
+            nodes=[row for batch in batches for row in batch.nodes],
+            edges=[row for batch in batches for row in batch.edges],
+            chunk_concepts=[row for batch in batches for row in batch.chunk_concepts],
+        )
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 

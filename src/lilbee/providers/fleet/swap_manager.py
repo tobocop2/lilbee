@@ -7,7 +7,9 @@ process and exposes its endpoint and readiness. See docs/architecture.md.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
+import logging
 import os
 import signal
 import socket
@@ -24,11 +26,13 @@ import psutil
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
 from lilbee.providers.fleet.launch import role_model_prefix
-from lilbee.providers.fleet.swap_config import build_swap_config
+from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.roles import WorkerRole
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 _CONFIG_FILENAME = "llama-swap.json"
@@ -46,10 +50,16 @@ _STATE_KEY_CREATED_AT = "created_at"
 _STATE_KEY_OWNER_PID = "owner_pid"
 _STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
+_STATE_KEY_MEMBER_PORTS = "member_ports"
+# Atomic state writes: the dot prefix keeps half-written tmp files out of the
+# reap scan's glob.
+_STATE_TMP_PREFIX = "."
+_STATE_TMP_SUFFIX = ".tmp"
 # Pid reuse guard: a live process at a recorded pid whose create time differs
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
+_LLAMA_SERVER_PROCESS_NAME = "llama-server"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
@@ -61,6 +71,9 @@ _BOOT_POLL_S = 0.25
 _STOP_TIMEOUT_S = 10.0
 # Grace for a llama-server that outlived llama-swap before it is force-killed.
 _ORPHAN_STOP_TIMEOUT_S = 5.0
+# Grace for a SIGKILLed process to exit (and release its VRAM) before the next
+# free-memory probe runs.
+_KILL_WAIT_TIMEOUT_S = 5.0
 _PROBE_TIMEOUT_S = 5.0
 _PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
@@ -93,6 +106,7 @@ class _SwapState:
     owner_pid: int | None
     owner_created_at: float | None
     created_at: float | None = None
+    member_ports: tuple[int, ...] = ()
 
 
 class SwapManager:
@@ -104,6 +118,7 @@ class SwapManager:
         self._state_path = data_dir / _state_filename(os.getpid())
         self._proc: subprocess.Popen[bytes] | None = None
         self._port: int | None = None
+        self._member_ports: list[int] = []
 
     def start(self, launches: list[InstanceLaunch]) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
@@ -118,6 +133,7 @@ class SwapManager:
         self.reap_stale()
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
+        self._member_ports = sorted(member_ports.values())
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(build_swap_config(launches, member_ports))
         self._port = ports[0]
@@ -146,18 +162,31 @@ class SwapManager:
         left alone, so a second lilbee at the same data_dir (e.g. ``lilbee
         sync`` beside the server) never kills the live owner's healthy swap.
         Recorded create times guard against owner- and swap-pid reuse; the
-        cmdline match covers legacy files without a swap create time.
+        cmdline match covers legacy files without a swap create time. An
+        unparseable file is skipped, never deleted: it may be a sibling's
+        in-flight write, and a truly corrupt file is its owner's to overwrite.
+        When the swap itself is dead, its servers (each in its own process
+        group) may still be alive holding VRAM; they are matched by name plus
+        recorded member port and stopped before the file is removed.
         """
         for state_path in sorted(self._data_dir.glob(_STATE_FILE_GLOB)):
             state = _load_state(state_path)
-            if state is not None and _owner_alive(state.owner_pid, state.owner_created_at):
+            if state is None:
                 continue
-            state_path.unlink(missing_ok=True)
-            if state is not None and _is_live_llama_swap(state):
+            if _owner_alive(state.owner_pid, state.owner_created_at):
+                continue
+            if _is_live_llama_swap(state):
                 _stop_stale_swap(state)
+            else:
+                _reap_orphan_servers(state)
+            state_path.unlink(missing_ok=True)
 
     def _write_state(self) -> None:
-        """Record the swap's pid/pgid/create time plus our pid and create time."""
+        """Record the swap's pid/pgid/create time, member ports, and our identity.
+
+        The write is atomic (tmp file then ``os.replace``) so a sibling's reap
+        scan can never read a torn file and mistake this live record for junk.
+        """
         proc = self._proc
         if proc is None:
             return
@@ -175,8 +204,13 @@ class SwapManager:
             _STATE_KEY_OWNER_PID: os.getpid(),
             _STATE_KEY_OWNER_CREATED_AT: psutil.Process().create_time(),
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
+            _STATE_KEY_MEMBER_PORTS: self._member_ports,
         }
-        self._state_path.write_text(json.dumps(state))
+        tmp_path = self._state_path.with_name(
+            f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
+        )
+        tmp_path.write_text(json.dumps(state))
+        os.replace(tmp_path, self._state_path)
 
     def endpoint(self) -> str:
         """Base URL of the llama-swap OpenAI-compatible proxy."""
@@ -298,6 +332,16 @@ def _reap_survivors(children: list[psutil.Process]) -> None:
     for child in alive:
         with contextlib.suppress(psutil.NoSuchProcess):
             child.kill()
+    _await_killed(alive)
+
+
+def _await_killed(procs: list[psutil.Process]) -> None:
+    """Wait for SIGKILLed processes to exit so their VRAM is free before any probe."""
+    if not procs:
+        return
+    _, alive = psutil.wait_procs(procs, timeout=_KILL_WAIT_TIMEOUT_S)
+    for proc in alive:
+        log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
@@ -330,12 +374,14 @@ def _load_state(path: Path) -> _SwapState | None:
         raw_owner = payload.get(_STATE_KEY_OWNER_PID)
         raw_owner_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
+        raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             owner_pid=int(raw_owner) if raw_owner is not None else None,
             owner_created_at=float(raw_owner_created) if raw_owner_created is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
+            member_ports=tuple(int(port) for port in raw_ports),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -394,6 +440,7 @@ def _stop_stale_swap(state: _SwapState) -> None:
             proc.wait(timeout=_ORPHAN_STOP_TIMEOUT_S)
         except psutil.TimeoutExpired:
             _signal_stale(state, _SIGKILL)
+            _await_killed([proc])
     _reap_survivors(children)
 
 
@@ -405,3 +452,44 @@ def _signal_stale(state: _SwapState, sig: int) -> None:
         return
     with contextlib.suppress(psutil.NoSuchProcess):
         psutil.Process(state.pid).send_signal(sig)
+
+
+def _reap_orphan_servers(state: _SwapState) -> None:
+    """Stop llama-servers that outlived a dead llama-swap, matched by recorded port.
+
+    The servers run in their own process groups, so they survive their swap's
+    death and are no longer reachable as its children; the recorded member
+    ports are the only handle left.
+    """
+    _reap_survivors(_find_orphan_servers(state.member_ports))
+
+
+def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
+    """Live llama-server processes serving one of *ports*.
+
+    Both the binary name and the ``--port`` value must match, so an unrelated
+    process on a recycled port is never killed.
+    """
+    if not ports:
+        return []
+    targets = {str(port) for port in ports}
+    orphans: list[psutil.Process] = []
+    for proc in psutil.process_iter():
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        binary = Path(next(iter(cmdline), "")).name
+        if _LLAMA_SERVER_PROCESS_NAME not in binary:
+            continue
+        if _port_argument(cmdline) in targets:
+            orphans.append(proc)
+    return orphans
+
+
+def _port_argument(cmdline: list[str]) -> str | None:
+    """The value following the port flag in *cmdline*, or ``None``."""
+    for flag, value in itertools.pairwise(cmdline):
+        if flag == PORT_FLAG:
+            return value
+    return None

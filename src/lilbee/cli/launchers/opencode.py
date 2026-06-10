@@ -16,6 +16,7 @@ from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
 from lilbee.core.config import cfg
+from lilbee.providers.model_ref import default_first
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
 _SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
@@ -131,17 +132,10 @@ def _update_opencode_picker_state(model_refs: list[str], default_ref: str) -> Pa
         return None
     path = _opencode_state_file()
     state = _read_opencode_state(path)
-    state["recent"] = _merge_recent(state.get("recent"), _default_first(model_refs, default_ref))
+    state["recent"] = _merge_recent(state.get("recent"), default_first(model_refs, default_ref))
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(path, state)
     return path
-
-
-def _default_first(model_refs: list[str], default_ref: str) -> list[str]:
-    """Order so *default_ref* leads, leaving the rest in their existing order."""
-    if default_ref not in model_refs:
-        return model_refs
-    return [default_ref, *(ref for ref in model_refs if ref != default_ref)]
 
 
 def _read_opencode_state(path: Path) -> PickerState:
