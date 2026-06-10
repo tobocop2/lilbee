@@ -558,9 +558,7 @@ async def ingest_batch(
                     )
                 return _IngestResult(name, entry.path, 0, error=exc)
 
-    pending = (
-        _process_one(entry, idx) for idx, entry in enumerate(files_to_process, 1)
-    )
+    pending = (_process_one(entry, idx) for idx, entry in enumerate(files_to_process, 1))
     if quiet:
         await _collect_results(
             pending,
@@ -656,9 +654,7 @@ async def _collect_results(
     try:
         _refill_window(in_flight, pending, window)
         while in_flight:
-            done, still_running = await asyncio.wait(
-                in_flight, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, still_running = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
             in_flight = set(still_running)
             for fut in done:
                 result = fut.result()
@@ -666,7 +662,8 @@ async def _collect_results(
                 status = _classify_result(result, added, updated, failed, skipped)
                 if status is BatchStatus.INGESTED:
                     buffer.append(result)
-                    buffered_chunks += result.chunk_count
+                    # Zero-chunk files count one unit so the buffer stays bounded.
+                    buffered_chunks += max(result.chunk_count, 1)
                     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
                         await asyncio.to_thread(
                             _flush_writes, buffer, added, updated, failed, flush_failed

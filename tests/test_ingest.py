@@ -942,6 +942,28 @@ class TestZeroChunkPageTextPersistence:
             assert "blank.pdf" not in second.skipped
             mock_svc.store.write_chunks_batch.assert_not_called()
 
+    async def test_zero_chunk_files_still_trigger_the_flush_threshold(self, isolated_env, mock_svc):
+        # Each zero-chunk file counts one unit toward the flush threshold, so a
+        # run of them cannot grow the write buffer without bound.
+        import lilbee.data.ingest.pipeline as pipeline_mod
+        from lilbee.data.ingest import sync
+
+        for i in range(3):
+            (isolated_env / f"blank{i}.pdf").write_bytes(b"%PDF-1.4 whitespace only")
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline._produce_records",
+                side_effect=self._pages_no_chunks,
+            ),
+            mock.patch.object(pipeline_mod, "_WRITE_FLUSH_CHUNKS", 2),
+            mock.patch.object(
+                pipeline_mod, "_flush_writes", wraps=pipeline_mod._flush_writes
+            ) as flush_spy,
+        ):
+            result = await sync(quiet=True)
+        assert len(result.added) == 3
+        assert flush_spy.call_count >= 2
+
 
 class TestDetectPending:
     """Cheap detection: filesystem walk + hash compare against the sources table."""

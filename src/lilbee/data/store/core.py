@@ -614,13 +614,15 @@ class Store:
 
         Caller must hold ``write_lock()``. One ``IN`` delete per table covers
         every source, so a batched flush pays a constant number of predicate
-        deletes instead of one set per document.
+        deletes instead of one set per document. A delete failure propagates:
+        swallowed, it would leave every flushed file silently stale; raised,
+        the flush fails and the files replan on the next sync.
         """
         quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
         for name, column in _PER_SOURCE_TABLES:
             table = self.open_table(name)
             if table is not None:
-                _safe_delete_unlocked(table, f"{column} IN ({quoted})")
+                table.delete(f"{column} IN ({quoted})")
 
     def _delete_by_source_unlocked(self, source: str) -> None:
         """Delete a single source's chunks, page texts, and chunk-concept rows."""
@@ -715,9 +717,7 @@ class Store:
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
         missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
         if missing:
-            table.add_columns(
-                {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing}
-            )
+            table.add_columns({name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing})
         return table
 
     def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:

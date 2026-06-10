@@ -169,6 +169,7 @@ class SwapManager:
         group) may still be alive holding VRAM; they are matched by name plus
         recorded member port and stopped before the file is removed.
         """
+        self._clean_stale_tmp_files()
         for state_path in sorted(self._data_dir.glob(_STATE_FILE_GLOB)):
             state = _load_state(state_path)
             if state is None:
@@ -180,6 +181,14 @@ class SwapManager:
             else:
                 _reap_orphan_servers(state)
             state_path.unlink(missing_ok=True)
+
+    def _clean_stale_tmp_files(self) -> None:
+        """Remove crash-leftover state tmp files whose writer is dead."""
+        tmp_glob = f"{_STATE_TMP_PREFIX}{_STATE_FILE_GLOB}{_STATE_TMP_SUFFIX}"
+        for tmp_path in self._data_dir.glob(tmp_glob):
+            writer_pid = _state_owner_pid(tmp_path.name)
+            if writer_pid is not None and not psutil.pid_exists(writer_pid):
+                tmp_path.unlink(missing_ok=True)
 
     def _write_state(self) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
@@ -468,7 +477,8 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
     """Live llama-server processes serving one of *ports*.
 
     Both the binary name and the ``--port`` value must match, so an unrelated
-    process on a recycled port is never killed.
+    process on a recycled port is never killed; a server whose parent is a
+    live llama-swap belongs to a current run on a reused port and is spared.
     """
     if not ports:
         return []
@@ -482,9 +492,30 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
         binary = Path(next(iter(cmdline), "")).name
         if _LLAMA_SERVER_PROCESS_NAME not in binary:
             continue
-        if _port_argument(cmdline) in targets:
+        if _port_argument(cmdline) in targets and not _has_live_swap_parent(proc):
             orphans.append(proc)
     return orphans
+
+
+def _state_owner_pid(name: str) -> int | None:
+    """Owner pid embedded in a state or state-tmp filename, ``None`` when absent."""
+    stem = name.removeprefix(_STATE_TMP_PREFIX).removesuffix(_STATE_TMP_SUFFIX)
+    stem = stem.removeprefix(_STATE_FILENAME_PREFIX).removesuffix(_STATE_FILENAME_SUFFIX)
+    try:
+        return int(stem)
+    except ValueError:
+        return None
+
+
+def _has_live_swap_parent(proc: psutil.Process) -> bool:
+    """True when *proc*'s parent is a live llama-swap (the server is not orphaned)."""
+    try:
+        parent = proc.parent()
+        if parent is None:
+            return False
+        return _LLAMA_SWAP_PROCESS_NAME in parent.name()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
 def _port_argument(cmdline: list[str]) -> str | None:

@@ -828,21 +828,42 @@ class TestAtomicStateWrite:
         assert [path for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
 
     def test_half_written_tmp_file_is_invisible_to_the_reap_scan(self, tmp_path: Path) -> None:
-        # A crash between write and replace leaves the dotted tmp file behind;
-        # the scan's glob must never pick it up.
-        leftover = tmp_path / ".llama-swap.state.123.json.tmp"
-        leftover.write_text('{"pid":')
+        # A live writer's in-flight tmp file must never be parsed as a state
+        # record nor removed; dead-writer leftovers are TestStaleTmpCleanup's.
+        in_flight = tmp_path / f".llama-swap.state.{os.getpid()}.json.tmp"
+        in_flight.write_text('{"pid":')
         SwapManager(tmp_path).reap_stale()
-        assert leftover.exists()
+        assert in_flight.exists()
+
+
+_PARENT_RAISES = "<parent-raises>"
+
+
+class _FakeParentProc:
+    """A stand-in psutil.Process parent for the orphan ownership guard."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def name(self) -> str:
+        return self._name
 
 
 class _FakeServerProc:
     """A stand-in psutil.Process for the orphan-server sweep."""
 
-    def __init__(self, pid: int, cmdline: list[str], *, cmdline_raises: bool = False) -> None:
+    def __init__(
+        self,
+        pid: int,
+        cmdline: list[str],
+        *,
+        cmdline_raises: bool = False,
+        parent_name: str | None = None,
+    ) -> None:
         self.pid = pid
         self._cmdline = cmdline
         self._cmdline_raises = cmdline_raises
+        self._parent_name = parent_name
         self.terminated = False
         self.killed = False
 
@@ -850,6 +871,13 @@ class _FakeServerProc:
         if self._cmdline_raises:
             raise sm.psutil.NoSuchProcess(self.pid)
         return self._cmdline
+
+    def parent(self) -> _FakeParentProc | None:
+        if self._parent_name == _PARENT_RAISES:
+            raise sm.psutil.NoSuchProcess(self.pid)
+        if self._parent_name is None:
+            return None
+        return _FakeParentProc(self._parent_name)
 
     def is_running(self) -> bool:
         return True
@@ -899,6 +927,45 @@ class TestOrphanServerReaping:
         assert no_port.terminated is False
         assert not (tmp_path / "llama-swap.state.json").exists()
 
+    def test_server_with_a_live_swap_parent_is_spared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A current run can reuse a stale record's port; its server still has a
+        # live llama-swap parent, so the sweep must not touch it.
+        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001])
+        _patch_psutil_process(monkeypatch, {})
+        adopted = _FakeServerProc(
+            1,
+            ["/opt/llama-server", "--port", "5001"],
+            parent_name="llama-swap",
+        )
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([adopted]))
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
+        SwapManager(tmp_path).reap_stale()
+        assert adopted.terminated is False
+        assert not (tmp_path / "llama-swap.state.json").exists()
+
+    def test_server_with_a_foreign_parent_is_still_reaped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _patch_psutil_process(monkeypatch, {})
+        orphan = _FakeServerProc(
+            1,
+            ["/opt/llama-server", "--port", "5001"],
+            parent_name="launchd",
+        )
+        parent_vanished = _FakeServerProc(
+            2,
+            ["/opt/llama-server", "--port", "5002"],
+            parent_name=_PARENT_RAISES,
+        )
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([orphan, parent_vanished]))
+        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
+        SwapManager(tmp_path).reap_stale()
+        assert orphan.terminated is True
+        assert parent_vanished.terminated is True
+
     def test_legacy_state_without_ports_sweeps_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -911,6 +978,38 @@ class TestOrphanServerReaping:
         monkeypatch.setattr(sm.psutil, "process_iter", _forbidden)
         SwapManager(tmp_path).reap_stale()
         assert not (tmp_path / "llama-swap.state.json").exists()
+
+
+class TestStaleTmpCleanup:
+    def test_dead_writers_tmp_file_is_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stale = tmp_path / ".llama-swap.state.424242.json.tmp"
+        stale.write_text("{partial")
+        monkeypatch.setattr(sm.psutil, "pid_exists", lambda pid: False)
+        SwapManager(tmp_path).reap_stale()
+        assert not stale.exists()
+
+    def test_live_writers_tmp_file_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        in_flight = tmp_path / f".llama-swap.state.{os.getpid()}.json.tmp"
+        in_flight.write_text("{partial")
+        monkeypatch.setattr(sm.psutil, "pid_exists", lambda pid: True)
+        SwapManager(tmp_path).reap_stale()
+        assert in_flight.exists()
+
+    def test_tmp_file_without_a_pid_is_kept(self, tmp_path: Path) -> None:
+        legacy = tmp_path / ".llama-swap.state.json.tmp"
+        legacy.write_text("{partial")
+        SwapManager(tmp_path).reap_stale()
+        assert legacy.exists()
+
+
+def test_state_owner_pid_parses_state_and_tmp_names() -> None:
+    assert sm._state_owner_pid("llama-swap.state.123.json") == 123
+    assert sm._state_owner_pid(".llama-swap.state.456.json.tmp") == 456
+    assert sm._state_owner_pid("llama-swap.state.json") is None
 
 
 def test_write_state_is_noop_without_a_process(tmp_path: Path) -> None:

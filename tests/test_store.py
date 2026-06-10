@@ -336,8 +336,8 @@ class TestWriteChunksBatch:
         assert store.search([0.0] * cfg.embedding_dim) == []
 
     def test_cleanup_deletes_are_constant_per_flush(self, store):
-        # N cleanup items issue one IN-delete per per-source table plus the
-        # batched source-row replace, never one delete set per item.
+        # N cleanup items go through one batched IN-delete pass, never one
+        # delete set per item.
         import lilbee.data.store.core as core_mod
         from lilbee.data.store import ChunkWrite
 
@@ -363,14 +363,52 @@ class TestWriteChunksBatch:
             for i in range(total)
         ]
         with mock.patch.object(
-            core_mod, "_safe_delete_unlocked", wraps=core_mod._safe_delete_unlocked
+            core_mod.Store,
+            "_delete_by_sources_unlocked",
+            autospec=True,
+            side_effect=core_mod.Store._delete_by_sources_unlocked,
         ) as spy:
             store.write_chunks_batch(items)
-        assert spy.call_count <= len(core_mod._PER_SOURCE_TABLES) + 1
+        assert spy.call_count == 1
+        assert sorted(spy.call_args.args[1]) == [f"f{i}.md" for i in range(total)]
         # End state matches the per-item behavior: replaced rows, no orphans.
         for i in range(total):
             assert len(store.get_chunks_by_source(f"f{i}.md")) == 2
             assert [row["text"] for row in store.get_page_texts(f"f{i}.md")] == ["new"]
+
+    def test_cleanup_delete_failure_propagates(self, store):
+        # A swallowed delete would leave every flushed file silently stale, so
+        # the flush must fail and let the files replan instead.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 1))
+        real_open_table = store.open_table
+        broken = mock.MagicMock()
+        broken.delete.side_effect = RuntimeError("commit conflict")
+
+        def _broken_chunks_table(name):
+            if name == core_mod.CHUNKS_TABLE:
+                return broken
+            return real_open_table(name)
+
+        with (
+            mock.patch.object(store, "open_table", side_effect=_broken_chunks_table),
+            pytest.raises(RuntimeError, match="commit conflict"),
+        ):
+            store.write_chunks_batch(
+                [ChunkWrite("a.md", "h2", _records_for("a.md", 1), needs_cleanup=True)]
+            )
+
+    def test_quoted_filename_survives_the_batched_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        name = "it's a note.md"
+        store.add_chunks(_records_for(name, 1))
+        store.write_chunks_batch(
+            [ChunkWrite(name, "h2", _records_for(name, 2), needs_cleanup=True)]
+        )
+        assert len(store.get_chunks_by_source(name)) == 2
 
     def test_page_texts_land_in_the_batch_and_survive_cleanup(self, store):
         from lilbee.data.store import ChunkWrite
