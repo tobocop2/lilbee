@@ -14,6 +14,7 @@ from .lance_helpers import (
 from .ranking import cosine_sim, mmr_rerank
 from .types import (
     LOCAL_OWNER,
+    SOURCE_STAT_UNKNOWN,
     ChunkType,
     ChunkWrite,
     CitationRecord,
@@ -26,14 +27,18 @@ from .types import (
     SearchChunk,
     SearchScope,
     SourceRecord,
+    SourceStat,
+    SourceStatBackfill,
     SourceType,
     agent_owner,
     is_agent_owner,
     scope_to_chunk_type,
+    source_stat,
 )
 
 __all__ = [
     "LOCAL_OWNER",
+    "SOURCE_STAT_UNKNOWN",
     "ChunkType",
     "ChunkWrite",
     "CitationRecord",
@@ -46,6 +51,8 @@ __all__ = [
     "SearchChunk",
     "SearchScope",
     "SourceRecord",
+    "SourceStat",
+    "SourceStatBackfill",
     "SourceType",
     "Store",
     "agent_owner",
@@ -59,4 +66,5 @@ __all__ = [
     "mmr_rerank",
     "safe_delete",
     "scope_to_chunk_type",
+    "source_stat",
 ]

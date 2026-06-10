@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
+
+if TYPE_CHECKING:
+    import lancedb.table
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -25,6 +29,18 @@ from lilbee.retrieval.concepts.schema import (
 )
 
 log = logging.getLogger(__name__)
+
+# Rows per record batch when scanning a concept table; bounds the Python-dict
+# working set while the columnar Arrow data stays compact.
+_TABLE_SCAN_BATCH_ROWS = 50_000
+
+_CONCEPT_TABLES = (CONCEPT_NODES_TABLE, CONCEPT_EDGES_TABLE, CHUNK_CONCEPTS_TABLE)
+
+
+def _iter_row_batches(table: lancedb.table.Table) -> Iterator[list[dict[str, Any]]]:
+    """Yield a table's rows as bounded-size lists of dicts."""
+    for batch in table.to_arrow().to_batches(max_chunksize=_TABLE_SCAN_BATCH_ROWS):
+        yield batch.to_pylist()
 
 
 class ConceptGraph:
@@ -241,15 +257,28 @@ class ConceptGraph:
             if by_cluster.get(cid)
         ]
 
+    def _aggregated_edge_rows(self, edges_table: lancedb.table.Table) -> list[dict[str, Any]]:
+        """Stream the edge table in batches, summing duplicate edges.
+
+        Per-file ingest appends one edge row per co-occurring pair, so the table
+        accumulates duplicates; the in-memory list holds unique edges only.
+        """
+        edge_weights: dict[tuple[str, str], float] = {}
+        for rows in _iter_row_batches(edges_table):
+            for row in rows:
+                key = (row["source"], row["target"])
+                edge_weights[key] = edge_weights.get(key, 0.0) + row["weight"]
+        return [{"source": a, "target": b, "weight": w} for (a, b), w in edge_weights.items()]
+
     def rebuild_clusters(self) -> None:
-        """Re-run Leiden clustering on the existing edge table."""
+        """Re-run Leiden clustering on the existing edge table, then compact."""
         from lilbee.data.store import ensure_table
         from lilbee.runtime.lock import write_lock
 
         edges_table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if edges_table is None:
             return
-        edge_rows = edges_table.to_arrow().to_pylist()
+        edge_rows = self._aggregated_edge_rows(edges_table)
         if not edge_rows:
             return
 
@@ -270,6 +299,21 @@ class ConceptGraph:
                 db = self._store.get_db()
                 nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
                 nodes_table.add(node_records)
+        self.compact_tables()
+
+    def compact_tables(self) -> None:
+        """Compact the concept tables; per-file adds otherwise accrete tiny versions."""
+        from lilbee.runtime.lock import write_lock
+
+        with write_lock():
+            for name in _CONCEPT_TABLES:
+                table = self._store.open_table(name)
+                if table is None:
+                    continue
+                try:
+                    table.optimize()
+                except Exception:
+                    log.debug("Concept table optimize failed on '%s'", name, exc_info=True)
 
     def get_cluster_sources(self, min_sources: int = 3) -> dict[int, set[str]]:
         """Return clusters that span at least *min_sources* distinct sources.
@@ -282,16 +326,18 @@ class ConceptGraph:
         if nodes_table is None or cc_table is None:
             return {}
 
-        node_rows = nodes_table.to_arrow().to_pylist()
-        concept_to_cluster: dict[str, int] = {r["concept"]: r["cluster_id"] for r in node_rows}
+        concept_to_cluster: dict[str, int] = {}
+        for node_rows in _iter_row_batches(nodes_table):
+            for row in node_rows:
+                concept_to_cluster[row["concept"]] = row["cluster_id"]
 
-        cc_rows = cc_table.to_arrow().to_pylist()
         cluster_sources: dict[int, set[str]] = {}
-        for row in cc_rows:
-            cid = concept_to_cluster.get(row["concept"])
-            if cid is None:
-                continue
-            cluster_sources.setdefault(cid, set()).add(row["chunk_source"])
+        for cc_rows in _iter_row_batches(cc_table):
+            for row in cc_rows:
+                cid = concept_to_cluster.get(row["concept"])
+                if cid is None:
+                    continue
+                cluster_sources.setdefault(cid, set()).add(row["chunk_source"])
 
         return {
             cid: sources for cid, sources in cluster_sources.items() if len(sources) >= min_sources

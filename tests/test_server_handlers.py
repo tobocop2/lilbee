@@ -1126,6 +1126,115 @@ class TestDrainHeartbeat:
         assert len(progress) == 3
 
 
+class TestSseEventQueue:
+    """The per-stream queue stays bounded: progress sheds, lifecycle always lands."""
+
+    def _progress_payload(self, i: int) -> str:
+        return f'event: file_done\ndata: {{"i": {i}}}\n\n'
+
+    async def test_queue_stays_bounded_under_fast_producer(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=10)
+        for i in range(1000):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        assert queue.qsize() == 10
+        assert queue.dropped_events == 990
+
+    async def test_oldest_progress_dropped_first(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=3)
+        for i in range(5):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        kept = [queue.get_nowait() for _ in range(3)]
+        # The two oldest were shed; the freshest progress survives.
+        assert kept == [self._progress_payload(i) for i in (2, 3, 4)]
+
+    async def test_terminal_event_always_delivered_when_full(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=5)
+        for i in range(50):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        done_payload = 'event: done\ndata: {"added": 50}\n\n'
+        queue.put_event_nowait(done_payload, EventType.DONE)
+        queue.put_nowait(None)
+
+        drained: list[str | None] = []
+        while not queue.empty():
+            drained.append(queue.get_nowait())
+        assert done_payload in drained
+        assert drained[-1] is None
+        # The bound held: an old progress event made room for each arrival.
+        assert len(drained) <= 7
+
+    async def test_sentinel_never_evicted_by_progress(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        queue.put_nowait(None)
+        for i in range(10):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        assert queue.get_nowait() is None
+
+    async def test_non_droppable_progress_event_types_always_land(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(4):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        crawl_done = 'event: crawl_done\ndata: {"pages_crawled": 1}\n\n'
+        queue.put_event_nowait(crawl_done, EventType.CRAWL_DONE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert crawl_done in drained
+
+    async def test_callback_routes_progress_through_shedding_path(self):
+        from lilbee.runtime.progress import EventType, FileDoneEvent
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        sse = SseStream()
+        assert isinstance(sse.queue, SseEventQueue)
+        sse.callback(EventType.FILE_DONE, FileDoneEvent(file="a.md", status="ok", chunks=1))
+        payload = sse.queue.get_nowait()
+        assert payload is not None
+        assert payload.startswith("event: file_done")
+
+    async def test_callback_from_worker_thread_routes_threadsafe(self):
+        from lilbee.runtime.progress import EventType, FileDoneEvent
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        await asyncio.to_thread(
+            sse.callback, EventType.FILE_DONE, FileDoneEvent(file="a.md", status="ok", chunks=1)
+        )
+        await asyncio.sleep(0)  # let call_soon_threadsafe land
+        payload = sse.queue.get_nowait()
+        assert payload is not None
+        assert payload.startswith("event: file_done")
+
+    async def test_drain_still_sees_all_events_under_capacity(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers import SseStream
+
+        cfg.sse_heartbeat_interval = 0.0
+        sse = SseStream()
+
+        async def producer():
+            sse.queue.put_event_nowait(self._progress_payload(1), EventType.FILE_DONE)
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(producer())
+        events = [e async for e in sse.drain(task, "bounded")]
+        assert events == [self._progress_payload(1)]
+
+
 class TestListModels:
     @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_catalogs(self, mock_get_mm):
