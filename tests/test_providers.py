@@ -311,8 +311,8 @@ class TestRoutingProvider:
             rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         resolve_ctx.assert_not_called()
 
-    def test_routes_vision_ocr_to_llama_cpp_for_native_ref(self) -> None:
-        """Native GGUF vision refs reach the llama-cpp vision worker pool."""
+    def test_routes_vision_ocr_to_local_engine_for_native_ref(self) -> None:
+        """Native GGUF vision refs reach the local engine's vision servers."""
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.vision_ocr.return_value = "page text"
@@ -347,13 +347,13 @@ class TestRoutingProvider:
         )
         mock_llama.vision_ocr.assert_not_called()
 
-    def test_routes_chat_to_llama_cpp_for_local_ref(self) -> None:
-        """Local HF refs dispatch to llama-cpp regardless of registry contents.
+    def test_routes_chat_to_local_engine_for_local_ref(self) -> None:
+        """Local HF refs dispatch to the local engine regardless of registry contents.
 
         The routing is strict: a ``<org>/<repo>/<file>.gguf`` shape means
-        native. If the registry doesn't have the model, llama-cpp raises
-        its own 'not installed' error; routing never falls through to
-        litellm.
+        native. If the registry doesn't have the model, the local engine
+        raises its own 'not installed' error; routing never falls through
+        to litellm.
         """
         rp = self._make_provider()
 
@@ -366,6 +366,21 @@ class TestRoutingProvider:
         assert result == "local"
         mock_llama.chat.assert_called_once()
 
+    def test_routes_chat_to_local_engine_for_gguf_under_provider_named_org(self) -> None:
+        """openai is a real HF org; an installed openai/<repo>/<file>.gguf stays local."""
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.chat.return_value = "local"
+        mock_litellm = mock.MagicMock()
+        rp._local = mock_llama
+        rp._sdk_provider = mock_litellm
+
+        cfg.chat_model = "openai/gpt-oss-20b-GGUF/gpt-oss-20b-Q4_K_M.gguf"
+        result = rp.chat([{"role": "user", "content": "hi"}])
+        assert result == "local"
+        mock_llama.chat.assert_called_once()
+        mock_litellm.chat.assert_not_called()
+
     def test_routes_embed_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
@@ -377,7 +392,7 @@ class TestRoutingProvider:
         assert result == [[0.1, 0.2]]
         mock_litellm.embed.assert_called_once()
 
-    def test_routes_embed_to_llama_cpp_for_local_ref(self) -> None:
+    def test_routes_embed_to_local_engine_for_local_ref(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
@@ -391,11 +406,11 @@ class TestRoutingProvider:
         assert result == [[0.3, 0.4]]
 
     def test_local_ref_never_falls_through_to_litellm(self) -> None:
-        """Local HF refs stay on llama-cpp even when litellm is installed.
+        """Local HF refs stay on the local engine even when litellm is installed.
 
-        Prefix is the single source of truth: anything that parses as a
-        local HF ref dispatches to llama-cpp. Users who want Ollama say
-        so with 'ollama/<name>'.
+        The native GGUF shape is the single source of truth: anything that
+        parses as a local HF ref dispatches to the local engine. Users who
+        want Ollama say so with 'ollama/<name>'.
         """
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
@@ -511,7 +526,7 @@ class TestRoutingProvider:
         assert result == {"parameters": "temp 0.7"}
         mock_litellm.show_model.assert_called_once_with("ollama/qwen3:8b")
 
-    def test_show_model_local_ref_uses_llama_cpp(self) -> None:
+    def test_show_model_local_ref_uses_local_engine(self) -> None:
         rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
@@ -3347,7 +3362,7 @@ class TestRoutingProviderRerank:
         mock_sdk.supports_rerank.return_value = True
         assert rp.supports_rerank() is True
 
-    def test_rerank_routes_bare_gguf_to_llama_cpp(self) -> None:
+    def test_rerank_routes_bare_gguf_to_local_engine(self) -> None:
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_sdk = mock.MagicMock()
@@ -3403,7 +3418,7 @@ class TestRoutingProviderRerank:
 class TestRoutingProviderPdfOcr:
     """``RoutingProvider.pdf_ocr`` dispatches by ref prefix, like ``vision_ocr``."""
 
-    def test_native_ref_routes_to_llama_cpp(self) -> None:
+    def test_native_ref_routes_to_local_engine(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
         rp = RoutingProvider()

@@ -19,15 +19,12 @@ from lilbee.providers.base import (
     ProviderError,
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
-from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.model_ref import ProviderModelRef, is_native_gguf_ref, parse_model_ref
 from lilbee.providers.roles import OcrBackend, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
-
-_NATIVE_GGUF_REF_MIN_SLASHES = 2
-"""``<org>/<repo>/<filename>.gguf`` has at least two slashes."""
 
 
 class RoutingProvider(LLMProvider):
@@ -340,8 +337,7 @@ def _is_native_rerank_ref(model: str) -> bool:
 
     Two acceptance paths:
 
-    1. The ref resolves to a featured rerank catalog entry (the historical
-       fast path).
+    1. The ref resolves to a featured rerank catalog entry.
     2. The ref has the native HuggingFace GGUF shape
        ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix). This
        lets users point ``cfg.reranker_model`` at any installed native GGUF
@@ -353,4 +349,4 @@ def _is_native_rerank_ref(model: str) -> bool:
         return False
     if is_rerank_ref(model):
         return True
-    return model.lower().endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES
+    return is_native_gguf_ref(model)

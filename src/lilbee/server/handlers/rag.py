@@ -101,8 +101,14 @@ async def ask(
     if not question or not question.strip():
         raise ValueError("question must not be empty")
     opts = _resolve_generation_options(options)
-    result = get_services().searcher.ask_raw(
-        question, top_k=top_k, options=opts, chunk_type=chunk_type
+    # ask_raw blocks for retrieval plus the whole generation; run it off the
+    # event loop so other admitted requests stay responsive.
+    result = await asyncio.to_thread(
+        get_services().searcher.ask_raw,
+        question,
+        top_k=top_k,
+        options=opts,
+        chunk_type=chunk_type,
     )
     return AskResponse(
         answer=result.answer,

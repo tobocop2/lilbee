@@ -500,6 +500,33 @@ class TestStreamSingleFlightGate:
             client.post("/api/ask/stream", json={"question": "boom"})
         assert chat_gate().in_flight == 0
 
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    async def test_disconnect_before_first_iteration_frees_slot(self, mock_stream):
+        """A client that vanishes between admission and the first chunk must not leak its slot."""
+        from lilbee.app.services import set_services
+        from lilbee.server.chat_dispatch.concurrency import chat_gate
+        from lilbee.server.models import AskRequest
+        from lilbee.server.routes.search import ask_stream_route
+        from tests.conftest import make_mock_services
+
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        services = make_mock_services()
+        services.provider.max_concurrent_chats.return_value = 1
+        set_services(services)
+        try:
+            response = await ask_stream_route.fn(data=AskRequest(question="hi"))
+            assert chat_gate().in_flight == 1
+            # Litestar never starts the generator when the disconnect lands
+            # first; its response cleanup still runs the background task.
+            assert response.background is not None
+            await response.background()
+            assert chat_gate().in_flight == 0
+            # Late generator cleanup must stay a no-op, not a double release.
+            await response.iterator.aclose()
+            assert chat_gate().in_flight == 0
+        finally:
+            set_services(None)
+
 
 class TestEmbeddingMismatchSurfacing:
     """A downloaded index built with a different embedder surfaces as an actionable

@@ -84,3 +84,29 @@ async def acquire_chat_slot_or_busy(capacity: int, timeout: float | None = None)
 async def release_chat_slot() -> None:
     """Release a chat slot reserved by :func:`acquire_chat_slot_or_busy`."""
     await chat_gate().release()
+
+
+class ChatSlotGuard:
+    """Releases one acquired chat slot at most once across multiple cleanup paths.
+
+    A streaming route acquires its slot before the SSE generator runs; a client
+    that disconnects before the generator's first iteration means the generator
+    body (and its ``finally``) never executes. Every cleanup path (generator
+    ``finally``, response after-send hook, explicit ``aclose``) releases through
+    the same guard, so whichever fires first frees the slot and the rest no-op.
+    """
+
+    def __init__(self) -> None:
+        self._released = False
+
+    @property
+    def released(self) -> bool:
+        """True once the slot has been freed."""
+        return self._released
+
+    async def release(self) -> None:
+        """Free the slot on first call; later calls are no-ops."""
+        if self._released:
+            return
+        self._released = True
+        await release_chat_slot()

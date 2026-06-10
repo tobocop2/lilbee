@@ -115,3 +115,69 @@ class TestHealthProbes:
         monkeypatch.setattr(server_mod, "chat_ready", lambda _p: False)
         monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
         assert server_mod.wait_for_chat_warm(8080, timeout_s=0.0) is False
+
+
+class TestWithConfiguredRemoteChat:
+    """The launcher's model set includes a remote-configured chat model."""
+
+    def test_remote_configured_chat_model_is_prepended(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "ollama/qwen3:8b")
+        refs = server_mod.with_configured_remote_chat(["a/b/c.gguf"])
+        assert refs == ["ollama/qwen3:8b", "a/b/c.gguf"]
+
+    def test_native_configured_chat_model_is_untouched(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "a/b/c.gguf")
+        assert server_mod.with_configured_remote_chat(["a/b/c.gguf"]) == ["a/b/c.gguf"]
+
+    def test_already_listed_remote_ref_is_not_duplicated(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "ollama/qwen3:8b")
+        refs = server_mod.with_configured_remote_chat(["ollama/qwen3:8b"])
+        assert refs == ["ollama/qwen3:8b"]
+
+
+class TestEnsureServerRunningRetries:
+    """A port stolen between free_port() and bind gets a fresh port on retry."""
+
+    @staticmethod
+    def _proc() -> mock.MagicMock:
+        proc = mock.MagicMock()
+        proc.poll.return_value = None
+        return proc
+
+    def test_retries_with_a_fresh_port_then_succeeds(self, monkeypatch) -> None:
+        first, second = self._proc(), self._proc()
+        monkeypatch.setattr(
+            server_mod, "running_server_session", mock.MagicMock(side_effect=[None, ("tok", 2222)])
+        )
+        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1111, 2222]))
+        spawn = mock.MagicMock(side_effect=[first, second])
+        monkeypatch.setattr(server_mod, "spawn_server", spawn)
+        monkeypatch.setattr(
+            server_mod, "wait_for_health", mock.MagicMock(side_effect=[False, True])
+        )
+
+        session, spawned = server_mod.ensure_server_running()
+
+        assert session == ("tok", 2222)
+        assert spawned is second
+        assert spawn.call_args_list == [mock.call(1111), mock.call(2222)]
+        first.terminate.assert_called_once()
+        second.terminate.assert_not_called()
+
+    def test_gives_up_after_bounded_attempts(self, monkeypatch) -> None:
+        import typer
+
+        procs = [self._proc() for _ in range(server_mod._SPAWN_ATTEMPTS)]
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        spawn = mock.MagicMock(side_effect=procs)
+        monkeypatch.setattr(server_mod, "spawn_server", spawn)
+        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p: False)
+
+        with pytest.raises(typer.Exit) as excinfo:
+            server_mod.ensure_server_running()
+
+        assert excinfo.value.exit_code == 1
+        assert spawn.call_count == server_mod._SPAWN_ATTEMPTS
+        for proc in procs:
+            proc.terminate.assert_called_once()

@@ -132,7 +132,9 @@ async def dispatch_chat_stream(
     req: CanonicalChatRequest,
 ) -> AsyncIterator[CanonicalStreamEvent]:
     """Stream a canonical event sequence by translating provider frames on the fly."""
-    canonical_model = preflight_chat_request(req)
+    # The preflight can do blocking HTTP model discovery when its TTL lapses;
+    # run it in a thread so the event loop stays responsive.
+    canonical_model = await asyncio.to_thread(preflight_chat_request, req)
     stream = get_services().provider.chat(
         stream=True, **_provider_chat_kwargs(req, canonical_model)
     )
@@ -308,22 +310,21 @@ def _translate_message(msg: CanonicalMessage) -> list[dict[str, Any]]:
     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
     tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
     tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-
-    if tool_results:
-        # One ``tool`` wire-message per result block; tool_call_id pairs
-        # it back to the originating ToolUseBlock.
-        return [
-            {
-                "role": "tool",
-                "tool_call_id": block.tool_use_id,
-                "content": _flatten_text(block.content),
-            }
-            for block in tool_results
-        ]
-
     text = "".join(text_parts)
+
+    # One ``tool`` wire-message per result block; tool_call_id pairs it back to
+    # the originating ToolUseBlock. Text blocks in the same canonical message
+    # follow as their own content message rather than being dropped.
+    out: list[dict[str, Any]] = [
+        {
+            "role": "tool",
+            "tool_call_id": block.tool_use_id,
+            "content": _flatten_text(block.content),
+        }
+        for block in tool_results
+    ]
     if tool_uses:
-        return [
+        out.append(
             {
                 "role": msg.role,
                 "content": text,
@@ -339,8 +340,10 @@ def _translate_message(msg: CanonicalMessage) -> list[dict[str, Any]]:
                     for tu in tool_uses
                 ],
             }
-        ]
-    return [{"role": msg.role, "content": text}]
+        )
+    elif text or not tool_results:
+        out.append({"role": msg.role, "content": text})
+    return out
 
 
 def _flatten_text(blocks: list[ContentBlock]) -> str:

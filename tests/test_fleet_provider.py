@@ -259,6 +259,17 @@ def test_chat_model_override_raises(monkeypatch) -> None:
         p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf")
 
 
+def test_chat_model_override_error_is_bad_request_kind(monkeypatch) -> None:
+    """The mismatch is a client error; BAD_REQUEST maps it to a 400 envelope, not a 500."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf")
+    assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
+
+
 def test_vision_call_returns_text() -> None:
     client = _fake_client()
     client.chat.return_value = "OCR text"

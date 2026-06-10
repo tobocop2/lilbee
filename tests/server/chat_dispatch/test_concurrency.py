@@ -94,3 +94,19 @@ async def test_chat_busy_error_inherits_from_exception() -> None:
     envelope; it must be a normal Exception so the existing handler chain catches it.
     """
     assert issubclass(ChatBusyError, Exception)
+
+
+async def test_slot_guard_releases_exactly_once() -> None:
+    """Multiple cleanup paths share one guard; only the first release frees the slot."""
+    from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard
+
+    await acquire_chat_slot_or_busy(2, timeout=0.5)
+    await acquire_chat_slot_or_busy(2, timeout=0.5)
+    guard = ChatSlotGuard()
+    assert guard.released is False
+    await guard.release()
+    assert guard.released is True
+    assert chat_gate().in_flight == 1
+    await guard.release()
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()

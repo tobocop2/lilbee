@@ -18,6 +18,8 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
+from lilbee.core.config import cfg
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,10 @@ _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
 _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
+# Spawn attempts before giving up. free_port() releases the probe socket before
+# the server binds, so a concurrent launch can steal the port; a fresh port on
+# the next attempt resolves that race.
+_SPAWN_ATTEMPTS = 3
 
 
 def running_server_session() -> tuple[str, int] | None:
@@ -58,6 +64,21 @@ def installed_chat_model_refs() -> list[str]:
     """Return sorted refs for every chat-task model in the registry."""
     registry = get_services().registry
     return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+
+
+def with_configured_remote_chat(refs: list[str]) -> list[str]:
+    """Return *refs* with the configured chat model prepended when it is remote.
+
+    A remote-configured chat model (``ollama/...``, ``openai/...``) is served by
+    the daemon through known-model resolution without appearing in the native
+    registry; prepending it keeps the launched client's picker truthful and puts
+    the model lilbee actually serves first. ``cfg.chat_model`` is validated and
+    canonicalized at the write boundary, so it always parses.
+    """
+    configured = str(cfg.chat_model)
+    if configured in refs or not parse_model_ref(configured).is_remote:
+        return list(refs)
+    return [configured, *refs]
 
 
 def free_port() -> int:
@@ -201,17 +222,32 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
     existing = running_server_session()
     if existing is not None and health_ok(existing[1]):
         return existing, None
-    chosen_port = free_port()
-    console.print(f"Starting lilbee server on port {chosen_port}...")
-    spawned = spawn_server(chosen_port)
-    if not wait_for_health(chosen_port):
-        stop_spawned_server(spawned)
-        typer.secho(
-            f"lilbee server failed to start on port {chosen_port}; check the logs.",
-            err=True,
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(1)
+    last_port = 0
+    for _ in range(_SPAWN_ATTEMPTS):
+        last_port = free_port()
+        spawned = _spawn_and_wait(last_port)
+        if spawned is not None:
+            return _session_for_spawned(spawned), spawned
+    typer.secho(
+        f"lilbee server failed to start on port {last_port}; check the logs.",
+        err=True,
+        fg=typer.colors.RED,
+    )
+    raise typer.Exit(1)
+
+
+def _spawn_and_wait(port: int) -> subprocess.Popen[bytes] | None:
+    """Spawn a server on *port* and wait for health; None when it never comes up."""
+    console.print(f"Starting lilbee server on port {port}...")
+    spawned = spawn_server(port)
+    if wait_for_health(port):
+        return spawned
+    stop_spawned_server(spawned)
+    return None
+
+
+def _session_for_spawned(spawned: subprocess.Popen[bytes]) -> tuple[str, int]:
+    """Read the session a freshly-healthy server wrote, stopping it when missing."""
     session = running_server_session()
     if session is None:
         stop_spawned_server(spawned)
@@ -221,4 +257,4 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
             fg=typer.colors.RED,
         )
         raise typer.Exit(1)
-    return session, spawned
+    return session

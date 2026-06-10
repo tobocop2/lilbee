@@ -240,6 +240,24 @@ class TestAsk:
         await handlers.ask("q", chunk_type="wiki")
         assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
 
+    async def test_generation_runs_off_the_event_loop(self, mock_svc):
+        """ask_raw blocks for the whole generation; it must run in a worker thread."""
+        import threading
+
+        from lilbee.retrieval.query import AskResult
+
+        loop_thread = threading.current_thread()
+        seen_threads: list[threading.Thread] = []
+
+        def _slow_ask(*args, **kwargs):
+            seen_threads.append(threading.current_thread())
+            return AskResult(answer="ok", sources=[])
+
+        mock_svc.searcher.ask_raw.side_effect = _slow_ask
+        result = await handlers.ask("q")
+        assert result.answer == "ok"
+        assert seen_threads and seen_threads[0] is not loop_thread
+
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -315,8 +333,9 @@ class TestAskStream:
         assert "rate-limited or out of quota" in parsed["message"]
         assert "lilbee" in parsed["message"]
         assert "Internal error" not in parsed["message"]
-        # The kind reaches the client as a machine-readable code to branch on.
-        assert parsed["code"] == "rate_limit"
+        # The classified kind reaches the client as a machine-readable code to
+        # branch on, in the chat-completions code vocabulary.
+        assert parsed["code"] == "rate_limit_exceeded"
 
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
@@ -608,7 +627,7 @@ class TestChatStream:
         assert "Internal error" in error_events[0]
 
     async def test_provider_error_surfaces_its_message(self, mock_svc, monkeypatch):
-        """A ProviderError from the dispatch reaches the client verbatim with its kind code."""
+        """A ProviderError from the dispatch reaches the client verbatim with its mapped code."""
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
 
         def _erroring_stream(_req):
@@ -629,7 +648,7 @@ class TestChatStream:
         assert len(error_events) == 1
         parsed = json.loads(error_events[0].split("data: ")[1].strip())
         assert "rejected your API key" in parsed["message"]
-        assert parsed["code"] == "auth"
+        assert parsed["code"] == "invalid_api_key"
 
     async def test_cancel_stops_emitting(self, mock_svc, monkeypatch):
         """Closing the chat_stream generator stops further dispatch events from being emitted."""

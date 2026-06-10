@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES
 from lilbee.providers.base import filter_options
 from lilbee.providers.local_servers import (
     LOCAL_SERVER_KEYS,
@@ -31,6 +32,11 @@ _API_PROVIDERS = frozenset(
 # All provider prefixes that route a ref away from the local registry:
 # API providers plus the local OpenAI-compatible servers (ollama, lm_studio).
 PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS)
+
+
+def is_native_gguf_ref(raw: str) -> bool:
+    """True when *raw* has the native HuggingFace GGUF shape ``<org>/<repo>/<file>.gguf``."""
+    return raw.lower().endswith(".gguf") and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
 
 
 @dataclass(frozen=True)
@@ -87,12 +93,16 @@ def format_remote_ref(name: str, provider: str) -> str:
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
-    """Classify a model string by its prefix and return the routing ref.
+    """Classify a model string and return the routing ref, native shape first.
 
-    Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``. Remote
-    providers use prefixes from :data:`PROVIDER_PREFIXES` (the local
-    servers ``ollama/`` and ``lm_studio/`` plus every API provider).
+    Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``; that shape
+    always routes locally, even when the org collides with a remote
+    provider prefix (``openai/``, ``mistral/``, ``deepseek/`` are real HF
+    orgs). Remote providers use prefixes from :data:`PROVIDER_PREFIXES`
+    (the local servers ``ollama/`` and ``lm_studio/`` plus every API provider).
     """
+    if is_native_gguf_ref(raw):
+        return ProviderModelRef(raw=raw, provider="local", name=raw)
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
         raise ValueError(
