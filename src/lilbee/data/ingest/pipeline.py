@@ -7,7 +7,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Coroutine, Iterable, Iterator
+from collections.abc import Callable, Coroutine, Iterable, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +38,7 @@ from lilbee.data.ingest.types import (
     _IngestResult,
 )
 from lilbee.data.store import (
+    SOURCE_STAT_UNKNOWN,
     ChunkWrite,
     PageTextRecord,
     SourceRecord,
@@ -163,12 +164,24 @@ async def _produce_records(
 
 
 def _disk_stat(path: Path) -> SourceStat | None:
-    """Current size/mtime of *path*, or None when it cannot be stat'd."""
+    """Current size/mtime of *path* stamped with now, or None when it cannot be stat'd."""
     try:
         st = path.stat()
     except OSError:
         return None
-    return SourceStat(st.st_size, st.st_mtime_ns)
+    return SourceStat(st.st_size, st.st_mtime_ns, time.time_ns())
+
+
+def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
+    """Whether the stored stat proves the file unchanged without hashing it.
+
+    Git-style racily-clean guard: a matching (size, mtime) only counts when the
+    mtime is strictly older than the time the stat was recorded; a same-size
+    edit landing in the same mtime tick is otherwise missed forever.
+    """
+    if (stored.size_bytes, stored.mtime_ns) != (current.size_bytes, current.mtime_ns):
+        return False
+    return stored.captured_ns != SOURCE_STAT_UNKNOWN and current.mtime_ns < stored.captured_ns
 
 
 def _plan_file_changes(
@@ -179,7 +192,8 @@ def _plan_file_changes(
 ) -> FileChangePlan:
     """Diff disk against the store, hashing only files whose size/mtime drifted.
 
-    A tracked file whose stored (size, mtime) matches the disk stat is unchanged
+    A tracked file whose stored (size, mtime) matches the disk stat, and whose
+    mtime predates the stat capture (see :func:`_stat_unchanged`), is unchanged
     without reading its bytes; everything else is SHA-256 hashed. A file whose
     current hash matches a marker in ``skip_markers`` (set by a prior failed
     attempt) is treated as unchanged so we don't retry every sync. Edit the file
@@ -200,7 +214,12 @@ def _plan_file_changes(
         record = existing_sources.get(name)
         stored_stat = source_stat(record) if record is not None else None
         current_stat = _disk_stat(path)
-        if record is not None and stored_stat is not None and stored_stat == current_stat:
+        if (
+            record is not None
+            and stored_stat is not None
+            and current_stat is not None
+            and _stat_unchanged(stored_stat, current_stat)
+        ):
             unchanged += 1
             continue
         old_hash = record["file_hash"] if record is not None else None
@@ -662,12 +681,16 @@ async def _collect_results(
                     )
             _refill_window(in_flight, pending, window)
     finally:
-        await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
-        still_pending = [t for t in in_flight if not t.done()]
-        for task in still_pending:
-            task.cancel()
-        if still_pending:
-            await asyncio.gather(*still_pending, return_exceptions=True)
+        # The inner finally guarantees the sibling cancel even if the flush
+        # itself raises (e.g. a cancellation landing on the to_thread await).
+        try:
+            await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
+        finally:
+            still_pending = [t for t in in_flight if not t.done()]
+            for task in still_pending:
+                task.cancel()
+            if still_pending:
+                await asyncio.gather(*still_pending, return_exceptions=True)
 
 
 def _classify_result(
@@ -712,36 +735,31 @@ def _classify_result(
 _FLUSH_RETRY_DELAY_SECONDS = 2.0
 
 
-def _write_batch_with_retry(items: list[ChunkWrite]) -> None:
-    """Write one chunk batch, retrying once after a lock timeout."""
+def _retry_after_lock_timeout(write: Callable[[], object]) -> None:
+    """Run one store write, retrying once after a lock timeout."""
     try:
-        get_services().store.write_chunks_batch(items)
+        write()
     except LockTimeoutError:
         log.warning(
             "Store write lock busy; retrying batch flush in %.0fs", _FLUSH_RETRY_DELAY_SECONDS
         )
         time.sleep(_FLUSH_RETRY_DELAY_SECONDS)
-        get_services().store.write_chunks_batch(items)
+        write()
 
 
-def _flush_writes(
-    buffer: list[_IngestResult],
-    added: dict[str, None],
-    updated: dict[str, None],
-    failed: dict[str, None],
-    flush_failed: set[str] | None = None,
-) -> None:
-    """Write the buffered documents in one transaction; track a write failure.
+def _flush_batch(buffer: list[_IngestResult]) -> None:
+    """Persist one flush unit: page texts first, then chunks + source rows.
 
-    Each buffered file's chunks, its cleanup delete, and its source upsert land
-    together in ``Store.write_chunks_batch`` under a single write lock. If the
-    batch write fails (after one retry on lock timeout), every file in it is
-    moved to ``failed`` since its chunks did not persist, and recorded in
-    *flush_failed* so the caller retries them next sync instead of skip-marking
-    them. The buffer is cleared either way.
+    The source row (with its fresh stat) lands in ``write_chunks_batch``, so the
+    page texts must already be persisted by then: a page-text failure leaves the
+    source row stale and the file replans next sync instead of losing its pages
+    forever behind the stat short-circuit. Each write retries once on a lock
+    timeout; the cleanup delete on replan removes any rows a partial flush left.
     """
-    if not buffer:
-        return
+    store = get_services().store
+    page_texts = [pt for r in buffer for pt in (r.page_texts or [])]
+    if page_texts:
+        _retry_after_lock_timeout(lambda: store.add_page_texts(cast(list[dict], page_texts)))
     items = [
         ChunkWrite(
             source=r.name,
@@ -752,8 +770,29 @@ def _flush_writes(
         )
         for r in buffer
     ]
+    _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
+
+
+def _flush_writes(
+    buffer: list[_IngestResult],
+    added: dict[str, None],
+    updated: dict[str, None],
+    failed: dict[str, None],
+    flush_failed: set[str] | None = None,
+) -> None:
+    """Flush the buffered documents to the store; track a write failure.
+
+    Each buffered file's page texts, chunks, cleanup delete, and source upsert
+    are written by :func:`_flush_batch`. If that fails, every file in the batch
+    is moved to ``failed`` since its source row did not land, and recorded in
+    *flush_failed* so the caller replans them next sync instead of skip-marking
+    them; the exception never escapes, so the caller's sibling-cancel and
+    skip-marker path always runs. The buffer is cleared either way.
+    """
+    if not buffer:
+        return
     try:
-        _write_batch_with_retry(items)
+        _flush_batch(buffer)
     except Exception as exc:
         for r in buffer:
             log.warning("Failed to write %s: %s", r.name, exc)
@@ -762,11 +801,5 @@ def _flush_writes(
             failed[r.name] = None
             if flush_failed is not None:
                 flush_failed.add(r.name)
+    finally:
         buffer.clear()
-        return
-    # Chunks persisted; write the batch's per-page text dataset rows (a separate
-    # table) in one more locked pass so bulk ingest stays batched there too.
-    page_texts = [pt for r in buffer for pt in (r.page_texts or [])]
-    if page_texts:
-        get_services().store.add_page_texts(cast(list[dict], page_texts))
-    buffer.clear()

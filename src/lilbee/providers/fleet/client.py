@@ -197,7 +197,8 @@ _HEALTH_TIMEOUT_S = 5.0
 _BUSY_RETRIES = 6
 _BUSY_BACKOFF_BASE_S = 0.5
 # Half-open recovery: a replica marked unhealthy becomes routable again after
-# this cool-down, so one live request probes it (success restores it, another
+# this cool-down. Recovery is probe-by-traffic and unmetered: every concurrent
+# caller sees it routable once cooled down (a success restores it, another
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
@@ -231,7 +232,7 @@ class LlamaServerClient:
         self._in_flight_lock = threading.Lock()
         # Routing health: cleared on a connection-level failure so the router
         # skips this replica; restored by a successful call, or half-open after
-        # the cool-down (the next routed request is the probe).
+        # the cool-down (probe-by-traffic, unmetered).
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
@@ -241,8 +242,9 @@ class LlamaServerClient:
         """Whether the router should offer this replica traffic.
 
         An unhealthy replica becomes routable again ``_UNHEALTHY_RETRY_S`` after
-        it was marked, so one live request probes it: a success marks it healthy,
-        another connection failure re-stamps the cool-down.
+        it was marked. The probe is by traffic and unmetered: every concurrent
+        reader sees it routable once the cool-down elapses; a success marks it
+        healthy, another connection failure re-stamps the cool-down.
         """
         with self._in_flight_lock:
             if self._healthy:

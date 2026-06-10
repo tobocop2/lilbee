@@ -135,13 +135,7 @@ class SourceRecord(TypedDict):
     source_type: str
     size_bytes: NotRequired[int]
     mtime_ns: NotRequired[int]
-
-
-class SourceStat(NamedTuple):
-    """File size and mtime captured when a source was hashed."""
-
-    size_bytes: int
-    mtime_ns: int
+    stat_captured_ns: NotRequired[int]
 
 
 # Sentinel for the stat columns on rows written before they existed (or for
@@ -149,13 +143,26 @@ class SourceStat(NamedTuple):
 SOURCE_STAT_UNKNOWN = -1
 
 
+class SourceStat(NamedTuple):
+    """File size and mtime captured when a source was hashed, plus the capture time.
+
+    ``captured_ns`` is the wall-clock time the stat was taken; the sync planner
+    hashes a file whose mtime is not strictly older than it (racily clean).
+    """
+
+    size_bytes: int
+    mtime_ns: int
+    captured_ns: int = SOURCE_STAT_UNKNOWN
+
+
 def source_stat(record: SourceRecord) -> SourceStat | None:
-    """Stored stat pair for a source row, or None when unknown."""
+    """Stored stat for a source row, or None when unknown."""
     size = record.get("size_bytes", SOURCE_STAT_UNKNOWN)
     mtime = record.get("mtime_ns", SOURCE_STAT_UNKNOWN)
+    captured = record.get("stat_captured_ns", SOURCE_STAT_UNKNOWN)
     if size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
         return None
-    return SourceStat(int(size), int(mtime))
+    return SourceStat(int(size), int(mtime), int(captured))
 
 
 class SourceStatBackfill(NamedTuple):

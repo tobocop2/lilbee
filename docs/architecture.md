@@ -240,11 +240,13 @@ flowchart TD
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. A state file records the running llama-swap's
-  pid, process group, and owning lilbee pid so the next start can reap a crashed
-  owner's surviving llama-swap and its servers (guarded against pid reuse by a
-  command-line match, and left alone while the owning lilbee is still alive);
-  clean shutdown removes the file. A background monitor restarts a dead server with
+  on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
+  (named with its pid) recording the running llama-swap's pid, process group, and the
+  owner's pid and create time; the next start scans every state file and reaps each
+  dead owner's surviving llama-swap and its servers (guarded against pid reuse by a
+  command-line match for the swap and a create-time match for the owner, and left
+  alone while the owning lilbee is still alive); clean shutdown removes only the
+  owner's own file. A background monitor restarts a dead server with
   backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
   then SIGKILL).
 - **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;

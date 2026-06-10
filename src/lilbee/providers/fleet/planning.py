@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +83,32 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 # host (7-8 GB) with no budget at all, refusing to serve even tiny models.
 _SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
+
+# llama.cpp split-GGUF shard naming ("%s-%05d-of-%05d.gguf"); the cold-load
+# timeout must scale with the SUM of the shards, not the first file alone.
+_SPLIT_GGUF_NAME = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
+
+
+def _weights_bytes(model_path: Path) -> int:
+    """Total weights size on disk; a split GGUF sums every sibling shard."""
+    match = _SPLIT_GGUF_NAME.fullmatch(model_path.name)
+    if match is None:
+        return model_path.stat().st_size
+    return sum(
+        sibling.stat().st_size
+        for sibling in model_path.parent.iterdir()
+        if _is_sibling_shard(sibling.name, match)
+    )
+
+
+def _is_sibling_shard(name: str, match: re.Match[str]) -> bool:
+    """Whether *name* is a shard of the same split GGUF as *match*."""
+    shard = _SPLIT_GGUF_NAME.fullmatch(name)
+    return (
+        shard is not None
+        and shard["prefix"] == match["prefix"]
+        and shard["total"] == match["total"]
+    )
 
 
 def _slots_for(
@@ -528,7 +555,7 @@ def _launch_for(
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     model_path = resolve_model_path(model_ref)
-    weights_bytes = model_path.stat().st_size
+    weights_bytes = _weights_bytes(model_path)
     meta = read_gguf_metadata(model_path)
     from lilbee.core.config import cfg
 

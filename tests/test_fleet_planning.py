@@ -1120,3 +1120,36 @@ class TestEstimateLaunchParity:
                 f"{role}: launch {flag}={value} not reflected as estimator "
                 f"{estimator_flag}={estimator_flags.get(estimator_flag)}"
             )
+
+
+class TestWeightsBytes:
+    """The cold-load timeout scales with the model's total on-disk weights."""
+
+    def test_single_file_uses_its_own_size(self, tmp_path) -> None:
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"x" * 100)
+        assert planning_mod._weights_bytes(model) == 100
+
+    def test_split_gguf_sums_all_sibling_shards(self, tmp_path) -> None:
+        first = tmp_path / "big-00001-of-00003.gguf"
+        first.write_bytes(b"x" * 100)
+        (tmp_path / "big-00002-of-00003.gguf").write_bytes(b"x" * 200)
+        (tmp_path / "big-00003-of-00003.gguf").write_bytes(b"x" * 300)
+        (tmp_path / "other-00001-of-00002.gguf").write_bytes(b"x" * 999)  # different model
+        (tmp_path / "big.gguf").write_bytes(b"x" * 50)  # not a shard
+        assert planning_mod._weights_bytes(first) == 600
+
+    def test_launch_for_split_model_sums_shards(self, tmp_path, monkeypatch) -> None:
+        model = tmp_path / "chat-00001-of-00002.gguf"
+        model.write_bytes(b"x" * 1024)
+        (tmp_path / "chat-00002-of-00002.gguf").write_bytes(b"x" * 1024)
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path",
+            lambda _ref: model,
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        assert launch.weights_bytes == 2048  # both shards, not just the served file

@@ -31,7 +31,7 @@ from lilbee.retrieval.reasoning import (
     strip_reasoning,
 )
 from lilbee.runtime.progress import SseErrorCode, SseEvent
-from lilbee.server.chat_completions_api.errors import classify_provider_error
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -40,6 +40,8 @@ from lilbee.server.chat_dispatch.canonical import (
     TextDelta,
 )
 from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
     dispatch_chat,
     dispatch_chat_stream,
 )
@@ -66,15 +68,27 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Kinds the /api SSE surface maps to a model-availability code; every other
+# kind is surfaced as its ProviderErrorKind string ("auth", "connection",
+# "server", ...) because shipped clients branch on that vocabulary. The /v1
+# surface applies its own completions-envelope mapping in
+# chat_completions_api.errors.
+_STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
+    ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
+    ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,
+}
+
+
 def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None, str]:
     """Return ``(code, user_message)`` for an SSE error event, typed-exception aware."""
-    classified = classify_provider_error(exc)
-    if classified is not None:
-        return classified.code, classified.message
+    if isinstance(exc, ModelNotFoundError):
+        return CompletionsErrorCode.MODEL_NOT_FOUND, str(exc)
+    if isinstance(exc, ModelDoesNotSupportToolsError):
+        return CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc)
     if isinstance(exc, ProviderError):
-        # An unmapped ProviderError already carries a user-facing message (rate
-        # limit, auth, bad request). Surface it verbatim; the kind becomes a
-        # machine-readable code unless the backend couldn't classify it.
+        mapped = _STREAM_KIND_CODES.get(exc.kind)
+        if mapped is not None:
+            return mapped, str(exc)
         code = None if exc.kind is ProviderErrorKind.UNKNOWN else exc.kind
         return code, str(exc)
     return classify_load_error(str(exc))

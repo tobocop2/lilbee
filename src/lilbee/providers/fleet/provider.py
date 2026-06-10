@@ -85,8 +85,10 @@ def _call_with_failover(
     A connection-level failure (dead replica, "exited prematurely") marks the
     client unhealthy so the router skips it for the cool-down (after which its
     next routed request is the recovery probe); the call retries once on a
-    different healthy replica, which is marked the same way if it also fails at
-    the connection level. With none left the failure surfaces.
+    different replica, preferring a healthy one but probing an unhealthy one
+    when none are (the same fallback ``_least_in_flight`` applies). The retry
+    replica is marked the same way if it also fails at the connection level.
+    With no other replica at all the failure surfaces.
     """
     client = _least_in_flight(clients)
     try:
@@ -95,7 +97,7 @@ def _call_with_failover(
         if not is_connection_failure(exc):
             raise
         client.mark_unhealthy()
-        others = [c for c in clients if c is not client and c.healthy]
+        others = [c for c in clients if c is not client]
         if not others:
             raise _no_healthy_replica_error() from exc
         retry = _least_in_flight(others)
@@ -191,8 +193,12 @@ def _bounded_vision_chat(
     options: dict[str, Any],
     timeout: float,
 ) -> object:
-    """One vision chat with a real deadline: the wait, the HTTP request, and the
-    worker thread all end at *timeout* instead of blocking on executor exit."""
+    """One vision chat whose caller returns by *timeout* with a result or an error.
+
+    The httpx timeout is per-phase (connect/read/...), not a total deadline, so
+    the worker thread can outlive the caller on a slowly trickling response; the
+    executor is shut down without waiting so nothing blocks on it.
+    """
     from concurrent.futures import ThreadPoolExecutor
     from concurrent.futures import TimeoutError as FutureTimeoutError
 
@@ -373,15 +379,32 @@ class FleetProvider:
         with self._build_lock:
             with self._lock:
                 swap = self._swap
-                clients = [client for pool in self._clients.values() for client in pool]
-                self._swap = None
-                self._clients = {}
-                self._chat_slots = 1
-                self._chat_ctx = None
-            for client in clients:
-                client.close()
+            self._drop_swap_refs()
             if swap is not None:
                 swap.shutdown()
+
+    def _drop_swap_refs(self) -> None:
+        """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""
+        with self._lock:
+            clients = [client for pool in self._clients.values() for client in pool]
+            self._swap = None
+            self._clients = {}
+            self._chat_slots = 1
+            self._chat_ctx = None
+        for client in clients:
+            client.close()
+
+    def _drop_dead_swap(self) -> None:
+        """Drop the refs to a swap whose process is gone so ``_ensure_swap`` rebuilds.
+
+        A no-op while the swap process is still running (e.g. the failure was in
+        planning), so a live engine is never abandoned unstopped.
+        """
+        with self._build_lock:
+            with self._lock:
+                swap = self._swap
+            if swap is not None and not swap.running:
+                self._drop_swap_refs()
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -807,16 +830,28 @@ class FleetProvider:
     def _reload_blocking(self) -> None:
         """Run reload passes until no further reload arrived mid-pass.
 
-        The pending check and the guard release happen under one lock acquisition,
-        so a reload_role landing between them cannot be acknowledged and dropped.
+        A failed pass with the pending flag set still runs the pending pass (the
+        fresh plan may succeed under the new cfg); only the final pass's failure
+        propagates, after dropping the refs to a dead swap so the next call can
+        rebuild. The pending check and the guard release happen under one lock
+        acquisition, so a reload_role landing between them cannot be acknowledged
+        and dropped.
         """
         while True:
             try:
                 self._reload_pass()
             except BaseException:
                 with self._lock:
-                    self._reloading = False
+                    rerun = self._reload_pending
                     self._reload_pending = False
+                    if not rerun:
+                        self._reloading = False
+                if rerun:
+                    log.warning(
+                        "Engine reload failed; retrying with the pending change.", exc_info=True
+                    )
+                    continue
+                self._drop_dead_swap()
                 raise
             with self._lock:
                 if not self._reload_pending:

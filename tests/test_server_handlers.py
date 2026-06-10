@@ -333,9 +333,8 @@ class TestAskStream:
         assert "rate-limited or out of quota" in parsed["message"]
         assert "lilbee" in parsed["message"]
         assert "Internal error" not in parsed["message"]
-        # The classified kind reaches the client as a machine-readable code to
-        # branch on, in the chat-completions code vocabulary.
-        assert parsed["code"] == "rate_limit_exceeded"
+        # The kind reaches the client as a machine-readable code to branch on.
+        assert parsed["code"] == "rate_limit"
 
     async def test_unclassified_provider_error_has_message_but_no_code(self, mock_svc):
         # An UNKNOWN-kind ProviderError still surfaces its message, with no code.
@@ -627,7 +626,7 @@ class TestChatStream:
         assert "Internal error" in error_events[0]
 
     async def test_provider_error_surfaces_its_message(self, mock_svc, monkeypatch):
-        """A ProviderError from the dispatch reaches the client verbatim with its mapped code."""
+        """A ProviderError from the dispatch reaches the client verbatim with its kind code."""
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
 
         def _erroring_stream(_req):
@@ -648,7 +647,7 @@ class TestChatStream:
         assert len(error_events) == 1
         parsed = json.loads(error_events[0].split("data: ")[1].strip())
         assert "rejected your API key" in parsed["message"]
-        assert parsed["code"] == "invalid_api_key"
+        assert parsed["code"] == "auth"
 
     async def test_cancel_stops_emitting(self, mock_svc, monkeypatch):
         """Closing the chat_stream generator stops further dispatch events from being emitted."""
@@ -3215,6 +3214,35 @@ class TestClassifyStreamError:
         code, msg = _classify_stream_error(exc)
         assert code == "model_not_found"
         assert "nomic-ai/embed/embed.gguf" in msg
+
+    def test_auth_provider_error_keeps_kind_code(self):
+        """An AUTH ProviderError keeps the /api kind vocabulary, not the /v1 mapping."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend rejected your API key.", kind=ProviderErrorKind.AUTH)
+        code, msg = _classify_stream_error(exc)
+        assert code == "auth"
+        assert "rejected your API key" in msg
+
+    def test_connection_provider_error_keeps_kind_code(self):
+        """A CONNECTION ProviderError keeps "connection" so clients can branch on it."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend unreachable.", kind=ProviderErrorKind.CONNECTION)
+        code, msg = _classify_stream_error(exc)
+        assert code == "connection"
+        assert "unreachable" in msg
+
+    def test_server_provider_error_keeps_kind_code(self):
+        """A SERVER ProviderError stays "server", distinct from "connection"."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend returned 502.", kind=ProviderErrorKind.SERVER)
+        code, _ = _classify_stream_error(exc)
+        assert code == "server"
 
     def test_model_does_not_support_tools_routes_to_typed_code(self):
         """``ModelDoesNotSupportToolsError`` from the dispatch surfaces as a typed code."""

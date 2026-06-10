@@ -107,7 +107,7 @@ _ANN_REFINE_FACTOR = 10
 
 # Stat columns appended to ``_sources`` after its first release; legacy tables
 # are migrated in place with the SOURCE_STAT_UNKNOWN sentinel.
-_SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns")
+_SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -689,6 +689,7 @@ class Store:
             "source_type": source_type,
             "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
             "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
+            "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
         }
 
     def _sources_table(self) -> lancedb.table.Table:
@@ -736,6 +737,7 @@ class Store:
                 **bf.record,
                 "size_bytes": bf.stat.size_bytes,
                 "mtime_ns": bf.stat.mtime_ns,
+                "stat_captured_ns": bf.stat.captured_ns,
             }
             for bf in backfills
         ]

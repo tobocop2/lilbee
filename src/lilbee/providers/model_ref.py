@@ -35,8 +35,13 @@ PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS
 
 
 def is_native_gguf_ref(raw: str) -> bool:
-    """True when *raw* has the native HuggingFace GGUF shape ``<org>/<repo>/<file>.gguf``."""
-    return raw.lower().endswith(".gguf") and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    """True when *raw* has the native HuggingFace GGUF shape ``<org>/<repo>/<file>.gguf``.
+
+    The suffix check is case-sensitive on purpose: repo extraction
+    (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
+    lowercase ``.gguf`` suffix, and classification must agree with it.
+    """
+    return raw.endswith(".gguf") and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
 
 
 @dataclass(frozen=True)
@@ -96,12 +101,15 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     """Classify a model string and return the routing ref, native shape first.
 
     Native HuggingFace refs are ``<org>/<repo>/<file>.gguf``; that shape
-    always routes locally, even when the org collides with a remote
-    provider prefix (``openai/``, ``mistral/``, ``deepseek/`` are real HF
-    orgs). Remote providers use prefixes from :data:`PROVIDER_PREFIXES`
-    (the local servers ``ollama/`` and ``lm_studio/`` plus every API provider).
+    routes locally even when the org collides with an API provider prefix
+    (``openai/``, ``mistral/``, ``deepseek/`` are real HF orgs). Local-server
+    prefixes (``ollama/``, ``lm_studio/``) are exempt from the shape rule:
+    those servers report model ids that can themselves look like GGUF paths
+    (LM Studio 0.2.x uses full relative GGUF paths), so the prefix wins there.
+    Remote providers use prefixes from :data:`PROVIDER_PREFIXES`.
     """
-    if is_native_gguf_ref(raw):
+    first_segment = raw.split("/", 1)[0]
+    if first_segment not in LOCAL_SERVER_KEYS and is_native_gguf_ref(raw):
         return ProviderModelRef(raw=raw, provider="local", name=raw)
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))

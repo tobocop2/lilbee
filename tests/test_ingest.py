@@ -413,6 +413,91 @@ class TestSync:
         retry = await sync(quiet=True)
         assert "doc.txt" in retry.added
 
+    def test_flush_batch_writes_page_texts_before_the_source_row(self, _mock_extract_file):
+        # Page texts must already be persisted when write_chunks_batch lands the
+        # source row, so a page-text failure leaves the row stale.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+        from lilbee.data.store import PageTextRecord
+
+        store = get_services().store
+        order: list[str] = []
+        store.add_page_texts.side_effect = lambda rows: order.append("page_texts")
+        store.write_chunks_batch.side_effect = lambda items: order.append("chunks")
+        result = _IngestResult(
+            name="a.txt",
+            path=Path("a.txt"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[{"text": "x"}],
+            page_texts=[PageTextRecord(source="a.txt", page=0, text="x", content_type="text")],
+        )
+        pipeline._flush_batch([result])
+        assert order == ["page_texts", "chunks"]
+
+    def test_page_text_write_failure_keeps_the_source_row_stale(self, _mock_extract_file):
+        # A failed add_page_texts aborts the flush unit before write_chunks_batch,
+        # so the source row never lands and the file replans next sync.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+        from lilbee.data.store import PageTextRecord
+
+        store = get_services().store
+        store.add_page_texts.side_effect = RuntimeError("page table corrupt")
+        result = _IngestResult(
+            name="a.txt",
+            path=Path("a.txt"),
+            chunk_count=1,
+            error=None,
+            file_hash="h",
+            records=[{"text": "x"}],
+            page_texts=[PageTextRecord(source="a.txt", page=0, text="x", content_type="text")],
+        )
+
+        buffer = [result]
+        added: dict[str, None] = {"a.txt": None}
+        failed: dict[str, None] = {}
+        flush_failed: set[str] = set()
+        pipeline._flush_writes(buffer, added, {}, failed, flush_failed)
+
+        store.write_chunks_batch.assert_not_called()
+        assert added == {}
+        assert list(failed) == ["a.txt"]
+        assert flush_failed == {"a.txt"}
+        assert buffer == []
+
+    async def test_page_text_flush_failure_replans_with_no_skip_marker(
+        self, _mock_extract_file, isolated_env
+    ):
+        # End-to-end: a page-text failure on the second sync leaves the source
+        # row at the OLD hash, writes no skip marker, and still yields a
+        # SyncResult, so the next sync replans the file.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        doc = isolated_env / "doc.txt"
+        doc.write_text("original content")
+        await sync(quiet=True)
+        store = get_services().store
+        old_hash = {s["filename"]: s for s in store.get_sources()}["doc.txt"]["file_hash"]
+
+        doc.write_text("edited content!!")
+        store.add_page_texts.side_effect = RuntimeError("page table corrupt")
+        result = await sync(quiet=True)
+        assert "doc.txt" in result.failed
+        assert "doc.txt" not in load_skip_markers(cfg.data_root)
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["doc.txt"]["file_hash"] == old_hash
+
+        # Next sync re-plans the file: the stale row's hash no longer matches.
+        store.add_page_texts.side_effect = None
+        retry = await sync(quiet=True)
+        assert "doc.txt" in retry.updated
+
     async def test_ingest_pdf(self, mock_extract_file, isolated_env):
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -829,8 +914,12 @@ class TestDetectPending:
 class TestStatShortCircuit:
     """Planning hashes only files whose stored (size, mtime) drifted."""
 
-    @staticmethod
-    def _record(name: str, fhash: str, path: Path | None = None) -> dict:
+    # A stat capture clearly later than the file's mtime, so the racily-clean
+    # tie-breaker does not force a hash in tests of the clean path.
+    _CAPTURE_MARGIN_NS = 1_000_000_000
+
+    @classmethod
+    def _record(cls, name: str, fhash: str, path: Path | None = None) -> dict:
         from lilbee.data.store import SOURCE_STAT_UNKNOWN
 
         record = {
@@ -841,11 +930,13 @@ class TestStatShortCircuit:
             "source_type": "document",
             "size_bytes": SOURCE_STAT_UNKNOWN,
             "mtime_ns": SOURCE_STAT_UNKNOWN,
+            "stat_captured_ns": SOURCE_STAT_UNKNOWN,
         }
         if path is not None:
             st = path.stat()
             record["size_bytes"] = st.st_size
             record["mtime_ns"] = st.st_mtime_ns
+            record["stat_captured_ns"] = st.st_mtime_ns + cls._CAPTURE_MARGIN_NS
         return record
 
     def test_matching_stat_skips_hashing(self, isolated_env, monkeypatch):
@@ -867,6 +958,52 @@ class TestStatShortCircuit:
         assert plan.unchanged == 1
         assert plan.files_to_process == []
         assert plan.stat_backfills == []
+
+    def test_racily_clean_mtime_at_capture_time_is_hashed(self, isolated_env, monkeypatch):
+        # A same-size edit landing in the same mtime tick as the recorded
+        # capture cannot be proven unseen by the stat alone; it must be hashed.
+        from lilbee.data.ingest import file_hash, pipeline
+
+        f = isolated_env / "racy.txt"
+        f.write_text("racy content!!")
+        record = self._record("racy.txt", file_hash(f), f)
+        record["stat_captured_ns"] = f.stat().st_mtime_ns  # capture tied with mtime
+
+        hash_calls: list[Path] = []
+
+        def _counting_hash(path: Path) -> str:
+            hash_calls.append(path)
+            return file_hash(path)
+
+        monkeypatch.setattr(pipeline, "file_hash", _counting_hash)
+        plan = pipeline._plan_file_changes({"racy.txt": f}, {"racy.txt": record}, cancel=None)
+        assert hash_calls == [f]
+        assert plan.unchanged == 1  # content matched after the forced hash
+        assert len(plan.stat_backfills) == 1  # the fresh capture re-arms the short-circuit
+
+    def test_unknown_capture_time_is_hashed(self, isolated_env, monkeypatch):
+        # A row with stat columns but no capture time (pre-capture format) cannot
+        # apply the racily-clean tie-breaker; hash once and backfill.
+        from lilbee.data.ingest import file_hash, pipeline
+
+        f = isolated_env / "precapture.txt"
+        f.write_text("pre-capture row")
+        record = self._record("precapture.txt", file_hash(f), f)
+        del record["stat_captured_ns"]
+
+        hash_calls: list[Path] = []
+
+        def _counting_hash(path: Path) -> str:
+            hash_calls.append(path)
+            return file_hash(path)
+
+        monkeypatch.setattr(pipeline, "file_hash", _counting_hash)
+        plan = pipeline._plan_file_changes(
+            {"precapture.txt": f}, {"precapture.txt": record}, cancel=None
+        )
+        assert hash_calls == [f]
+        assert plan.unchanged == 1
+        assert len(plan.stat_backfills) == 1
 
     def test_changed_mtime_rehashes(self, isolated_env, monkeypatch):
         import os
@@ -1284,6 +1421,39 @@ class TestCollectResultsSkipped:
         with pytest.raises(RuntimeError, match="ingest blew up"):
             await _collect_results(
                 iter([_boom(), _never_finishes()]), 2, added, {}, failed, skipped, window=2
+            )
+        assert sibling_cancelled.is_set()
+
+    async def test_finally_path_flush_failure_still_cancels_siblings(self, monkeypatch):
+        """A flush raising on the way out must not strand the in-flight siblings."""
+        import asyncio
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        started = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
+
+        async def _boom() -> _IngestResult:
+            await started.wait()
+            raise RuntimeError("ingest blew up")
+
+        async def _never_finishes() -> _IngestResult:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+            raise AssertionError("sibling task should have been cancelled")
+
+        def _exploding_flush(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("flush blew up")
+
+        monkeypatch.setattr(pipeline, "_flush_writes", _exploding_flush)
+        with pytest.raises(RuntimeError, match="flush blew up"):
+            await pipeline._collect_results(
+                iter([_boom(), _never_finishes()]), 2, {}, {}, {}, {}, window=2
             )
         assert sibling_cancelled.is_set()
 

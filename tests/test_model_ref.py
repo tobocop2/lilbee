@@ -24,19 +24,31 @@ class TestParseModelRef:
         assert ref.provider == "local"
         assert ref.name == "Qwen/Qwen3-8B-GGUF"
 
-    @pytest.mark.parametrize("org", ["openai", "mistral", "deepseek", "ollama", "lm_studio"])
-    def test_native_gguf_shape_wins_over_provider_prefix(self, org: str) -> None:
-        """A real HF org colliding with a provider prefix still routes locally for GGUFs."""
+    @pytest.mark.parametrize("org", ["openai", "mistral", "deepseek"])
+    def test_native_gguf_shape_wins_over_api_provider_prefix(self, org: str) -> None:
+        """A real HF org colliding with an API provider prefix still routes locally for GGUFs."""
         raw = f"{org}/Some-Model-GGUF/some-model-Q4_K_M.gguf"
         ref = parse_model_ref(raw)
         assert ref.provider == "local"
         assert ref.name == raw
 
+    def test_lm_studio_gguf_path_id_routes_to_lm_studio(self) -> None:
+        """LM Studio 0.2.x reports model ids as relative GGUF paths; the prefix wins."""
+        ref = parse_model_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf")
+        assert ref.provider == "lm_studio"
+        assert ref.name == "TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf"
+
+    def test_ollama_gguf_path_id_routes_to_ollama(self) -> None:
+        """An Ollama-prefixed id that looks like a GGUF path stays with Ollama."""
+        ref = parse_model_ref("ollama/some/dir/model.gguf")
+        assert ref.provider == "ollama"
+
     def test_native_gguf_shape_check(self) -> None:
         from lilbee.providers.model_ref import is_native_gguf_ref
 
         assert is_native_gguf_ref("openai/Repo-GGUF/file.gguf") is True
-        assert is_native_gguf_ref("openai/Repo-GGUF/sub/file.GGUF") is True
+        # Case-sensitive on purpose: hf_repo_from_ref only matches ".gguf".
+        assert is_native_gguf_ref("openai/Repo-GGUF/sub/file.GGUF") is False
         assert is_native_gguf_ref("openai/gpt-4o") is False
         assert is_native_gguf_ref("ollama/llama3:8b") is False
         assert is_native_gguf_ref("file.gguf") is False

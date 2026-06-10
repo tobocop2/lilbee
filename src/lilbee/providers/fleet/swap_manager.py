@@ -32,15 +32,22 @@ if TYPE_CHECKING:
 
 _HOST = "127.0.0.1"
 _CONFIG_FILENAME = "llama-swap.json"
-# Cross-run reaping: the state file records the live swap's pid/pgid plus the
-# owning lilbee pid, so the next start can kill a dead owner's surviving
-# llama-swap (it holds VRAM otherwise) while leaving a live owner's swap alone.
-_STATE_FILENAME = "llama-swap.state.json"
+# Cross-run reaping: each owner lilbee writes its own state file (named with its
+# pid) recording its swap's pid/pgid plus the owner's pid and create time, so the
+# next start can kill a dead owner's surviving llama-swap (it holds VRAM
+# otherwise) while leaving a live owner's swap and file alone.
+_STATE_FILENAME_PREFIX = "llama-swap.state."
+_STATE_FILENAME_SUFFIX = ".json"
+# Also matches the legacy single shared state file ("llama-swap.state.json").
+_STATE_FILE_GLOB = f"{_STATE_FILENAME_PREFIX}*"
 _STATE_KEY_PID = "pid"
 _STATE_KEY_PGID = "pgid"
 _STATE_KEY_OWNER_PID = "owner_pid"
-_STATE_KEY_STARTED_AT = "started_at"
+_STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
+# Owner pid reuse guard: a live process at the owner pid whose create time differs
+# from the recorded one by more than this is a different process (the owner died).
+_OWNER_CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
@@ -71,6 +78,11 @@ _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
+def _state_filename(owner_pid: int) -> str:
+    """The per-owner state filename for the lilbee process *owner_pid*."""
+    return f"{_STATE_FILENAME_PREFIX}{owner_pid}{_STATE_FILENAME_SUFFIX}"
+
+
 @dataclass(frozen=True)
 class _SwapState:
     """A previous run's llama-swap identity, read back for cross-run reaping."""
@@ -78,14 +90,16 @@ class _SwapState:
     pid: int
     pgid: int | None
     owner_pid: int | None
+    owner_created_at: float | None
 
 
 class SwapManager:
     """Owns one llama-swap process fronting every configured role co-resident."""
 
     def __init__(self, data_dir: Path) -> None:
+        self._data_dir = data_dir
         self._config_path = data_dir / _CONFIG_FILENAME
-        self._state_path = data_dir / _STATE_FILENAME
+        self._state_path = data_dir / _state_filename(os.getpid())
         self._proc: subprocess.Popen[bytes] | None = None
         self._port: int | None = None
 
@@ -118,26 +132,27 @@ class SwapManager:
         self._await_health()
 
     def _reap_previous(self) -> None:
-        """Kill a dead owner's surviving llama-swap before starting a new one.
+        """Kill every dead owner's surviving llama-swap before starting a new one.
 
         An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
         so the next run would plan against artificially reduced free memory.
-        Reaping happens only when the recorded owner lilbee process is dead: a
-        second lilbee at the same data_dir (e.g. ``lilbee sync`` beside the
-        server) must not kill the live owner's healthy swap, and the state file
-        stays in place for that owner (``_write_state`` re-points it only when
-        this run spawns its own swap). The cmdline match guards against pid
-        reuse by an unrelated process.
+        Every state file in the data dir is scanned (including the legacy
+        shared-name file): a dead owner's swap is reaped and its file removed; a
+        live owner's swap and file are left alone, so a second lilbee at the
+        same data_dir (e.g. ``lilbee sync`` beside the server) never kills the
+        live owner's healthy swap. The owner's recorded create time guards
+        against owner-pid reuse; the cmdline match guards against swap-pid reuse.
         """
-        state = _load_state(self._state_path)
-        if state is not None and _owner_alive(state.owner_pid):
-            return
-        self._state_path.unlink(missing_ok=True)
-        if state is not None and _is_live_llama_swap(state.pid):
-            _stop_stale_swap(state)
+        for state_path in sorted(self._data_dir.glob(_STATE_FILE_GLOB)):
+            state = _load_state(state_path)
+            if state is not None and _owner_alive(state.owner_pid, state.owner_created_at):
+                continue
+            state_path.unlink(missing_ok=True)
+            if state is not None and _is_live_llama_swap(state.pid):
+                _stop_stale_swap(state)
 
     def _write_state(self) -> None:
-        """Record the swap's pid/pgid and our owner pid for cross-run reaping."""
+        """Record the swap's pid/pgid plus our pid and create time in our own file."""
         proc = self._proc
         if proc is None:
             return
@@ -149,7 +164,7 @@ class SwapManager:
             _STATE_KEY_PID: proc.pid,
             _STATE_KEY_PGID: pgid,
             _STATE_KEY_OWNER_PID: os.getpid(),
-            _STATE_KEY_STARTED_AT: time.time(),
+            _STATE_KEY_OWNER_CREATED_AT: psutil.Process().create_time(),
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
         }
         self._state_path.write_text(json.dumps(state))
@@ -174,8 +189,16 @@ class SwapManager:
         self.shutdown()
         self.start(launches)
 
+    @property
+    def running(self) -> bool:
+        """Whether this manager currently has a spawned llama-swap process."""
+        return self._proc is not None
+
     def shutdown(self) -> None:
-        """Stop llama-swap and every server it spawned (a no-op when not running)."""
+        """Stop llama-swap and every server it spawned (a no-op when not running).
+
+        Unlinks only this owner's state file; another instance's record stays.
+        """
         proc = self._proc
         if proc is not None:
             _stop_process_tree(proc)
@@ -296,22 +319,32 @@ def _load_state(path: Path) -> _SwapState | None:
         payload = json.loads(path.read_text())
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_owner = payload.get(_STATE_KEY_OWNER_PID)
+        raw_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             owner_pid=int(raw_owner) if raw_owner is not None else None,
+            owner_created_at=float(raw_created) if raw_created is not None else None,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def _owner_alive(pid: int | None) -> bool:
-    """True when the recorded owner lilbee process is still running (not a zombie)."""
+def _owner_alive(pid: int | None, created_at: float | None) -> bool:
+    """True when the recorded owner lilbee process is still running (not a zombie).
+
+    A live process at *pid* whose create time differs from *created_at* is a
+    pid-reuse impostor, so the owner counts as dead.
+    """
     if pid is None:
         return False
     try:
-        status = str(psutil.Process(pid).status())
+        proc = psutil.Process(pid)
+        status = str(proc.status())
+        create_time = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    if created_at is not None and abs(create_time - created_at) > _OWNER_CREATE_TIME_TOLERANCE_S:
         return False
     return status != str(psutil.STATUS_ZOMBIE)
 

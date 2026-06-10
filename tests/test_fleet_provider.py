@@ -42,9 +42,11 @@ class _FakeSwap:
         self.reloads = 0
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
+        self.running = True
 
     def start(self, launches: list) -> None:
         self.started.append(launches)
+        self.running = True
 
     def endpoint(self) -> str:
         return "http://fake-endpoint"
@@ -57,6 +59,7 @@ class _FakeSwap:
 
     def shutdown(self) -> None:
         self.shutdowns += 1
+        self.running = False
 
 
 def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
@@ -1095,6 +1098,17 @@ class TestReplicaHealthRouting:
         assert p.rerank("q", ["c"]) == [0.5]
         assert alive.calls == 1
 
+    def test_failover_probes_a_cooling_replica_when_none_healthy(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        cooling = _FakeReplica(in_flight=5)
+        cooling.mark_unhealthy()  # the only sibling is mid cool-down
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, cooling]})
+        assert p.embed(["a"]) == [[0.1]]  # probed instead of "no healthy replica"
+        assert cooling.calls == 1
+        assert cooling.healthy is True  # the successful probe restored it
+
     def test_retry_connection_failure_marks_the_second_replica_unhealthy(self) -> None:
         import httpx as _httpx
 
@@ -1255,17 +1269,70 @@ class TestReloadSingleFlight:
     def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
             def reload(self, launches: list) -> None:
+                super().reload(launches)
                 raise RuntimeError("respawn failed")
 
+        swap = _ExplodingSwap()
         p = FleetProvider()
-        p._swap = _ExplodingSwap()
+        p._swap = swap
         p._reloading = True
         p._reload_pending = True
         monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
         with pytest.raises(RuntimeError, match="respawn failed"):
             p._reload_blocking()
+        assert swap.reloads == 2  # the pending pass still ran before the failure surfaced
         assert p._reloading is False
         assert p._reload_pending is False
+
+    def test_failed_pass_still_applies_the_pending_change(self, monkeypatch) -> None:
+        class _FlakySwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                super().reload(launches)
+                if self.reloads == 1:
+                    self.running = False  # the failed restart tore the process down
+                    raise RuntimeError("first pass failed")
+                self.running = True
+
+        swap = _FlakySwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+        p._reload_pending = True  # a settings change arrived during the failing pass
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p._reload_blocking()  # must not raise: the pending pass succeeded
+        assert swap.reloads == 2
+        assert p._swap is swap  # re-adopted by the successful pass
+        assert p._reloading is False
+        assert p._reload_pending is False
+
+    def test_final_pass_failure_drops_the_dead_swap(self, monkeypatch) -> None:
+        class _ExplodingSwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                self.running = False  # the failed restart tore the process down
+                raise RuntimeError("respawn failed")
+
+        p = FleetProvider()
+        p._swap = _ExplodingSwap()
+        p._reloading = True
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        with pytest.raises(RuntimeError, match="respawn failed"):
+            p._reload_blocking()
+        assert p._swap is None  # the next call rebuilds instead of hitting a dead swap
+
+    def test_planning_failure_keeps_a_live_swap(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+
+        def _broken_plan() -> list:
+            raise RuntimeError("no devices")
+
+        monkeypatch.setattr(planning_mod, "plan_all_launches", _broken_plan)
+        with pytest.raises(RuntimeError, match="no devices"):
+            p._reload_blocking()
+        assert p._swap is swap  # still running and serving the old config
+        assert swap.shutdowns == 0
 
     def test_reload_clears_the_guard_when_done(self, monkeypatch) -> None:
         swap = _FakeSwap()
