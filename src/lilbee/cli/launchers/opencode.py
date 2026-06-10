@@ -239,6 +239,7 @@ class OpencodeLauncher:
             api_key=token,
             model_refs=model_refs,
             chat_ctx=served_chat_ctx(port),
+            default_ref=str(cfg.chat_model),
         )
         provider_block = block["provider"][_OPENCODE_PROVIDER_ID]
         _merge_lilbee_provider_into_config(

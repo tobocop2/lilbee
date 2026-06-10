@@ -67,6 +67,16 @@ def run_launcher(launcher: Launcher) -> None:
             err=True,
             fg=typer.colors.YELLOW,
         )
+    elif str(cfg.chat_model) not in model_refs:
+        # The startup pin would point at a model the provider does not serve,
+        # so the client opens on its own default provider instead of lilbee.
+        typer.secho(
+            f"Warning: configured chat model '{cfg.chat_model}' is not installed; "
+            "the launched client will not open on a lilbee model. Pull it first "
+            "or set chat_model to an installed ref.",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
     # Wait out the cold model load before handing off, so the client opens onto a
     # warm engine instead of an apparently-dead stream. Only meaningful when a
     # native chat model is installed to warm; a remote-configured model has no

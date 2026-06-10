@@ -61,6 +61,7 @@ def opencode_config(
     api_key: str,
     model_refs: list[str],
     chat_ctx: int | None = None,
+    default_ref: str | None = None,
 ) -> dict[str, Any]:
     """Return the opencode.json block wiring lilbee as a provider.
 
@@ -70,9 +71,13 @@ def opencode_config(
     the bearer token, so retrieval shares the daemon's warm models instead of
     spawning a second process. ``chat_ctx`` is the active model's served window;
     when set it becomes each model's ``limit.context`` so opencode trims history
-    to fit instead of overflowing on a long agentic session.
+    to fit instead of overflowing on a long agentic session. ``default_ref``
+    pins opencode's startup model via the top-level ``model`` key
+    (``provider/model-id`` form); picker state alone no longer selects the
+    boot model on current opencode, which otherwise starts on its own
+    default provider instead of the lilbee-served chat model.
     """
-    return {
+    config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
             "lilbee": {
@@ -94,3 +99,6 @@ def opencode_config(
             }
         },
     }
+    if default_ref is not None:
+        config["model"] = f"lilbee/{default_ref}"
+    return config

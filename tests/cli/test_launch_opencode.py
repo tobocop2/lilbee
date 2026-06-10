@@ -119,6 +119,9 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     assert mcp_entry["enabled"] is True
     assert mcp_entry["url"] == f"http://127.0.0.1:{_PORT}/mcp"
     assert mcp_entry["headers"]["Authorization"] == f"Bearer {_TOKEN}"
+    # Startup pin: without the top-level model key opencode boots on its own
+    # default provider instead of the lilbee-served chat model.
+    assert payload["model"] == f"lilbee/{cfg.chat_model}"
 
 
 @pytest.mark.no_health_default
@@ -280,6 +283,25 @@ def test_opencode_config_omits_limit_when_ctx_unknown():
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=None
     )
     assert "limit" not in block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
+
+
+def test_opencode_config_pins_default_model_when_ref_given():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(
+        base_url="http://127.0.0.1:9",
+        api_key="k",
+        model_refs=["a/M/m.gguf"],
+        default_ref="a/M/m.gguf",
+    )
+    assert block["model"] == "lilbee/a/M/m.gguf"
+
+
+def test_opencode_config_omits_model_key_without_default_ref():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
+    assert "model" not in block
 
 
 def test_launch_opencode_waits_for_chat_warm_before_handoff(tmp_path):
@@ -603,6 +625,23 @@ def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
     assert not state_path.exists()
     # No chat models -> the provider would be unusable; warn loudly (bb-c4t).
     assert "no chat models are installed" in result.output
+
+
+def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path):
+    _write_server_session()
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    other_ref = "bartowski/SmolLM-135M-Instruct-GGUF/SmolLM-135M-Instruct.Q8_0.gguf"
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[other_ref]),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+
+    # cfg.chat_model (the default Qwen ref) is absent from the served refs, so the
+    # startup pin would dangle and the client would open on its own provider.
+    assert "is not installed" in result.output
 
 
 def test_launch_opencode_spawns_server_when_none_running():
