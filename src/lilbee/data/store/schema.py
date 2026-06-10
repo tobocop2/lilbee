@@ -24,6 +24,8 @@ def _sources_schema() -> pa.Schema:
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
             pa.field("source_type", pa.utf8()),
+            pa.field("size_bytes", pa.int64()),
+            pa.field("mtime_ns", pa.int64()),
         ]
     )
 

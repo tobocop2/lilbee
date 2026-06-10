@@ -573,8 +573,19 @@ class TestRebuildClusters:
         cg.rebuild_clusters()
 
     def test_rebuild_empty_edges(self, cg, mock_svc):
+        import pyarrow as pa
+
         mock_table = MagicMock()
-        mock_table.to_arrow.return_value.to_pylist.return_value = []
+        mock_table.to_arrow.return_value = pa.table(
+            {"source": [], "target": [], "weight": []},
+            schema=pa.schema(
+                [
+                    pa.field("source", pa.utf8()),
+                    pa.field("target", pa.utf8()),
+                    pa.field("weight", pa.float64()),
+                ]
+            ),
+        )
         mock_svc.store.open_table.return_value = mock_table
         cg.rebuild_clusters()
 
@@ -582,6 +593,8 @@ class TestRebuildClusters:
     @patch("lilbee.data.store.ensure_table")
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_with_edges(self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc):
+        import pyarrow as pa
+
         mock_lock.return_value.__enter__ = MagicMock()
         mock_lock.return_value.__exit__ = MagicMock(return_value=False)
         mock_table = MagicMock()
@@ -589,7 +602,13 @@ class TestRebuildClusters:
             {"source": "python", "target": "ml", "weight": 2.0},
             {"source": "ml", "target": "deep learning", "weight": 1.5},
         ]
-        mock_table.to_arrow.return_value.to_pylist.return_value = edge_rows
+        mock_table.to_arrow.return_value = pa.table(
+            {
+                "source": [r["source"] for r in edge_rows],
+                "target": [r["target"] for r in edge_rows],
+                "weight": [r["weight"] for r in edge_rows],
+            }
+        )
         mock_svc.store.open_table.return_value = mock_table
         mock_svc.store.get_db.return_value = MagicMock()
         mock_leiden.return_value = (
@@ -602,6 +621,72 @@ class TestRebuildClusters:
         cg.rebuild_clusters()
         mock_leiden.assert_called_once_with(edge_rows)
         mock_nodes_table.add.assert_called_once()
+
+    @patch("lilbee.runtime.lock.write_lock")
+    @patch("lilbee.data.store.ensure_table")
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_aggregates_duplicate_edges(
+        self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc
+    ):
+        """Per-file ingest appends duplicate edge rows; rebuild sums them into one."""
+        import pyarrow as pa
+
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value = pa.table(
+            {
+                "source": ["python", "python", "ml"],
+                "target": ["ml", "ml", "web"],
+                "weight": [2.0, 1.0, 0.5],
+            }
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        mock_svc.store.get_db.return_value = MagicMock()
+        mock_leiden.return_value = ({"python": 0}, {"python": 1})
+
+        cg.rebuild_clusters()
+        passed = mock_leiden.call_args.args[0]
+        assert passed == [
+            {"source": "python", "target": "ml", "weight": 3.0},
+            {"source": "ml", "target": "web", "weight": 0.5},
+        ]
+
+    @patch("lilbee.runtime.lock.write_lock")
+    @patch("lilbee.data.store.ensure_table")
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_compacts_concept_tables(
+        self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc
+    ):
+        """rebuild_clusters ends with optimize() on every concept table."""
+        import pyarrow as pa
+
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value = pa.table(
+            {"source": ["a"], "target": ["b"], "weight": [1.0]}
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        mock_svc.store.get_db.return_value = MagicMock()
+        mock_leiden.return_value = ({"a": 0}, {"a": 1})
+
+        cg.rebuild_clusters()
+        # compact_tables opens the three concept tables; open_table returns the
+        # same mock for every name here, so optimize fires once per table.
+        assert mock_table.optimize.call_count == 3
+
+    def test_compact_tables_survives_optimize_failure(self, cg, mock_svc):
+        mock_table = MagicMock()
+        mock_table.optimize.side_effect = RuntimeError("compaction failed")
+        mock_svc.store.open_table.return_value = mock_table
+        cg.compact_tables()
+        assert mock_table.optimize.call_count == 3
+
+    def test_compact_tables_skips_missing_tables(self, cg, mock_svc):
+        mock_svc.store.open_table.return_value = None
+        cg.compact_tables()
+        assert mock_svc.store.open_table.call_count == 3
 
 
 class TestGetGraph:
@@ -713,19 +798,24 @@ class TestCommunityDataclass:
 
 class TestGetClusterSources:
     def test_returns_clusters_spanning_min_sources(self, cg, mock_svc):
+        import pyarrow as pa
+
         nodes_table = MagicMock()
-        nodes_table.to_arrow.return_value.to_pylist.return_value = [
-            {"concept": "python", "cluster_id": 0, "degree": 3},
-            {"concept": "ml", "cluster_id": 0, "degree": 2},
-            {"concept": "web", "cluster_id": 1, "degree": 1},
-        ]
+        nodes_table.to_arrow.return_value = pa.table(
+            {
+                "concept": ["python", "ml", "web"],
+                "cluster_id": [0, 0, 1],
+                "degree": [3, 2, 1],
+            }
+        )
         cc_table = MagicMock()
-        cc_table.to_arrow.return_value.to_pylist.return_value = [
-            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
-            {"chunk_source": "b.md", "chunk_index": 0, "concept": "python"},
-            {"chunk_source": "c.md", "chunk_index": 0, "concept": "ml"},
-            {"chunk_source": "d.md", "chunk_index": 0, "concept": "web"},
-        ]
+        cc_table.to_arrow.return_value = pa.table(
+            {
+                "chunk_source": ["a.md", "b.md", "c.md", "d.md"],
+                "chunk_index": [0, 0, 0, 0],
+                "concept": ["python", "python", "ml", "web"],
+            }
+        )
 
         def open_table(name):
             from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
@@ -744,15 +834,20 @@ class TestGetClusterSources:
 
     def test_skips_orphan_concepts(self, cg, mock_svc):
         """Chunk-concepts referencing concepts not in any cluster are ignored."""
+        import pyarrow as pa
+
         nodes_table = MagicMock()
-        nodes_table.to_arrow.return_value.to_pylist.return_value = [
-            {"concept": "python", "cluster_id": 0, "degree": 3},
-        ]
+        nodes_table.to_arrow.return_value = pa.table(
+            {"concept": ["python"], "cluster_id": [0], "degree": [3]}
+        )
         cc_table = MagicMock()
-        cc_table.to_arrow.return_value.to_pylist.return_value = [
-            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
-            {"chunk_source": "b.md", "chunk_index": 0, "concept": "orphan_concept"},
-        ]
+        cc_table.to_arrow.return_value = pa.table(
+            {
+                "chunk_source": ["a.md", "b.md"],
+                "chunk_index": [0, 0],
+                "concept": ["python", "orphan_concept"],
+            }
+        )
 
         def open_table(name):
             from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
@@ -773,14 +868,16 @@ class TestGetClusterSources:
         assert cg.get_cluster_sources() == {}
 
     def test_returns_empty_when_no_qualifying_clusters(self, cg, mock_svc):
+        import pyarrow as pa
+
         nodes_table = MagicMock()
-        nodes_table.to_arrow.return_value.to_pylist.return_value = [
-            {"concept": "python", "cluster_id": 0, "degree": 1},
-        ]
+        nodes_table.to_arrow.return_value = pa.table(
+            {"concept": ["python"], "cluster_id": [0], "degree": [1]}
+        )
         cc_table = MagicMock()
-        cc_table.to_arrow.return_value.to_pylist.return_value = [
-            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
-        ]
+        cc_table.to_arrow.return_value = pa.table(
+            {"chunk_source": ["a.md"], "chunk_index": [0], "concept": ["python"]}
+        )
 
         def open_table(name):
             from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE

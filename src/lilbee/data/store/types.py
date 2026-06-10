@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -26,6 +26,7 @@ class ChunkWrite(NamedTuple):
     file_hash: str
     records: list[dict]
     needs_cleanup: bool
+    stat: SourceStat | None = None
 
 
 class ChunkType(StrEnum):
@@ -120,13 +121,48 @@ class SearchChunk(BaseModel):
 
 
 class SourceRecord(TypedDict):
-    """A tracked source document record."""
+    """A tracked source document record.
+
+    The stat columns are absent on rows read from stores created before they
+    existed; ``source_stat`` is the accessor that folds absence and the
+    ``SOURCE_STAT_UNKNOWN`` sentinel into ``None``.
+    """
 
     filename: str
     file_hash: str
     ingested_at: str
     chunk_count: int
     source_type: str
+    size_bytes: NotRequired[int]
+    mtime_ns: NotRequired[int]
+
+
+class SourceStat(NamedTuple):
+    """File size and mtime captured when a source was hashed."""
+
+    size_bytes: int
+    mtime_ns: int
+
+
+# Sentinel for the stat columns on rows written before they existed (or for
+# detached imports with no backing file). Planning treats it as "unknown: re-hash".
+SOURCE_STAT_UNKNOWN = -1
+
+
+def source_stat(record: SourceRecord) -> SourceStat | None:
+    """Stored stat pair for a source row, or None when unknown."""
+    size = record.get("size_bytes", SOURCE_STAT_UNKNOWN)
+    mtime = record.get("mtime_ns", SOURCE_STAT_UNKNOWN)
+    if size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
+        return None
+    return SourceStat(int(size), int(mtime))
+
+
+class SourceStatBackfill(NamedTuple):
+    """An already-tracked source row paired with its freshly verified stat."""
+
+    record: SourceRecord
+    stat: SourceStat
 
 
 class PageTextRecord(TypedDict):

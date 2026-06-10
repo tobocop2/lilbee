@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from lilbee.core.config import (
+    CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     MEMORIES_TABLE,
@@ -40,6 +42,7 @@ from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
+    SOURCE_STAT_UNKNOWN,
     ChunkType,
     ChunkWrite,
     CitationRecord,
@@ -50,6 +53,8 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SourceRecord,
+    SourceStat,
+    SourceStatBackfill,
     SourceType,
     StoreMeta,
 )
@@ -96,8 +101,19 @@ _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 _VECTOR_METRIC = "cosine"
 _ANN_INDEX_TYPE = "IVF_PQ"
-_ANN_NPROBES = 20
+_ANN_NPROBES_FLOOR = 20
+_ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
+
+# Stat columns appended to ``_sources`` after its first release; legacy tables
+# are migrated in place with the SOURCE_STAT_UNKNOWN sentinel.
+_SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns")
+
+
+def _ann_nprobes(row_count: int) -> int:
+    """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
+    partitions = math.isqrt(max(row_count, 0))
+    return max(_ANN_NPROBES_FLOOR, math.ceil(partitions * _ANN_NPROBES_PARTITION_FRACTION))
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -479,7 +495,8 @@ class Store:
         if _has_vector_index(table):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan.
-            query = query.nprobes(_ANN_NPROBES).refine_factor(_ANN_REFINE_FACTOR)
+            nprobes = _ann_nprobes(table.count_rows())
+            query = query.nprobes(nprobes).refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         rows = query.to_list()
@@ -574,12 +591,22 @@ class Store:
         return [SearchChunk(**r) for r in rows]
 
     def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete a source's chunks and page texts. Caller must hold ``write_lock()``."""
-        predicate = f"source = '{escape_sql_string(source)}'"
-        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE):
+        """Delete a source's chunks, page texts, and chunk-concept rows.
+
+        Caller must hold ``write_lock()``. The concept nodes/edges tables carry
+        no source column (they are corpus-level aggregates), so only the
+        per-chunk concept mapping is source-scoped.
+        """
+        escaped = escape_sql_string(source)
+        per_source_tables = (
+            (CHUNKS_TABLE, "source"),
+            (PAGE_TEXTS_TABLE, "source"),
+            (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+        )
+        for name, column in per_source_tables:
             table = self.open_table(name)
             if table is not None:
-                _safe_delete_unlocked(table, predicate)
+                _safe_delete_unlocked(table, f"{column} = '{escaped}'")
 
     def delete_by_source(self, source: str) -> None:
         """Delete a source's chunks and page texts."""
@@ -645,28 +672,46 @@ class Store:
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 
-    def _upsert_source_unlocked(
+    def _source_row(
         self,
         filename: str,
         file_hash: str,
         chunk_count: int,
-        source_type: str = "document",
-    ) -> None:
-        """Add or update one source tracking record. Caller must hold ``write_lock()``."""
-        db = self.get_db()
-        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-        _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
-        table.add(
-            [
-                {
-                    "filename": filename,
-                    "file_hash": file_hash,
-                    "ingested_at": datetime.now(UTC).isoformat(),
-                    "chunk_count": chunk_count,
-                    "source_type": source_type,
-                }
-            ]
-        )
+        source_type: str,
+        stat: SourceStat | None,
+    ) -> dict:
+        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel."""
+        return {
+            "filename": filename,
+            "file_hash": file_hash,
+            "ingested_at": datetime.now(UTC).isoformat(),
+            "chunk_count": chunk_count,
+            "source_type": source_type,
+            "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
+            "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
+        }
+
+    def _sources_table(self) -> lancedb.table.Table:
+        """Open/create ``_sources``, adding the stat columns to pre-stat tables."""
+        table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
+        missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
+        if missing:
+            table.add_columns(
+                {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing}
+            )
+        return table
+
+    def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
+        """Replace source rows: one batched delete plus one batched add.
+
+        Caller must hold ``write_lock()``. A per-file delete+add pair costs two
+        LanceDB version commits, so bulk ingest folds every file in a flush into
+        a single pair.
+        """
+        table = self._sources_table()
+        filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
+        _safe_delete_unlocked(table, f"filename IN ({filenames})")
+        table.add(rows)
 
     def upsert_source(
         self,
@@ -674,11 +719,40 @@ class Store:
         file_hash: str,
         chunk_count: int,
         source_type: SourceType = SourceType.DOCUMENT,
+        stat: SourceStat | None = None,
     ) -> None:
         """Add or update a source tracking record."""
+        row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
         with write_lock():
-            self._upsert_source_unlocked(filename, file_hash, chunk_count, source_type)
+            self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
+
+    def update_source_stats(self, backfills: list[SourceStatBackfill]) -> None:
+        """Record size/mtime for already-tracked sources in one batched write."""
+        if not backfills:
+            return
+        rows = [
+            {
+                **bf.record,
+                "size_bytes": bf.stat.size_bytes,
+                "mtime_ns": bf.stat.mtime_ns,
+            }
+            for bf in backfills
+        ]
+        with write_lock():
+            self._replace_source_rows_unlocked(rows)
+        self._invalidate_source_cache()
+
+    def optimize_sources(self) -> None:
+        """Compact the sources table; per-flush upserts otherwise accrete tiny versions."""
+        with write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is None:
+                return
+            try:
+                table.optimize()
+            except Exception:
+                log.debug("Sources table optimize failed", exc_info=True)
 
     def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
@@ -721,8 +795,13 @@ class Store:
                 self._write_meta_unlocked(
                     embedding_model=embedding_model, embedding_dim=embedding_dim
                 )
-            for it in items:
-                self._upsert_source_unlocked(it.source, it.file_hash, len(it.records))
+            source_rows = [
+                self._source_row(
+                    it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat
+                )
+                for it in items
+            ]
+            self._replace_source_rows_unlocked(source_rows)
         self._invalidate_source_cache()
         return len(all_records)
 

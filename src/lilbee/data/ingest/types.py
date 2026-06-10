@@ -9,7 +9,7 @@ from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel
 
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceStat, SourceStatBackfill
 
 
 class FileToProcess(NamedTuple):
@@ -20,6 +20,17 @@ class FileToProcess(NamedTuple):
     content_type: str
     file_hash: str
     needs_cleanup: bool
+    stat: SourceStat | None = None
+
+
+class FileChangePlan(NamedTuple):
+    """Outcome of diffing disk files against the tracked sources."""
+
+    files_to_process: list[FileToProcess]
+    added: dict[str, None]
+    updated: dict[str, None]
+    unchanged: int
+    stat_backfills: list[SourceStatBackfill]
 
 
 # Minimum total chars for extracted text to be considered meaningful.
@@ -117,6 +128,7 @@ class _IngestResult:
     records: list[ChunkRecord] | None = None
     needs_cleanup: bool = True
     page_texts: list[PageTextRecord] | None = None
+    stat: SourceStat | None = None
 
 
 # Extension → content_type string for document formats handled by kreuzberg

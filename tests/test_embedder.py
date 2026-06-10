@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.retrieval.embedder import MAX_BATCH_CHARS, Embedder
+from lilbee.data.chunk import CHARS_PER_TOKEN
+from lilbee.retrieval.embedder import EMBED_BATCH_TARGET_SEQUENCES, Embedder
 
 
 @pytest.fixture()
@@ -68,9 +69,10 @@ class TestEmbedBatch:
         mock_provider.embed.assert_called_once_with(["hello", "world"])
 
     def test_batches_large_input(self, embedder, mock_provider):
-        """Texts exceeding MAX_BATCH_CHARS split into multiple API calls."""
-        chunk_size = min(cfg.max_embed_chars, MAX_BATCH_CHARS // 2 + 1)
-        n_to_fill = MAX_BATCH_CHARS // chunk_size + 1
+        """Texts exceeding the batch char budget split into multiple API calls."""
+        budget = embedder.batch_char_budget
+        chunk_size = min(embedder.embed_char_budget, budget // 2 + 1)
+        n_to_fill = budget // chunk_size + 1
         texts = ["x" * chunk_size for _ in range(n_to_fill + 1)]
         mock_provider.embed.side_effect = [
             [[0.1] * 768 for _ in range(n_to_fill)],
@@ -79,6 +81,21 @@ class TestEmbedBatch:
         result = embedder.embed_batch(texts)
         assert len(result) == n_to_fill + 1
         assert mock_provider.embed.call_count == 2
+
+    def test_batch_char_budget_feeds_full_engine_batches(self, embedder):
+        """The app-layer cap allows a full packed batch of max-size chunks."""
+        assert (
+            embedder.batch_char_budget
+            == EMBED_BATCH_TARGET_SEQUENCES * cfg.chunk_size * CHARS_PER_TOKEN
+        )
+
+    def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
+        """A typical bulk-ingest batch is no longer split into 3-8 chunk requests."""
+        chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
+        texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
+        mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]
+        embedder.embed_batch(texts)
+        assert mock_provider.embed.call_count == 1
 
     def test_truncates_long_texts_in_batch(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768, [0.0] * 768]
