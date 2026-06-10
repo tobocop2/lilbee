@@ -381,12 +381,13 @@ class FleetProvider:
         one" and is always accepted.
         """
         if model and model != configured:
-            from lilbee.providers.base import ProviderError
+            from lilbee.providers.base import ProviderError, ProviderErrorKind
 
             raise ProviderError(
                 f"This engine serves the configured {role} model ({configured}). "
                 f"To use {model!r}, set it as the {role} model and reload.",
                 provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.BAD_REQUEST,
             )
 
     @overload

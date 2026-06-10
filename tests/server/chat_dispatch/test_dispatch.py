@@ -371,6 +371,37 @@ class TestDispatchChat:
             {"role": "tool", "tool_call_id": "b", "content": "B"},
         ]
 
+    def test_tool_results_with_text_keep_the_text_message(self, services_with_model) -> None:
+        """A message carrying tool results AND text emits both, results first."""
+        history = [
+            CanonicalMessage(
+                role="user",
+                content=[
+                    ToolResultBlock(tool_use_id="a", content=[TextBlock(text="result A")]),
+                    TextBlock(text="and here is my follow-up"),
+                ],
+            )
+        ]
+        dispatch_chat(_req(messages=history))
+        sent = services_with_model.provider.chat.call_args.kwargs["messages"]
+        assert sent == [
+            {"role": "tool", "tool_call_id": "a", "content": "result A"},
+            {"role": "user", "content": "and here is my follow-up"},
+        ]
+
+    def test_tool_results_without_text_emit_no_empty_text_message(
+        self, services_with_model
+    ) -> None:
+        history = [
+            CanonicalMessage(
+                role="tool",
+                content=[ToolResultBlock(tool_use_id="a", content=[TextBlock(text="A")])],
+            )
+        ]
+        dispatch_chat(_req(messages=history))
+        sent = services_with_model.provider.chat.call_args.kwargs["messages"]
+        assert sent == [{"role": "tool", "tool_call_id": "a", "content": "A"}]
+
 
 class _FakeStream:
     """Test-only async iterator that mimics ``ClosableIterator[ChatStreamItem]``."""
@@ -439,6 +470,27 @@ class TestDispatchChatStream:
         kinds = [type(e).__name__ for e in events]
         # No content blocks were ever opened; just MessageStart + MessageDelta + MessageStop.
         assert kinds == ["MessageStart", "MessageDelta", "MessageStop"]
+
+    async def test_stream_runs_preflight_off_the_event_loop(
+        self, services_with_model, monkeypatch
+    ) -> None:
+        """The preflight can do blocking model discovery; it must not run on the loop."""
+        import threading
+
+        from lilbee.server.chat_dispatch import dispatch as dispatch_mod
+
+        loop_thread = threading.current_thread()
+        seen_threads: list[threading.Thread] = []
+        real_preflight = dispatch_mod.preflight_chat_request
+
+        def _recording_preflight(req):
+            seen_threads.append(threading.current_thread())
+            return real_preflight(req)
+
+        monkeypatch.setattr(dispatch_mod, "preflight_chat_request", _recording_preflight)
+        services_with_model.provider.chat.return_value = _FakeStream(["hi"])
+        await self._drain(dispatch_chat_stream(_req()))
+        assert seen_threads and seen_threads[0] is not loop_thread
 
     async def test_tool_call_stream_opens_and_closes_tool_use_block(
         self, services_with_model

@@ -629,6 +629,8 @@ def test_launch_opencode_spawns_server_when_none_running():
 
 
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
+    from lilbee.cli.launchers.server import _SPAWN_ATTEMPTS
+
     fake_opencode = "/usr/local/bin/opencode"
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
@@ -641,7 +643,8 @@ def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
     assert "failed to start" in result.stderr
-    fake_proc.terminate.assert_called_once()
+    # Every bounded attempt spawned a server and then stopped it.
+    assert fake_proc.terminate.call_count == _SPAWN_ATTEMPTS
 
 
 def test_launch_opencode_health_ok_but_session_missing_exits_1():
@@ -666,6 +669,96 @@ def test_free_port_returns_open_port():
 
     port = launch_mod.free_port()
     assert 1024 < port < 65536
+
+
+def test_run_launcher_serves_remote_configured_chat_model():
+    """A remote-configured chat model reaches the client picker first, with no
+    false 'no chat models' warning and no local warm wait."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", "ollama/qwen3:8b"),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == ["ollama/qwen3:8b"]
+    # No native model is installed, so there is no local load to wait out.
+    warm.assert_not_called()
+
+
+def test_run_launcher_warns_and_skips_warm_when_no_models_at_all(capsys):
+    """No native models and a native-configured ref: warn, don't warm."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", _CHAT_REF),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == []
+    assert "no chat models are installed" in capsys.readouterr().err
+    warm.assert_not_called()
+
+
+def test_run_launcher_warms_native_chat_models():
+    """Installed native chat models still gate the launch on the warm wait."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", _CHAT_REF),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch(
+            "lilbee.cli.launchers.launcher.installed_chat_model_refs",
+            return_value=[_CHAT_REF],
+        ),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == [_CHAT_REF]
+    warm.assert_called_once_with(1234)
 
 
 @pytest.mark.no_health_default

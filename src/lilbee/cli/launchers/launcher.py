@@ -12,6 +12,7 @@ from lilbee.cli.launchers.server import (
     installed_chat_model_refs,
     stop_spawned_server,
     wait_for_chat_warm,
+    with_configured_remote_chat,
 )
 from lilbee.core.config import cfg
 
@@ -53,7 +54,8 @@ def run_launcher(launcher: Launcher) -> None:
     # port (the loser gets connection-refused). The spawned serve warms its own.
     cfg.worker_pool_eager_start = False
     (token, port), spawned = ensure_server_running()
-    model_refs = installed_chat_model_refs()
+    native_refs = installed_chat_model_refs()
+    model_refs = with_configured_remote_chat(native_refs)
     if not model_refs:
         # The client provider is written with no models, so it cannot use lilbee.
         # Some clients (e.g. opencode) then silently fall back to their own default
@@ -67,8 +69,9 @@ def run_launcher(launcher: Launcher) -> None:
         )
     # Wait out the cold model load before handing off, so the client opens onto a
     # warm engine instead of an apparently-dead stream. Only meaningful when a
-    # chat model is configured to warm.
-    if model_refs:
+    # native chat model is installed to warm; a remote-configured model has no
+    # local load to wait for.
+    if native_refs:
         wait_for_chat_warm(port)
     extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
     try:
