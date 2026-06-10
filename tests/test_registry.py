@@ -201,6 +201,40 @@ class TestSha256File:
         assert _sha256_file(p) == hashlib.sha256(b"").hexdigest()
 
 
+class TestBlobDigest:
+    def test_reuses_hf_cache_blob_name_without_hashing(self, tmp_path: Path, monkeypatch) -> None:
+        """A snapshot path resolving into blobs/<sha256> must not re-read the file.
+
+        Registration of a 130 GB split GGUF was failing on network volumes because
+        the redundant full-file hash hit transient I/O errors; the blob name is the
+        digest already.
+        """
+        from lilbee.modelhub import registry as registry_mod
+
+        digest = hashlib.sha256(b"payload").hexdigest()
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        blob = blobs / digest
+        blob.write_bytes(b"payload")
+        snapshot = tmp_path / "snapshots" / "rev"
+        snapshot.mkdir(parents=True)
+        link = snapshot / "model.gguf"
+        link.symlink_to(blob)
+
+        def _boom(path):
+            raise AssertionError("must not hash a cache blob")
+
+        monkeypatch.setattr(registry_mod, "_sha256_file", _boom)
+        assert registry_mod._blob_digest(link) == digest
+
+    def test_plain_file_falls_back_to_hashing(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import _blob_digest
+
+        p = tmp_path / "model.gguf"
+        p.write_bytes(b"payload")
+        assert _blob_digest(p) == hashlib.sha256(b"payload").hexdigest()
+
+
 class TestModelRegistryInstall:
     def test_install_writes_manifest_and_blob(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
@@ -469,6 +503,26 @@ class TestModelRegistryResolve:
         blob = _seed_hf_cache(tmp_path)
         assert registry.resolve(_REPO) == blob.resolve()
         assert registry.is_installed(_REPO)
+
+    def test_resolve_recovery_registers_non_catalog_ref_as_chat(self, tmp_path: Path) -> None:
+        """A cache recovery of a NON-featured repo still writes a manifest (task=chat).
+
+        Skipping it left the model permanently half-installed: ``is_installed``
+        (and so a re-pull's "already installed" short-circuit) saw it, while
+        ``list_installed`` (the launcher, the fleet, ``lilbee model list``) did
+        not, so it could never be selected or repaired by re-pulling.
+        """
+        from lilbee.catalog.types import ModelTask
+
+        repo = "unsloth/NotFeatured-GGUF"
+        filename = "NotFeatured-Q4_K_S.gguf"
+        registry = ModelRegistry(tmp_path)
+        _seed_hf_cache(tmp_path, repo=repo, filename=filename)
+        assert not registry.list_installed()
+        registry.resolve(repo)
+        installed = registry.list_installed()
+        assert [m.ref for m in installed] == [f"{repo}/{filename}"]
+        assert installed[0].task == ModelTask.CHAT
 
     def test_resolve_bare_repo_ref_uses_manifest_when_present(self, tmp_path: Path) -> None:
         """A bare repo ref prefers a current-format manifest under that repo."""

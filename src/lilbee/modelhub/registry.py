@@ -142,6 +142,23 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _blob_digest(source_path: Path) -> str:
+    """Digest for *source_path*, reusing the HF-cache blob name when possible.
+
+    huggingface_hub names cache blobs by their sha256, so a snapshot path that
+    resolves into a ``blobs/`` dir already carries its digest. Re-hashing a
+    multi-GB GGUF only to recompute that name is slow and, on network volumes,
+    I/O-fragile enough to fail registration outright. Plain files still hash.
+    """
+    real = source_path.resolve()
+    if real.parent.name == "blobs" and _SHA256_HEX.fullmatch(real.name):
+        return real.name
+    return _sha256_file(source_path)
+
+
 class ModelRegistry:
     """Read/write manifests and resolve refs to blobs in the HF cache."""
 
@@ -318,11 +335,16 @@ class ModelRegistry:
         ``list_installed`` only walks ``manifests/``, so a cache-recovered model
         is resolvable but otherwise invisible (``lilbee model list``, the TUI
         catalog, the pull command's "already installed" check) until a manifest
-        exists. The ``task`` comes from the featured catalog; for a non-catalog
-        ref it's unknown, so the rewrite is skipped. Best-effort: a read-only
-        models dir or a write race must not break the resolve that succeeded.
+        exists. The ``task`` comes from the featured catalog when the ref is
+        featured; otherwise it defaults to chat. Skipping non-catalog refs
+        instead left them permanently half-installed: resolvable (so a re-pull
+        short-circuits on "already installed") yet absent from every listing.
+        Best-effort: a read-only models dir or a write race must not break the
+        resolve that succeeded.
         """
         from datetime import UTC, datetime
+
+        from lilbee.catalog.types import ModelTask
 
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
@@ -331,14 +353,13 @@ class ModelRegistry:
             )  # deferred: lilbee.catalog is a heavy import
 
             entry = find_catalog_entry(ref)
-            if entry is None:
-                return
+            task = entry.task if entry is not None else ModelTask.CHAT
             self._write_manifest(
                 ModelManifest(
                     hf_repo=hf_repo,
                     gguf_filename=gguf_filename,
                     size_bytes=blob_path.stat().st_size,
-                    task=entry.task,
+                    task=task,
                     downloaded_at=datetime.now(UTC).isoformat(),
                     blob=blob_path.name,  # the blob's filename is its sha in the HF cache
                 )
@@ -363,7 +384,7 @@ class ModelRegistry:
         manifest: ModelManifest,
     ) -> Path:
         """Write a manifest, copying *source_path* into the HF cache if needed."""
-        digest = _sha256_file(source_path)
+        digest = _blob_digest(source_path)
         cache_path = self._repo_cache_dir(hf_repo)
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
