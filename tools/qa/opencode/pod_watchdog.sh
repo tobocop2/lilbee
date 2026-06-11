@@ -9,9 +9,14 @@ set -euo pipefail
 IDLE_MIN="${IDLE_MIN:-30}"
 GPU_BUSY_PCT=5
 
+# A watch path may not exist yet (HF_HOME before the first download); find's
+# nonzero exit must not kill the watchdog under set -e, silently dropping the
+# billing protection it exists to provide.
 newest_mtime() {
-  find "$@" -type f -printf '%T@\n' 2>/dev/null | sort -nr | head -1 | cut -d. -f1
+  { find "$@" -type f -printf '%T@\n' 2>/dev/null || true; } | sort -nr | head -1 | cut -d. -f1
 }
+
+echo "[watchdog] watching: $* (stop after ${IDLE_MIN}m of no writes + idle GPUs)"
 
 last_seen="$(newest_mtime "$@")"
 last_seen="${last_seen:-0}"
