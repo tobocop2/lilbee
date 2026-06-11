@@ -124,7 +124,7 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
         for m in manifests:
             repo_counts[m.hf_repo] = repo_counts.get(m.hf_repo, 0) + 1
 
-        from lilbee.modelhub.model_manager.discovery import reclassify_by_name
+        from lilbee.catalog.query import reclassify_by_name
 
         for manifest in manifests:
             ref = manifest.ref

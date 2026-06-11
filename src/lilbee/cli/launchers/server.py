@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import IO
 
 import httpx
@@ -19,6 +19,9 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
+from lilbee.core.config import cfg
+from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
@@ -28,19 +31,13 @@ LOOPBACK = "127.0.0.1"
 
 _SERVER_BOOT_TIMEOUT_S = 60.0
 _SERVER_POLL_INTERVAL_S = 0.5
-# Floor on the cold model-load wait; chat_warm_budget_s() scales it up with
-# the configured model's on-disk weights (the fleet's own formula, so the
-# launcher can never give up while the fleet is still legitimately loading).
-# It only bounds the visible warming wait, after which the launcher hands off
-# anyway (the model then warms on the first call).
+# Floor on the cold model-load wait; chat_warm_budget_s() scales it up with the weights.
 _WARM_TIMEOUT_S = 600.0
 _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
 _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
-# Spawn attempts before giving up. free_port() releases the probe socket before
-# the server binds, so a concurrent launch can steal the port; a fresh port on
-# the next attempt resolves that race.
+# Spawn attempts; free_port()'s released probe port can be stolen before the server binds.
 _SPAWN_ATTEMPTS = 3
 
 
@@ -121,30 +118,12 @@ def served_chat_ctx(port: int) -> int | None:
 
 
 def chat_warm_budget_s() -> float:
-    """Warm-wait budget scaled to the configured chat model's on-disk weights.
-
-    Uses the fleet's cold-load formula over the full shard set so the
-    launcher's patience always covers what llama-swap's health budget allows;
-    a fixed cap shorter than the fleet's own budget made the launcher abandon
-    giants that were still loading legitimately. Falls back to the floor when
-    the configured model has no local weights to size (remote/SDK refs, or a
-    ref the registry cannot resolve).
-    """
-    from lilbee.catalog.download import split_shard_filenames
-    from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelRegistry, parse_hf_ref
-    from lilbee.providers.fleet.swap_config import cold_load_timeout_s
-
+    """Warm wait scaled to the chat model's on-disk weights at the engine's cold-load rate."""
     try:
-        first = ModelRegistry(cfg.models_dir).resolve(str(cfg.chat_model))
-        _repo, filename = parse_hf_ref(str(cfg.chat_model))
+        shards = ModelRegistry(cfg.models_dir).shard_paths(str(cfg.chat_model))
     except (KeyError, ValueError):
         return _WARM_TIMEOUT_S
-    total_bytes = 0
-    for shard in split_shard_filenames(Path(filename).name):
-        shard_path = first.parent / Path(shard).name
-        if shard_path.exists():
-            total_bytes += shard_path.stat().st_size
+    total_bytes = sum(shard.stat().st_size for shard in shards)
     return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes)))
 
 
@@ -182,10 +161,6 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
     capped at 5 MB) so a crash mid-session leaves a trace instead of disappearing.
     Set ``LILBEE_LAUNCHER_SERVE_QUIET=1`` to restore the previous DEVNULL behavior.
     """
-    import os
-
-    from lilbee.core.config import cfg
-
     lilbee_bin = shutil.which("lilbee")
     cmd = (
         [lilbee_bin, "serve", "--port", str(port)]

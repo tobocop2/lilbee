@@ -113,13 +113,8 @@ class OpencodeLauncher:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
         _install_lilbee_skill()
-        # The injected block is the entire session contract: provider, MCP, and
-        # the startup-model pin all carry the session's port and bearer token,
-        # which are ephemeral by design. Persisting any of it (as earlier
-        # versions did with a provider merge into opencode.json and picker-state
-        # writes that current opencode discards) left dead endpoints and stale
-        # credentials in user config; `lilbee agent-config opencode` is the
-        # explicit path for hand-wired persistent setups.
+        # The block carries the session's ephemeral port and token; never persist
+        # it into user config.
         block = opencode_config(
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,

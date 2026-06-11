@@ -6,6 +6,7 @@ import contextlib
 import json
 import shutil
 import subprocess
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ from harness_config import _EMBED_REF, _MODEL_PULL_TIMEOUT_S, _SUSPENDED_SUFFIX,
 
 def _models_manifests_dir() -> Path:
     """Locate lilbee's chat-manifests directory via cfg."""
+    # function-local lilbee imports throughout: the harness must parse args and
+    # print usage without the lilbee package importable; only model ops need it.
     from lilbee.core.config import cfg
 
     return Path(cfg.models_dir) / "manifests"
@@ -55,21 +58,12 @@ def prewarm_model_blobs(ref: str) -> None:
     timeout) leaves them in RAM, and the printed rate doubles as a volume
     health probe.
     """
-    import time
-
-    from lilbee.catalog.download import split_shard_filenames
     from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelRegistry, parse_hf_ref
+    from lilbee.modelhub.registry import ModelRegistry
 
-    first = ModelRegistry(Path(cfg.models_dir)).resolve(ref)
-    _repo, filename = parse_hf_ref(ref)
-    shard_names = [Path(s).name for s in split_shard_filenames(Path(filename).name)]
     total = 0
     start = time.monotonic()
-    for name in shard_names:
-        shard = first.parent / name
-        if not shard.exists():
-            continue
+    for shard in ModelRegistry(Path(cfg.models_dir)).shard_paths(ref):
         with shard.open("rb") as f:
             while chunk := f.read(_PREWARM_CHUNK_BYTES):
                 total += len(chunk)
@@ -88,14 +82,7 @@ def is_ref_registered(ref: str) -> bool:
 
 
 def restore_suspended_manifests() -> int:
-    """Heal ``*.qa-suspended`` manifests a crashed earlier run left behind.
-
-    Older harness versions renamed competing chat manifests per cell (opencode
-    used to boot on the first installed ref); a kill mid-cell left them
-    suspended, so the registry under-reported installed models on the next
-    run. The startup-model pin made suspension obsolete; this sweep remains so
-    machines that ran the old harness recover. Returns the restore count.
-    """
+    """Heal ``*.qa-suspended`` manifests a crashed run left behind; returns the count."""
     restored = 0
     manifests_dir = _models_manifests_dir()
     if not manifests_dir.exists():

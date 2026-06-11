@@ -153,16 +153,10 @@ def _pane_in_alternate_screen(session: str) -> bool:
 
 
 def _wait_for_opencode_ui(session: str, workspace: Path) -> None:
-    """Block until opencode is up, then let the boot settle.
+    """Block until opencode is up (first tap record or alternate-screen flip), then settle.
 
-    ``lilbee launch opencode`` holds a "Warming the chat model" spinner until
-    its warm gate passes, and a giant's cold load legitimately runs for many
-    minutes (the fleet's health budget scales with the weights). Starting the
-    scenario clock during that spinner reads as an idle pane and times the
-    cell out before opencode even exists. Ready means the event tap wrote its
-    first record (plugins load at opencode startup) or the pane entered the
-    alternate screen (the TUI painted); the heartbeat keeps the wait visible
-    in the matrix log so a stall here can never read as a dead run.
+    The wait must outlast the launcher's warm spinner (a giant's cold load runs
+    minutes); the heartbeat keeps the wait visible in the matrix log.
     """
     from events import plugin_active
 

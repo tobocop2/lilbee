@@ -77,9 +77,7 @@ def opencode_config(
     when set it becomes each model's ``limit.context`` so opencode trims history
     to fit instead of overflowing on a long agentic session. ``default_ref``
     pins opencode's startup model via the top-level ``model`` key
-    (``provider/model-id`` form); picker state alone no longer selects the
-    boot model on current opencode, which otherwise starts on its own
-    default provider instead of the lilbee-served chat model.
+    (``provider/model-id`` form).
     """
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",

@@ -33,6 +33,9 @@ _API_PROVIDERS = frozenset(
 # API providers plus the local OpenAI-compatible servers (ollama, lm_studio).
 PROVIDER_PREFIXES: frozenset[str] = frozenset(_API_PROVIDERS | LOCAL_SERVER_KEYS)
 
+# Provider value for refs served from the local registry (native GGUF).
+LOCAL_PROVIDER = "local"
+
 
 def is_native_gguf_ref(raw: str) -> bool:
     """True when *raw* has the native HuggingFace GGUF shape ``<org>/<repo>/<file>.gguf``.
@@ -60,7 +63,7 @@ class ProviderModelRef:
     """Parsed model reference with provider routing information."""
 
     raw: str
-    provider: str  # "local" or any value in PROVIDER_PREFIXES
+    provider: str  # LOCAL_PROVIDER or any value in PROVIDER_PREFIXES
     name: str  # provider-specific name with tag normalization applied
 
     @property
@@ -69,12 +72,12 @@ class ProviderModelRef:
 
     @property
     def is_local(self) -> bool:
-        return self.provider == "local"
+        return self.provider == LOCAL_PROVIDER
 
     @property
     def is_remote(self) -> bool:
         """True if this model routes through a remote SDK (any non-``local`` provider)."""
-        return self.provider != "local"
+        return self.provider != LOCAL_PROVIDER
 
     def for_openai_prefix(self) -> str:
         """Name with its canonical ``provider/model`` prefix (``ollama/llama3.2:1b``)."""
@@ -120,7 +123,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     Remote providers use prefixes from :data:`PROVIDER_PREFIXES`.
     """
     if routes_to_native_gguf(raw):
-        return ProviderModelRef(raw=raw, provider="local", name=raw)
+        return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
     if "/" not in raw:
         known = ", ".join(f"{p}/" for p in sorted(PROVIDER_PREFIXES))
         raise ValueError(
@@ -133,7 +136,7 @@ def parse_model_ref(raw: str) -> ProviderModelRef:
     spec = local_server_for_key(prefix)
     if spec is not None:
         return ProviderModelRef(raw=raw, provider=spec.key, name=spec.normalize_name(rest))
-    return ProviderModelRef(raw=raw, provider="local", name=raw)
+    return ProviderModelRef(raw=raw, provider=LOCAL_PROVIDER, name=raw)
 
 
 def default_first(refs: list[str], default_ref: str) -> list[str]:

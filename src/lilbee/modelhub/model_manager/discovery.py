@@ -9,6 +9,11 @@ from threading import Lock
 import httpx
 
 from lilbee.app.services import get_services
+from lilbee.catalog.query import (
+    EMBEDDING_NAME_PATTERNS,
+    RERANKER_NAME_PATTERNS,
+    VISION_NAME_PATTERNS,
+)
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
@@ -26,13 +31,6 @@ from lilbee.providers.sdk_backend import PROVIDER_KEYS
 log = logging.getLogger(__name__)
 
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
-# Embedding detection by name, for servers (LM Studio) that report ids but no
-# family. Trailing hyphens keep chat models that merely contain the letters out.
-_EMBEDDING_NAME_PATTERNS = frozenset({"embed", "bge-", "e5-", "gte-"})
-_VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
-# Reranker detection runs before embedding detection so ``bge-reranker-*``
-# (family "bge") is not misclassified as EMBEDDING.
-_RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 _CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
 
@@ -44,37 +42,16 @@ def _classify_remote_task(name: str, family: str) -> ModelTask:
     servers like LM Studio that report no family.
     """
     name_lower = name.lower()
-    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
+    if any(rp in name_lower for rp in RERANKER_NAME_PATTERNS):
         return ModelTask.RERANK
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES) or any(
-        ep in name_lower for ep in _EMBEDDING_NAME_PATTERNS
+        ep in name_lower for ep in EMBEDDING_NAME_PATTERNS
     ):
         return ModelTask.EMBEDDING
-    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
+    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
         return ModelTask.VISION
     return ModelTask.CHAT
-
-
-def reclassify_by_name(ref: str, declared_task: str) -> str:
-    """Override declared_task to RERANK / VISION / EMBEDDING when ref names a known role.
-
-    Defends against manifests that stored ``task="chat"`` for models whose ref
-    obviously identifies them as rerankers (e.g. ``bge-reranker-*``), vision
-    loaders, or embedders. Embedders on a chat decoder arch (e.g.
-    ``Qwen3-Embedding-*``, a qwen3 backbone + pooling head) classify as chat by
-    architecture, so the name is the only signal short of probing the GGUF
-    pooling type. Reranker is checked before embedding so ``bge-reranker`` (which
-    also matches the ``bge-`` embedder pattern) stays a reranker.
-    """
-    name_lower = ref.lower()
-    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
-        return ModelTask.RERANK
-    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
-        return ModelTask.VISION
-    if any(ep in name_lower for ep in _EMBEDDING_NAME_PATTERNS):
-        return ModelTask.EMBEDDING
-    return declared_task
 
 
 def classify_remote_models(

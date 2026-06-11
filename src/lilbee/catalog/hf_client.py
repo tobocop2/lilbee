@@ -84,9 +84,8 @@ _BYTES_PER_GB = 1024**3
 
 def hf_token() -> str | None:
     """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
-    # Deferred: a module-level cfg import makes Config()'s model-ref validator
-    # circular (config -> model_ref -> catalog -> here -> config), which made
-    # every config.toml with a model field fall back to defaults.
+    # circular: a module-level cfg import makes Config()'s model-ref validator
+    # circular (config -> model_ref -> catalog -> here -> config).
     from lilbee.core.config import cfg
 
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None

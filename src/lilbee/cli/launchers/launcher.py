@@ -42,20 +42,8 @@ class Launcher(Protocol):
         ...
 
 
-def run_launcher(launcher: Launcher) -> None:
-    """Find the client, ensure a lilbee server is up, prepare, exec, clean up."""
-    binary = launcher.find_binary()
-    if binary is None:
-        typer.secho(launcher.install_hint, err=True, fg=typer.colors.RED)
-        raise typer.Exit(1)
-    # The launcher only reads the registry and talks to the spawned `lilbee serve`
-    # over HTTP; it runs no inference itself. Skip the eager warm so get_services()
-    # here doesn't start a second llama-swap that races the server's for the model
-    # port (the loser gets connection-refused). The spawned serve warms its own.
-    cfg.worker_pool_eager_start = False
-    (token, port), spawned = ensure_server_running()
-    native_refs = installed_chat_model_refs()
-    model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
+def _warn_on_model_pin_gaps(model_refs: list[str]) -> None:
+    """Warn when the launched client cannot open on a lilbee-served chat model."""
     if not model_refs:
         # The client provider is written with no models, so it cannot use lilbee.
         # Some clients (e.g. opencode) then silently fall back to their own default
@@ -77,6 +65,23 @@ def run_launcher(launcher: Launcher) -> None:
             err=True,
             fg=typer.colors.YELLOW,
         )
+
+
+def run_launcher(launcher: Launcher) -> None:
+    """Find the client, ensure a lilbee server is up, prepare, exec, clean up."""
+    binary = launcher.find_binary()
+    if binary is None:
+        typer.secho(launcher.install_hint, err=True, fg=typer.colors.RED)
+        raise typer.Exit(1)
+    # The launcher only reads the registry and talks to the spawned `lilbee serve`
+    # over HTTP; it runs no inference itself. Skip the eager warm so get_services()
+    # here doesn't start a second llama-swap that races the server's for the model
+    # port (the loser gets connection-refused). The spawned serve warms its own.
+    cfg.worker_pool_eager_start = False
+    (token, port), spawned = ensure_server_running()
+    native_refs = installed_chat_model_refs()
+    model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
+    _warn_on_model_pin_gaps(model_refs)
     # Wait out the cold model load before handing off, so the client opens onto a
     # warm engine instead of an apparently-dead stream. Only meaningful when a
     # native chat model is installed to warm; a remote-configured model has no

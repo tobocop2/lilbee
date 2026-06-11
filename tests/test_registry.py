@@ -367,6 +367,33 @@ class TestModelRegistryResolve:
         for n in (2, 3):
             assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
 
+    def test_shard_paths_returns_every_split_shard(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        paths = registry.shard_paths(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+        assert [p.name for p in paths] == [f"m-mxfp4-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
+        assert all(p.exists() for p in paths)
+
+    def test_shard_paths_empty_for_single_file_blob_resolution(self, tmp_path: Path) -> None:
+        """A single-file GGUF resolves to its hash-named blob, so no sibling exists
+        under the real filename and the shard list is empty (callers floor on 0 bytes)."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        assert registry.shard_paths(_REF) == []
+
+    def test_shard_paths_raises_for_uninstalled_ref(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.shard_paths(_REF)
+
     def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

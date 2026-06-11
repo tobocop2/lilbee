@@ -21,6 +21,8 @@ from lilbee.runtime.cancellation import TaskCancelledError
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
 
+log = logging.getLogger(__name__)
+
 
 def _models_dir() -> Path:
     """Deferred cfg read: a module-level cfg import is circular via Config()'s
@@ -28,9 +30,6 @@ def _models_dir() -> Path:
     from lilbee.core.config.model import cfg
 
     return cfg.models_dir
-
-
-log = logging.getLogger(__name__)
 
 
 class DownloadConfig(BaseModel):
@@ -141,14 +140,15 @@ def download_model(
         PermissionError: gated repo requiring authentication
         RuntimeError: repo not found or download failure with details
     """
-    _models_dir().mkdir(parents=True, exist_ok=True)
+    models_dir = _models_dir()
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     filename = resolve_filename(entry)
     shards = split_shard_filenames(filename)
-    dest = _models_dir() / shards[0]
+    dest = models_dir / shards[0]
     if all(
-        (_models_dir() / shard).exists()
-        and _cached_file_is_complete(entry.hf_repo, shard, _models_dir() / shard)
+        (models_dir / shard).exists()
+        and _cached_file_is_complete(entry.hf_repo, shard, models_dir / shard)
         for shard in shards
     ):
         log.info("Model already downloaded: %s", dest)
@@ -160,12 +160,12 @@ def download_model(
     tracker = _ProgressTracker(on_progress) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
-        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, _models_dir())
+        log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
         config = DownloadConfig(
             repo_id=entry.hf_repo,
             filename=shard,
             token=hf_token(),
-            cache_dir=str(_models_dir()),
+            cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
         shard_paths.append(_hf_download_or_translate(entry, config))

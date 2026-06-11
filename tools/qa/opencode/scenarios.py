@@ -127,16 +127,10 @@ def _poll_verdict(
 ) -> ScenarioResult | None:
     """One poll iteration's verdict, or ``None`` to keep waiting.
 
-    The primary PASS gate is the event tap: a tool-dispatch event for
-    ``lilbee_search`` recorded past this scenario's baseline means opencode
-    really extracted a structured tool call and ran the MCP tool this turn --
-    per-scenario baselines make staleness impossible. When the tap never
-    loaded (older opencode), the legacy pane gate applies: the gear-glyph
-    dispatch marker AND at least ``_TOOL_TURN_MIN_COMPLETIONS`` new
-    ``POST /v1/chat/completions 200`` since the scenario started (the
-    two-completion delta defeats the stale-glyph trap, since opencode keeps
-    the prior turn's transcript visible in the pane). Forbidden-marker checks
-    always run on the pane: they assert what the user actually saw rendered.
+    PASS gate: a fresh ``lilbee_search`` dispatch event past this scenario's
+    baseline, else (tap never loaded) the pane gear marker plus
+    ``_TOOL_TURN_MIN_COMPLETIONS`` fresh completions; forbidden-marker checks
+    always run on the rendered pane.
     """
 
     def result(status: ScenarioStatus, detail: str) -> ScenarioResult:

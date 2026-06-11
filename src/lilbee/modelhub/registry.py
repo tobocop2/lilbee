@@ -16,20 +16,23 @@ import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.download import split_shard_filenames
+from lilbee.catalog.query import find_catalog_entry, reclassify_by_name
 from lilbee.catalog.refs import (
     NATIVE_GGUF_REF_MIN_SLASHES,
     format_native_gguf_ref,
     is_bare_hf_repo,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
-    from lilbee.catalog.types import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -187,8 +190,6 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
-        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
-
         if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
@@ -237,10 +238,8 @@ class ModelRegistry:
         if first_shard is None:
             raise KeyError(f"Model {ref} not installed")
         if self._read_manifest(hf_repo, shards[0]) is None:
-            # Same recovery as the single-file path: without it a cache-resolved
-            # split model stays invisible to every listing while re-pulls
-            # short-circuit on "already installed". Resolve the snapshot symlink
-            # so the manifest records the content-hashed blob, not the link.
+            # Same cache recovery as the single-file path; resolve the symlink so
+            # the manifest records the content-hashed blob, not the link.
             self._reregister_from_cache(hf_repo, shards[0], first_shard.resolve())
         return first_shard
 
@@ -328,42 +327,34 @@ class ModelRegistry:
         (``<base>-0000N-of-0000M.gguf``) every shard must be cached, since
         llama.cpp loads the whole set from the first shard but needs them all.
         """
-        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
-
         shards = split_shard_filenames(gguf_filename)
         if len(shards) == 1:
             return True
         return all(self._find_cached_gguf(hf_repo, shard) is not None for shard in shards)
 
-    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
-        """Write a fresh manifest for a model just recovered from the HF cache.
+    def shard_paths(self, ref: str) -> list[Path]:
+        """On-disk paths of *ref*'s GGUF shards that exist next to its resolved path.
 
-        ``list_installed`` only walks ``manifests/``, so a cache-recovered model
-        is resolvable but otherwise invisible (``lilbee model list``, the TUI
-        catalog, the pull command's "already installed" check) until a manifest
-        exists. The ``task`` comes from the featured catalog when the ref is
-        featured, else is classified from the ref name. Skipping non-catalog refs
-        instead left them permanently half-installed: resolvable (so a re-pull
-        short-circuits on "already installed") yet absent from every listing.
-        Best-effort: a read-only models dir or a write race must not break the
-        resolve that succeeded.
+        A split GGUF resolves to its first shard's snapshot symlink with the
+        siblings co-located, so every shard is returned; a single-file GGUF
+        resolves to its content-hashed blob, where no sibling exists under the
+        real filename. Raises ``KeyError`` / ``ValueError`` like :meth:`resolve`.
         """
-        from datetime import UTC, datetime
+        first = self.resolve(ref)
+        _repo, filename = parse_hf_ref(ref)
+        candidates = (
+            first.parent / Path(shard).name for shard in split_shard_filenames(Path(filename).name)
+        )
+        return [path for path in candidates if path.exists()]
 
-        from lilbee.catalog.types import ModelTask
-
+    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
+        """Best-effort manifest write for a cache-recovered model so listings see it."""
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
-            from lilbee.catalog import (
-                find_catalog_entry,
-            )  # deferred: lilbee.catalog is a heavy import
-
             entry = find_catalog_entry(ref)
             if entry is not None:
                 task = entry.task
             else:
-                from lilbee.modelhub.model_manager.discovery import reclassify_by_name
-
                 task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
             self._write_manifest(
                 ModelManifest(
@@ -578,8 +569,6 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     HF cache (``resolve`` recovers from it); if it isn't, the download itself is
     broken and the failure propagates so the caller reports it.
     """
-    from datetime import UTC, datetime
-
     registry = ModelRegistry(cfg.models_dir)
     gguf_filename = _repo_relative_gguf_name(file_path)
     manifest = ModelManifest(

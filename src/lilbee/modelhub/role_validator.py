@@ -5,10 +5,10 @@ import sys
 from typing import Any
 
 from lilbee.catalog import find_catalog_entry
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import PROVIDER_PREFIXES
 
