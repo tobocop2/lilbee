@@ -13,6 +13,7 @@ from harness_config import (
     _GODOT_CORPUS,
     _INDEX_TIMEOUT_S,
     _NUM_CTX_OVERRIDE,
+    QA_DIR,
     SHARED_WORKSPACE,
     WORKSPACE_DIR,
 )
@@ -112,6 +113,14 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     if _NUM_CTX_OVERRIDE:
         config_lines.append(f"num_ctx = {_NUM_CTX_OVERRIDE}")
     (config_dir / "config.toml").write_text("\n".join(config_lines) + "\n")
+    # Event tap: opencode loads project plugins from .opencode/plugins/; the tap
+    # appends real bus events (tool dispatch, session idle/error) to
+    # .lilbee/qa-events.jsonl, which scenarios.py prefers over pane scraping.
+    plugins_dir = workspace / ".opencode" / "plugins"
+    if plugins_dir.exists():
+        shutil.rmtree(plugins_dir)
+    plugins_dir.mkdir(parents=True)
+    shutil.copyfile(QA_DIR / "qa_events_plugin.js", plugins_dir / "qa-events.js")
     # opencode reads AGENTS.md from the project dir. This is the published
     # godot-with-lilbee workflow: it tells the model its Godot knowledge is stale
     # and it MUST look every class/method up via lilbee_search before using it.

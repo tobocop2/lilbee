@@ -128,7 +128,7 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
         ],
         check=True,
     )
-    _wait_for_opencode_ui(session)
+    _wait_for_opencode_ui(session, workspace)
 
 
 def _pane_in_alternate_screen(session: str) -> bool:
@@ -152,21 +152,25 @@ def _pane_in_alternate_screen(session: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "1"
 
 
-def _wait_for_opencode_ui(session: str) -> None:
-    """Block until opencode's TUI takes the terminal, then let the boot settle.
+def _wait_for_opencode_ui(session: str, workspace: Path) -> None:
+    """Block until opencode is up, then let the boot settle.
 
     ``lilbee launch opencode`` holds a "Warming the chat model" spinner until
     its warm gate passes, and a giant's cold load legitimately runs for many
     minutes (the fleet's health budget scales with the weights). Starting the
     scenario clock during that spinner reads as an idle pane and times the
-    cell out before opencode even exists. The heartbeat keeps the wait visible
+    cell out before opencode even exists. Ready means the event tap wrote its
+    first record (plugins load at opencode startup) or the pane entered the
+    alternate screen (the TUI painted); the heartbeat keeps the wait visible
     in the matrix log so a stall here can never read as a dead run.
     """
+    from events import plugin_active
+
     deadline = time.monotonic() + _OPENCODE_UI_TIMEOUT_S
     started = time.monotonic()
     next_heartbeat = started + _UI_WAIT_HEARTBEAT_S
     while time.monotonic() < deadline:
-        if _pane_in_alternate_screen(session):
+        if plugin_active(workspace) or _pane_in_alternate_screen(session):
             time.sleep(_OPENCODE_BOOT_SETTLE_S)
             return
         if time.monotonic() >= next_heartbeat:

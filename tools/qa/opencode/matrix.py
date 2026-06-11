@@ -129,7 +129,7 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
                 result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
                 if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
                     print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
-                    wait_for_answer_settle(session)
+                    wait_for_answer_settle(session, workspace)
                 pane = tmux_capture(session)
                 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
                 (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
