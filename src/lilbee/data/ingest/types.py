@@ -139,17 +139,48 @@ class _IngestResult:
     concept_records: ConceptRecords | None = None
 
 
-# Extension → content_type string for document formats handled by kreuzberg
+# Extension → content_type string for document formats handled by kreuzberg.
+# Container formats (.zip/.tar/.7z/.pst) are deliberately absent: kreuzberg can
+# extract them, but one file fans out to many inner documents, which the
+# source/citation model can't express yet.
 DOCUMENT_EXTENSION_MAP: dict[str, str] = {
-    **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
+    **{ext: "text" for ext in (".md", ".txt", ".html", ".htm", ".rst", ".yaml", ".yml")},
     ".pdf": PDF_CONTENT_TYPE,
-    **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
+    **{
+        ext: ext.lstrip(".")
+        for ext in (
+            ".docx",
+            ".xlsx",
+            ".pptx",
+            ".doc",
+            ".xls",
+            ".ppt",
+            ".rtf",
+            ".odt",
+            ".ods",
+            ".eml",
+            ".msg",
+        )
+    },
     ".epub": "epub",
     **{
         ext: IMAGE_CONTENT_TYPE
-        for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")
+        for ext in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".tiff",
+            ".tif",
+            ".bmp",
+            ".webp",
+            ".gif",
+            ".jp2",
+            ".j2k",
+            ".j2c",
+            ".jpx",
+        )
     },
-    **{ext: "data" for ext in (".csv", ".tsv")},
+    **{ext: "data" for ext in (".csv", ".tsv", ".dbf")},
     ".xml": "xml",
     **{ext: "json" for ext in (".json", ".jsonl")},
 }
