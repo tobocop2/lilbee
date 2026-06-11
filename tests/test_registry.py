@@ -504,6 +504,22 @@ class TestModelRegistryResolve:
         assert registry.resolve(_REPO) == blob.resolve()
         assert registry.is_installed(_REPO)
 
+    def test_resolve_split_ref_reregisters_from_cache(self, tmp_path: Path) -> None:
+        """A cached split GGUF resolved by file ref gets its manifest rewritten.
+
+        The split path resolves via snapshot symlinks without reading manifests,
+        so it previously never re-registered: the model stayed resolvable but
+        absent from every listing, and re-pulls short-circuited forever.
+        """
+        repo = "unsloth/Split-GGUF"
+        shards = [f"Split-Q4_K_S-0000{i}-of-00002.gguf" for i in (1, 2)]
+        registry = ModelRegistry(tmp_path)
+        for shard in shards:
+            _seed_hf_cache(tmp_path, repo=repo, filename=shard, content=shard.encode())
+        assert not registry.list_installed()
+        registry.resolve(f"{repo}/{shards[0]}")
+        assert [m.ref for m in registry.list_installed()] == [f"{repo}/{shards[0]}"]
+
     def test_resolve_recovery_registers_non_catalog_ref_as_chat(self, tmp_path: Path) -> None:
         """A cache recovery of a NON-featured repo still writes a manifest (task=chat).
 

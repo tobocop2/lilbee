@@ -236,6 +236,12 @@ class ModelRegistry:
         first_shard = self._snapshot_gguf_path(hf_repo, shards[0])
         if first_shard is None:
             raise KeyError(f"Model {ref} not installed")
+        if self._read_manifest(hf_repo, shards[0]) is None:
+            # Same recovery as the single-file path: without it a cache-resolved
+            # split model stays invisible to every listing while re-pulls
+            # short-circuit on "already installed". Resolve the snapshot symlink
+            # so the manifest records the content-hashed blob, not the link.
+            self._reregister_from_cache(hf_repo, shards[0], first_shard.resolve())
         return first_shard
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
