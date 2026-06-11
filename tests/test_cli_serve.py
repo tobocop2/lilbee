@@ -90,25 +90,39 @@ class TestTokenCommand:
 
 
 class TestServeCommand:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_default_host_port(self, mock_create_app, mock_asyncio_run):
+    def test_default_host_port(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
+        mock_setup_logging.assert_called_once()
+        mock_setup_log_file.assert_called_once()
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_custom_host_port(self, mock_create_app, mock_asyncio_run):
+    def test_custom_host_port(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "8080"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_short_flags(self, mock_create_app, mock_asyncio_run):
+    def test_short_flags(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "-H", "0.0.0.0", "-p", "9000"])
         assert result.exit_code == 0
@@ -120,6 +134,28 @@ class TestPortFile:
         from lilbee.cli.commands.servers import _port_file
 
         assert _port_file() == cfg.data_dir / "server.port"
+
+
+class TestLogLoopException:
+    def test_logs_exception_from_context(self, caplog):
+        import logging
+
+        from lilbee.cli.commands.servers import _log_loop_exception
+
+        err = RuntimeError("task blew up")
+        with caplog.at_level(logging.ERROR, logger="lilbee.cli.commands.servers"):
+            _log_loop_exception(mock.MagicMock(), {"exception": err})
+        assert "asyncio task error" in caplog.text
+        assert "task blew up" in caplog.text
+
+    def test_logs_message_when_no_exception(self, caplog):
+        import logging
+
+        from lilbee.cli.commands.servers import _log_loop_exception
+
+        with caplog.at_level(logging.ERROR, logger="lilbee.cli.commands.servers"):
+            _log_loop_exception(mock.MagicMock(), {"message": "task was destroyed"})
+        assert "asyncio task error: task was destroyed" in caplog.text
 
 
 class TestRunServer:
@@ -269,6 +305,27 @@ class TestRunServer:
         port_path.write_text("11111")
         cleanup_fn()
         assert not port_path.exists()
+
+    def test_installs_loop_exception_handler(self):
+        from lilbee.cli.commands.servers import _log_loop_exception, _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = []
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        seen_handler = None
+
+        async def capture_handler() -> None:
+            nonlocal seen_handler
+            seen_handler = asyncio.get_running_loop().get_exception_handler()
+
+        fake_server_obj.main_loop = capture_handler
+        fake_config = mock.MagicMock()
+
+        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        assert seen_handler is _log_loop_exception
 
     def test_does_not_call_shutdown_when_startup_fails(self):
         """If `startup()` raises, `server.servers` was never assigned. Calling
