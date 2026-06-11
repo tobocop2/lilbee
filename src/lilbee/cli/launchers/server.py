@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import IO
 
 import httpx
@@ -27,9 +28,11 @@ LOOPBACK = "127.0.0.1"
 
 _SERVER_BOOT_TIMEOUT_S = 60.0
 _SERVER_POLL_INTERVAL_S = 0.5
-# Upper bound on the cold model-load wait. A large chat model split across GPUs
-# can take minutes to load; this only bounds the visible warming wait, after
-# which the launcher hands off anyway (the model then warms on the first call).
+# Floor on the cold model-load wait; chat_warm_budget_s() scales it up with
+# the configured model's on-disk weights (the fleet's own formula, so the
+# launcher can never give up while the fleet is still legitimately loading).
+# It only bounds the visible warming wait, after which the launcher hands off
+# anyway (the model then warms on the first call).
 _WARM_TIMEOUT_S = 600.0
 _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
@@ -117,15 +120,46 @@ def served_chat_ctx(port: int) -> int | None:
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
-def wait_for_chat_warm(port: int, timeout_s: float = _WARM_TIMEOUT_S) -> bool:
+def chat_warm_budget_s() -> float:
+    """Warm-wait budget scaled to the configured chat model's on-disk weights.
+
+    Uses the fleet's cold-load formula over the full shard set so the
+    launcher's patience always covers what llama-swap's health budget allows;
+    a fixed cap shorter than the fleet's own budget made the launcher abandon
+    giants that were still loading legitimately. Falls back to the floor when
+    the configured model has no local weights to size (remote/SDK refs, or a
+    ref the registry cannot resolve).
+    """
+    from lilbee.catalog.download import split_shard_filenames
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry, parse_hf_ref
+    from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+    try:
+        first = ModelRegistry(cfg.models_dir).resolve(str(cfg.chat_model))
+        _repo, filename = parse_hf_ref(str(cfg.chat_model))
+    except (KeyError, ValueError):
+        return _WARM_TIMEOUT_S
+    total_bytes = 0
+    for shard in split_shard_filenames(Path(filename).name):
+        shard_path = first.parent / Path(shard).name
+        if shard_path.exists():
+            total_bytes += shard_path.stat().st_size
+    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes)))
+
+
+def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:
     """Block until the chat model is loaded, showing a warming indicator.
 
     The server warms the chat role on a background thread at startup, so a client
     launched the instant the HTTP port binds would otherwise hit an
     apparently-dead stream during the cold model load. Returns True once the
-    chat engine reports ready, or False if *timeout_s* elapses first; the caller
-    proceeds either way, so a still-loading model just warms on the first call.
+    chat engine reports ready, or False if the budget (weights-scaled via
+    :func:`chat_warm_budget_s` unless given) elapses first; the caller proceeds
+    either way, so a still-loading model just warms on the first call.
     """
+    if timeout_s is None:
+        timeout_s = chat_warm_budget_s()
     if chat_ready(port):
         return True
     deadline = time.monotonic() + timeout_s
