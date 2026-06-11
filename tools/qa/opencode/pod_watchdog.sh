@@ -9,11 +9,14 @@ set -euo pipefail
 IDLE_MIN="${IDLE_MIN:-30}"
 GPU_BUSY_PCT=5
 
-# A watch path may not exist yet (HF_HOME before the first download); find's
-# nonzero exit must not kill the watchdog under set -e, silently dropping the
-# billing protection it exists to provide.
+# Survival rules learned the hard way: a watch path may not exist yet (HF_HOME
+# before the first download), and `head -1` closing the pipe early SIGPIPEs the
+# producers, which pipefail turns into a silent death on any large tree. Either
+# way the watchdog dies and the billing protection it exists to provide is
+# gone, so absent paths are tolerated and `sed -n 1p` (which drains its input)
+# takes the place of head.
 newest_mtime() {
-  { find "$@" -type f -printf '%T@\n' 2>/dev/null || true; } | sort -nr | head -1 | cut -d. -f1
+  { find "$@" -type f -printf '%T@\n' 2>/dev/null || true; } | sort -nr | sed -n 1p | cut -d. -f1
 }
 
 echo "[watchdog] watching: $* (stop after ${IDLE_MIN}m of no writes + idle GPUs)"
@@ -25,7 +28,7 @@ last_change="$(date +%s)"
 while true; do
   mtime="$(newest_mtime "$@")"
   mtime="${mtime:-0}"
-  gpu="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -nr | head -1)"
+  gpu="$({ nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true; } | sort -nr | sed -n 1p)"
   gpu="${gpu:-0}"
   if [ "$mtime" != "$last_seen" ] || [ "$gpu" -gt "$GPU_BUSY_PCT" ]; then
     last_seen="$mtime"
