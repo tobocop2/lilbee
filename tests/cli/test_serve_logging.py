@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
+import sys
 from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
 
+from lilbee.cli.commands import serve_logging
 from lilbee.cli.commands.serve_logging import (
     _BACKUP_COUNT,
     _MAX_BYTES,
+    enable_fault_log,
+    install_excepthook,
     setup_server_log_file,
 )
 from lilbee.core.config import cfg
@@ -89,3 +94,67 @@ def test_pins_notset_stream_handler_to_old_root_level(data_root: Path) -> None:
         handler.flush()
     assert "file only" in log_path.read_text()
     assert stream_handler.level == logging.WARNING
+
+
+@pytest.fixture(autouse=True)
+def _reset_fault_log() -> Iterator[None]:
+    yield
+    handle = serve_logging._fault_log._handle
+    if handle is not None and not handle.closed:
+        faulthandler.disable()
+        handle.close()
+        # Restore pytest's stderr fault dumping.
+        faulthandler.enable()
+    serve_logging._fault_log._handle = None
+
+
+@pytest.fixture(autouse=True)
+def _restore_excepthook() -> Iterator[None]:
+    before = sys.excepthook
+    yield
+    sys.excepthook = before
+
+
+def test_fault_log_enabled(data_root: Path) -> None:
+    fault_path = enable_fault_log()
+    assert fault_path == data_root / "logs" / "server-fault.log"
+    assert fault_path.exists()
+    assert faulthandler.is_enabled()
+    # pytest enables faulthandler itself, so also assert our handle is live.
+    handle = serve_logging._fault_log._handle
+    assert handle is not None
+    assert not handle.closed
+    assert Path(handle.name) == fault_path
+
+
+def test_fault_log_idempotent(data_root: Path) -> None:
+    first = enable_fault_log()
+    handle = serve_logging._fault_log._handle
+    second = enable_fault_log()
+    assert first == second
+    assert serve_logging._fault_log._handle is handle
+
+
+def test_fault_log_reopens_closed_handle(data_root: Path) -> None:
+    first = enable_fault_log()
+    handle = serve_logging._fault_log._handle
+    assert handle is not None
+    faulthandler.disable()
+    handle.close()
+    second = enable_fault_log()
+    assert second == first
+    reopened = serve_logging._fault_log._handle
+    assert reopened is not None
+    assert not reopened.closed
+    assert faulthandler.is_enabled()
+
+
+def test_excepthook_logs_and_chains(data_root: Path, caplog: pytest.LogCaptureFixture) -> None:
+    called: list[type[BaseException]] = []
+    sys.excepthook = lambda tp, val, tb: called.append(tp)
+    install_excepthook()
+    err = RuntimeError("kaboom")
+    with caplog.at_level(logging.CRITICAL):
+        sys.excepthook(RuntimeError, err, None)
+    assert "kaboom" in caplog.text
+    assert called == [RuntimeError]
