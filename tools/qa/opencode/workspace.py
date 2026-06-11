@@ -81,6 +81,9 @@ class reference is indexed locally in lilbee. Do NOT guess or use web search -- 
 """
 
 
+_CORPUS_COPY_ATTEMPTS = 3
+
+
 def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     """Per-cell workspace seeded by copying the pre-built Godot corpus lancedb.
 
@@ -101,10 +104,20 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     if config_dir.exists():
         shutil.rmtree(config_dir)
     config_dir.mkdir(parents=True)
-    for sub in ("data", "documents"):
-        src = _GODOT_CORPUS / sub
-        if src.is_dir():
-            shutil.copytree(src, config_dir / sub)
+    # The corpus copy is hundreds of small files on a network volume that
+    # throws transient Errno-5s; one bad file otherwise kills the whole cell
+    # (observed twice, different file each time), so retry from scratch.
+    for attempt in range(1, _CORPUS_COPY_ATTEMPTS + 1):
+        try:
+            for sub in ("data", "documents"):
+                src = _GODOT_CORPUS / sub
+                if src.is_dir():
+                    shutil.copytree(src, config_dir / sub, dirs_exist_ok=True)
+            break
+        except (OSError, shutil.Error) as exc:
+            if attempt == _CORPUS_COPY_ATTEMPTS:
+                raise
+            print(f"corpus copy failed (attempt {attempt}/{_CORPUS_COPY_ATTEMPTS}): {exc}")
     config_lines = [
         f'chat_model = "{model_ref}"',
         f'embedding_model = "{_EMBED_REF}"',
