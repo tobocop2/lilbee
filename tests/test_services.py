@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -205,8 +206,8 @@ class TestEagerStartBranch:
         assert "start" in called
         assert "run_sync" in called
 
-    def test_eager_start_swallows_runtime_failure(self, monkeypatch):
-        """Suppress(Exception) keeps get_services() resilient if eager start raises."""
+    def test_eager_start_swallows_runtime_failure(self, monkeypatch, caplog):
+        """An eager-start failure is logged but keeps get_services() resilient."""
         cfg.worker_pool_eager_start = True
 
         from lilbee.app import services as services_mod
@@ -232,8 +233,10 @@ class TestEagerStartBranch:
 
         try:
             # Must not raise even though start() blew up.
-            svc = services_mod.get_services()
+            with caplog.at_level(logging.WARNING, logger="lilbee.app.services"):
+                svc = services_mod.get_services()
             assert svc is not None
+            assert any("Eager worker-pool start failed" in r.message for r in caplog.records)
         finally:
             services_mod.set_services(None)
 
