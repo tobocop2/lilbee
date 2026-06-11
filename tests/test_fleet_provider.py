@@ -544,10 +544,10 @@ def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_vision_call", _capture)
     result = p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=120.0)  # type: ignore[arg-type]
     assert result == [PageText(1, "ocr"), PageText(2, "ocr")]
-    # Budget is 2*120 + 300 = 540; both pages draw from it (far above any 120 cap),
-    # and the second page sees no more than the first since time only moves forward.
+    # Budget is 2*120 + 300 = 540; pages run concurrently, so each draws nearly
+    # the full remaining budget (far above any 120 cap), in either capture order.
     assert seen[0] == pytest.approx(540.0, abs=1.0)
-    assert seen[1] is not None and seen[0] is not None and seen[1] <= seen[0]
+    assert seen[1] == pytest.approx(540.0, abs=1.0)
     assert all(t is not None and t > 120.0 for t in seen)
 
 
