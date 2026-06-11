@@ -23,6 +23,12 @@ _POST_SEND_SLEEP_S = 0.1
 _SERVE_BOOT_TIMEOUT_S = 30.0
 _SERVE_TERMINATE_TIMEOUT_S = 10.0
 _OPENCODE_BOOT_SETTLE_S = 30.0  # boot + first-prompt prefill warmup
+# Launcher warm gate (600s) plus a giant's cold load inside the fleet's
+# weights-scaled health budget can hold the warm spinner for many minutes
+# before opencode execs; only then may the scenario clock start.
+_OPENCODE_UI_TIMEOUT_S = 1200.0
+_UI_WAIT_HEARTBEAT_S = 60.0
+_TMUX_COMMAND_TIMEOUT_S = 30.0
 _INDEX_TIMEOUT_S = 120.0
 _MODEL_PULL_TIMEOUT_S = 3600.0  # residential bandwidth, multi-quant repos can run 30+ min
 _POLL_INTERVAL_S = 2.0
@@ -31,17 +37,15 @@ _SCENARIO_TIMEOUT_S = (
 )
 _MULTI_TOOL_TIMEOUT_S = 600.0
 _INTER_SCENARIO_SETTLE_S = 15.0  # let opencode finish the prior turn before queuing the next
-# Fail-fast: declare a scenario dead when the pane stops changing for this long
-# AFTER the model has emitted at least one ``Build · …`` activity marker. Keeps
-# a quiet model from eating the full timeout. Set high enough that a giant MoE on
-# Metal (static "thinking" spinner reads as an idle pane) isn't killed mid-reason
-# before it emits its first tool call.
+# Fail-fast: declare a scenario dead when the pane stops changing (any output) for
+# this long. Keeps a quiet model from eating the full timeout. Set high enough that
+# a giant MoE on Metal (static "thinking" spinner reads as an idle pane) isn't
+# killed mid-reason before it emits its first tool call.
 _PANE_IDLE_TIMEOUT_S = 480.0
 
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
 _OPENCODE_SHARE_DIR = Path.home() / ".local" / "share" / "opencode"
-_OPENCODE_CONFIG = Path.home() / ".config" / "opencode" / "opencode.json"
 # Pre-built Godot 4 class-reference corpus (one-time `lilbee add /root/godot/doc/classes`
 # into LILBEE_DATA=<this>); each cell copies its data/ + documents/ so lilbee_search
 # has the reference without re-embedding. Override with LILBEE_QA_CORPUS.
@@ -97,7 +101,6 @@ _CHAT_CTX_TARGET = 131072  # ~24K goes to opencode's system + tools schema; the
 # full window.
 _NUM_CTX_OVERRIDE = os.environ.get("LILBEE_QA_NUM_CTX", "").strip()
 _EMBED_REF = "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
-_EMBED_PULL_REF = "Qwen/Qwen3-Embedding-8B-GGUF"
 
 
 class ScenarioStatus(StrEnum):

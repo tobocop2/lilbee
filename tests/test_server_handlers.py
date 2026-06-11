@@ -240,6 +240,24 @@ class TestAsk:
         await handlers.ask("q", chunk_type="wiki")
         assert mock_svc.searcher.ask_raw.call_args.kwargs.get("chunk_type") == "wiki"
 
+    async def test_generation_runs_off_the_event_loop(self, mock_svc):
+        """ask_raw blocks for the whole generation; it must run in a worker thread."""
+        import threading
+
+        from lilbee.retrieval.query import AskResult
+
+        loop_thread = threading.current_thread()
+        seen_threads: list[threading.Thread] = []
+
+        def _slow_ask(*args, **kwargs):
+            seen_threads.append(threading.current_thread())
+            return AskResult(answer="ok", sources=[])
+
+        mock_svc.searcher.ask_raw.side_effect = _slow_ask
+        result = await handlers.ask("q")
+        assert result.answer == "ok"
+        assert seen_threads and seen_threads[0] is not loop_thread
+
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -1124,6 +1142,142 @@ class TestDrainHeartbeat:
         assert heartbeats == []
         progress = [e for e in events if e.startswith("event: progress")]
         assert len(progress) == 3
+
+
+class TestSseEventQueue:
+    """The per-stream queue stays bounded: progress sheds, lifecycle always lands."""
+
+    def _progress_payload(self, i: int) -> str:
+        return f'event: file_done\ndata: {{"i": {i}}}\n\n'
+
+    async def test_queue_stays_bounded_under_fast_producer(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=10)
+        for i in range(1000):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        assert queue.qsize() == 10
+        assert queue.dropped_events == 990
+
+    async def test_oldest_progress_dropped_first(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=3)
+        for i in range(5):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        kept = [queue.get_nowait() for _ in range(3)]
+        # The two oldest were shed; the freshest progress survives.
+        assert kept == [self._progress_payload(i) for i in (2, 3, 4)]
+
+    async def test_terminal_event_always_delivered_when_full(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=5)
+        for i in range(50):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        done_payload = 'event: done\ndata: {"added": 50}\n\n'
+        queue.put_event_nowait(done_payload, EventType.DONE)
+        queue.put_nowait(None)
+
+        drained: list[str | None] = []
+        while not queue.empty():
+            drained.append(queue.get_nowait())
+        assert done_payload in drained
+        assert drained[-1] is None
+        # The bound held: an old progress event made room for each arrival.
+        assert len(drained) <= 7
+
+    async def test_sentinel_never_evicted_by_progress(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        queue.put_nowait(None)
+        for i in range(10):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        assert queue.get_nowait() is None
+
+    def _download_progress_payload(self, i: int) -> str:
+        return f'event: progress\ndata: {{"current": {i}, "total": 100}}\n\n'
+
+    async def test_download_progress_sheds_under_pressure(self):
+        from lilbee.runtime.progress import SseEvent
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=5)
+        for i in range(100):
+            queue.put_event_nowait(self._download_progress_payload(i), SseEvent.PROGRESS)
+        assert queue.qsize() == 5
+        assert queue.dropped_events == 95
+
+    async def test_download_done_and_error_always_delivered_when_full(self):
+        from lilbee.runtime.progress import SseEvent
+        from lilbee.server.handlers.sse import SseEventQueue, sse_error
+
+        queue = SseEventQueue(max_events=3)
+        for i in range(30):
+            queue.put_event_nowait(self._download_progress_payload(i), SseEvent.PROGRESS)
+        error_payload = sse_error("download failed")
+        queue.put_nowait(error_payload)
+        queue.put_nowait(None)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert error_payload in drained
+        assert drained[-1] is None
+
+    async def test_non_droppable_progress_event_types_always_land(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(4):
+            queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
+        crawl_done = 'event: crawl_done\ndata: {"pages_crawled": 1}\n\n'
+        queue.put_event_nowait(crawl_done, EventType.CRAWL_DONE)
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert crawl_done in drained
+
+    async def test_callback_routes_progress_through_shedding_path(self):
+        from lilbee.runtime.progress import EventType, FileDoneEvent
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        sse = SseStream()
+        assert isinstance(sse.queue, SseEventQueue)
+        sse.callback(EventType.FILE_DONE, FileDoneEvent(file="a.md", status="ok", chunks=1))
+        payload = sse.queue.get_nowait()
+        assert payload is not None
+        assert payload.startswith("event: file_done")
+
+    async def test_callback_from_worker_thread_routes_threadsafe(self):
+        from lilbee.runtime.progress import EventType, FileDoneEvent
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        await asyncio.to_thread(
+            sse.callback, EventType.FILE_DONE, FileDoneEvent(file="a.md", status="ok", chunks=1)
+        )
+        await asyncio.sleep(0)  # let call_soon_threadsafe land
+        payload = sse.queue.get_nowait()
+        assert payload is not None
+        assert payload.startswith("event: file_done")
+
+    async def test_drain_still_sees_all_events_under_capacity(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers import SseStream
+
+        cfg.sse_heartbeat_interval = 0.0
+        sse = SseStream()
+
+        async def producer():
+            sse.queue.put_event_nowait(self._progress_payload(1), EventType.FILE_DONE)
+            sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(producer())
+        events = [e async for e in sse.drain(task, "bounded")]
+        assert events == [self._progress_payload(1)]
 
 
 class TestListModels:
@@ -3060,6 +3214,45 @@ class TestClassifyStreamError:
         code, msg = _classify_stream_error(exc)
         assert code == "model_not_found"
         assert "nomic-ai/embed/embed.gguf" in msg
+
+    def test_auth_provider_error_keeps_kind_code(self):
+        """An AUTH ProviderError keeps the /api kind vocabulary, not the /v1 mapping."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend rejected your API key.", kind=ProviderErrorKind.AUTH)
+        code, msg = _classify_stream_error(exc)
+        assert code == "auth"
+        assert "rejected your API key" in msg
+
+    def test_connection_provider_error_keeps_kind_code(self):
+        """A CONNECTION ProviderError keeps "connection" so clients can branch on it."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend unreachable.", kind=ProviderErrorKind.CONNECTION)
+        code, msg = _classify_stream_error(exc)
+        assert code == "connection"
+        assert "unreachable" in msg
+
+    def test_rate_limit_provider_error_keeps_kind_code(self):
+        """A RATE_LIMIT ProviderError keeps "rate_limit", not the /v1 429 mapping."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend is out of quota.", kind=ProviderErrorKind.RATE_LIMIT)
+        code, msg = _classify_stream_error(exc)
+        assert code == "rate_limit"
+        assert "out of quota" in msg
+
+    def test_server_provider_error_keeps_kind_code(self):
+        """A SERVER ProviderError stays "server", distinct from "connection"."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.server.handlers.rag import _classify_stream_error
+
+        exc = ProviderError("backend returned 502.", kind=ProviderErrorKind.SERVER)
+        code, _ = _classify_stream_error(exc)
+        assert code == "server"
 
     def test_model_does_not_support_tools_routes_to_typed_code(self):
         """``ModelDoesNotSupportToolsError`` from the dispatch surfaces as a typed code."""

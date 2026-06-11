@@ -13,6 +13,7 @@ from harness_config import (
     _GODOT_CORPUS,
     _INDEX_TIMEOUT_S,
     _NUM_CTX_OVERRIDE,
+    QA_DIR,
     SHARED_WORKSPACE,
     WORKSPACE_DIR,
 )
@@ -29,25 +30,26 @@ def seed_shared_workspace() -> Path:
     SHARED_WORKSPACE.mkdir(parents=True, exist_ok=True)
     fixtures = {
         "chat_worker.md": (
-            "# Chat worker\n\n"
-            "The chat worker subprocess in lilbee runs llama-cpp inference. "
-            "It receives ChatRequest payloads over a pipe transport and "
-            "streams tokens back via SSE. Cancellation is enforced through "
-            "an abort flag in shared memory."
+            "# Chat engine\n\n"
+            "Chat inference in lilbee runs on a managed llama-server fleet. "
+            "llama-swap supervises the server processes behind an "
+            "OpenAI-compatible proxy, gguf-parser estimates each model's "
+            "memory footprint for placement, and tokens stream back via SSE."
         ),
         "dispatch.md": (
             "# Dispatch layer\n\n"
             "chat_dispatch.dispatch_chat is the canonical entry point that "
             "the OpenAI-compatible route forwards to. It resolves the model "
             "through KnownModelCache, enforces tool capability, and routes "
-            "to either the native llama-cpp worker or the SDK backend."
+            "to either the local llama-server fleet or the SDK backend."
         ),
         "tool_extraction.md": (
             "# Tool extraction\n\n"
-            "Lilbee uses a schema-driven response parser based on the "
-            "HuggingFace transformers chat_parsing_utils.recursive_parse. "
-            "Each supported family ships a JSON schema under "
-            "providers/worker/response_parser/schemas/."
+            "Lilbee launches llama-server with --jinja, so the server renders "
+            "each model's own chat template and parses its native tool-call "
+            "syntax into structured message.tool_calls. A recovery pass in "
+            "providers/fleet/client.py catches bare-JSON tool calls that "
+            "models emit as plain content."
         ),
     }
     for filename, content in fixtures.items():
@@ -111,6 +113,20 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     if _NUM_CTX_OVERRIDE:
         config_lines.append(f"num_ctx = {_NUM_CTX_OVERRIDE}")
     (config_dir / "config.toml").write_text("\n".join(config_lines) + "\n")
+    # opencode resolves its project root by traversing up to the nearest git
+    # directory; without this the workspace (which lives inside the lilbee
+    # repo) would resolve to the repo root, so the per-cell opencode.json and
+    # the event-tap plugin below would never load.
+    if not (workspace / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    # Event tap: opencode loads project plugins from .opencode/plugins/; the tap
+    # appends real bus events (tool dispatch, session idle/error) to
+    # .lilbee/qa-events.jsonl, which scenarios.py prefers over pane scraping.
+    plugins_dir = workspace / ".opencode" / "plugins"
+    if plugins_dir.exists():
+        shutil.rmtree(plugins_dir)
+    plugins_dir.mkdir(parents=True)
+    shutil.copyfile(QA_DIR / "qa_events_plugin.js", plugins_dir / "qa-events.js")
     # opencode reads AGENTS.md from the project dir. This is the published
     # godot-with-lilbee workflow: it tells the model its Godot knowledge is stale
     # and it MUST look every class/method up via lilbee_search before using it.

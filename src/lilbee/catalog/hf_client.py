@@ -15,7 +15,6 @@ from huggingface_hub.hf_api import RepoSibling
 from lilbee.catalog.compat import classify
 from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
 from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
-from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +84,10 @@ _BYTES_PER_GB = 1024**3
 
 def hf_token() -> str | None:
     """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
+    # circular: a module-level cfg import makes Config()'s model-ref validator
+    # circular (config -> model_ref -> catalog -> here -> config).
+    from lilbee.core.config import cfg
+
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     if token:
         return token

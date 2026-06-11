@@ -71,15 +71,6 @@ jobs:
           version: "latest"
       - run: uv python install 3.12
       - run: uv sync
-        env:
-          # AVX-baseline llama-cpp-python build; see the test job below.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
       - run: make lint
       - run: make format-check
       - run: make typecheck
@@ -97,18 +88,6 @@ jobs:
           version: "latest"
       - run: uv python install 3.12
       - run: uv sync
-        env:
-          # llama-cpp-python is sdist-only; an unflagged build compiles ggml
-          # with -march=native, and the built wheel is shared across runners
-          # with different CPUs via the setup-uv cache, SIGILLing the test
-          # job. Cap at AVX baseline like ci.yml's test matrix.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
       - run: make test-ci
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee

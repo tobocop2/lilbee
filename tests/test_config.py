@@ -1593,6 +1593,38 @@ class TestBuildCfgFallback:
             _, error = _build_cfg()
         assert error is None
 
+    def test_fresh_import_honors_toml_model_fields(self, tmp_path):
+        """A config.toml with model refs must survive first package import.
+
+        The model-ref validator imports the catalog package, which once imported
+        cfg back at module level: on a fresh interpreter the cycle rejected every
+        config.toml carrying a model field, silently falling back to defaults.
+        Only a subprocess exercises the fresh-import path, so this test shells out.
+        """
+        import json
+        import subprocess
+        import sys
+
+        pinned = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        (tmp_path / "config.toml").write_text(
+            f'chat_model = "{pinned}"\nchat_n_ctx_target = 131072\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["PATH"] = os.environ["PATH"]
+        probe = (
+            "import json\n"
+            "from lilbee.core.config import cfg, config_load_error\n"
+            "print(json.dumps({'error': str(config_load_error), "
+            "'chat_model': str(cfg.chat_model)}))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
+        )
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "None"
+        assert payload["chat_model"] == pinned
+
     def test_empty_string_persisted_nullable_uses_default(self, tmp_path):
         """Legacy bug: set_setting wrote None as ""; pydantic can't coerce.
 

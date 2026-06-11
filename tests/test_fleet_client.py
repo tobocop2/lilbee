@@ -252,6 +252,49 @@ def test_in_flight_counter_is_atomic_under_threads() -> None:
     assert c.in_flight == 0
 
 
+class TestHealthHalfOpen:
+    def _clocked_client(self, monkeypatch: pytest.MonkeyPatch) -> tuple[LlamaServerClient, dict]:
+        from lilbee.providers.fleet import client as client_mod
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock["now"])
+        return _client(), clock
+
+    def test_unhealthy_within_cooldown_is_not_routable(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S - 0.1
+        assert c.healthy is False
+
+    def test_unhealthy_becomes_routable_after_cooldown(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S
+        assert c.healthy is True  # half-open: the next routed request is the probe
+
+    def test_refailure_restamps_the_cooldown(self, monkeypatch) -> None:
+        from lilbee.providers.fleet.client import _UNHEALTHY_RETRY_S
+
+        c, clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        clock["now"] = _UNHEALTHY_RETRY_S
+        c.mark_unhealthy()  # the probe-by-traffic failed again
+        clock["now"] = 2 * _UNHEALTHY_RETRY_S - 0.1
+        assert c.healthy is False
+        clock["now"] = 2 * _UNHEALTHY_RETRY_S
+        assert c.healthy is True
+
+    def test_mark_healthy_restores_immediately(self, monkeypatch) -> None:
+        c, _clock = self._clocked_client(monkeypatch)
+        c.mark_unhealthy()
+        c.mark_healthy()
+        assert c.healthy is True
+
+
 def test_health_true_on_200() -> None:
     assert _client().health() is True
 
@@ -1018,3 +1061,55 @@ def test_embed_does_not_retry_on_non_overflow_error() -> None:
 
     with pytest.raises(ProviderError, match="500"):
         _capped_client(handler, 10).embed(["x"])
+
+
+def test_raise_for_status_tags_premature_exit_as_connection(monkeypatch) -> None:
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    monkeypatch.setattr(client_mod, "_log_upstream_tail", lambda _resp: None)
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+class TestIsConnectionFailure:
+    def test_true_for_httpx_transport_errors(self) -> None:
+        from lilbee.providers.fleet.client import is_connection_failure
+
+        assert is_connection_failure(httpx.ConnectError("refused")) is True
+
+    def test_true_for_connection_kind_provider_error(self) -> None:
+        from lilbee.providers.base import ProviderErrorKind
+        from lilbee.providers.fleet.client import is_connection_failure
+
+        exc = ProviderError("dead", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+        assert is_connection_failure(exc) is True
+
+    def test_false_for_model_level_errors(self) -> None:
+        from lilbee.providers.fleet.client import is_connection_failure
+
+        assert is_connection_failure(ProviderError("bad", provider="llama-server")) is False
+        assert is_connection_failure(ValueError("nope")) is False
+
+
+class TestClientHealthFlag:
+    def test_starts_healthy_and_flips_with_marks(self) -> None:
+        client = _client()
+        assert client.healthy is True
+        client.mark_unhealthy()
+        assert client.healthy is False
+        client.mark_healthy()
+        assert client.healthy is True
+
+
+def test_chat_forwards_per_request_timeout() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _client(handler).chat([{"role": "user", "content": "hi"}], timeout=7.5)
+    assert seen["timeout"] == {"connect": 7.5, "read": 7.5, "write": 7.5, "pool": 7.5}

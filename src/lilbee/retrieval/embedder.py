@@ -14,7 +14,11 @@ from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventT
 
 log = logging.getLogger(__name__)
 
-MAX_BATCH_CHARS = 6000
+# Sequences per embed request, matching the local engine's per-request packing
+# cap so app-level batches feed full server batches. The engine re-splits by
+# exact token counts anyway; for remote SDK providers the resulting char budget
+# (~chunk_size-dependent, ~128 KiB at defaults) stays a safe request-size cap.
+EMBED_BATCH_TARGET_SEQUENCES = 64
 
 
 def _name_base(ref: ProviderModelRef) -> str:
@@ -76,6 +80,11 @@ class Embedder:
         silently losing its tail to a limit set below what the chunker emits.
         """
         return max(self._config.max_embed_chars, self._config.chunk_size * CHARS_PER_TOKEN)
+
+    @property
+    def batch_char_budget(self) -> int:
+        """Per-request char cap: a full packed batch of maximum-size chunks."""
+        return EMBED_BATCH_TARGET_SEQUENCES * self._config.chunk_size * CHARS_PER_TOKEN
 
     @property
     def truncated_total(self) -> int:
@@ -171,13 +180,14 @@ class Embedder:
             return []
         truncated_before = self.truncated_total
         total_chunks = len(texts)
+        max_batch_chars = self.batch_char_budget
         vectors: list[list[float]] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
             truncated = prefix + self.truncate(text)
             chunk_len = len(truncated)
-            if batch and batch_chars + chunk_len > MAX_BATCH_CHARS:
+            if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._provider.embed(batch))
                 on_progress(
                     EventType.EMBED,

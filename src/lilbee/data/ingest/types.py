@@ -9,7 +9,13 @@ from typing import NamedTuple, TypedDict
 
 from pydantic import BaseModel
 
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import (
+    ChunkType,
+    ConceptRecords,
+    PageTextRecord,
+    SourceStat,
+    SourceStatBackfill,
+)
 
 
 class FileToProcess(NamedTuple):
@@ -20,6 +26,17 @@ class FileToProcess(NamedTuple):
     content_type: str
     file_hash: str
     needs_cleanup: bool
+    stat: SourceStat | None = None
+
+
+class FileChangePlan(NamedTuple):
+    """Outcome of diffing disk files against the tracked sources."""
+
+    files_to_process: list[FileToProcess]
+    added: dict[str, None]
+    updated: dict[str, None]
+    unchanged: int
+    stat_backfills: list[SourceStatBackfill]
 
 
 # Minimum total chars for extracted text to be considered meaningful.
@@ -105,8 +122,9 @@ class _IngestResult:
     ``records`` carries the produced (extracted + embedded) chunks until the
     batched flush writes them; ``None`` on a failed file. ``needs_cleanup``
     travels with the records so the flush can delete the source's old chunks in
-    the same transaction. ``page_texts`` carries the per-page text dataset rows,
-    written by the same flush.
+    the same transaction. ``page_texts`` carries the per-page text dataset rows
+    and ``concept_records`` the file's concept-table rows, both written by the
+    same flush.
     """
 
     name: str
@@ -117,6 +135,8 @@ class _IngestResult:
     records: list[ChunkRecord] | None = None
     needs_cleanup: bool = True
     page_texts: list[PageTextRecord] | None = None
+    stat: SourceStat | None = None
+    concept_records: ConceptRecords | None = None
 
 
 # Extension → content_type string for document formats handled by kreuzberg.

@@ -376,9 +376,10 @@ class TestRemoteToRow:
 class TestBackendField:
     """Verify the backend field is set correctly across all row builders.
 
-    Native (llama-cpp) models have backend="" because they are managed by
-    lilbee itself. Only externally-managed models (ollama, litellm) show
-    a backend pill so users know lilbee cannot install/delete them.
+    Native (llama-server fleet) models have backend="" because they are
+    managed by lilbee itself. Only externally-managed models (ollama,
+    litellm) show a backend pill so users know lilbee cannot
+    install/delete them.
     """
 
     def test_catalog_to_row_backend_native(self):
@@ -4315,7 +4316,7 @@ async def test_catalog_select_ollama_remote_row_stores_prefix():
     """Picking an Ollama-backed catalog row stores the ollama/ prefix.
 
     Without the prefix, routing would classify it as local and dispatch
-    to llama-cpp, silently bypassing the user's Ollama choice.
+    to the llama-server fleet, silently bypassing the user's Ollama choice.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import remote_to_row

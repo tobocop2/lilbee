@@ -315,12 +315,125 @@ class TestWriteChunksBatch:
         )
         assert len(store.get_chunks_by_source("a.md")) == 2
 
-    def test_empty_batch_and_empty_records_are_noops(self, store):
+    def test_empty_batch_is_noop(self, store):
+        assert store.write_chunks_batch([]) == 0
+        assert store.get_sources() == []
+
+    def test_zero_chunk_item_persists_page_texts_and_source_row(self, store):
+        # A processed file with no chunkable text (whitespace-only OCR) keeps
+        # its pages and source row so it stops replanning every sync.
         from lilbee.data.store import ChunkWrite
 
-        assert store.write_chunks_batch([]) == 0
-        assert store.write_chunks_batch([ChunkWrite("x.md", "h", [], needs_cleanup=False)]) == 0
-        assert store.get_sources() == []
+        page = {"source": "scan.pdf", "page": 1, "text": "  ", "content_type": "pdf"}
+        items = [ChunkWrite("scan.pdf", "h", [], needs_cleanup=True, page_texts=[page])]
+        assert store.write_chunks_batch(items) == 0
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["scan.pdf"]["chunk_count"] == 0
+        assert sources["scan.pdf"]["file_hash"] == "h"
+        assert [row["page"] for row in store.get_page_texts("scan.pdf")] == [1]
+        # Read paths stay healthy with a zero-chunk source present.
+        assert store.get_chunks_by_source("scan.pdf") == []
+        assert store.search([0.0] * cfg.embedding_dim) == []
+
+    def test_cleanup_deletes_are_constant_per_flush(self, store):
+        # N cleanup items go through one batched IN-delete pass, never one
+        # delete set per item.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        total = 4
+        for i in range(total):
+            store.add_chunks(_records_for(f"f{i}.md", 1))
+        store.add_page_texts(
+            [
+                {"source": f"f{i}.md", "page": 1, "text": "old", "content_type": "pdf"}
+                for i in range(total)
+            ]
+        )
+        items = [
+            ChunkWrite(
+                f"f{i}.md",
+                f"h{i}",
+                _records_for(f"f{i}.md", 2),
+                needs_cleanup=True,
+                page_texts=[
+                    {"source": f"f{i}.md", "page": 1, "text": "new", "content_type": "pdf"}
+                ],
+            )
+            for i in range(total)
+        ]
+        with mock.patch.object(
+            core_mod.Store,
+            "_delete_by_sources_unlocked",
+            autospec=True,
+            side_effect=core_mod.Store._delete_by_sources_unlocked,
+        ) as spy:
+            store.write_chunks_batch(items)
+        assert spy.call_count == 1
+        assert sorted(spy.call_args.args[1]) == [f"f{i}.md" for i in range(total)]
+        # End state matches the per-item behavior: replaced rows, no orphans.
+        for i in range(total):
+            assert len(store.get_chunks_by_source(f"f{i}.md")) == 2
+            assert [row["text"] for row in store.get_page_texts(f"f{i}.md")] == ["new"]
+
+    def test_cleanup_delete_failure_propagates(self, store):
+        # A swallowed delete would leave every flushed file silently stale, so
+        # the flush must fail and let the files replan instead.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 1))
+        real_open_table = store.open_table
+        broken = mock.MagicMock()
+        broken.delete.side_effect = RuntimeError("commit conflict")
+
+        def _broken_chunks_table(name):
+            if name == core_mod.CHUNKS_TABLE:
+                return broken
+            return real_open_table(name)
+
+        with (
+            mock.patch.object(store, "open_table", side_effect=_broken_chunks_table),
+            pytest.raises(RuntimeError, match="commit conflict"),
+        ):
+            store.write_chunks_batch(
+                [ChunkWrite("a.md", "h2", _records_for("a.md", 1), needs_cleanup=True)]
+            )
+
+    def test_quoted_filename_survives_the_batched_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        name = "it's a note.md"
+        store.add_chunks(_records_for(name, 1))
+        store.write_chunks_batch(
+            [ChunkWrite(name, "h2", _records_for(name, 2), needs_cleanup=True)]
+        )
+        assert len(store.get_chunks_by_source(name)) == 2
+
+    def test_page_texts_land_in_the_batch_and_survive_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        page = {"source": "a.pdf", "page": 1, "text": "page one", "content_type": "pdf"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h1", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[page]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one"]
+
+        # Re-ingest: the same transaction's cleanup delete clears the old page
+        # rows, then the fresh ones land, so nothing the batch wrote is wiped.
+        edited = {**page, "text": "page one, edited"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h2", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[edited]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
 
     def test_dimension_mismatch_rejects_whole_batch(self, store):
         from lilbee.data.store import ChunkWrite
@@ -1563,3 +1676,207 @@ class TestEmbeddingModelGate:
         }
         with mock.patch.object(store, "get_meta", side_effect=[None, winning_meta]):
             assert store.initialize_meta_if_legacy() is False
+
+
+class TestSourceStatColumns:
+    """Size/mtime travel with each source row; legacy tables migrate in place."""
+
+    def test_upsert_with_stat_roundtrips(self, store):
+        from lilbee.data.store import SourceStat, source_stat
+
+        store.upsert_source("a.md", "h1", 2, stat=SourceStat(123, 456))
+        record = store.get_sources()[0]
+        assert source_stat(record) == SourceStat(123, 456)
+
+    def test_upsert_without_stat_reads_as_unknown(self, store):
+        from lilbee.data.store import source_stat
+
+        store.upsert_source("a.md", "h1", 2)
+        assert source_stat(store.get_sources()[0]) is None
+
+    def test_write_chunks_batch_persists_stat(self, store):
+        from lilbee.data.store import ChunkWrite, SourceStat, source_stat
+
+        items = [
+            ChunkWrite(
+                "a.md", "h", _records_for("a.md", 1), needs_cleanup=False, stat=SourceStat(9, 8)
+            )
+        ]
+        store.write_chunks_batch(items)
+        assert source_stat(store.get_sources()[0]) == SourceStat(9, 8)
+
+    def test_legacy_sources_table_gains_stat_columns(self, store):
+        # Build a pre-stat table by hand (5 columns, one legacy row).
+        import pyarrow as pa
+
+        from lilbee.core.config import SOURCES_TABLE
+        from lilbee.data.store import SourceStat, ensure_table, source_stat
+
+        legacy_schema = pa.schema(
+            [
+                pa.field("filename", pa.utf8()),
+                pa.field("file_hash", pa.utf8()),
+                pa.field("ingested_at", pa.utf8()),
+                pa.field("chunk_count", pa.int32()),
+                pa.field("source_type", pa.utf8()),
+            ]
+        )
+        table = ensure_table(store.get_db(), SOURCES_TABLE, legacy_schema)
+        table.add(
+            [
+                {
+                    "filename": "old.md",
+                    "file_hash": "h",
+                    "ingested_at": "",
+                    "chunk_count": 1,
+                    "source_type": "document",
+                }
+            ]
+        )
+
+        # First write through the new path migrates the table and lands the stat.
+        store.upsert_source("new.md", "h2", 1, stat=SourceStat(5, 6))
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert source_stat(records["old.md"]) is None  # backfilled sentinel
+        assert source_stat(records["new.md"]) == SourceStat(5, 6)
+
+    def test_update_source_stats_batches_one_delete_one_add(self, store):
+        from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
+
+        store.upsert_source("a.md", "ha", 1)
+        store.upsert_source("b.md", "hb", 2)
+        records = {r["filename"]: r for r in store.get_sources()}
+
+        backfills = [
+            SourceStatBackfill(records["a.md"], SourceStat(1, 2)),
+            SourceStatBackfill(records["b.md"], SourceStat(3, 4)),
+        ]
+        with mock.patch.object(
+            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+        ) as spy:
+            store.update_source_stats(backfills)
+        spy.assert_called_once()
+
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert source_stat(records["a.md"]) == SourceStat(1, 2)
+        assert source_stat(records["b.md"]) == SourceStat(3, 4)
+        assert records["a.md"]["file_hash"] == "ha"
+
+    def test_update_source_stats_chunks_huge_backfills(self, store):
+        # A whole-corpus backfill must not join every filename into one delete
+        # predicate: rows are replaced in slices, each its own locked write.
+        import math
+
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
+
+        total, batch_rows = 5, 2
+        for i in range(total):
+            store.upsert_source(f"f{i}.md", f"h{i}", 1)
+        records = {r["filename"]: r for r in store.get_sources()}
+        backfills = [
+            SourceStatBackfill(records[f"f{i}.md"], SourceStat(i, i + 1)) for i in range(total)
+        ]
+        with (
+            mock.patch.object(core_mod, "_SOURCE_STAT_BATCH_ROWS", batch_rows),
+            mock.patch.object(
+                store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            ) as spy,
+        ):
+            store.update_source_stats(backfills)
+        assert spy.call_count == math.ceil(total / batch_rows)
+        assert all(len(call.args[0]) <= batch_rows for call in spy.call_args_list)
+
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert len(records) == total
+        for i in range(total):
+            assert source_stat(records[f"f{i}.md"]) == SourceStat(i, i + 1)
+            assert records[f"f{i}.md"]["file_hash"] == f"h{i}"
+
+    def test_update_source_stats_empty_is_noop(self, store):
+        store.update_source_stats([])
+        assert store.get_sources() == []
+
+
+class TestBatchedSourceUpserts:
+    """One flush of N files produces one delete + one add on the sources table."""
+
+    def test_write_chunks_batch_single_source_table_pass(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        items = [
+            ChunkWrite(f"f{i}.md", f"h{i}", _records_for(f"f{i}.md", 1), needs_cleanup=False)
+            for i in range(5)
+        ]
+        with mock.patch.object(
+            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+        ) as spy:
+            store.write_chunks_batch(items)
+        spy.assert_called_once()
+        assert len(spy.call_args.args[0]) == 5
+        assert len(store.get_sources()) == 5
+
+    def test_optimize_sources_compacts(self, store):
+        store.upsert_source("a.md", "h", 1)
+        with mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened:
+            store.optimize_sources()
+        opened.return_value.optimize.assert_called_once()
+
+    def test_optimize_sources_noop_without_table(self, store):
+        with mock.patch.object(store, "open_table", return_value=None) as opened:
+            store.optimize_sources()
+        opened.assert_called_once()
+
+    def test_optimize_sources_survives_failure(self, store):
+        failing = mock.MagicMock()
+        failing.optimize.side_effect = RuntimeError("compaction failed")
+        with mock.patch.object(store, "open_table", return_value=failing):
+            store.optimize_sources()
+        failing.optimize.assert_called_once()
+
+
+class TestDeleteBySourceConceptRows:
+    """Re-ingest cleanup removes the source's chunk-concept rows too."""
+
+    def test_delete_by_source_clears_chunk_concepts(self, store):
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+        from lilbee.data.store import ensure_table
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_records_for("doc.md", 2))
+        cc_table = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+        cc_table.add(
+            [
+                {"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"},
+                {"chunk_source": "other.md", "chunk_index": 0, "concept": "beta"},
+            ]
+        )
+
+        store.delete_by_source("doc.md")
+        cc_table.checkout_latest()  # bypass the read-consistency interval
+        remaining = cc_table.search().limit(None).to_list()
+        assert [r["chunk_source"] for r in remaining] == ["other.md"]
+        assert store.get_chunks_by_source("doc.md") == []
+
+
+class TestAnnNprobesScaling:
+    """nprobes follows the IVF partition count (~sqrt(N)) with a floor."""
+
+    def test_small_corpus_keeps_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        assert _ann_nprobes(0) == _ANN_NPROBES_FLOOR
+        assert _ann_nprobes(50_000) == _ANN_NPROBES_FLOOR
+
+    def test_large_corpus_scales_past_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.05) = 354 probes.
+        fifty_million = 50_000_000
+        assert _ann_nprobes(fifty_million) == 354
+        assert _ann_nprobes(fifty_million) > _ANN_NPROBES_FLOOR
+
+    def test_negative_row_count_clamps_to_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        assert _ann_nprobes(-5) == _ANN_NPROBES_FLOOR

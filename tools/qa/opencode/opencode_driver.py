@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import shutil
 import subprocess
@@ -11,31 +10,38 @@ from pathlib import Path
 
 from harness_config import (
     _OPENCODE_BOOT_SETTLE_S,
-    _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
     _OPENCODE_SHARE_DIR,
+    _OPENCODE_UI_TIMEOUT_S,
+    _PANE_EXCERPT_TAIL,
+    _POLL_INTERVAL_S,
     _POST_SEND_SLEEP_S,
+    _TMUX_COMMAND_TIMEOUT_S,
     _TMUX_HISTORY_LINES,
     _TMUX_WINDOW_COLS,
     _TMUX_WINDOW_ROWS,
     _TOOLS_OFF,
+    _UI_WAIT_HEARTBEAT_S,
+    LOG_DIR,
 )
 
 
-def scope_opencode_tools() -> None:
-    """Disable opencode's built-in tools so the model uses lilbee_search.
+def scope_opencode_tools(workspace: Path) -> None:
+    """Disable opencode's built-in tools for the cell so the model uses lilbee_search.
 
     Models drift to opencode's built-in webfetch/read/grep over the lilbee MCP
-    search unless those are turned off (search mode). The launcher merges the
-    lilbee provider + MCP into this same config and preserves the tools key.
+    search unless those are turned off (search mode). Written as the cell
+    workspace's project-level ``opencode.json`` (opencode merges it below the
+    launcher's injected env config), never the user's global config: a global
+    write outlives the QA run and disables the developer's own opencode tools.
+    ``autoupdate`` is pinned off so the binary cannot change mid-matrix.
     """
-    cfg: dict[str, object] = {}
-    if _OPENCODE_CONFIG.exists():
-        with contextlib.suppress(json.JSONDecodeError):
-            cfg = json.loads(_OPENCODE_CONFIG.read_text(encoding="utf-8"))
-    cfg["tools"] = {tool: False for tool in _TOOLS_OFF}
-    _OPENCODE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    _OPENCODE_CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "tools": {tool: False for tool in _TOOLS_OFF},
+        "autoupdate": False,
+    }
+    (workspace / "opencode.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def tmux_session_exists(name: str) -> bool:
@@ -53,12 +59,19 @@ def tmux_kill(name: str) -> None:
 
 
 def tmux_capture(name: str) -> str:
-    result = subprocess.run(
-        ["tmux", "capture-pane", "-t", name, "-p", "-S", f"-{_TMUX_HISTORY_LINES}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # A wedged tmux server blocks capture-pane forever, which freezes the whole
+    # matrix without a single log line; bound it and treat a hang as "no pane".
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", name, "-p", "-S", f"-{_TMUX_HISTORY_LINES}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"tmux capture-pane timed out after {_TMUX_COMMAND_TIMEOUT_S:.0f}s for {name}")
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -86,13 +99,21 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     tmux_kill(session)
     workspace_data = workspace / ".lilbee"
     env_flags = ["-e", f"LILBEE_DATA={workspace_data}"]
-    # The session runs `bash -lc`, a login shell that sources .bash_profile (not
-    # .bashrc), so a custom models dir set only in the rc files would be lost here
-    # and `lilbee launch opencode` would write a provider with no models. Forward it
-    # explicitly so installed_chat_model_refs() finds the cell's chat model.
-    models_dir = os.environ.get("LILBEE_MODELS_DIR")
-    if models_dir:
-        env_flags += ["-e", f"LILBEE_MODELS_DIR={models_dir}"]
+    # The session runs `bash -lc`, a login shell that does not inherit the
+    # matrix's environment, so anything the cell's `uv run` needs must be
+    # forwarded explicitly: the models dir (or the launcher serves no models)
+    # and the uv project env (or `uv run` syncs a FRESH venv whose lilbee-engine
+    # wheel is the empty placeholder, leaving the serve with no llama-server).
+    for env_var in (
+        "LILBEE_MODELS_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "UV_CACHE_DIR",
+        "UV_LINK_MODE",
+        "UV_NO_SYNC",
+    ):
+        value = os.environ.get(env_var)
+        if value:
+            env_flags += ["-e", f"{env_var}={value}"]
     # Forward QA diagnostic flags into the launched serve + its worker
     # subprocesses (multiprocessing-spawn inherits the tmux session env), so
     # LILBEE_QA_LOG_RAW reaches the chat worker where the raw-output tap lives.
@@ -116,7 +137,88 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
         ],
         check=True,
     )
-    time.sleep(_OPENCODE_BOOT_SETTLE_S)
+    # Stream the pane to a file from t=0: a cell that dies before its verdict
+    # otherwise leaves a blank final capture and no evidence (the tmux session
+    # is reaped on teardown, taking its scrollback with it).
+    stream_path = LOG_DIR / f"{session}.pane.stream"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["tmux", "pipe-pane", "-t", session, "-o", f"cat >> {stream_path}"],
+        check=False,
+    )
+    _wait_for_opencode_ui(session, workspace)
+
+
+def _pane_in_alternate_screen(session: str) -> bool:
+    """True once the pane's terminal is in the alternate screen.
+
+    A full-screen TUI flips the terminal into the alternate screen when it
+    takes over; the launcher's inline warm spinner never does. tmux exposes
+    the flag directly, so this is a content- and version-independent "the TUI
+    has painted" signal (footer text shifts between opencode releases).
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", session, "#{alternate_on}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+def _opencode_process_alive() -> bool:
+    """True when an actual opencode binary is running on this host.
+
+    Corroborates the alternate-screen flag: the flag alone read true during
+    the launcher's warm spinner (before opencode existed), which let the
+    scenario type its prompt into the launcher's tty queue; opencode then
+    inherited that buffered input mid terminal-handshake and died blank.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "[.]opencode/bin/opencode"],
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
+def _wait_for_opencode_ui(session: str, workspace: Path) -> None:
+    """Block until opencode is up (first tap record, or alternate screen backed
+    by a live opencode process), then settle.
+
+    The wait must outlast the launcher's warm spinner (a giant's cold load runs
+    minutes); the heartbeat keeps the wait visible in the matrix log.
+    """
+    from events import plugin_active
+
+    deadline = time.monotonic() + _OPENCODE_UI_TIMEOUT_S
+    started = time.monotonic()
+    next_heartbeat = started + _UI_WAIT_HEARTBEAT_S
+    while time.monotonic() < deadline:
+        if plugin_active(workspace) or (
+            _pane_in_alternate_screen(session) and _opencode_process_alive()
+        ):
+            time.sleep(_OPENCODE_BOOT_SETTLE_S)
+            return
+        if time.monotonic() >= next_heartbeat:
+            elapsed = time.monotonic() - started
+            pane = tmux_capture(session)
+            tail = " | ".join(pane.strip().splitlines()[-2:]) if pane.strip() else "(empty pane)"
+            print(f"waiting for opencode UI ({elapsed:.0f}s): {tail}")
+            next_heartbeat = time.monotonic() + _UI_WAIT_HEARTBEAT_S
+        time.sleep(_POLL_INTERVAL_S)
+    raise RuntimeError(
+        f"opencode TUI did not appear within {_OPENCODE_UI_TIMEOUT_S:.0f}s; "
+        f"pane tail: {tmux_capture(session)[-_PANE_EXCERPT_TAIL:]}"
+    )
 
 
 def reset_opencode_session_state() -> None:
@@ -130,15 +232,10 @@ def reset_opencode_session_state() -> None:
        ``KnownModelCache``) and the next cell's smoke matches them without
        its own model ever loading.
 
-    2. ``~/.local/state/opencode/model.json`` -- the picker state. Opencode
-       picks the first installed model in ``recent[]`` as its default. If
-       the previous cell pinned a model that's still installed (e.g.
-       ``Qwen3-8B`` left from the qwen3 cell), opencode silently falls back
-       to it for the next cell whose own ref isn't pulled yet -- and the
-       smoke ends up testing the WRONG model with a fake PASS.
-
-    ``lilbee launch opencode`` rewrites the picker on the next boot with the
-    cell's configured chat model as the default, so the scrub is safe.
+    2. ``~/.local/state/opencode/model.json`` -- the model-selection state.
+       The launcher pins the boot model via the injected config, but a stale
+       recent/variant selection from the prior cell is one more input opencode
+       may consult, so each cell starts from none.
     """
     if _OPENCODE_SHARE_DIR.exists():
         shutil.rmtree(_OPENCODE_SHARE_DIR)

@@ -7,20 +7,26 @@ from collections.abc import AsyncGenerator
 from typing import NoReturn
 
 from litestar import get, post
+from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
-from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
+    ChatSlotGuard,
     acquire_chat_slot_or_busy,
     release_chat_slot,
+)
+from lilbee.server.chat_dispatch.dispatch import (
+    ModelDoesNotSupportToolsError,
+    ModelNotFoundError,
 )
 from lilbee.server.handlers.sse import sse_error
 from lilbee.server.models import (
@@ -29,7 +35,16 @@ from lilbee.server.models import (
     ChatRequest,
 )
 
+_BAD_REQUEST_STATUS = 400
+_NOT_FOUND_STATUS = 404
 _SERVICE_UNAVAILABLE_STATUS = 503
+
+# Shipped clients read /api 401/429 as lilbee-session signals, so upstream kinds stay 503.
+_API_PROVIDER_KIND_STATUSES: dict[ProviderErrorKind, int] = {
+    ProviderErrorKind.CONTEXT_OVERFLOW: _BAD_REQUEST_STATUS,
+    ProviderErrorKind.NOT_FOUND: _NOT_FOUND_STATUS,
+}
+
 log = logging.getLogger(__name__)
 
 
@@ -55,15 +70,24 @@ def _embedding_mismatch_http(exc: EmbeddingModelMismatchError) -> HTTPException:
 def _raise_chat_http_error(exc: Exception) -> NoReturn:
     """Translate a chat/RAG failure into the Litestar HTTP envelope.
 
-    ValueError is a 422 validation error; an embedder/index mismatch is a 409
-    conflict; a recognized typed dispatch/provider failure carries its own
-    status; anything else is a 503.
+    ValueError is a 422 validation error; a typed dispatch error or a
+    kind-mapped ProviderError carries its own status; anything else is a
+    503 carrying the failure message.
     """
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
-    classified = classify_provider_error(exc)
-    status = classified.http_status if classified is not None else _SERVICE_UNAVAILABLE_STATUS
-    raise HTTPException(status_code=status, detail=str(exc)) from exc
+    raise HTTPException(status_code=_api_chat_error_status(exc), detail=str(exc)) from exc
+
+
+def _api_chat_error_status(exc: Exception) -> int:
+    """HTTP status for a non-stream /api chat failure; unmapped kinds stay 503."""
+    if isinstance(exc, ModelNotFoundError):
+        return _NOT_FOUND_STATUS
+    if isinstance(exc, ModelDoesNotSupportToolsError):
+        return _BAD_REQUEST_STATUS
+    if isinstance(exc, ProviderError):
+        return _API_PROVIDER_KIND_STATUSES.get(exc.kind, _SERVICE_UNAVAILABLE_STATUS)
+    return _SERVICE_UNAVAILABLE_STATUS
 
 
 async def _acquire_chat_lock_or_raise() -> None:
@@ -78,12 +102,15 @@ async def _acquire_chat_lock_or_raise() -> None:
 
 async def _gated_stream(
     generator: AsyncGenerator[str, None],
+    guard: ChatSlotGuard,
 ) -> AsyncGenerator[str, None]:
     """Wrap *generator* so the chat lock is released when the stream ends.
 
     The lock must already be held when this is called. Release happens on
     natural completion, exception, and client-disconnect (GeneratorExit
-    fires the ``finally`` block). A failure inside the generator becomes an
+    fires the ``finally`` block); a disconnect before the first iteration
+    never enters this body, so the route also releases *guard* from the
+    response's after-send hook. A failure inside the generator becomes an
     SSE error event; raising after the 201 headers would drop the connection
     with no body for the client to read.
     """
@@ -94,7 +121,16 @@ async def _gated_stream(
         log.exception("streaming chat handler failed")
         yield sse_error(str(exc))
     finally:
-        await release_chat_slot()
+        await guard.release()
+
+
+def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) -> Stream:
+    """SSE Stream whose chat slot is freed by the generator or the after-send hook."""
+    return Stream(
+        _gated_stream(generator, guard),
+        media_type="text/event-stream",
+        background=BackgroundTask(guard.release),
+    )
 
 
 @get("/api/search")
@@ -144,16 +180,14 @@ async def ask_route(data: AskRequest) -> AskResponse:
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
     await _acquire_chat_lock_or_raise()
-    return Stream(
-        _gated_stream(
-            handlers.ask_stream(
-                question=data.question,
-                top_k=data.top_k,
-                options=data.options,
-                chunk_type=data.chunk_type,
-            ),
+    return _slot_gated_sse(
+        handlers.ask_stream(
+            question=data.question,
+            top_k=data.top_k,
+            options=data.options,
+            chunk_type=data.chunk_type,
         ),
-        media_type="text/event-stream",
+        ChatSlotGuard(),
     )
 
 
@@ -187,15 +221,13 @@ async def chat_stream_route(data: ChatRequest) -> Stream:
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
-    return Stream(
-        _gated_stream(
-            handlers.chat_stream(
-                question=data.question,
-                history=history,
-                top_k=data.top_k,
-                options=data.options,
-                chunk_type=data.chunk_type,
-            ),
+    return _slot_gated_sse(
+        handlers.chat_stream(
+            question=data.question,
+            history=history,
+            top_k=data.top_k,
+            options=data.options,
+            chunk_type=data.chunk_type,
         ),
-        media_type="text/event-stream",
+        ChatSlotGuard(),
     )

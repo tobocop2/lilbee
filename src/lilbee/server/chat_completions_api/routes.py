@@ -11,12 +11,14 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 
 from litestar import Request, Router, get, post
+from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import ValidationException
 from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.providers.model_ref import default_first, with_configured_remote_chat
 from lilbee.server.auth import read_only, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
@@ -38,8 +40,8 @@ from lilbee.server.chat_completions_api.translate import (
 from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
+    ChatSlotGuard,
     acquire_chat_slot_or_busy,
-    release_chat_slot,
 )
 from lilbee.server.chat_dispatch.dispatch import (
     dispatch_chat,
@@ -53,25 +55,33 @@ log = logging.getLogger(__name__)
 @get("/v1/models")
 @read_only
 async def list_models_endpoint(request: Request) -> Response:
-    """Return all installed chat models in the ``/v1/models`` shape."""
+    """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
     auth_error = _auth_failure(request)
     if auth_error is not None:
         return auth_error
 
     services = get_services()
-    registry = services.registry
     # The served window applies to the active chat model; advertise it so a
     # client trims history to fit instead of overflowing on a long session.
     served_ctx = services.provider.served_chat_ctx()
-    chat_models = [m for m in registry.list_installed() if m.task == ModelTask.CHAT]
+    installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
+    # A remote-configured chat model has no registry entry but is still listed,
+    # configured model first (the launcher's picker order).
+    listed = with_configured_remote_chat(sorted(installed), cfg.chat_model)
+    refs = default_first(listed, cfg.chat_model)
+    # A ref without a registry entry carries the newest native timestamp so a
+    # client sorting by created desc does not bury the model lilbee serves.
+    fallback_created = max((_parse_created(m.downloaded_at) for m in installed.values()), default=0)
     payload = ModelsListResponse(
         data=[
             ModelEntry(
-                id=m.ref,
-                created=_parse_created(m.downloaded_at),
-                context_window=served_ctx if m.ref == cfg.chat_model else None,
+                id=ref,
+                created=_parse_created(installed[ref].downloaded_at)
+                if ref in installed
+                else fallback_created,
+                context_window=served_ctx if ref == cfg.chat_model else None,
             )
-            for m in sorted(chat_models, key=lambda m: m.ref)
+            for ref in refs
         ]
     )
     return Response(payload.model_dump(), media_type="application/json")
@@ -94,7 +104,7 @@ async def chat_completions_endpoint(
         # (e.g. image content). Surface as 400 instead of a generic 500.
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
-    preflush_error = _preflush_or_none(req)
+    preflush_error = await _preflush_or_none(req)
     if preflush_error is not None:
         return preflush_error
 
@@ -108,24 +118,30 @@ async def chat_completions_endpoint(
             headers={"Retry-After": "1"},
         )
 
+    guard = ChatSlotGuard()
     if req.stream:
+        # The after-send hook frees the slot when a disconnect lands before the
+        # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_completions_stream(req),
+            _gated_completions_stream(req, guard),
             media_type="text/event-stream",
+            background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req)
+    return await _run_non_stream(req, guard)
 
 
-def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
+async def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
     """Validate *req* before any streaming response starts.
 
     A 4xx body here is reachable by any OpenAI-compatible client; once a
     Stream is returned the headers are flushed at 200 and downstream errors
     can only travel via SSE frames which not every client surfaces cleanly.
+    Runs the preflight in a thread: a lapsed model-discovery TTL makes it do
+    blocking HTTP probes that must not stall the event loop.
     Returns ``None`` when *req* is fit to dispatch.
     """
     try:
-        preflight_chat_request(req)
+        await asyncio.to_thread(preflight_chat_request, req)
     except Exception as exc:  # typed dispatch errors only; classify or re-raise
         classified = classify_provider_error(exc)
         if classified is None:
@@ -143,7 +159,7 @@ def _internal_error_response() -> Response:
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
 
-async def _run_non_stream(req: CanonicalChatRequest) -> Response:
+async def _run_non_stream(req: CanonicalChatRequest, guard: ChatSlotGuard) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
         # dispatch_chat blocks for the whole generation; run it off the event loop
@@ -155,13 +171,14 @@ async def _run_non_stream(req: CanonicalChatRequest) -> Response:
             return _internal_error_response()
         return _error_response(classified.http_status, classified.code, classified.message)
     finally:
-        await release_chat_slot()
+        await guard.release()
     body: CompletionsResponse = canonical_to_completions_response(resp, response_id=_response_id())
     return Response(body.model_dump(exclude_none=True), media_type="application/json")
 
 
 async def _gated_completions_stream(
     req: CanonicalChatRequest,
+    guard: ChatSlotGuard,
 ) -> AsyncGenerator[bytes, None]:
     """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -169,7 +186,8 @@ async def _gated_completions_stream(
     surfaced as a single SSE ``data:`` frame carrying the error
     envelope, then ``[DONE]``. The chat slot is released in ``finally`` so
     natural completion, exception, and client disconnect (GeneratorExit)
-    all unwind cleanly.
+    all unwind cleanly; a disconnect before the first iteration is covered
+    by the route's after-send release of the same guard.
     """
     try:
         try:
@@ -187,15 +205,17 @@ async def _gated_completions_stream(
             else:
                 yield _sse_error_frame(classified.code, classified.message)
     finally:
-        await release_chat_slot()
+        await guard.release()
 
 
 def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
     """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
 
     OpenAI-SDK clients only parse ``chat.completion.chunk``-shaped frames, so the
-    error rides a real chunk (empty delta, ``finish_reason="length"``, inline
-    ``error`` field) followed by ``[DONE]`` rather than a bare error frame.
+    error rides a real chunk (empty delta, inline ``error`` field) followed by
+    ``[DONE]`` rather than a bare error frame. ``finish_reason`` stays null, as
+    in OpenAI's non-final chunks: a concrete reason like ``"length"`` would tell
+    clients the answer was merely truncated, and some auto-continue on it.
     """
     body = completions_error_body(code, message)
     chunk: dict[str, object] = {
@@ -203,7 +223,7 @@ def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": "",
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}],
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
         "error": body["error"],
     }
     payload = json.dumps(chunk, separators=(",", ":"))

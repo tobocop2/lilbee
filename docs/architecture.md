@@ -72,7 +72,7 @@ flowchart LR
 
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
-- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed.
+- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill.
 - **Markdown.** Heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., `# Setup > ## Install`) so each chunk's section context travels with it. Inspired by Anthropic's Contextual Retrieval (2024), which showed adding context to chunks reduces retrieval failures by 49%.
 - **Code.** tree-sitter AST splitting via tree-sitter-language-pack for 150+ languages, with symbol name, type, and line range in chunk headers.
 - **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model on `llama-server`). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
@@ -167,17 +167,26 @@ flowchart TD
   index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
   so we never cross them; the Vulkan VRAM probe (`gpu_select`) is only a fallback.
 - **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
-  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, ROCm via
+  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
+  environment presets another order), ROCm via
   `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
+  When the parent environment already restricts a visible-devices var (a pod preset
+  like `CUDA_VISIBLE_DEVICES=2,3`), the probe's indices are relative to that list,
+  so the child env maps them back through it (integer or UUID entries) and keeps
+  naming the same physical cards the probe saw.
 - **VRAM estimation** (`vram.py`): each instance's footprint comes from
   **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
   subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
   discrete-GPU footprint (`nonuma`, what lands in device VRAM) and a unified-memory
   footprint (`uma`, total resident on an Apple Silicon / shared-RAM host); the
   planner charges whichever matches the host. For a multi-GPU tensor-split it passes
-  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; the planner
-  fits and charges the busiest card (`peak_footprint`), because a split OOMs on
-  whichever GPU is fullest, not on the summed total. This replaced a hand-rolled
+  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; placement
+  then charges each card its own share and gates on each card's headroom, with the
+  busiest card (`peak_footprint`) as the binding constraint, because a split OOMs on
+  whichever GPU is fullest, not on the summed total. The estimate also carries the
+  same `--batch-size`/`--ubatch-size` the launch will use (pooled embed/rerank raise
+  them to the full context), so the compute-buffer estimate matches what the server
+  actually allocates. This replaced a hand-rolled
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
@@ -190,8 +199,9 @@ flowchart TD
   across batching slots, so the planner reserves and launches it at the single-sequence
   footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is
   for a chat that fits one card). Its context is then sized (`ctx.fit_split_ctx`, a
-  binary search over the gguf-parser estimate) against the **busiest card's** headroom,
-  not the combined pool, so the per-GPU compute buffer can't overflow device 0. On a
+  binary search over the gguf-parser estimate) so **each card's own share fits that
+  card's own headroom**, never the combined pool, so the per-GPU compute buffer can't
+  overflow device 0 even when the cards are unequal. On a
   single CPU/Metal box this
   is a fleet-of-one against one shared pool, where the **search-critical roles
   (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
@@ -228,12 +238,32 @@ flowchart TD
   in fleet mode.
 - **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
-  the model loads); a `pid`/`port` file lets the next start reap a crashed parent's
-  orphaned servers. A background monitor restarts a dead server with backoff, and the
-  router serves only healthy clients. Teardown group-kills (SIGTERM then SIGKILL).
+  the model loads); the cold-load health timeout scales with the heaviest member's
+  weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
+  on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
+  (named with its pid, written atomically so a concurrent scan never reads a torn
+  file) recording the running llama-swap's pid, process group, and create time, the
+  member servers' ports, plus the owner's pid and create time; before the next build
+  plans placement (so the device probe sees the real free VRAM), every state file is
+  scanned and each dead owner's surviving llama-swap and its servers are reaped
+  (guarded against pid reuse by create-time matches for both the swap and the owner,
+  falling back to a command-line match for legacy files, and left alone while the
+  owning lilbee is still alive; an unparseable file is skipped, never deleted, since
+  it may be a sibling's in-flight write). Servers that outlive a dead swap (each runs
+  in its own process group) are matched by binary name plus recorded port and stopped
+  the same way; force-killed processes are waited on so the VRAM probe sees their
+  memory actually freed. Clean shutdown removes only the
+  owner's own file. A background monitor restarts a dead server with
+  backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
+  then SIGKILL).
 - **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;
   rerank reuses the client's rank-pooling embeddings call and vision the chat call
-  with image content. A per-call model that differs from the role's configured model
+  with image content. A connection-level failure marks the replica unhealthy and the
+  embed/rerank call retries once on a different replica; an unhealthy replica rejoins
+  the pool after a short cool-down, where recovery is probed by live traffic and
+  unmetered: every caller that routes to it once cooled is a probe (a success
+  restores it, another connection failure re-starts the cool-down).
+  A per-call model that differs from the role's configured model
   is rejected (switching models is a config change that respawns the server), and a
   role with no healthy server surfaces a `ProviderError`. Fleet build is single-flight
   and the in-flight counter is atomic, because the HTTP and MCP servers route concurrently.
@@ -247,30 +277,26 @@ flowchart TD
 
 ### Chat context-window management
 
-The chat worker windows the request prompt to fit the loaded model's
-`n_ctx` before inference. Two estimates are subtracted from the budget:
-`_DEFAULT_RESPONSE_BUDGET` (1024 tokens for the response), and a
-chat-template-inflated tools-overhead figure.
+The fleet provider windows the request messages to fit the served chat
+context before sending them to llama-server (`_fit_chat_context` in
+`providers/fleet/provider.py`, the fitting logic in
+`providers/fleet/windowing.py`). The budget is the served `n_ctx` minus
+a generation reserve (the request's `num_predict`, else a default) and
+a safety margin; the oldest conversation turns are dropped until the
+estimated prompt fits. System messages and the most recent turn are
+always kept, and a kept suffix never starts with an orphan tool result
+whose originating call was dropped.
 
-The tools-overhead figure (`count_tools_overhead`) does not tokenize the
-real rendered prompt (llama-cpp-python doesn't expose chat-template
-rendering as a tokenization step); it inflates the bare
-`json.dumps(tools)` token count by `_TOOLS_TEMPLATE_OVERHEAD_MULTIPLIER`
-(1.5x) and adds `_TOOLS_TEMPLATE_PREAMBLE_TOKENS` (256). The multiplier
-is calibrated from observed rendering across Qwen3, Mistral, Gemma 4,
-GLM, and Llama 3 chat templates, which typically inflate the bare JSON
-by 1.3–1.7x once descriptions, `<tools>`/`# Tools` wrapping, and
-schema-field repetition are accounted for. 1.5 is the conservative
-middle. The preamble allowance covers the introductory text that most
-templates inject (e.g. "You may call one or more functions to assist
-with the user query.").
+The estimate does not tokenize the real rendered prompt (llama-server
+renders the chat template server-side at inference time); it counts
+characters at a conservative 3 chars per token and adds a per-message
+overhead for role markers and template wrappers, so the window errs
+toward dropping more rather than overflowing.
 
-The pre-flight is intentionally conservative: better to raise a clean
-400 `context_length_exceeded` than to reach llama-cpp's runtime
-`ValueError`. A safety net in `_ChatSession.chat` also catches that
-`ValueError` (matched by regex against llama-cpp's exact phrasing) and
-re-raises as `ContextWindowExceededError`, so the user-facing 400 still
-fires even when the inflated pre-flight is too optimistic.
+When even the system messages, tools, and the final turn exceed the
+budget, the provider raises a `CONTEXT_OVERFLOW` `ProviderError`, which
+the chat-completions route maps to a clean 400 `context_length_exceeded`
+rather than a 500 from the server.
 
 ---
 
@@ -438,7 +464,7 @@ Useful for benchmarking (compare BM25 vs vector on the same question), debugging
 **Threshold-gated.** Below `LILBEE_ANN_INDEX_THRESHOLD` chunks (default 50,000) search uses an exact brute-force scan, which is fast and exact for personal vaults and is all a laptop needs. At/above the threshold, `sync` builds an approximate index so search stays fast at millions of vectors; `lilbee index` forces a build for the publish-a-large-index workflow.
 
 - **Index type**: IVF_PQ. Product Quantization compresses each vector so the index fits in memory at 10M+ scale; the inverted file (IVF) restricts the scan to a few partitions.
-- **Recall recovery**: PQ is lossy, so search probes multiple partitions (`nprobes`) and re-ranks the candidates against the full vectors (`refine_factor`) to keep results close to the exact scan. These are module constants in `data/store/core.py`, not config, until a real tuning need appears.
+- **Recall recovery**: PQ is lossy, so search probes multiple partitions (`nprobes`) and re-ranks the candidates against the full vectors (`refine_factor`) to keep results close to the exact scan. `nprobes` is computed per query as `max(floor, ceil(sqrt(N) * fraction))` with N the indexed row count, since the IVF partition count grows ~sqrt(N) and a fixed probe count would collapse recall at large N. The floor, fraction, and refine factor are module constants in `data/store/core.py`, not config, until a real tuning need appears.
 - **Lifecycle**: built once when the corpus crosses the threshold; subsequent syncs fold new rows in via `optimize()` rather than rebuilding. The index lives inside the LanceDB directory, so a downloaded index ships with it and searches fast on the first query.
 - **Why threshold-gated**: IVF_PQ needs enough vectors to train, and brute force already beats an index for small N. Setting the threshold to `0` keeps search flat regardless of size.
 
@@ -505,8 +531,8 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
-- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, write a paste-ready client config and a priming `AGENTS.md`, exec the client, clean up on exit
-- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the same client config block for hand-wired setups
+- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
+- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the client config block for hand-wired persistent setups
 - `--json` / `-j` on any command for structured output
 
 ### TUI (Textual)
@@ -664,7 +690,6 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, remote | auto = SDK backend for remote refs, the local `llama-server` engine for native GGUF refs |
-| `LILBEE_REMOTE_BASE_URL` | `http://localhost:11434` | SDK backend endpoint | |
 | `LILBEE_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (blank uses the default) | |
 | `LILBEE_LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio server URL (blank uses the default) | |
 

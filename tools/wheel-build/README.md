@@ -12,8 +12,6 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `install_gpu_toolkit.sh` — installs the build-time GPU SDK on the runner
   (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; no-op on
   macOS where Metal ships with the OS).
-- `install_gpu_runtime.sh` — installs only the runtime loader needed by the GPU
-  backends (Vulkan loader, CUDA driver shim).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
   ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
   package's `bin/` for the requested backend.

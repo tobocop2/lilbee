@@ -1777,7 +1777,7 @@ class TestModelBarVisionSidecarPicker:
                 return_value=registry,
             ),
             mock.patch(
-                "lilbee.modelhub.model_manager.discovery.reclassify_by_name",
+                "lilbee.catalog.query.reclassify_by_name",
                 return_value=ModelTask.CHAT,
             ),
             mock.patch(

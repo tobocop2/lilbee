@@ -257,7 +257,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
-        # heavy: model_info reads GGUF headers via llama-cpp (~130 ms)
+        # heavy: model_info reads GGUF headers with the gguf parser (~130 ms)
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()

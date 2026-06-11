@@ -16,20 +16,23 @@ import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.download import split_shard_filenames
+from lilbee.catalog.query import find_catalog_entry, reclassify_by_name
 from lilbee.catalog.refs import (
     NATIVE_GGUF_REF_MIN_SLASHES,
     format_native_gguf_ref,
     is_bare_hf_repo,
 )
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
-    from lilbee.catalog.types import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +145,23 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _blob_digest(source_path: Path) -> str:
+    """Digest for *source_path*, reusing the HF-cache blob name when possible.
+
+    huggingface_hub names cache blobs by their sha256, so a snapshot path that
+    resolves into a ``blobs/`` dir already carries its digest. Re-hashing a
+    multi-GB GGUF only to recompute that name is slow and, on network volumes,
+    I/O-fragile enough to fail registration outright. Plain files still hash.
+    """
+    real = source_path.resolve()
+    if real.parent.name == "blobs" and _SHA256_HEX.fullmatch(real.name):
+        return real.name
+    return _sha256_file(source_path)
+
+
 class ModelRegistry:
     """Read/write manifests and resolve refs to blobs in the HF cache."""
 
@@ -170,8 +190,6 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
-        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
-
         if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
@@ -219,6 +237,10 @@ class ModelRegistry:
         first_shard = self._snapshot_gguf_path(hf_repo, shards[0])
         if first_shard is None:
             raise KeyError(f"Model {ref} not installed")
+        if self._read_manifest(hf_repo, shards[0]) is None:
+            # Same cache recovery as the single-file path; resolve the symlink so
+            # the manifest records the content-hashed blob, not the link.
+            self._reregister_from_cache(hf_repo, shards[0], first_shard.resolve())
         return first_shard
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
@@ -305,40 +327,41 @@ class ModelRegistry:
         (``<base>-0000N-of-0000M.gguf``) every shard must be cached, since
         llama.cpp loads the whole set from the first shard but needs them all.
         """
-        from lilbee.catalog.download import split_shard_filenames  # deferred: catalog is heavy
-
         shards = split_shard_filenames(gguf_filename)
         if len(shards) == 1:
             return True
         return all(self._find_cached_gguf(hf_repo, shard) is not None for shard in shards)
 
-    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
-        """Write a fresh manifest for a model just recovered from the HF cache.
+    def shard_paths(self, ref: str) -> list[Path]:
+        """On-disk paths of *ref*'s GGUF shards that exist next to its resolved path.
 
-        ``list_installed`` only walks ``manifests/``, so a cache-recovered model
-        is resolvable but otherwise invisible (``lilbee model list``, the TUI
-        catalog, the pull command's "already installed" check) until a manifest
-        exists. The ``task`` comes from the featured catalog; for a non-catalog
-        ref it's unknown, so the rewrite is skipped. Best-effort: a read-only
-        models dir or a write race must not break the resolve that succeeded.
+        A split GGUF resolves to its first shard's snapshot symlink with the
+        siblings co-located, so every shard is returned; a single-file GGUF
+        resolves to its content-hashed blob, where no sibling exists under the
+        real filename. Raises ``KeyError`` / ``ValueError`` like :meth:`resolve`.
         """
-        from datetime import UTC, datetime
+        first = self.resolve(ref)
+        _repo, filename = parse_hf_ref(ref)
+        candidates = (
+            first.parent / Path(shard).name for shard in split_shard_filenames(Path(filename).name)
+        )
+        return [path for path in candidates if path.exists()]
 
+    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
+        """Best-effort manifest write for a cache-recovered model so listings see it."""
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
-            from lilbee.catalog import (
-                find_catalog_entry,
-            )  # deferred: lilbee.catalog is a heavy import
-
             entry = find_catalog_entry(ref)
-            if entry is None:
-                return
+            if entry is not None:
+                task = entry.task
+            else:
+                task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
             self._write_manifest(
                 ModelManifest(
                     hf_repo=hf_repo,
                     gguf_filename=gguf_filename,
                     size_bytes=blob_path.stat().st_size,
-                    task=entry.task,
+                    task=task,
                     downloaded_at=datetime.now(UTC).isoformat(),
                     blob=blob_path.name,  # the blob's filename is its sha in the HF cache
                 )
@@ -363,7 +386,7 @@ class ModelRegistry:
         manifest: ModelManifest,
     ) -> Path:
         """Write a manifest, copying *source_path* into the HF cache if needed."""
-        digest = _sha256_file(source_path)
+        digest = _blob_digest(source_path)
         cache_path = self._repo_cache_dir(hf_repo)
         blobs_dir = cache_path / "blobs"
         blob_path = blobs_dir / digest
@@ -546,8 +569,6 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     HF cache (``resolve`` recovers from it); if it isn't, the download itself is
     broken and the failure propagates so the caller reports it.
     """
-    from datetime import UTC, datetime
-
     registry = ModelRegistry(cfg.models_dir)
     gguf_filename = _repo_relative_gguf_name(file_path)
     manifest = ModelManifest(

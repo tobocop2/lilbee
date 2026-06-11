@@ -16,12 +16,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager.discovery import (
     classify_remote_models,
     discover_api_models,
-    reclassify_by_name,
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry

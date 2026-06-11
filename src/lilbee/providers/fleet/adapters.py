@@ -15,6 +15,9 @@ from lilbee.core.config.enums import RerankerType
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _HOST = "127.0.0.1"
+# llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
+FLAG_BATCH_SIZE = "--batch-size"
+FLAG_UBATCH_SIZE = "--ubatch-size"
 
 
 @dataclass(frozen=True)
@@ -144,7 +147,7 @@ def build_server_argv(
     if cache_type is not None:
         argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
     if batch_size is not None:
-        argv += ["--batch-size", str(batch_size), "--ubatch-size", str(batch_size)]
+        argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if threads is not None:
         argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar

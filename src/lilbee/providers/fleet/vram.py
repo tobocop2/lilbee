@@ -14,9 +14,10 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
 
-# gguf-parser CLI flags.
+# gguf-parser CLI flags (the batch flags are shared with the llama-server argv builder).
 _FLAG_PATH = "--path"
 _FLAG_CTX = "--ctx-size"
 _FLAG_PARALLEL = "--parallel"
@@ -92,12 +93,15 @@ def estimate_instance_footprint(
     kv_cache_type: KvCacheType,
     mmproj_path: Path | None = None,
     tensor_split: tuple[int, ...] = (),
+    batch_size: int | None = None,
 ) -> GgufVramEstimate:
     """gguf-parser's UMA-aware footprint for one llama-server instance.
 
     Pass *tensor_split* (the per-device proportions a multi-GPU instance launches
     with) so gguf-parser reports the real per-device breakdown; without it the
     estimate is single-device and the per-GPU peak that actually OOMs is invisible.
+    Pass *batch_size* when the launch raises ``--batch-size``/``--ubatch-size``
+    (pooled embed/rerank), so the compute-buffer estimate matches the launch.
     """
     mmproj = str(mmproj_path) if mmproj_path is not None else None
     mmproj_mtime = mmproj_path.stat().st_mtime_ns if mmproj_path is not None else 0
@@ -112,6 +116,7 @@ def estimate_instance_footprint(
         mmproj,
         mmproj_mtime,
         tensor_split,
+        batch_size,
     )
 
 
@@ -127,12 +132,40 @@ def _cached_footprint(
     mmproj: str | None,
     _mmproj_mtime_ns: int,
     tensor_split: tuple[int, ...],
+    batch_size: int | None,
 ) -> GgufVramEstimate:
     """Memoised gguf-parser run keyed on path + mtime + sizing.
 
     The mtime args participate in the cache key only; a re-pulled file at the same
     path invalidates automatically because its mtime changes.
     """
+    argv = estimator_argv(
+        path_str,
+        ctx=ctx,
+        slots=slots,
+        gpu_layers=gpu_layers,
+        flash_attn=flash_attn,
+        kv_cache_type=kv_cache_type,
+        mmproj=mmproj,
+        tensor_split=tensor_split,
+        batch_size=batch_size,
+    )
+    return _parse_estimate(_run_parser(argv, path_str), path_str)
+
+
+def estimator_argv(
+    path_str: str,
+    *,
+    ctx: int,
+    slots: int,
+    gpu_layers: int,
+    flash_attn: bool,
+    kv_cache_type: str,
+    mmproj: str | None,
+    tensor_split: tuple[int, ...],
+    batch_size: int | None,
+) -> list[str]:
+    """The gguf-parser command line for one instance's sizing parameters."""
     argv = [
         str(resolve_gguf_parser()),
         _FLAG_PATH,
@@ -150,6 +183,10 @@ def _cached_footprint(
         _FLAG_FLASH if flash_attn else _FLAG_NO_FLASH,
         _FLAG_JSON,
     ]
+    if batch_size is not None:
+        # Pooled embed/rerank launch with --batch-size/--ubatch-size raised to the
+        # context; the default ubatch (512) would under-estimate their compute buffer.
+        argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if tensor_split:
         # The split proportions are gguf-parser's only signal for the device count,
         # so it returns one ``vrams[]`` entry per GPU instead of a single total.
@@ -161,7 +198,7 @@ def _cached_footprint(
         ]
     if mmproj is not None:
         argv += [_FLAG_MMPROJ, mmproj]
-    return _parse_estimate(_run_parser(argv, path_str), path_str)
+    return argv
 
 
 def _run_parser(argv: list[str], path_str: str) -> str:

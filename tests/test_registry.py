@@ -201,6 +201,40 @@ class TestSha256File:
         assert _sha256_file(p) == hashlib.sha256(b"").hexdigest()
 
 
+class TestBlobDigest:
+    def test_reuses_hf_cache_blob_name_without_hashing(self, tmp_path: Path, monkeypatch) -> None:
+        """A snapshot path resolving into blobs/<sha256> must not re-read the file.
+
+        Registration of a 130 GB split GGUF was failing on network volumes because
+        the redundant full-file hash hit transient I/O errors; the blob name is the
+        digest already.
+        """
+        from lilbee.modelhub import registry as registry_mod
+
+        digest = hashlib.sha256(b"payload").hexdigest()
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        blob = blobs / digest
+        blob.write_bytes(b"payload")
+        snapshot = tmp_path / "snapshots" / "rev"
+        snapshot.mkdir(parents=True)
+        link = snapshot / "model.gguf"
+        link.symlink_to(blob)
+
+        def _boom(path):
+            raise AssertionError("must not hash a cache blob")
+
+        monkeypatch.setattr(registry_mod, "_sha256_file", _boom)
+        assert registry_mod._blob_digest(link) == digest
+
+    def test_plain_file_falls_back_to_hashing(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import _blob_digest
+
+        p = tmp_path / "model.gguf"
+        p.write_bytes(b"payload")
+        assert _blob_digest(p) == hashlib.sha256(b"payload").hexdigest()
+
+
 class TestModelRegistryInstall:
     def test_install_writes_manifest_and_blob(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
@@ -332,6 +366,33 @@ class TestModelRegistryResolve:
         # Every sibling shard sits next to it under its real name.
         for n in (2, 3):
             assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
+
+    def test_shard_paths_returns_every_split_shard(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        paths = registry.shard_paths(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+        assert [p.name for p in paths] == [f"m-mxfp4-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
+        assert all(p.exists() for p in paths)
+
+    def test_shard_paths_empty_for_single_file_blob_resolution(self, tmp_path: Path) -> None:
+        """A single-file GGUF resolves to its hash-named blob, so no sibling exists
+        under the real filename and the shard list is empty (callers floor on 0 bytes)."""
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        assert registry.shard_paths(_REF) == []
+
+    def test_shard_paths_raises_for_uninstalled_ref(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.shard_paths(_REF)
 
     def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -469,6 +530,42 @@ class TestModelRegistryResolve:
         blob = _seed_hf_cache(tmp_path)
         assert registry.resolve(_REPO) == blob.resolve()
         assert registry.is_installed(_REPO)
+
+    def test_resolve_split_ref_reregisters_from_cache(self, tmp_path: Path) -> None:
+        """A cached split GGUF resolved by file ref gets its manifest rewritten.
+
+        The split path resolves via snapshot symlinks without reading manifests,
+        so it previously never re-registered: the model stayed resolvable but
+        absent from every listing, and re-pulls short-circuited forever.
+        """
+        repo = "unsloth/Split-GGUF"
+        shards = [f"Split-Q4_K_S-0000{i}-of-00002.gguf" for i in (1, 2)]
+        registry = ModelRegistry(tmp_path)
+        for shard in shards:
+            _seed_hf_cache(tmp_path, repo=repo, filename=shard, content=shard.encode())
+        assert not registry.list_installed()
+        registry.resolve(f"{repo}/{shards[0]}")
+        assert [m.ref for m in registry.list_installed()] == [f"{repo}/{shards[0]}"]
+
+    def test_resolve_recovery_registers_non_catalog_ref_as_chat(self, tmp_path: Path) -> None:
+        """A cache recovery of a NON-featured repo still writes a manifest (task=chat).
+
+        Skipping it left the model permanently half-installed: ``is_installed``
+        (and so a re-pull's "already installed" short-circuit) saw it, while
+        ``list_installed`` (the launcher, the fleet, ``lilbee model list``) did
+        not, so it could never be selected or repaired by re-pulling.
+        """
+        from lilbee.catalog.types import ModelTask
+
+        repo = "unsloth/NotFeatured-GGUF"
+        filename = "NotFeatured-Q4_K_S.gguf"
+        registry = ModelRegistry(tmp_path)
+        _seed_hf_cache(tmp_path, repo=repo, filename=filename)
+        assert not registry.list_installed()
+        registry.resolve(repo)
+        installed = registry.list_installed()
+        assert [m.ref for m in installed] == [f"{repo}/{filename}"]
+        assert installed[0].task == ModelTask.CHAT
 
     def test_resolve_bare_repo_ref_uses_manifest_when_present(self, tmp_path: Path) -> None:
         """A bare repo ref prefers a current-format manifest under that repo."""

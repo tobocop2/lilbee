@@ -33,18 +33,19 @@ def fit_split_ctx(
     flash_attn: bool,
     kv_cache_type: KvCacheType,
 ) -> int:
-    """Largest quantized per-slot n_ctx whose per-device peak fits the busiest card.
+    """Largest quantized per-slot n_ctx whose per-device shares all fit their cards.
 
     Binary-searches the gguf-parser estimate at the launch tensor-split *ratio*:
     the server serves ``--ctx-size = per_slot x slots``, so each probe estimates
-    that total and accepts the per-slot value when the peak device's footprint
-    stays under its usable headroom. Falls to the floor when even that overflows.
+    that total and accepts the per-slot value when every device's own share stays
+    under that device's usable headroom. Falls to the floor when even that
+    overflows.
     """
-    bottleneck = (
-        min(int(free * USABLE_VRAM_FRACTION) for free in per_device_free_bytes)
-        - _MAIN_GPU_SKEW_RESERVE_BYTES
-    )
-    if bottleneck <= 0:
+    headrooms = [
+        int(free * USABLE_VRAM_FRACTION) - _MAIN_GPU_SKEW_RESERVE_BYTES
+        for free in per_device_free_bytes
+    ]
+    if min(headrooms) <= 0:
         return _DYNAMIC_CTX_FLOOR
     upper = chat_ctx_ceiling(meta, model_path)
 
@@ -58,7 +59,11 @@ def fit_split_ctx(
             kv_cache_type=kv_cache_type,
             tensor_split=ratio,
         )
-        return est.peak_footprint(unified=False) <= bottleneck
+        shares = est.per_device_vram
+        if len(shares) != len(headrooms):
+            # No usable per-device breakdown: fall back to peak vs the tightest card.
+            return est.peak_footprint(unified=False) <= min(headrooms)
+        return all(share <= room for share, room in zip(shares, headrooms, strict=True))
 
     if not _peak_fits(_DYNAMIC_CTX_FLOOR):
         return _DYNAMIC_CTX_FLOOR

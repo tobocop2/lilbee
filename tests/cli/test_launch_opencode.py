@@ -119,6 +119,9 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     assert mcp_entry["enabled"] is True
     assert mcp_entry["url"] == f"http://127.0.0.1:{_PORT}/mcp"
     assert mcp_entry["headers"]["Authorization"] == f"Bearer {_TOKEN}"
+    # Startup pin: without the top-level model key opencode boots on its own
+    # default provider instead of the lilbee-served chat model.
+    assert payload["model"] == f"lilbee/{cfg.chat_model}"
 
 
 @pytest.mark.no_health_default
@@ -282,6 +285,25 @@ def test_opencode_config_omits_limit_when_ctx_unknown():
     assert "limit" not in block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
 
 
+def test_opencode_config_pins_default_model_when_ref_given():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(
+        base_url="http://127.0.0.1:9",
+        api_key="k",
+        model_refs=["a/M/m.gguf"],
+        default_ref="a/M/m.gguf",
+    )
+    assert block["model"] == "lilbee/a/M/m.gguf"
+
+
+def test_opencode_config_omits_model_key_without_default_ref():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
+    assert "model" not in block
+
+
 def test_launch_opencode_waits_for_chat_warm_before_handoff(tmp_path):
     """The launcher must block on the warm-gate before exec'ing the client, so
     the client never opens onto a cold, silent stream."""
@@ -340,269 +362,30 @@ def test_launch_opencode_skips_skill_install_when_already_present(tmp_path):
     assert custom.read_text() == "user customization"
 
 
-def test_launch_opencode_updates_picker_state_on_unix(tmp_path):
-    _write_server_session()
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    assert state_path.exists()
-    state = json.loads(state_path.read_text())
-    assert state["recent"][0] == {"providerID": "lilbee", "modelID": _CHAT_REF}
-
-
 def test_default_first_leads_with_configured_model():
-    from lilbee.cli.launchers.opencode import _default_first
+    from lilbee.providers.model_ref import default_first
 
     refs = ["aaa/x.gguf", "zzz/y.gguf", "mmm/z.gguf"]
-    assert _default_first(refs, "mmm/z.gguf") == ["mmm/z.gguf", "aaa/x.gguf", "zzz/y.gguf"]
+    assert default_first(refs, "mmm/z.gguf") == ["mmm/z.gguf", "aaa/x.gguf", "zzz/y.gguf"]
     # A default that isn't installed leaves the order untouched.
-    assert _default_first(refs, "not/installed.gguf") == refs
+    assert default_first(refs, "not/installed.gguf") == refs
 
 
-def test_picker_state_leads_with_configured_default_not_alphabetically_first(tmp_path):
-    from lilbee.cli.launchers.opencode import _update_opencode_picker_state
-
-    # "zzz" sorts last but is the configured chat model -> it must be recent[0],
-    # otherwise opencode opens on "aaa" and ignores the model lilbee serves.
-    _update_opencode_picker_state(["aaa/x.gguf", "zzz/y.gguf"], "zzz/y.gguf")
-    state = json.loads((tmp_path / ".local" / "state" / "opencode" / "model.json").read_text())
-    assert state["recent"][0] == {"providerID": "lilbee", "modelID": "zzz/y.gguf"}
-    assert {e["modelID"] for e in state["recent"]} == {"aaa/x.gguf", "zzz/y.gguf"}
-
-
-def test_launch_opencode_picker_state_dedupes_prior_lilbee_entries(tmp_path):
+def test_launch_opencode_warns_when_configured_chat_model_not_installed(tmp_path):
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    state_path.parent.mkdir(parents=True)
-    state_path.write_text(
-        json.dumps(
-            {
-                "recent": [
-                    {"providerID": "lilbee", "modelID": _CHAT_REF},
-                    {"providerID": "anthropic", "modelID": "claude-3-5-sonnet"},
-                ],
-                "favorite": [],
-                "variant": {},
-            }
-        )
-    )
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "linux"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    state = json.loads(state_path.read_text())
-    lilbee_entries = [e for e in state["recent"] if e.get("providerID") == "lilbee"]
-    assert len(lilbee_entries) == 1
-    assert state["recent"][1] == {"providerID": "anthropic", "modelID": "claude-3-5-sonnet"}
-
-
-def test_launch_opencode_updates_picker_state_on_windows(tmp_path):
-    # opencode uses the same XDG-style state path on every platform, so the
-    # picker state is written on Windows too (no platform skip).
-    _write_server_session()
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "win32"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    assert state_path.exists()
-    state = json.loads(state_path.read_text())
-    assert state["recent"][0] == {"providerID": "lilbee", "modelID": _CHAT_REF}
-
-
-def test_launch_opencode_picker_state_recovers_from_corrupt_file(tmp_path):
-    _write_server_session()
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    state_path.parent.mkdir(parents=True)
-    state_path.write_text("not json{{")
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    state = json.loads(state_path.read_text())
-    assert state["recent"][0]["modelID"] == _CHAT_REF
-
-
-def test_launch_opencode_picker_state_ignores_non_dict_root(tmp_path):
-    _write_server_session()
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    state_path.parent.mkdir(parents=True)
-    state_path.write_text(json.dumps(["unexpected", "shape"]))
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    state = json.loads(state_path.read_text())
-    assert isinstance(state, dict)
-    assert state["recent"][0]["modelID"] == _CHAT_REF
-
-
-def test_launch_opencode_writes_lilbee_provider_to_persistent_config(tmp_path):
-    """Picker rendering needs the provider in opencode's on-disk config file,
-    not just the env var. The launcher must merge our provider into
-    ``~/.config/opencode/opencode.json`` so a "lilbee" section appears
-    alongside the user's other configured providers (ollama, etc.).
-    """
-    _write_server_session()
-    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        json.dumps(
-            {
-                "$schema": "https://opencode.ai/config.json",
-                "plugin": ["user-custom-plugin"],
-                "provider": {
-                    "ollama": {
-                        "npm": "@ai-sdk/openai-compatible",
-                        "name": "Ollama (local)",
-                        "options": {"baseURL": "http://localhost:11434/v1"},
-                        "models": {"qwen3-coder:30b": {"name": "qwen3-coder:30b"}},
-                    }
-                },
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
+    other_ref = "bartowski/SmolLM-135M-Instruct-GGUF/SmolLM-135M-Instruct.Q8_0.gguf"
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    merged = json.loads(config_path.read_text(encoding="utf-8"))
-    # User's other providers and top-level settings survive.
-    assert merged["plugin"] == ["user-custom-plugin"]
-    assert merged["provider"]["ollama"]["name"] == "Ollama (local)"
-    # Lilbee section now appears with the current launch's port + token.
-    lilbee = merged["provider"]["lilbee"]
-    assert lilbee["options"]["baseURL"] == f"http://127.0.0.1:{_PORT}/v1"
-    assert lilbee["options"]["apiKey"] == _TOKEN
-    assert _CHAT_REF in lilbee["models"]
-
-
-def test_launch_opencode_creates_config_file_when_absent(tmp_path):
-    """When the user has no existing opencode.json, the launcher creates it."""
-    _write_server_session()
-    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
-    assert not config_path.exists()
-
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        runner.invoke(app, ["launch", "opencode"])
-
-    assert config_path.exists()
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "lilbee" in payload["provider"]
-
-
-def test_launch_opencode_recovers_from_corrupt_existing_config(tmp_path):
-    """A garbled existing opencode.json is overwritten with a minimal valid
-    config carrying the lilbee provider; the launcher doesn't crash.
-    """
-    _write_server_session()
-    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text("not json", encoding="utf-8")
-
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-    ):
-        result = runner.invoke(app, ["launch", "opencode"])
-    assert result.exit_code == 0
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "lilbee" in payload["provider"]
-
-
-def test_launch_opencode_overwrites_non_dict_provider_field(tmp_path):
-    """If the existing config has ``provider`` as the wrong shape (string,
-    list, null), the merge resets it to a dict rather than silently dropping
-    the lilbee entry.
-    """
-    _write_server_session()
-    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        json.dumps(
-            {
-                "$schema": "https://opencode.ai/config.json",
-                "plugin": [],
-                "provider": "this should be a dict but isn't",
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[other_ref]),
     ):
         result = runner.invoke(app, ["launch", "opencode"])
 
-    assert result.exit_code == 0
-    merged = json.loads(config_path.read_text(encoding="utf-8"))
-    assert isinstance(merged["provider"], dict)
-    assert "lilbee" in merged["provider"]
-    # Other top-level keys still survive the rewrite.
-    assert merged["plugin"] == []
-
-
-def test_launch_opencode_picker_state_skips_when_no_models(tmp_path):
-    _write_server_session()
-    fake_opencode = "/usr/local/bin/opencode"
-    completed = MagicMock(returncode=0)
-    with (
-        patch("lilbee.cli.launchers.opencode.sys.platform", "darwin"),
-        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
-        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
-    ):
-        result = runner.invoke(app, ["launch", "opencode"])
-
-    state_path = tmp_path / ".local" / "state" / "opencode" / "model.json"
-    assert not state_path.exists()
-    # No chat models -> the provider would be unusable; warn loudly (bb-c4t).
-    assert "no chat models are installed" in result.output
+    # cfg.chat_model (the default Qwen ref) is absent from the served refs, so the
+    # startup pin would dangle and the client would open on its own provider.
+    assert "is not installed" in result.output
 
 
 def test_launch_opencode_spawns_server_when_none_running():
@@ -629,6 +412,8 @@ def test_launch_opencode_spawns_server_when_none_running():
 
 
 def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
+    from lilbee.cli.launchers.server import _SPAWN_ATTEMPTS
+
     fake_opencode = "/usr/local/bin/opencode"
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
@@ -641,7 +426,8 @@ def test_launch_opencode_health_timeout_terminates_spawn_and_exits_1():
         result = runner.invoke(app, ["launch", "opencode"])
     assert result.exit_code == 1
     assert "failed to start" in result.stderr
-    fake_proc.terminate.assert_called_once()
+    # Every bounded attempt spawned a server and then stopped it.
+    assert fake_proc.terminate.call_count == _SPAWN_ATTEMPTS
 
 
 def test_launch_opencode_health_ok_but_session_missing_exits_1():
@@ -666,6 +452,96 @@ def test_free_port_returns_open_port():
 
     port = launch_mod.free_port()
     assert 1024 < port < 65536
+
+
+def test_run_launcher_serves_remote_configured_chat_model():
+    """A remote-configured chat model reaches the client picker first, with no
+    false 'no chat models' warning and no local warm wait."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", "ollama/qwen3:8b"),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == ["ollama/qwen3:8b"]
+    # No native model is installed, so there is no local load to wait out.
+    warm.assert_not_called()
+
+
+def test_run_launcher_warns_and_skips_warm_when_no_models_at_all(capsys):
+    """No native models and a native-configured ref: warn, don't warm."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", _CHAT_REF),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == []
+    assert "no chat models are installed" in capsys.readouterr().err
+    warm.assert_not_called()
+
+
+def test_run_launcher_warms_native_chat_models():
+    """Installed native chat models still gate the launch on the warm wait."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.return_value = ([], {})
+    with (
+        patch.object(cfg, "chat_model", _CHAT_REF),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), None),
+        ),
+        patch(
+            "lilbee.cli.launchers.launcher.installed_chat_model_refs",
+            return_value=[_CHAT_REF],
+        ),
+        patch("lilbee.cli.launchers.launcher.wait_for_chat_warm") as warm,
+        patch(
+            "lilbee.cli.launchers.launcher.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    assert launcher.prepare.call_args.kwargs["model_refs"] == [_CHAT_REF]
+    warm.assert_called_once_with(1234)
 
 
 @pytest.mark.no_health_default
@@ -858,3 +734,77 @@ def test_run_launcher_disables_eager_warm_in_launcher_process():
         assert cfg.worker_pool_eager_start is False
     finally:
         cfg.worker_pool_eager_start = old
+
+
+def test_launch_opencode_persists_nothing_outside_the_skill(tmp_path):
+    """The session contract is env-only: no picker state, no opencode.json write.
+
+    Earlier versions merged the provider (with the session's ephemeral port and
+    bearer token) into the user's persistent opencode.json and wrote picker
+    state that current opencode discards; both left stale artifacts behind.
+    """
+    _write_server_session()
+    fake_opencode = "/usr/local/bin/opencode"
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value=fake_opencode),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+
+    assert result.exit_code == 0
+    assert not (tmp_path / ".local" / "state" / "opencode" / "model.json").exists()
+    assert not (tmp_path / ".config" / "opencode" / "opencode.json").exists()
+
+
+def test_opencode_config_sets_generous_mcp_timeout():
+    from lilbee.cli.agent_configs.opencode import _MCP_TIMEOUT_MS, opencode_config
+
+    block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
+    # opencode defaults remote-MCP requests to 5000 ms, which the first
+    # lilbee_search can exceed while the embedding model cold-loads.
+    assert block["mcp"]["lilbee"]["timeout"] == _MCP_TIMEOUT_MS
+
+
+def test_chat_warm_budget_falls_back_to_floor_when_model_unresolvable():
+    from lilbee.cli.launchers import server as launch_mod
+
+    # cfg.chat_model points at an uninstalled ref in the isolated env.
+    assert launch_mod.chat_warm_budget_s() == launch_mod._WARM_TIMEOUT_S
+
+
+def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
+    """A split giant's warm wait must cover the fleet's own cold-load budget.
+
+    Only split models exercise the shard-sum path: a single-file ref resolves
+    to its blob (no co-located siblings) and floors, which is correct because
+    single files load well under the floor.
+    """
+    import hashlib
+
+    from lilbee.cli.launchers import server as launch_mod
+    from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+    models_dir = tmp_path / "models"
+    cache = models_dir / "models--org--Big-GGUF"
+    (cache / "blobs").mkdir(parents=True)
+    snap = cache / "snapshots" / "rev"
+    snap.mkdir(parents=True)
+    shards = [f"Big-Q4-0000{i}-of-00002.gguf" for i in (1, 2)]
+    total = 0
+    for shard in shards:
+        payload = shard.encode() * 64
+        total += len(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        blob = cache / "blobs" / digest
+        blob.write_bytes(payload)
+        (snap / shard).symlink_to(blob)
+    (cache / "refs").mkdir()
+    (cache / "refs" / "main").write_text("rev")
+    # The autouse _isolated_env fixture snapshots and restores every cfg field.
+    cfg.models_dir = models_dir
+    cfg.chat_model = f"org/Big-GGUF/{shards[0]}"
+
+    budget = launch_mod.chat_warm_budget_s()
+    assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))

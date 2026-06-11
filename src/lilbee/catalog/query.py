@@ -255,22 +255,59 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
     default. A bare ``owner/name`` repo prefers the featured entry, then falls
     back to an ad-hoc glob pull that picks the best quant.
     """
-    from lilbee.modelhub.registry import parse_hf_ref  # deferred: modelhub is heavy
+    # circular: modelhub.registry imports catalog.query at top
+    from lilbee.modelhub.registry import parse_hf_ref
 
     if model.endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
-        task = _task_for_repo(hf_repo)
+        task = _task_for_repo(hf_repo, model)
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
     featured = find_catalog_entry(model)
     if featured is not None:
         return featured
-    return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
+    if not _is_hf_repo_id(model):
+        return None
+    return build_adhoc_entry(model, task=_task_for_repo(model, model))
 
 
-def _task_for_repo(hf_repo: str) -> ModelTask:
-    """Task for a concrete-file pull: a featured repo's task, else CHAT."""
+def _task_for_repo(hf_repo: str, ref: str) -> ModelTask:
+    """Featured entries keep their catalog task; other repos are classified by name."""
     featured = find_catalog_entry(hf_repo)
-    return featured.task if featured is not None else ModelTask.CHAT
+    if featured is not None:
+        return featured.task
+    return ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
+
+
+# Embedding detection by name, for servers (LM Studio) that report ids but no
+# family. Trailing hyphens keep chat models that merely contain the letters out.
+EMBEDDING_NAME_PATTERNS: frozenset[str] = frozenset({"embed", "bge-", "e5-", "gte-"})
+VISION_NAME_PATTERNS: frozenset[str] = frozenset(
+    {"llava", "vision", "moondream", "ocr", "minicpm-v"}
+)
+# Reranker detection runs before embedding detection so ``bge-reranker-*`` is
+# not misclassified as EMBEDDING.
+RERANKER_NAME_PATTERNS: frozenset[str] = frozenset({"reranker", "rerank", "cross-encoder"})
+
+
+def reclassify_by_name(ref: str, declared_task: str) -> str:
+    """Override declared_task to RERANK / VISION / EMBEDDING when ref names a known role.
+
+    Defends against manifests that stored ``task="chat"`` for models whose ref
+    obviously identifies them as rerankers (e.g. ``bge-reranker-*``), vision
+    loaders, or embedders. Embedders on a chat decoder arch (e.g.
+    ``Qwen3-Embedding-*``, a qwen3 backbone + pooling head) classify as chat by
+    architecture, so the name is the only signal short of probing the GGUF
+    pooling type. Reranker is checked before embedding so ``bge-reranker`` (which
+    also matches the ``bge-`` embedder pattern) stays a reranker.
+    """
+    name_lower = ref.lower()
+    if any(rp in name_lower for rp in RERANKER_NAME_PATTERNS):
+        return ModelTask.RERANK
+    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
+        return ModelTask.VISION
+    if any(ep in name_lower for ep in EMBEDDING_NAME_PATTERNS):
+        return ModelTask.EMBEDDING
+    return declared_task

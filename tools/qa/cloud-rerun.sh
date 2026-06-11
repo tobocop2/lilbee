@@ -16,12 +16,15 @@ cd "${WORK_DIR}"
 git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 uv sync --extra remote --extra crawler --extra graph
-# Same two-step as cloud-setup.sh: PyPI for the resolver, then force-reinstall
-# the GPU-built llama-cpp-python from abetlen's CUDA index so a code change
-# can't accidentally downgrade you back to the CPU wheel.
-uv pip install --reinstall-package llama-cpp-python --no-cache \
-  --index-url "https://abetlen.github.io/llama-cpp-python/whl/${LLAMA_CUDA:-cu124}/" \
-  llama-cpp-python
+# The CUDA llama-server built by cloud-setup.sh lives in the engine wheel's
+# bin/ (untracked, so it survives the reset --hard). Rebuild via cloud-setup.sh
+# if it's missing; verify it still runs before kicking off the matrix.
+ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine/bin"
+if [ ! -x "${ENGINE_BIN_DIR}/llama-server" ]; then
+  echo "no llama-server at ${ENGINE_BIN_DIR}; run tools/qa/cloud-setup.sh first" >&2
+  exit 1
+fi
+"${ENGINE_BIN_DIR}/llama-server" --version
 
 # Drop any stale matrix process / tmux session from the previous run
 tmux kill-session -t lilbee-matrix 2>/dev/null || true
@@ -41,7 +44,7 @@ fi
 
 LOG=/tmp/qa-matrix-$(date +%Y%m%d-%H%M%S).log
 tmux new-session -d -s lilbee-matrix \
-  "cd ${WORK_DIR} && export PATH=${HOME}/.local/bin:${HOME}/.opencode/bin:${PATH} && HF_HUB_DISABLE_PROGRESS_BARS=1 uv run python -u tools/qa/opencode/matrix.py ${ARGS[*]+\"${ARGS[@]}\"} 2>&1 | tee ${LOG}"
+  "cd ${WORK_DIR} && export PATH=${ENGINE_BIN_DIR}:${HOME}/.local/bin:${HOME}/.opencode/bin:${PATH} && LILBEE_LLAMA_SERVER_PATH=${ENGINE_BIN_DIR}/llama-server HF_HUB_DISABLE_PROGRESS_BARS=1 uv run python -u tools/qa/opencode/matrix.py ${ARGS[*]+\"${ARGS[@]}\"} 2>&1 | tee ${LOG}"
 
 cat <<EOF
 

@@ -6,16 +6,18 @@ import contextlib
 import json
 import shutil
 import subprocess
+import time
 import tomllib
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_config import _EMBED_PULL_REF, _MODEL_PULL_TIMEOUT_S, _SUSPENDED_SUFFIX, REPO_ROOT
+from harness_config import _EMBED_REF, _MODEL_PULL_TIMEOUT_S, _SUSPENDED_SUFFIX, REPO_ROOT
 
 
 def _models_manifests_dir() -> Path:
     """Locate lilbee's chat-manifests directory via cfg."""
+    # function-local lilbee imports throughout: the harness must parse args and
+    # print usage without the lilbee package importable; only model ops need it.
     from lilbee.core.config import cfg
 
     return Path(cfg.models_dir) / "manifests"
@@ -44,58 +46,51 @@ def _ref_for_manifest(path: Path) -> str:
     return f"{repo}/{rest}"
 
 
-def _installed_ref_for_repo(repo: str) -> str | None:
-    """Return the chat model ref actually installed under *repo*, if any.
+_PREWARM_CHUNK_BYTES = 64 * 1024 * 1024
 
-    ``lilbee model pull <repo>`` installs the repo's default quant, which need
-    not be the specific file named in models.toml (e.g. legraphista/glm-4-9b
-    installs Q4_K_S, internlm2 installs fp16). Pinning opencode to the
-    models.toml ref then points at an uninstalled file: ``/v1/models`` omits
-    it, opencode never dispatches, and the cell logs zero chat completions.
-    Resolving the installed ref after the pull keeps the cell aligned with
-    whatever quant lilbee actually fetched.
+
+def prewarm_model_blobs(ref: str) -> None:
+    """Read the cell's GGUF shards once so the fleet's cold load hits page cache.
+
+    On a network-volume models dir the first sequential read is the slow,
+    fault-prone path; a giant read cold from the volume can outlast the
+    fleet's health budget. Reading the shards here (outside any product
+    timeout) leaves them in RAM, and the printed rate doubles as a volume
+    health probe.
     """
-    for path in _list_chat_manifests():
-        ref = _ref_for_manifest(path)
-        if _pull_ref_for(ref) == repo:
-            return ref
-    return None
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry
+
+    total = 0
+    start = time.monotonic()
+    for shard in ModelRegistry(Path(cfg.models_dir)).shard_paths(ref):
+        with shard.open("rb") as f:
+            while chunk := f.read(_PREWARM_CHUNK_BYTES):
+                total += len(chunk)
+    elapsed = max(time.monotonic() - start, 1e-6)
+    print(f"prewarmed {total / 1e9:.1f} GB in {elapsed:.0f}s ({total / 1e6 / elapsed:.0f} MB/s)")
 
 
-def _pull_ref_for(model_ref: str) -> str:
-    """Return the HuggingFace repo id (owner/name) for *model_ref*.
-
-    GGUF refs in models.toml have the shape ``owner/repo[/subdir]/file.gguf``,
-    e.g. ``Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf`` (3 parts, no subdir) or
-    ``unsloth/GLM-4.5-Air-GGUF/Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf``
-    (4 parts, with a quant-tier subdir). ``lilbee model pull`` wants exactly
-    ``owner/repo`` regardless, so keep only the first two segments.
-    """
+def _repo_of(model_ref: str) -> str:
+    """The ``owner/repo`` prefix of a GGUF ref (used for HF-cache dir names)."""
     return "/".join(model_ref.split("/")[:2])
 
 
-@contextlib.contextmanager
-def suspend_other_chat_manifests(target_ref: str) -> Iterator[None]:
-    """Move every chat manifest except *target_ref* out of the registry.
+def is_ref_registered(ref: str) -> bool:
+    """True when the registry lists exactly *ref* (manifest present + blob valid)."""
+    return any(_ref_for_manifest(path) == ref for path in _list_chat_manifests())
 
-    The launcher's ``_update_opencode_picker_state`` prepends every entry of
-    ``sorted(installed_chat_model_refs())`` to opencode's recent list, so
-    whichever ref sorts first wins ``recent[0]``. To pin a specific model
-    per cell we suspend the others for the duration of the cell.
-    """
-    suspended: list[tuple[Path, Path]] = []
-    try:
-        for path in _list_chat_manifests():
-            if _ref_for_manifest(path) == target_ref:
-                continue
-            suspended_path = path.with_name(path.name + _SUSPENDED_SUFFIX)
-            path.rename(suspended_path)
-            suspended.append((path, suspended_path))
-        yield
-    finally:
-        for original, suspended_path in suspended:
-            if suspended_path.exists():
-                suspended_path.rename(original)
+
+def restore_suspended_manifests() -> int:
+    """Heal ``*.qa-suspended`` manifests a crashed run left behind; returns the count."""
+    restored = 0
+    manifests_dir = _models_manifests_dir()
+    if not manifests_dir.exists():
+        return restored
+    for path in manifests_dir.rglob(f"*{_SUSPENDED_SUFFIX}"):
+        path.rename(path.with_name(path.name.removesuffix(_SUSPENDED_SUFFIX)))
+        restored += 1
+    return restored
 
 
 @dataclass
@@ -128,12 +123,18 @@ def ensure_embedding_model_pulled() -> None:
     The matrix's per-cell `lilbee add` step requires the workspace's
     configured embedding model to be registered, otherwise indexing skips
     every fixture with "Model not found in registry" and `lilbee_search`
-    comes up empty in opencode. The registry is keyed off ``cfg.models_dir``
-    (global), so one pull at matrix start serves every cell -- no per-cell
-    re-pull needed.
+    comes up empty in opencode. Pulled by exact file ref: the per-cell
+    config pins this quant, and a repo-level pull may install another.
+    The registry is keyed off ``cfg.models_dir`` (global), so one pull at
+    matrix start serves every cell -- no per-cell re-pull needed.
     """
-    print(f"ensuring embedding model {_EMBED_PULL_REF} is registered")
-    _run_pull_with_group_kill(_EMBED_PULL_REF)
+    print(f"ensuring embedding model {_EMBED_REF} is registered")
+    _run_pull_with_group_kill(_EMBED_REF)
+
+
+_PULL_ATTEMPTS = 3
+"""Pulls resume from partial downloads, so retries convert transient volume
+I/O errors (network-FS Errno 5 on multi-GB shards) into incremental progress."""
 
 
 def _run_pull_with_group_kill(pull_ref: str) -> None:
@@ -141,6 +142,9 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
     full tree (otherwise ``uv``'s child python orphans and keeps the download
     running, contending for bandwidth with the next cell's pull).
 
+    A non-zero exit is retried, then raised: a cell must never proceed past a
+    failed pull (the launcher would serve zero models and the scenario would
+    burn its full timeout against the client's fallback provider).
     Progress bars are suppressed so the matrix stdout stays grep-able.
     """
     import os
@@ -148,19 +152,24 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
 
     env = os.environ.copy()
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    proc = subprocess.Popen(
-        ["uv", "run", "lilbee", "model", "pull", pull_ref],
-        cwd=REPO_ROOT,
-        env=env,
-        start_new_session=True,
-    )
-    try:
-        proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
-        raise
+    for attempt in range(1, _PULL_ATTEMPTS + 1):
+        proc = subprocess.Popen(
+            ["uv", "run", "lilbee", "model", "pull", pull_ref],
+            cwd=REPO_ROOT,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+            raise
+        if proc.returncode == 0:
+            return
+        print(f"pull of {pull_ref} exited {proc.returncode} (attempt {attempt}/{_PULL_ATTEMPTS})")
+    raise RuntimeError(f"pull of {pull_ref} failed after {_PULL_ATTEMPTS} attempts")
 
 
 def cleanup_cell_model(cell: ModelCell) -> None:
@@ -173,7 +182,7 @@ def cleanup_cell_model(cell: ModelCell) -> None:
     """
     from lilbee.core.config import cfg
 
-    repo = _pull_ref_for(cell.ref)
+    repo = _repo_of(cell.ref)
     # HF-cache directories ("models--Qwen--Qwen3-4B-GGUF") use the ``models--``
     # prefix; lilbee's manifests dir ("Qwen--Qwen3-4B-GGUF") does NOT. Cleaning
     # only the prefixed paths left stale manifests behind, which then convinced

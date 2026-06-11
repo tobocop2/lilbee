@@ -2180,16 +2180,18 @@ class TestIngestShutdownError:
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
+        from pathlib import Path
 
         from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest.types import FileToProcess
 
         shutdown_err = RuntimeError("cannot schedule new futures after shutdown")
 
         async def _run():
-            added = ["test.txt"]
-            updated: list[str] = []
-            failed: list[str] = []
-            skipped: list[str] = []
+            added = {"test.txt": None}
+            updated: dict[str, None] = {}
+            failed: dict[str, None] = {}
+            skipped: dict[str, None] = {}
             with (
                 mock.patch(
                     "lilbee.data.ingest.pipeline._produce_records", side_effect=shutdown_err
@@ -2197,7 +2199,7 @@ class TestIngestShutdownError:
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
-                    [("test.txt", __import__("pathlib").Path("test.txt"), "text", "abc123", False)],
+                    [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)],
                     added,
                     updated,
                     failed,

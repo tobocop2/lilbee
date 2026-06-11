@@ -95,11 +95,26 @@ class TestClassifyProviderError:
         assert result.code == CompletionsErrorCode.MODEL_NOT_FOUND
 
     @pytest.mark.parametrize(
-        "kind",
-        [ProviderErrorKind.AUTH, ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.UNKNOWN],
+        ("kind", "status", "code"),
+        [
+            (ProviderErrorKind.BAD_REQUEST, 400, CompletionsErrorCode.INVALID_REQUEST),
+            (ProviderErrorKind.AUTH, 401, CompletionsErrorCode.INVALID_API_KEY),
+            (ProviderErrorKind.RATE_LIMIT, 429, CompletionsErrorCode.RATE_LIMIT_EXCEEDED),
+            (ProviderErrorKind.CONNECTION, 503, CompletionsErrorCode.INTERNAL_ERROR),
+            (ProviderErrorKind.SERVER, 502, CompletionsErrorCode.INTERNAL_ERROR),
+        ],
     )
-    def test_unmapped_provider_kinds_return_none(self, kind) -> None:
-        assert classify_provider_error(ProviderError("x", kind=kind)) is None
+    def test_classified_provider_kinds_keep_status_code_and_message(
+        self, kind, status, code
+    ) -> None:
+        result = classify_provider_error(ProviderError("the original message", kind=kind))
+        assert result is not None
+        assert result.http_status == status
+        assert result.code == code
+        assert result.message == "the original message"
+
+    def test_unknown_provider_kind_returns_none(self) -> None:
+        assert classify_provider_error(ProviderError("x", kind=ProviderErrorKind.UNKNOWN)) is None
 
     def test_unrelated_exception_returns_none(self) -> None:
         assert classify_provider_error(ValueError("nope")) is None

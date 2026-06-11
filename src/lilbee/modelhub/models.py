@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -275,7 +276,6 @@ def list_installed_models() -> list[str]:
     """
     # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import classify_all_remote_models
-    from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
     try:
         names: list[str] = []

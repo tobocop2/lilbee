@@ -61,11 +61,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
-        env:
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Build dev portal (marketing site + coverage + API docs)
         run: make docs-site

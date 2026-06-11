@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config.enums import KvCacheType
+from lilbee.providers import model_cache
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
@@ -82,6 +84,32 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 # host (7-8 GB) with no budget at all, refusing to serve even tiny models.
 _SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
+
+# llama.cpp split-GGUF shard naming ("%s-%05d-of-%05d.gguf"); the cold-load
+# timeout must scale with the SUM of the shards, not the first file alone.
+_SPLIT_GGUF_NAME = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
+
+
+def _weights_bytes(model_path: Path) -> int:
+    """Total weights size on disk; a split GGUF sums every sibling shard."""
+    match = _SPLIT_GGUF_NAME.fullmatch(model_path.name)
+    if match is None:
+        return model_path.stat().st_size
+    return sum(
+        sibling.stat().st_size
+        for sibling in model_path.parent.iterdir()
+        if _is_sibling_shard(sibling.name, match)
+    )
+
+
+def _is_sibling_shard(name: str, match: re.Match[str]) -> bool:
+    """Whether *name* is a shard of the same split GGUF as *match*."""
+    shard = _SPLIT_GGUF_NAME.fullmatch(name)
+    return (
+        shard is not None
+        and shard["prefix"] == match["prefix"]
+        and shard["total"] == match["total"]
+    )
 
 
 def _slots_for(
@@ -192,9 +220,8 @@ def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
     ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
     steps down to fit free memory instead of overcommitting."""
     from lilbee.core.config import cfg
-    from lilbee.providers.model_cache import get_available_memory
 
-    budget = int(get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
+    budget = int(model_cache.get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
     return budget
@@ -262,6 +289,19 @@ def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
 
     arch = meta.get("architecture") if meta else None
     return resolve_rerank_mode(cfg.reranker_type, arch)
+
+
+def _role_rerank_mode(role: WorkerRole, meta: dict[str, str] | None) -> RerankMode | None:
+    """The RERANK serving mode for *role*, or ``None`` for every other role."""
+    return _rerank_mode_for(meta) if role is WorkerRole.RERANK else None
+
+
+def _pooled_batch_size(role: WorkerRole, rerank_mode: RerankMode | None, ctx: int) -> int | None:
+    """The ``--batch-size``/``--ubatch-size`` the launch raises for pooled
+    embed/cross-encoder rerank (the full context), or ``None`` for other roles."""
+    if role in _EMBED_ROLES and rerank_mode is not RerankMode.LLM:
+        return ctx
+    return None
 
 
 def _role_gpu_layers(role: WorkerRole) -> int:
@@ -350,6 +390,7 @@ def _estimate_role(
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
     ctx = _role_ctx(role, path, meta)
+    rerank_mode = _role_rerank_mode(role, meta)
     if slots is None:
         slots = _slots_for(
             role,
@@ -358,7 +399,7 @@ def _estimate_role(
             mmproj_path=mmproj,
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
-            rerank_mode=_rerank_mode_for(meta) if role is WorkerRole.RERANK else None,
+            rerank_mode=rerank_mode,
         )
     est = estimate_instance_footprint(
         path,
@@ -368,6 +409,7 @@ def _estimate_role(
         flash_attn=_role_flash(role),
         kv_cache_type=_role_kv_cache_type(role),
         mmproj_path=mmproj,
+        batch_size=_pooled_batch_size(role, rerank_mode, ctx),
     )
     return ModelPlacementInput(
         role=role,
@@ -427,6 +469,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             kv_cache_type=_role_kv_cache_type(role),
             mmproj_path=mmproj,
             tensor_split=ratio,
+            batch_size=_pooled_batch_size(role, _role_rerank_mode(role, meta), ctx),
         )
         return est.per_device_vram
 
@@ -502,7 +545,6 @@ def _launch_for(
     plan: InstancePlan,
     model_ref: str,
     binary: Path,
-    data_dir: Path,
     by_index: dict[int, FleetDevice],
     *,
     unified_budget: int | None = None,
@@ -513,7 +555,7 @@ def _launch_for(
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     model_path = resolve_model_path(model_ref)
-    weights_bytes = model_path.stat().st_size
+    weights_bytes = _weights_bytes(model_path)
     meta = read_gguf_metadata(model_path)
     from lilbee.core.config import cfg
 
@@ -541,7 +583,7 @@ def _launch_for(
         )
     else:
         ctx = _role_ctx(plan.role, model_path, meta)
-    rerank_mode = _rerank_mode_for(meta) if plan.role is WorkerRole.RERANK else None
+    rerank_mode = _role_rerank_mode(plan.role, meta)
     is_llm_rerank = rerank_mode is RerankMode.LLM
     # A multi-card chat runs one slot; other roles size --parallel against the budget
     # the same way the estimator did so the launch matches the placement reservation.
@@ -574,7 +616,7 @@ def _launch_for(
         mmproj=mmproj,
         flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
         cache_type=_cache_type_flag() if is_chat else None,
-        batch_size=ctx if cross_encoder_pooled else None,
+        batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
     )
     return InstanceLaunch(
@@ -582,9 +624,6 @@ def _launch_for(
         argv=argv,
         env_overrides={**visible_env(chosen), **llama_server_runtime_env()},
         model=model_ref,
-        # Unique per role + replica + owning pid so a concurrent instance's reaper
-        # won't touch this server (only a dead parent's orphans get reaped).
-        port_file=data_dir / f"llama-server-{plan.role.value}-{plan.replica}-{os.getpid()}.port",
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
         token_cap=max(1, ctx - _EMBED_CTX_MARGIN) if cross_encoder_pooled else None,
@@ -607,6 +646,14 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
 
     devices = probe_devices(binary)
+    if not devices and model_cache.has_nvidia_gpu():
+        log.warning(
+            "This host has an NVIDIA GPU but the engine's device probe "
+            "(%s --list-devices) reported none; placement is falling back to "
+            "shared-memory mode with unpinned GPUs. Check the GPU driver, "
+            "CUDA_VISIBLE_DEVICES, and that the llama-server build has CUDA support.",
+            binary,
+        )
     if not devices:
         devices = [
             FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
@@ -620,13 +667,11 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     RAM is not the constraint there."""
     if devices:
         return None
-    from lilbee.providers.model_cache import free_system_memory, total_system_memory
-
     floor = min(
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
-        total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
+        model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
-    return max(0, free_system_memory() - floor)
+    return max(0, model_cache.free_system_memory() - floor)
 
 
 def plan_launches(
@@ -636,8 +681,6 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> list[InstanceLaunch]:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    from lilbee.core.config import cfg
-
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
     placement = plan_placement(
@@ -658,7 +701,6 @@ def plan_launches(
             plan,
             model_refs[plan.role],
             binary,
-            cfg.data_dir,
             by_index,
             unified_budget=unified_budget,
             chat_reservation=reservation,

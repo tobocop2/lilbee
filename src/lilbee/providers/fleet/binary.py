@@ -41,16 +41,13 @@ def _bundled_tool(tool: EngineTool) -> Path | None:
 
 
 def resolve_engine_tool(tool: EngineTool) -> Path:
-    """Resolve *tool*: bundled wheel, then a configured llama-server path, then PATH.
+    """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH.
 
     Never downloads anything; the binaries arrive via the bundled ``lilbee-engine``
-    wheel or bring-your-own. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``;
-    the other tools fall back to ``PATH``.
+    wheel or bring-your-own. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
+    (an explicit setting beats the bundled wheel); the other tools resolve from the
+    wheel, then ``PATH``.
     """
-    bundled = _bundled_tool(tool)
-    if bundled is not None:
-        return bundled
-
     if tool is EngineTool.LLAMA_SERVER:
         from lilbee.core.config import cfg
 
@@ -59,6 +56,10 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
             if not configured.is_file():
                 raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
             return configured
+
+    bundled = _bundled_tool(tool)
+    if bundled is not None:
+        return bundled
 
     found = shutil.which(tool.value)
     if found is not None:

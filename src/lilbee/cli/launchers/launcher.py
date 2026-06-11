@@ -14,6 +14,7 @@ from lilbee.cli.launchers.server import (
     wait_for_chat_warm,
 )
 from lilbee.core.config import cfg
+from lilbee.providers.model_ref import with_configured_remote_chat
 
 
 class Launcher(Protocol):
@@ -41,6 +42,31 @@ class Launcher(Protocol):
         ...
 
 
+def _warn_on_model_pin_gaps(model_refs: list[str]) -> None:
+    """Warn when the launched client cannot open on a lilbee-served chat model."""
+    if not model_refs:
+        # The client provider is written with no models, so it cannot use lilbee.
+        # Some clients (e.g. opencode) then silently fall back to their own default
+        # provider, so make the cause loud instead of leaving an empty picker.
+        typer.secho(
+            "Warning: no chat models are installed, so the launched client will have "
+            "no lilbee models to select. Pull one first, e.g. "
+            "'lilbee model pull Qwen/Qwen3-8B-GGUF'.",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+    elif str(cfg.chat_model) not in model_refs:
+        # The startup pin would point at a model the provider does not serve,
+        # so the client opens on its own default provider instead of lilbee.
+        typer.secho(
+            f"Warning: configured chat model '{cfg.chat_model}' is not installed; "
+            "the launched client will not open on a lilbee model. Pull it first "
+            "or set chat_model to an installed ref.",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+
+
 def run_launcher(launcher: Launcher) -> None:
     """Find the client, ensure a lilbee server is up, prepare, exec, clean up."""
     binary = launcher.find_binary()
@@ -53,22 +79,14 @@ def run_launcher(launcher: Launcher) -> None:
     # port (the loser gets connection-refused). The spawned serve warms its own.
     cfg.worker_pool_eager_start = False
     (token, port), spawned = ensure_server_running()
-    model_refs = installed_chat_model_refs()
-    if not model_refs:
-        # The client provider is written with no models, so it cannot use lilbee.
-        # Some clients (e.g. opencode) then silently fall back to their own default
-        # provider, so make the cause loud instead of leaving an empty picker.
-        typer.secho(
-            "Warning: no chat models are installed, so the launched client will have "
-            "no lilbee models to select. Pull one first, e.g. "
-            "'lilbee model pull Qwen/Qwen3-8B-GGUF'.",
-            err=True,
-            fg=typer.colors.YELLOW,
-        )
+    native_refs = installed_chat_model_refs()
+    model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
+    _warn_on_model_pin_gaps(model_refs)
     # Wait out the cold model load before handing off, so the client opens onto a
     # warm engine instead of an apparently-dead stream. Only meaningful when a
-    # chat model is configured to warm.
-    if model_refs:
+    # native chat model is installed to warm; a remote-configured model has no
+    # local load to wait for.
+    if native_refs:
         wait_for_chat_warm(port)
     extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
     try:

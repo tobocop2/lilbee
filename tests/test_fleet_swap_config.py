@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -27,7 +26,6 @@ def _launch(
         argv=argv,
         env_overrides=env or {},
         model=f"{role.value}-model",
-        port_file=Path(f"/data/{role.value}.port"),
     )
 
 
@@ -148,3 +146,43 @@ class TestBuildSwapConfig:
     def test_member_never_times_out(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 0
+
+
+class TestHealthCheckTimeoutScaling:
+    def test_small_model_gets_the_floor(self) -> None:
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        launch.weights_bytes = 4 * 1024**3
+        cfg = _config([launch])
+        assert cfg["healthCheckTimeout"] == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+
+    def test_giant_model_scales_the_timeout_past_the_floor(self) -> None:
+        # 300 GB at the conservative 150 MB/s disk rate needs ~2048s, not 600s;
+        # llama-swap would otherwise kill the server mid-load.
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        launch.weights_bytes = 300 * 1024**3
+        cfg = _config([launch])
+        expected = (300 * 1024**3) // swap_config_mod._COLD_LOAD_BYTES_PER_S
+        assert cfg["healthCheckTimeout"] == expected
+        assert expected > swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+
+    def test_heaviest_member_sets_the_proxy_global_timeout(self) -> None:
+        small = _launch(WorkerRole.EMBED, ["/bin/llama-server"])
+        small.weights_bytes = 1 * 1024**3
+        giant = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        giant.weights_bytes = 300 * 1024**3
+        cfg = _config([small, giant])
+        expected = (300 * 1024**3) // swap_config_mod._COLD_LOAD_BYTES_PER_S
+        assert cfg["healthCheckTimeout"] == expected
+
+    def test_cold_load_timeout_floors_small_weights(self) -> None:
+        # The shared per-member helper; the provider's client timeout derives from it.
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        assert cold_load_timeout_s(0) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+        assert cold_load_timeout_s(4 * 1024**3) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+
+    def test_cold_load_timeout_scales_giant_weights(self) -> None:
+        from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+        weights = 300 * 1024**3
+        assert cold_load_timeout_s(weights) == weights // swap_config_mod._COLD_LOAD_BYTES_PER_S

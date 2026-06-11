@@ -94,3 +94,80 @@ async def test_chat_busy_error_inherits_from_exception() -> None:
     envelope; it must be a normal Exception so the existing handler chain catches it.
     """
     assert issubclass(ChatBusyError, Exception)
+
+
+async def test_slot_guard_releases_exactly_once() -> None:
+    """Multiple cleanup paths share one guard; only the first release frees the slot."""
+    from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard
+
+    await acquire_chat_slot_or_busy(2, timeout=0.5)
+    await acquire_chat_slot_or_busy(2, timeout=0.5)
+    guard = ChatSlotGuard()
+    assert guard.released is False
+    await guard.release()
+    assert guard.released is True
+    assert chat_gate().in_flight == 1
+    await guard.release()
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()
+
+
+async def test_cancelled_cleanup_still_frees_the_slot() -> None:
+    """A client-disconnect cancellation during cleanup frees the slot exactly once."""
+    from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard
+
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    guard = ChatSlotGuard()
+    started = asyncio.Event()
+
+    async def _stream() -> None:
+        try:
+            started.set()
+            await asyncio.sleep(60)
+        finally:
+            await guard.release()
+
+    task = asyncio.create_task(_stream())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert guard.released is True
+    assert chat_gate().in_flight == 0
+    await guard.release()  # later cleanup paths still no-op
+    assert chat_gate().in_flight == 0
+    # The freed slot is immediately acquirable again.
+    await acquire_chat_slot_or_busy(1, timeout=0.1)
+    await release_chat_slot()
+
+
+async def test_wakeup_consumed_by_cancelled_waiter_passes_to_next() -> None:
+    """A waiter cancelled after being woken hands its wake-up to the next waiter."""
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    first = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    second = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    await asyncio.sleep(0)  # both waiters enqueued
+
+    await release_chat_slot()  # wakes the first waiter's future synchronously
+    first.cancel()  # cancel it before it resumes; the wake-up must not be lost
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await asyncio.wait_for(second, timeout=1)
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()
+
+
+async def test_release_skips_already_cancelled_waiters() -> None:
+    """A release walks past dead waiter futures and wakes the next live one."""
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    first = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    second = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    await asyncio.sleep(0)  # both waiters enqueued
+
+    first.cancel()  # its waiter future is cancelled in place, still queued
+    await release_chat_slot()  # must skip the dead waiter and wake the live one
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await asyncio.wait_for(second, timeout=1)
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()

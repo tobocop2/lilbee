@@ -29,22 +29,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --all-extras
-        env:
-          # x86_64 build cap at AVX baseline (Sandy Bridge 2011+) so ggml
-          # doesn't bake AVX2/FMA/BMI2 into a wheel that the runner pool's
-          # weakest CPU can't run. See tools/wheel-build/cmake_args.sh for
-          # the full rationale (CPU_ALL_VARIANTS + BACKEND_DL builds but
-          # llama-cpp-python's binding never registers the dynamic backends).
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_AVX=ON
-            -DGGML_AVX2=OFF
-            -DGGML_FMA=OFF
-            -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF
-            -DGGML_AVX_VNNI=OFF
-            -DGGML_AVX512=OFF
 
       - name: Lint
         run: make lint
@@ -105,19 +89,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked
-        env:
-          # Cap x86_64 builds at AVX baseline (Sandy Bridge 2011+). With
-          # GGML_NATIVE=OFF, ggml's CMake still auto-enables AVX2/FMA/BMI2
-          # when the build host supports them, so the resulting wheel SIGILLs
-          # on runners whose CPU lacks them. Explicit *=OFF flags pin the
-          # baseline; matches tools/wheel-build/cmake_args.sh. arm64 needs
-          # no equivalent: NEON is mandatory in ARMv8.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Run unit tests
         # ubuntu and macOS on 3.11 hang under pytest-xdist near the end of
@@ -274,25 +245,8 @@ jobs:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
 
-      # Metal OFF: CI macOS runners are VMs without GPU passthrough.
-      # Native OFF: avoids i8mm compile errors on CI M1 runners.
-      # BLAS ON (macOS): uses built-in Accelerate framework for faster matrix ops.
-      # BLAS/CUDA OFF (Linux/Windows): no GPU or BLAS library available.
-      # AVX baseline (x86_64): explicit *=OFF for AVX2/FMA/BMI2/etc. so a
-      # runner lacking them doesn't SIGILL on llama-cpp init.
       - name: Install dependencies
         run: uv sync --locked --all-extras
-        env:
-          # x86_64 builds cap at AVX baseline so ggml doesn't bake AVX2/FMA/BMI2
-          # into a wheel that crashes on the runner pool's weaker CPUs. See
-          # tools/wheel-build/cmake_args.sh for why CPU_ALL_VARIANTS + BACKEND_DL
-          # isn't viable with llama-cpp-python's Python binding.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_CUDA=OFF
-            ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
-            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
 
       - name: Install spacy model
         # Retry around the GitHub-releases download. The default `uv pip

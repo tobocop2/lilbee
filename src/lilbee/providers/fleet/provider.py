@@ -15,14 +15,18 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import WorkerRole, configured_model_message
 
 log = logging.getLogger(__name__)
 
@@ -50,22 +54,87 @@ _CONTEXT_WINDOW_MARGIN = 128
 # starts an upstream on its first request, so warming issues one cheap call).
 _WARM_PROMPT = "warm"
 _WARM_MAX_TOKENS = 1
-# Per-role client request budget. llama-swap loads an upstream lazily on the first
-# request and holds it open during the cold load (up to its own health timeout), so
-# unlike the old supervisor -- which waited for ready before routing -- the first
-# request here covers load + generation. Sized to cover both so a large model's
-# cold load doesn't time out the first call.
-_REQUEST_TIMEOUT_S = 900.0
+# Per-role client request budget: the first request covers the lazy cold load plus
+# generation, so the weights-scaled cold-load budget plus the margin raises this floor.
+_REQUEST_TIMEOUT_FLOOR_S = 900.0
+_REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
+_T = TypeVar("_T")
+
+
+def _request_timeout_s(weights_bytes: int) -> float:
+    """Per-client request budget: the floor, or the cold-load budget plus margin."""
+    return max(
+        _REQUEST_TIMEOUT_FLOOR_S,
+        cold_load_timeout_s(weights_bytes) + _REQUEST_TIMEOUT_GENERATION_MARGIN_S,
+    )
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
-    """Pick the healthy client with the fewest in-flight requests."""
-    return min(clients, key=lambda c: c.in_flight)
+    """Pick the healthy client with the fewest in-flight requests.
+
+    Falls back to the full pool when every client is marked unhealthy, so a
+    fully-dead pool still gets a call (which surfaces the error and lets a
+    recovered replica mark itself healthy again).
+    """
+    healthy = [client for client in clients if client.healthy]
+    return min(healthy or clients, key=lambda c: c.in_flight)
+
+
+def _call_with_failover(
+    clients: list[LlamaServerClient],
+    call: Callable[[LlamaServerClient], _T],
+) -> _T:
+    """Run *call* on the least-busy healthy client, retrying once on another replica.
+
+    A connection-level failure marks the client unhealthy and retries once on a
+    different replica; with no other replica the failure surfaces.
+    """
+    client = _least_in_flight(clients)
+    try:
+        result = call(client)
+    except Exception as exc:
+        if not is_connection_failure(exc):
+            raise
+        client.mark_unhealthy()
+        return _retry_on_other_replica(clients, client, call, exc)
+    client.mark_healthy()
+    return result
+
+
+def _retry_on_other_replica(
+    clients: list[LlamaServerClient],
+    failed: LlamaServerClient,
+    call: Callable[[LlamaServerClient], _T],
+    cause: Exception,
+) -> _T:
+    """Retry *call* once on a replica other than *failed*, marking its health."""
+    others = [c for c in clients if c is not failed]
+    if not others:
+        raise _no_healthy_replica_error() from cause
+    retry = _least_in_flight(others)
+    try:
+        retry_result = call(retry)
+    except Exception as retry_exc:
+        if is_connection_failure(retry_exc):
+            retry.mark_unhealthy()
+        raise
+    retry.mark_healthy()
+    return retry_result
+
+
+def _no_healthy_replica_error() -> ProviderError:
+    """User-facing error for a call with no healthy replica left to retry on."""
+    return ProviderError(
+        "The model server is not responding and no healthy replica is available. "
+        "It may be restarting; try again in a moment.",
+        provider=_PROVIDER_NAME,
+        kind=ProviderErrorKind.CONNECTION,
+    )
 
 
 def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
@@ -111,27 +180,40 @@ def _vision_call(
 
     Caps generation at ``cfg.vision_ocr_max_tokens`` so a runaway repetition loop
     on one page (seen looping to tens of thousands of chars) can't dominate a
-    scan's OCR time; a real page stays well under the cap.
+    scan's OCR time; a real page stays well under the cap. A timeout surfaces as
+    a ``ProviderError`` so the page-level OCR caller can fail just that page.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.base import ProviderError
 
     options = {"max_tokens": cfg.vision_ocr_max_tokens}
     if timeout and timeout > 0:
-        from concurrent.futures import ThreadPoolExecutor
+        return _bounded_vision_chat(client, messages, options, timeout)
+    return client.chat(messages, options=options, stream=False)
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            result = pool.submit(client.chat, messages, options=options, stream=False).result(
-                timeout=timeout
-            )
-    else:
-        result = client.chat(messages, options=options, stream=False)
-    if not isinstance(result, str):
+
+def _bounded_vision_chat(
+    client: LlamaServerClient,
+    messages: Sequence[Mapping[str, Any]],
+    options: dict[str, Any],
+    timeout: float,
+) -> str:
+    """One vision chat whose caller returns by *timeout* with a result or an error.
+
+    The httpx timeout is per-phase (connect/read/...), not a total deadline, so
+    the worker thread can outlive the caller on a slowly trickling response; the
+    executor is shut down without waiting so nothing blocks on it.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(client.chat, messages, options=options, stream=False, timeout=timeout)
+        return future.result(timeout=timeout)
+    except FutureTimeoutError:
         raise ProviderError(
-            f"Vision server returned {type(result).__name__}, expected text.",
+            f"Vision OCR timed out after {timeout:.0f}s.",
             provider=_PROVIDER_NAME,
-        )
-    return result
+        ) from None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _pdf_drain_budget(total_pages: int, per_page_timeout_s: float | None) -> float | None:
@@ -177,6 +259,13 @@ class FleetProvider:
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
         self._warming = False
+        # Single-flight guard for the off-thread reload: a second reload_role
+        # while one is in flight sets the pending flag instead of dispatching,
+        # and the in-flight thread re-runs the plan loop once per pending flag.
+        self._reloading = False
+        # Set when a reload arrives mid-reload: the in-flight pass may have
+        # already snapshotted its plan, so the change must be re-applied.
+        self._reload_pending = False
 
     def _ensure_swap(self) -> SwapManager | None:
         """Start the llama-swap process exactly once across concurrent callers.
@@ -197,10 +286,13 @@ class FleetProvider:
                     return self._swap
             from lilbee.core.config import cfg
 
+            swap = SwapManager(cfg.data_dir)
+            # A dead owner's surviving llama-swap holds VRAM; reap before planning
+            # so the device probe sees the real free memory.
+            swap.reap_stale()
             launches = planning.plan_all_launches()
             if not launches:
                 return None  # no installed/configured model -> serve nothing, spawn nothing
-            swap = SwapManager(cfg.data_dir)
             swap.start(launches)
             with self._lock:
                 self._adopt_swap(swap, launches)
@@ -224,7 +316,7 @@ class FleetProvider:
                     endpoint,
                     launch.model_id,
                     token_cap=launch.token_cap,
-                    timeout=_REQUEST_TIMEOUT_S,
+                    timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                 )
             )
@@ -241,8 +333,6 @@ class FleetProvider:
         upstream on its first request, so a returned client may still be cold. No
         in-process fallback, so a missing pool is a hard error.
         """
-        from lilbee.providers.base import ProviderError
-
         self._ensure_swap()
         with self._lock:
             clients = self._clients.get(role)
@@ -283,8 +373,19 @@ class FleetProvider:
             return self._chat_ctx if self._swap is not None else None
 
     def _shutdown_swap(self) -> None:
+        # The build lock serializes shutdown against a concurrent reload/build:
+        # both mutate self._swap and the llama-swap process, so an unserialized
+        # loser would overwrite the winner's state and leak a live llama-swap.
+        with self._build_lock:
+            with self._lock:
+                swap = self._swap
+            self._drop_swap_refs()
+            if swap is not None:
+                swap.shutdown()
+
+    def _drop_swap_refs(self) -> None:
+        """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""
         with self._lock:
-            swap = self._swap
             clients = [client for pool in self._clients.values() for client in pool]
             self._swap = None
             self._clients = {}
@@ -292,8 +393,18 @@ class FleetProvider:
             self._chat_ctx = None
         for client in clients:
             client.close()
-        if swap is not None:
-            swap.shutdown()
+
+    def _drop_dead_swap(self) -> None:
+        """Drop the refs to a swap whose process is gone so ``_ensure_swap`` rebuilds.
+
+        A no-op while the swap process is still running (e.g. the failure was in
+        planning), so a live engine is never abandoned unstopped.
+        """
+        with self._build_lock:
+            with self._lock:
+                swap = self._swap
+            if swap is not None and not swap.running:
+                self._drop_swap_refs()
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -306,12 +417,10 @@ class FleetProvider:
         one" and is always accepted.
         """
         if model and model != configured:
-            from lilbee.providers.base import ProviderError
-
             raise ProviderError(
-                f"This engine serves the configured {role} model ({configured}). "
-                f"To use {model!r}, set it as the {role} model and reload.",
+                configured_model_message(role, configured, model),
                 provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.BAD_REQUEST,
             )
 
     @overload
@@ -410,8 +519,6 @@ class FleetProvider:
         tools, and the final turn exceed the window; the chat-completions route
         maps that to a 400 ``context_length_exceeded`` rather than a 500.
         """
-        from lilbee.providers.base import ProviderError, ProviderErrorKind
-
         # 0/None means the served context is unknown (no chat launch adopted yet);
         # a real per-slot context is always positive, so skip windowing.
         if not self._chat_ctx:
@@ -430,7 +537,8 @@ class FleetProvider:
         return result.messages
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return _least_in_flight(self._require_clients(WorkerRole.EMBED)).embed(texts)
+        clients = self._require_clients(WorkerRole.EMBED)
+        return _call_with_failover(clients, lambda client: client.embed(texts))
 
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
@@ -461,8 +569,6 @@ class FleetProvider:
         Rich progress to suppress). Pages are numbered 1-based to match
         ``PageText`` / ``ExtractEvent`` everywhere else in lilbee.
         """
-        from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-
         from lilbee.core.config import cfg
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import (
@@ -486,7 +592,17 @@ class FleetProvider:
         def _ocr(idx: int, png: bytes) -> tuple[int, str]:
             messages = build_vision_messages(OCR_PROMPT, png)
             remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
-            return idx, _vision_call(_least_in_flight(clients), messages, remaining)
+            try:
+                return idx, _vision_call(_least_in_flight(clients), messages, remaining)
+            except ProviderError:
+                # One failed/timed-out page yields empty text; siblings continue.
+                log.warning(
+                    "Vision OCR failed for page %d of %s; skipping that page.",
+                    idx + 1,
+                    path.name,
+                    exc_info=True,
+                )
+                return idx, ""
 
         # OCR pages concurrently (a single-page decode underuses the GPU; the vision
         # server runs cfg.vision_ocr_concurrency batching slots). A bounded sliding
@@ -523,7 +639,8 @@ class FleetProvider:
         return [PageText(idx + 1, results[idx]) for idx in sorted(results)]
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        return _least_in_flight(self._require_clients(WorkerRole.RERANK)).rerank(query, candidates)
+        clients = self._require_clients(WorkerRole.RERANK)
+        return _call_with_failover(clients, lambda client: client.rerank(query, candidates))
 
     # --- model management: registry / GGUF reads, no running server needed ---
 
@@ -553,7 +670,6 @@ class FleetProvider:
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata from GGUF headers, or ``None`` if unresolved."""
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -571,7 +687,6 @@ class FleetProvider:
         sidecar is present.
         """
         from lilbee.catalog import is_rerank_ref
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
         from lilbee.providers.gguf_meta import find_mmproj_for_model
 
@@ -598,7 +713,6 @@ class FleetProvider:
         GGUF header each request; a re-quantised file at the same path
         invalidates because its mtime changes.
         """
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
 
         try:
@@ -683,11 +797,19 @@ class FleetProvider:
         Dispatched to a background thread because the slow restart (rewrite config +
         respawn + wait-ready) must not block the settings/model-picker callback.
         llama-swap reloads the whole proxy, so every role is re-planned. If the swap
-        isn't up yet, the next use starts it with current cfg.
+        isn't up yet, the next use starts it with current cfg. Single-flight: a
+        reload while one is in flight sets the pending flag (the in-flight pass may
+        have already snapshotted its plan), and the in-flight thread runs one more
+        pass per pending flag so the change is applied, not dropped.
         """
         with self._lock:
             if self._swap is None:
                 return
+            if self._reloading:
+                self._reload_pending = True
+                return
+            self._reloading = True
+            self._reload_pending = False
         threading.Thread(
             target=self._reload_blocking,
             name=f"fleet-reload-{role.value}",
@@ -695,15 +817,54 @@ class FleetProvider:
         ).start()
 
     def _reload_blocking(self) -> None:
-        """Re-plan all roles and restart llama-swap; runs off the caller's thread."""
-        launches = planning.plan_all_launches()
-        with self._lock:
-            swap = self._swap
-        if swap is None:
-            return
-        swap.reload(launches)
-        with self._lock:
-            self._adopt_swap(swap, launches)
+        """Run reload passes until no further reload arrived mid-pass.
+
+        A failed pass with the pending flag set still runs the pending pass (the
+        fresh plan may succeed under the new cfg); only the final pass's failure
+        propagates, after dropping the refs to a dead swap so the next call can
+        rebuild. The pending check and the guard release happen under one lock
+        acquisition, so a reload_role landing between them cannot be acknowledged
+        and dropped.
+        """
+        while True:
+            try:
+                self._reload_pass()
+            except BaseException:
+                with self._lock:
+                    rerun = self._reload_pending
+                    self._reload_pending = False
+                    if not rerun:
+                        self._reloading = False
+                if rerun:
+                    log.warning(
+                        "Engine reload failed; retrying with the pending change.", exc_info=True
+                    )
+                    continue
+                self._drop_dead_swap()
+                raise
+            with self._lock:
+                if not self._reload_pending:
+                    self._reloading = False
+                    return
+                self._reload_pending = False
+
+    def _reload_pass(self) -> None:
+        """One re-plan/restart of llama-swap from current cfg.
+
+        Runs under the build lock so a racing shutdown/build can't interleave with
+        the restart and leak a live llama-swap holding GPU memory.
+        """
+        with self._build_lock:
+            with self._lock:
+                swap = self._swap
+            if swap is None:
+                return
+            # Reap dead owners' swaps before re-planning, same as the first build.
+            swap.reap_stale()
+            launches = planning.plan_all_launches()
+            swap.reload(launches)
+            with self._lock:
+                self._adopt_swap(swap, launches)
 
     def add_spawn_listener(
         self,

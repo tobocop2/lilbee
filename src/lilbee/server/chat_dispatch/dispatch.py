@@ -11,7 +11,17 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from lilbee.app.services import get_services
-from lilbee.providers.base import ChatResult, FinishReason, TokenUsage, ToolCallDelta
+from lilbee.core.config import cfg
+from lilbee.providers.base import (
+    ChatResult,
+    FinishReason,
+    ProviderError,
+    ProviderErrorKind,
+    TokenUsage,
+    ToolCallDelta,
+)
+from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole, configured_model_message
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -132,7 +142,9 @@ async def dispatch_chat_stream(
     req: CanonicalChatRequest,
 ) -> AsyncIterator[CanonicalStreamEvent]:
     """Stream a canonical event sequence by translating provider frames on the fly."""
-    canonical_model = preflight_chat_request(req)
+    # The preflight can do blocking HTTP model discovery when its TTL lapses;
+    # run it in a thread so the event loop stays responsive.
+    canonical_model = await asyncio.to_thread(preflight_chat_request, req)
     stream = get_services().provider.chat(
         stream=True, **_provider_chat_kwargs(req, canonical_model)
     )
@@ -155,12 +167,12 @@ async def _async_iter_provider_stream(
 ) -> AsyncIterator[str | ToolCallDelta | TokenUsage]:
     """Iterate a provider chat stream without blocking the event loop.
 
-    The llama-cpp pool wrapper implements both Iterator and AsyncIterator so
-    its async path runs without thread hops. The SDK provider's streaming
-    method is a plain sync generator; iterating it inline on the event loop
-    would block, so each ``next()`` runs in a worker thread via
-    ``asyncio.to_thread``. ``LLMProvider.chat`` cannot narrow this distinction
-    in the Protocol because the SDK backend has no async-native path.
+    An async-native stream is consumed directly, without thread hops. The
+    fleet and SDK providers stream via plain sync generators; iterating one
+    inline on the event loop would block, so each ``next()`` runs in a
+    worker thread via ``asyncio.to_thread``. ``LLMProvider.chat`` cannot
+    narrow this distinction in the Protocol because the SDK backend has no
+    async-native path.
     """
     if isinstance(stream, AsyncIterable):
         async for frame in stream:
@@ -281,15 +293,31 @@ def _ensure_tool_capability(req: CanonicalChatRequest, model: str) -> None:
         raise ModelDoesNotSupportToolsError(model)
 
 
+def _ensure_configured_local_model(canonical: str) -> None:
+    """Reject a local-route model that is not the configured chat model.
+
+    Mirrors the fleet's own configured-model guard (which stays in place as
+    defense in depth for direct provider users) so streaming clients get a
+    clean 400 before headers instead of an SSE error frame mid-stream.
+    """
+    if not parse_model_ref(canonical).is_local or canonical == cfg.chat_model:
+        return
+    raise ProviderError(
+        configured_model_message(WorkerRole.CHAT, cfg.chat_model, canonical),
+        kind=ProviderErrorKind.BAD_REQUEST,
+    )
+
+
 def preflight_chat_request(req: CanonicalChatRequest) -> str:
     """Synchronously validate *req* before any streaming response starts.
 
-    Raises ``ModelNotFoundError`` or ``ModelDoesNotSupportToolsError``
-    so the route layer can return a real 4xx HTTP status instead of
-    burying the failure in an SSE error frame after headers flush.
-    Returns the resolved canonical model ref.
+    Raises ``ModelNotFoundError``, ``ModelDoesNotSupportToolsError``, or a
+    ``BAD_REQUEST`` ``ProviderError`` so the route layer can return a real
+    4xx HTTP status instead of burying the failure in an SSE error frame
+    after headers flush. Returns the resolved canonical model ref.
     """
     canonical = _resolve_canonical_model(req.model)
+    _ensure_configured_local_model(canonical)
     _ensure_tool_capability(req, canonical)
     return canonical
 
@@ -308,22 +336,21 @@ def _translate_message(msg: CanonicalMessage) -> list[dict[str, Any]]:
     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
     tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
     tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-
-    if tool_results:
-        # One ``tool`` wire-message per result block; tool_call_id pairs
-        # it back to the originating ToolUseBlock.
-        return [
-            {
-                "role": "tool",
-                "tool_call_id": block.tool_use_id,
-                "content": _flatten_text(block.content),
-            }
-            for block in tool_results
-        ]
-
     text = "".join(text_parts)
+
+    # One ``tool`` wire-message per result block; tool_call_id pairs it back to
+    # the originating ToolUseBlock. Text blocks in the same canonical message
+    # follow as their own content message rather than being dropped.
+    out: list[dict[str, Any]] = [
+        {
+            "role": "tool",
+            "tool_call_id": block.tool_use_id,
+            "content": _flatten_text(block.content),
+        }
+        for block in tool_results
+    ]
     if tool_uses:
-        return [
+        out.append(
             {
                 "role": msg.role,
                 "content": text,
@@ -339,8 +366,10 @@ def _translate_message(msg: CanonicalMessage) -> list[dict[str, Any]]:
                     for tu in tool_uses
                 ],
             }
-        ]
-    return [{"role": msg.role, "content": text}]
+        )
+    elif text or not tool_results:
+        out.append({"role": msg.role, "content": text})
+    return out
 
 
 def _flatten_text(blocks: list[ContentBlock]) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from functools import lru_cache
 
 # Default upper bound for waiting on a free chat slot before surfacing a real
@@ -28,7 +29,7 @@ class ChatGate:
 
     def __init__(self) -> None:
         self._in_flight = 0
-        self._cond = asyncio.Condition()
+        self._waiters: deque[asyncio.Future[None]] = deque()
 
     @property
     def in_flight(self) -> int:
@@ -40,23 +41,52 @@ class ChatGate:
         ceiling = max(1, capacity)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        async with self._cond:
-            while self._in_flight >= ceiling:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise ChatBusyError(_busy_message(timeout))
-                try:
-                    await asyncio.wait_for(self._cond.wait(), timeout=remaining)
-                except TimeoutError as exc:
-                    raise ChatBusyError(_busy_message(timeout)) from exc
-            self._in_flight += 1
+        while self._in_flight >= ceiling:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ChatBusyError(_busy_message(timeout))
+            waiter: asyncio.Future[None] = loop.create_future()
+            self._waiters.append(waiter)
+            try:
+                # asyncio.timeout, not wait_for: 3.11's wait_for swallows a task
+                # cancellation that races a completed waiter (fixed in 3.12).
+                async with asyncio.timeout(remaining):
+                    await waiter
+            except TimeoutError as exc:
+                self._renotify_if_woken(waiter)
+                raise ChatBusyError(_busy_message(timeout)) from exc
+            except asyncio.CancelledError:
+                self._renotify_if_woken(waiter)
+                raise
+            finally:
+                if waiter in self._waiters:
+                    self._waiters.remove(waiter)
+        self._in_flight += 1
 
     async def release(self) -> None:
-        """Free a previously-acquired slot and wake one waiter."""
-        async with self._cond:
-            if self._in_flight > 0:
-                self._in_flight -= 1
-            self._cond.notify()
+        """Free an acquired slot and wake one waiter.
+
+        Contains no awaits: the decrement and wake-up run synchronously on the
+        event loop, so a cancellation delivered to the caller (for example a
+        client disconnect tearing down a streaming response) can never abort
+        the release halfway and leak the slot.
+        """
+        if self._in_flight > 0:
+            self._in_flight -= 1
+        self._wake_next()
+
+    def _wake_next(self) -> None:
+        """Wake the oldest still-pending waiter, if any."""
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+
+    def _renotify_if_woken(self, waiter: asyncio.Future[None]) -> None:
+        """Pass a wake-up consumed by a bailing-out waiter on to the next one."""
+        if waiter.done() and not waiter.cancelled():
+            self._wake_next()
 
 
 def _busy_message(timeout: float) -> str:
@@ -84,3 +114,31 @@ async def acquire_chat_slot_or_busy(capacity: int, timeout: float | None = None)
 async def release_chat_slot() -> None:
     """Release a chat slot reserved by :func:`acquire_chat_slot_or_busy`."""
     await chat_gate().release()
+
+
+class ChatSlotGuard:
+    """Releases one acquired chat slot at most once across multiple cleanup paths.
+
+    A streaming route acquires its slot before the SSE generator runs; a client
+    that disconnects before the generator's first iteration means the generator
+    body (and its ``finally``) never executes. Every cleanup path (generator
+    ``finally``, response after-send hook, explicit ``aclose``) releases through
+    the same guard, so whichever fires first frees the slot and the rest no-op.
+    """
+
+    def __init__(self) -> None:
+        self._released = False
+
+    @property
+    def released(self) -> bool:
+        """True once the slot has been freed."""
+        return self._released
+
+    async def release(self) -> None:
+        """Free the slot on first call; later calls are no-ops."""
+        if self._released:
+            return
+        self._released = True
+        # ChatGate.release never yields to the event loop, so no cancellation
+        # can land between flipping the flag and the slot actually freeing.
+        await release_chat_slot()

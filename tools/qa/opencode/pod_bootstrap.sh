@@ -88,11 +88,16 @@ log "installing cached engine into venv"
 mkdir -p "$VENV_ENGINE_BIN"
 cp -a "$ENGINE_CACHE/." "$VENV_ENGINE_BIN/"
 
-# 7. opencode (the matrix drives it; standalone install needs no node).
+# 7. opencode, pinned (the matrix drives it; standalone install needs no node).
+#    A mid-matrix self-update changes the binary under test; the per-cell
+#    workspace config also sets autoupdate=false as the second lock.
+OPENCODE_PIN="${OPENCODE_PIN:-v1.17.1}"
 if [ ! -x "$HOME/.opencode/bin/opencode" ] && ! command -v opencode >/dev/null; then
   log "installing opencode"
   curl -fsSL https://opencode.ai/install | bash
 fi
+log "pinning opencode to $OPENCODE_PIN"
+PATH="$HOME/.opencode/bin:$PATH" opencode upgrade "$OPENCODE_PIN"
 
 # 8. VHS recorder for the demo reels (the cell pane is recorded on the pod, not a Mac).
 #    The "VHS captures 0 frames on the pod" block was two mundane causes, both handled

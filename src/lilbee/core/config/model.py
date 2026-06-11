@@ -147,7 +147,6 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    remote_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     # Path to a llama-server binary. Empty = use the bundled lilbee-engine
     # wheel binary, else a llama-server on PATH.
     llama_server_path: str = ConfigField(default="", writable=True)
@@ -221,9 +220,9 @@ class Config(BaseSettings):
         "just write the passage.\n\nQuestion: {question}"
     )
 
-    # Reranker model ref. Empty disables reranking. Native GGUFs use
-    # llama-cpp rank pooling; hosted refs (cohere/voyage/jina/together/hf-tei)
-    # need the backend extra.
+    # Reranker model ref. Empty disables reranking. Native GGUFs run on
+    # llama-server (rank pooling or LLM logprob scoring); hosted refs
+    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
@@ -350,8 +349,8 @@ class Config(BaseSettings):
     # to back it. Set explicitly to cap below the model's training_ctx.
     num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
-    # Flash attention. None (default) = on with TypeError fallback for
-    # older llama-cpp-python builds, True = force on, False = off.
+    # Flash attention. None (default) = on, True = force on, False = off
+    # for backends or models where it misbehaves.
     # Resolves the 'padding V cache to 1024' warning on models with
     # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
     flash_attention: bool | None = ConfigField(default=None, writable=True)

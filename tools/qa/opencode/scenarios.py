@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from events import count_session_idles, count_tool_dispatches, has_session_error, read_events
 from harness_config import (
     _FAIL_FAST_MARKERS,
     _MULTI_TOOL_TIMEOUT_S,
@@ -18,6 +19,10 @@ from harness_config import (
 )
 from opencode_driver import tmux_capture, tmux_send
 from serve import _count_ok_chat_completions
+
+_SEARCH_TOOL_SUBSTR = "lilbee_search"
+"""Tool-name fragment the event tap matches for the dispatch gate (opencode
+may namespace MCP tools with the server prefix, so substring, not equality)."""
 
 
 @dataclass(frozen=True)
@@ -111,74 +116,95 @@ in *this* scenario, not carried over from the previous one.
 """
 
 
+def _poll_verdict(
+    scenario: Scenario,
+    workspace: Path,
+    pane: str,
+    *,
+    baseline_calls: int,
+    baseline_dispatches: int,
+    start: float,
+) -> ScenarioResult | None:
+    """One poll iteration's verdict, or ``None`` to keep waiting.
+
+    PASS gate: a fresh ``lilbee_search`` dispatch event past this scenario's
+    baseline, else (tap never loaded) the pane gear marker plus
+    ``_TOOL_TURN_MIN_COMPLETIONS`` fresh completions; forbidden-marker checks
+    always run on the rendered pane.
+    """
+
+    def result(status: ScenarioStatus, detail: str) -> ScenarioResult:
+        return ScenarioResult(
+            name=scenario.name,
+            status=status,
+            detail=detail,
+            pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
+            elapsed_s=time.time() - start,
+        )
+
+    pane_lower = pane.lower()
+    fail_fast = next((m for m in _FAIL_FAST_MARKERS if m.lower() in pane_lower), None)
+    if fail_fast is not None:
+        return result(ScenarioStatus.FAIL, f"fail-fast marker hit: {fail_fast!r}")
+    forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
+    if forbidden_hits:
+        return result(ScenarioStatus.FAIL, f"forbidden substring(s) appeared: {forbidden_hits}")
+    events = read_events(workspace)
+    if has_session_error(events):
+        return result(ScenarioStatus.FAIL, "session.error event from opencode")
+    fresh_dispatches = count_tool_dispatches(events, _SEARCH_TOOL_SUBSTR) - baseline_dispatches
+    if fresh_dispatches >= 1:
+        return result(
+            ScenarioStatus.PASS, f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch event(s)"
+        )
+    missing = [s for s in scenario.expected if s.lower() not in pane_lower]
+    fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
+    if not events and not missing and fresh_call >= _TOOL_TURN_MIN_COMPLETIONS:
+        return result(
+            ScenarioStatus.PASS, "gear dispatch + fresh chat completion (pane fallback; no tap)"
+        )
+    return None
+
+
 def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioResult:
     """Send the prompt and poll until a FRESH tool dispatch lands or idle/timeout.
 
-    PASS requires the gear-glyph dispatch marker in the pane AND at least
-    ``_TOOL_TURN_MIN_COMPLETIONS`` new ``POST /v1/chat/completions 200`` in the
-    launcher log since this scenario started. The two-completion delta defeats
-    the stale-glyph trap: opencode keeps the prior turn's transcript visible, so
-    a later scenario would otherwise match an earlier scenario's gear off a
-    single prose completion without ever re-dispatching the tool itself.
+    Verdicts come from :func:`_poll_verdict` (event tap first, pane fallback);
+    this loop owns only the prompt send, the pane-idle fail-fast, and the
+    overall scenario timeout.
     """
     baseline_calls = _count_ok_chat_completions(workspace)
+    baseline_dispatches = count_tool_dispatches(read_events(workspace), _SEARCH_TOOL_SUBSTR)
     tmux_send(session, scenario.prompt)
     start = time.time()
     deadline = start + scenario.timeout_s
     last_pane = ""
     last_change_at = start
-    last_pane_len = 0
-    missing: list[str] = list(scenario.expected)
+    prev_pane = ""
     while time.time() < deadline:
         pane = tmux_capture(session)
         last_pane = pane
-        pane_lower = pane.lower()
-        if pane != "" and len(pane) != last_pane_len:
-            last_pane_len = len(pane)
+        # Full-content compare: a spinner swapping one glyph keeps the pane
+        # LENGTH constant, which the old length check read as idle.
+        if pane != "" and pane != prev_pane:
+            prev_pane = pane
             last_change_at = time.time()
-        fail_fast = next((m for m in _FAIL_FAST_MARKERS if m.lower() in pane_lower), None)
-        if fail_fast is not None:
-            return ScenarioResult(
-                name=scenario.name,
-                status=ScenarioStatus.FAIL,
-                detail=f"fail-fast marker hit: {fail_fast!r}",
-                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
-                elapsed_s=time.time() - start,
-            )
-        forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
-        if forbidden_hits:
-            return ScenarioResult(
-                name=scenario.name,
-                status=ScenarioStatus.FAIL,
-                detail=f"forbidden substring(s) appeared: {forbidden_hits}",
-                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
-                elapsed_s=time.time() - start,
-            )
-        missing = [s for s in scenario.expected if s.lower() not in pane_lower]
-        new_calls = _count_ok_chat_completions(workspace) - baseline_calls
-        fresh_call = new_calls >= _TOOL_TURN_MIN_COMPLETIONS
-        if not missing and fresh_call:
-            return ScenarioResult(
-                name=scenario.name,
-                status=ScenarioStatus.PASS,
-                detail="gear dispatch + fresh chat completion",
-                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
-                elapsed_s=time.time() - start,
-            )
+        verdict = _poll_verdict(
+            scenario,
+            workspace,
+            pane,
+            baseline_calls=baseline_calls,
+            baseline_dispatches=baseline_dispatches,
+            start=start,
+        )
+        if verdict is not None:
+            return verdict
         idle_for = time.time() - last_change_at
         if idle_for > _PANE_IDLE_TIMEOUT_S and time.time() - start > _OPENCODE_BOOT_SETTLE_S:
-            detail = (
-                f"pane idle {idle_for:.0f}s; missing {missing}"
-                if missing
-                else (
-                    f"pane idle {idle_for:.0f}s; gear seen but only {new_calls} new "
-                    f"completion(s), need {_TOOL_TURN_MIN_COMPLETIONS} (prose, no re-dispatch)"
-                )
-            )
             return ScenarioResult(
                 name=scenario.name,
                 status=ScenarioStatus.TIMEOUT,
-                detail=detail,
+                detail=f"pane idle {idle_for:.0f}s without a {_SEARCH_TOOL_SUBSTR} dispatch",
                 pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
                 elapsed_s=time.time() - start,
             )
@@ -186,7 +212,7 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
     return ScenarioResult(
         name=scenario.name,
         status=ScenarioStatus.TIMEOUT,
-        detail=f"missing after {scenario.timeout_s:.0f}s: {missing}",
+        detail=f"no {_SEARCH_TOOL_SUBSTR} dispatch within {scenario.timeout_s:.0f}s",
         pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
         elapsed_s=scenario.timeout_s,
     )
@@ -197,25 +223,44 @@ _ANSWER_SETTLE_QUIET_POLLS = 3
 _ANSWER_SETTLE_INTERVAL_S = 4.0
 
 
-def wait_for_answer_settle(session: str) -> None:
+def wait_for_answer_settle(session: str, workspace: Path) -> None:
     """Wait for opencode to finish rendering the post-tool answer before capture.
 
-    ``run_scenario`` returns the instant the gear marker plus a fresh chat
-    completion appear, but opencode is still streaming the answer turn then, so a
-    pane captured immediately shows the tool call and no answer. Poll until the
-    pane stops changing for a few consecutive intervals (generation idle), capped
-    by a timeout so a model that streams forever cannot hang the sweep.
+    ``run_scenario`` returns the instant the dispatch gate passes, but opencode
+    is still streaming the answer turn then, so a pane captured immediately
+    shows the tool call and no answer. The event tap ends the wait exactly when
+    opencode reports the turn done (``session.idle`` as the latest event); the
+    pane-quiet poll remains as the no-tap fallback, capped by a timeout so a
+    model that streams forever cannot hang the sweep.
     """
     deadline = time.monotonic() + _ANSWER_SETTLE_TIMEOUT_S
-    prev = tmux_capture(session)
+    idles_at_entry = count_session_idles(read_events(workspace))
+    prev_pane = tmux_capture(session)
+    prev_event_count = -1
     quiet = 0
     while time.monotonic() < deadline:
         time.sleep(_ANSWER_SETTLE_INTERVAL_S)
+        events = read_events(workspace)
+        if events:
+            # A fresh session.idle means opencode finished the turn. Trailing
+            # bookkeeping events (session.status etc.) can follow it, so also
+            # treat a quiet event stream as settled rather than requiring idle
+            # to be the literal last record.
+            if count_session_idles(events) > idles_at_entry:
+                return
+            if len(events) == prev_event_count:
+                quiet += 1
+                if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
+                    return
+            else:
+                quiet = 0
+                prev_event_count = len(events)
+            continue
         cur = tmux_capture(session)
-        if cur == prev:
+        if cur == prev_pane:
             quiet += 1
             if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
                 return
         else:
             quiet = 0
-            prev = cur
+            prev_pane = cur

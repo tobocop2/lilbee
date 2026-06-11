@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,9 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
+from lilbee.core.config import cfg
+from lilbee.modelhub.registry import ModelRegistry
+from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
@@ -27,14 +31,14 @@ LOOPBACK = "127.0.0.1"
 
 _SERVER_BOOT_TIMEOUT_S = 60.0
 _SERVER_POLL_INTERVAL_S = 0.5
-# Upper bound on the cold model-load wait. A large chat model split across GPUs
-# can take minutes to load; this only bounds the visible warming wait, after
-# which the launcher hands off anyway (the model then warms on the first call).
+# Floor on the cold model-load wait; chat_warm_budget_s() scales it up with the weights.
 _WARM_TIMEOUT_S = 600.0
 _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
 _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
+# Spawn attempts; free_port()'s released probe port can be stolen before the server binds.
+_SPAWN_ATTEMPTS = 3
 
 
 def running_server_session() -> tuple[str, int] | None:
@@ -113,15 +117,28 @@ def served_chat_ctx(port: int) -> int | None:
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
-def wait_for_chat_warm(port: int, timeout_s: float = _WARM_TIMEOUT_S) -> bool:
+def chat_warm_budget_s() -> float:
+    """Warm wait scaled to the chat model's on-disk weights at the engine's cold-load rate."""
+    try:
+        shards = ModelRegistry(cfg.models_dir).shard_paths(str(cfg.chat_model))
+    except (KeyError, ValueError):
+        return _WARM_TIMEOUT_S
+    total_bytes = sum(shard.stat().st_size for shard in shards)
+    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes)))
+
+
+def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:
     """Block until the chat model is loaded, showing a warming indicator.
 
     The server warms the chat role on a background thread at startup, so a client
     launched the instant the HTTP port binds would otherwise hit an
     apparently-dead stream during the cold model load. Returns True once the
-    chat engine reports ready, or False if *timeout_s* elapses first; the caller
-    proceeds either way, so a still-loading model just warms on the first call.
+    chat engine reports ready, or False if the budget (weights-scaled via
+    :func:`chat_warm_budget_s` unless given) elapses first; the caller proceeds
+    either way, so a still-loading model just warms on the first call.
     """
+    if timeout_s is None:
+        timeout_s = chat_warm_budget_s()
     if chat_ready(port):
         return True
     deadline = time.monotonic() + timeout_s
@@ -144,10 +161,6 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
     capped at 5 MB) so a crash mid-session leaves a trace instead of disappearing.
     Set ``LILBEE_LAUNCHER_SERVE_QUIET=1`` to restore the previous DEVNULL behavior.
     """
-    import os
-
-    from lilbee.core.config import cfg
-
     lilbee_bin = shutil.which("lilbee")
     cmd = (
         [lilbee_bin, "serve", "--port", str(port)]
@@ -201,17 +214,32 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
     existing = running_server_session()
     if existing is not None and health_ok(existing[1]):
         return existing, None
-    chosen_port = free_port()
-    console.print(f"Starting lilbee server on port {chosen_port}...")
-    spawned = spawn_server(chosen_port)
-    if not wait_for_health(chosen_port):
-        stop_spawned_server(spawned)
-        typer.secho(
-            f"lilbee server failed to start on port {chosen_port}; check the logs.",
-            err=True,
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(1)
+    last_port = 0
+    for _ in range(_SPAWN_ATTEMPTS):
+        last_port = free_port()
+        spawned = _spawn_and_wait(last_port)
+        if spawned is not None:
+            return _session_for_spawned(spawned), spawned
+    typer.secho(
+        f"lilbee server failed to start on port {last_port}; check the logs.",
+        err=True,
+        fg=typer.colors.RED,
+    )
+    raise typer.Exit(1)
+
+
+def _spawn_and_wait(port: int) -> subprocess.Popen[bytes] | None:
+    """Spawn a server on *port* and wait for health; None when it never comes up."""
+    console.print(f"Starting lilbee server on port {port}...")
+    spawned = spawn_server(port)
+    if wait_for_health(port):
+        return spawned
+    stop_spawned_server(spawned)
+    return None
+
+
+def _session_for_spawned(spawned: subprocess.Popen[bytes]) -> tuple[str, int]:
+    """Read the session a freshly-healthy server wrote, stopping it when missing."""
     session = running_server_session()
     if session is None:
         stop_spawned_server(spawned)
@@ -221,4 +249,4 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
             fg=typer.colors.RED,
         )
         raise typer.Exit(1)
-    return session, spawned
+    return session

@@ -27,6 +27,7 @@ def isolated_env(tmp_path):
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.concept_graph = False
+    cfg.vision_model = ""
 
     yield docs
 

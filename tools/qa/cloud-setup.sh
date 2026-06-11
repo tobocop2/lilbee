@@ -11,7 +11,7 @@
 #
 # Optional env:
 #   LILBEE_BRANCH=feat/local-model-api  (default)
-#   LLAMA_CUDA=cu124                    (cu124|cu125|cu126 - pick to match the box's nvidia-smi CUDA version)
+#   LLAMA_CUDA=cu124                    (cu121..cu125 - engine build backend; match the box's nvidia-smi CUDA version)
 #   HF_TOKEN=hf_xxx                     (only if pulling gated repos; the default matrix cells are all public)
 
 set -euxo pipefail
@@ -24,7 +24,7 @@ WORK_DIR="${HOME}/lilbee"
 # 1. System deps (Lambda's PyTorch image already has most of these; idempotent)
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends \
-  git tmux curl ca-certificates build-essential pkg-config jq
+  git tmux curl ca-certificates build-essential cmake pkg-config jq
 
 # 2. Install uv (Python toolchain) if not already on PATH
 if ! command -v uv >/dev/null 2>&1; then
@@ -47,19 +47,32 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
-# 5. Install lilbee with the [remote] + [crawler] + [graph] extras + CUDA wheel.
-# Sync via PyPI first (resolves the dep tree), then force-reinstall the GPU
-# build of llama-cpp-python from abetlen's CUDA-specific index. The two-step
-# is required because passing the CUDA URL as ``--extra-index-url`` only
-# ranks it BELOW PyPI; uv would still pick PyPI's CPU wheel for the same
-# version. ``--index-url`` (primary) on the second call forces the GPU build.
+# 5. Install lilbee with the [remote] + [crawler] + [graph] extras.
 uv sync --extra remote --extra crawler --extra graph
-uv pip install --reinstall-package llama-cpp-python --no-cache \
-  --index-url "https://abetlen.github.io/llama-cpp-python/whl/${CUDA}/" \
-  llama-cpp-python
 
-# Sanity-check: confirm GPU offload is actually compiled in.
-uv run python -c "from llama_cpp.llama_cpp import llama_supports_gpu_offload; assert llama_supports_gpu_offload(), 'CUDA wheel missing -- llama_cpp built without GPU offload'; print('GPU offload OK')"
+# 5b. Build the CUDA engine. On a source checkout the lilbee-engine path
+# dependency ships an empty bin/, so build llama-server (CUDA) plus the
+# llama-swap / gguf-parser helpers from the pinned sources. The build script
+# drops all three into packaging/engine-wheel/lilbee_engine/bin; lilbee finds
+# them via LILBEE_LLAMA_SERVER_PATH and PATH. Skipped when a previous run
+# already built the binary.
+ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine/bin"
+if [ ! -x "${ENGINE_BIN_DIR}/llama-server" ]; then
+  command -v nvcc >/dev/null 2>&1 || { echo "nvcc not found; install the CUDA toolkit first (or pick a CUDA base image)" >&2; exit 1; }
+  if ! command -v go >/dev/null 2>&1; then
+    # Go toolchain for the llama-swap / gguf-parser source builds.
+    curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -xz -C /usr/local
+    export PATH="/usr/local/go/bin:${PATH}"
+  fi
+  BACKEND="${CUDA}" bash tools/wheel-build/build_llama_server.sh
+fi
+export LILBEE_LLAMA_SERVER_PATH="${ENGINE_BIN_DIR}/llama-server"
+export PATH="${ENGINE_BIN_DIR}:${PATH}"
+
+# Sanity-check: the engine binary runs and the CUDA backend sees the GPU.
+"${LILBEE_LLAMA_SERVER_PATH}" --version
+"${LILBEE_LLAMA_SERVER_PATH}" --list-devices | grep -qi cuda \
+  || { echo "llama-server built without CUDA devices" >&2; exit 1; }
 
 # 6. Unskip the GPU-enabled cells (these were skipped on the user's M1 Pro)
 uv run python - <<'PYEOF'
@@ -95,7 +108,7 @@ fi
 LOG=/tmp/qa-matrix-$(date +%Y%m%d-%H%M%S).log
 tmux kill-session -t lilbee-matrix 2>/dev/null || true
 tmux new-session -d -s lilbee-matrix \
-  "cd ${WORK_DIR} && export PATH=${HOME}/.local/bin:${HOME}/.opencode/bin:${PATH} && HF_HUB_DISABLE_PROGRESS_BARS=1 uv run python -u tools/qa/opencode/matrix.py 2>&1 | tee ${LOG}"
+  "cd ${WORK_DIR} && export PATH=${ENGINE_BIN_DIR}:${HOME}/.local/bin:${HOME}/.opencode/bin:${PATH} && LILBEE_LLAMA_SERVER_PATH=${ENGINE_BIN_DIR}/llama-server HF_HUB_DISABLE_PROGRESS_BARS=1 uv run python -u tools/qa/opencode/matrix.py 2>&1 | tee ${LOG}"
 
 cat <<EOF
 

@@ -56,9 +56,16 @@ class ClassifiedError:
     message: str
 
 
+# UNKNOWN stays unmapped on purpose: an unclassified failure keeps the callers'
+# generic internal_error fallback instead of guessing a status.
 _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsErrorCode]] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: (400, CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED),
     ProviderErrorKind.NOT_FOUND: (404, CompletionsErrorCode.MODEL_NOT_FOUND),
+    ProviderErrorKind.BAD_REQUEST: (400, CompletionsErrorCode.INVALID_REQUEST),
+    ProviderErrorKind.AUTH: (401, CompletionsErrorCode.INVALID_API_KEY),
+    ProviderErrorKind.RATE_LIMIT: (429, CompletionsErrorCode.RATE_LIMIT_EXCEEDED),
+    ProviderErrorKind.CONNECTION: (503, CompletionsErrorCode.INTERNAL_ERROR),
+    ProviderErrorKind.SERVER: (502, CompletionsErrorCode.INTERNAL_ERROR),
 }
 
 

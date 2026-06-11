@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from lilbee.core.config import (
+    CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     MEMORIES_TABLE,
@@ -40,6 +42,7 @@ from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
+    SOURCE_STAT_UNKNOWN,
     ChunkType,
     ChunkWrite,
     CitationRecord,
@@ -50,6 +53,8 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SourceRecord,
+    SourceStat,
+    SourceStatBackfill,
     SourceType,
     StoreMeta,
 )
@@ -96,8 +101,45 @@ _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 _VECTOR_METRIC = "cosine"
 _ANN_INDEX_TYPE = "IVF_PQ"
-_ANN_NPROBES = 20
+_ANN_NPROBES_FLOOR = 20
+_ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
+
+# Stat columns of ``_sources``; mirrors the field names in ``schema._sources_schema``
+# and ``types.SourceRecord``. Legacy tables that predate these columns are migrated
+# in place with the SOURCE_STAT_UNKNOWN sentinel.
+_SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
+
+# (table, source column) pairs deleted when a source's rows are replaced. The
+# concept nodes/edges tables carry no source column (corpus-level aggregates),
+# so only the per-chunk concept mapping is source-scoped.
+_PER_SOURCE_TABLES = (
+    (CHUNKS_TABLE, "source"),
+    (PAGE_TEXTS_TABLE, "source"),
+    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+)
+
+# Stat backfills replace this many source rows per locked write: the first
+# sync after a stat-column upgrade backfills every source, and an unchunked
+# replace would join millions of filenames into one delete predicate.
+_SOURCE_STAT_BATCH_ROWS = 2000
+
+
+def _ann_nprobes(row_count: int) -> int:
+    """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
+    partitions = math.isqrt(max(row_count, 0))
+    return max(_ANN_NPROBES_FLOOR, math.ceil(partitions * _ANN_NPROBES_PARTITION_FRACTION))
+
+
+def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
+    """Raise ``ValueError`` when any record's vector is not *embedding_dim* wide."""
+    for rec in records:
+        vec = rec.get("vector", [])
+        if len(vec) != embedding_dim:
+            raise ValueError(
+                f"Vector dimension mismatch: expected {embedding_dim}, "
+                f"got {len(vec)} (source={rec.get('source', '?')})"
+            )
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -405,13 +447,7 @@ class Store:
             self._fts_ready = False
             if not records:
                 return 0
-            for rec in records:
-                vec = rec.get("vector", [])
-                if len(vec) != embedding_dim:
-                    raise ValueError(
-                        f"Vector dimension mismatch: expected {embedding_dim}, "
-                        f"got {len(vec)} (source={rec.get('source', '?')})"
-                    )
+            _check_vector_dims(records, embedding_dim)
             db = self.get_db()
             table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
             table.add(records)
@@ -479,7 +515,8 @@ class Store:
         if _has_vector_index(table):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan.
-            query = query.nprobes(_ANN_NPROBES).refine_factor(_ANN_REFINE_FACTOR)
+            nprobes = _ann_nprobes(table.count_rows())
+            query = query.nprobes(nprobes).refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         rows = query.to_list()
@@ -573,13 +610,24 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
-    def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete a source's chunks and page texts. Caller must hold ``write_lock()``."""
-        predicate = f"source = '{escape_sql_string(source)}'"
-        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE):
+    def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
+        """Delete the sources' chunks, page texts, and chunk-concept rows.
+
+        Caller must hold ``write_lock()``. One ``IN`` delete per table covers
+        every source, so a batched flush pays a constant number of predicate
+        deletes instead of one set per document. A delete failure propagates:
+        swallowed, it would leave every flushed file silently stale; raised,
+        the flush fails and the files replan on the next sync.
+        """
+        quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
+        for name, column in _PER_SOURCE_TABLES:
             table = self.open_table(name)
             if table is not None:
-                _safe_delete_unlocked(table, predicate)
+                table.delete(f"{column} IN ({quoted})")
+
+    def _delete_by_source_unlocked(self, source: str) -> None:
+        """Delete a single source's chunks, page texts, and chunk-concept rows."""
+        self._delete_by_sources_unlocked([source])
 
     def delete_by_source(self, source: str) -> None:
         """Delete a source's chunks and page texts."""
@@ -645,28 +693,45 @@ class Store:
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 
-    def _upsert_source_unlocked(
+    def _source_row(
         self,
         filename: str,
         file_hash: str,
         chunk_count: int,
-        source_type: str = "document",
-    ) -> None:
-        """Add or update one source tracking record. Caller must hold ``write_lock()``."""
-        db = self.get_db()
-        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-        _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
-        table.add(
-            [
-                {
-                    "filename": filename,
-                    "file_hash": file_hash,
-                    "ingested_at": datetime.now(UTC).isoformat(),
-                    "chunk_count": chunk_count,
-                    "source_type": source_type,
-                }
-            ]
-        )
+        source_type: str,
+        stat: SourceStat | None,
+    ) -> dict:
+        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel."""
+        return {
+            "filename": filename,
+            "file_hash": file_hash,
+            "ingested_at": datetime.now(UTC).isoformat(),
+            "chunk_count": chunk_count,
+            "source_type": source_type,
+            "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
+            "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
+            "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
+        }
+
+    def _sources_table(self) -> lancedb.table.Table:
+        """Open/create ``_sources``, adding the stat columns to pre-stat tables."""
+        table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
+        missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
+        if missing:
+            table.add_columns({name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing})
+        return table
+
+    def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
+        """Replace source rows: one batched delete plus one batched add.
+
+        Caller must hold ``write_lock()``. A per-file delete+add pair costs two
+        LanceDB version commits, so bulk ingest folds every file in a flush into
+        a single pair.
+        """
+        table = self._sources_table()
+        filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
+        _safe_delete_unlocked(table, f"filename IN ({filenames})")
+        table.add(rows)
 
     def upsert_source(
         self,
@@ -674,28 +739,55 @@ class Store:
         file_hash: str,
         chunk_count: int,
         source_type: SourceType = SourceType.DOCUMENT,
+        stat: SourceStat | None = None,
     ) -> None:
         """Add or update a source tracking record."""
+        row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
         with write_lock():
-            self._upsert_source_unlocked(filename, file_hash, chunk_count, source_type)
+            self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
+
+    def update_source_stats(self, backfills: list[SourceStatBackfill]) -> None:
+        """Record size/mtime for already-tracked sources in batched locked writes."""
+        if not backfills:
+            return
+        for start in range(0, len(backfills), _SOURCE_STAT_BATCH_ROWS):
+            rows = [
+                {
+                    **bf.record,
+                    "size_bytes": bf.stat.size_bytes,
+                    "mtime_ns": bf.stat.mtime_ns,
+                    "stat_captured_ns": bf.stat.captured_ns,
+                }
+                for bf in backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
+            ]
+            with write_lock():
+                self._replace_source_rows_unlocked(rows)
+        self._invalidate_source_cache()
+
+    def optimize_sources(self) -> None:
+        """Compact the sources table; per-flush upserts otherwise accrete tiny versions."""
+        with write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is None:
+                return
+            try:
+                table.optimize()
+            except Exception:
+                log.debug("Sources table optimize failed", exc_info=True)
 
     def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
 
-        Bulk ingest otherwise pays one write-lock acquisition and one LanceDB
-        transaction per document. This folds many documents into a single
-        ``table.add`` plus one source-table update pass, so the lock is taken once
-        per batch and held only for the write -- never across extract or embed,
-        which run before this is called. Each document's cleanup delete and source
-        upsert run inside the same lock, so a reader never observes a half-applied
-        batch (stronger than the per-file path's separate lock per delete/add/upsert).
-
-        The embedding-identity gate and per-vector dimension check mirror
-        ``add_chunks``; a dimension mismatch raises and the whole batch is rejected,
-        which the caller treats as a per-batch failure.
+        One ``write_lock`` acquisition covers the batch's cleanup deletes, page
+        texts, chunk add, and source upserts, so a reader never observes a
+        half-applied batch. Page texts land after the cleanup and before the
+        source rows, so a page-text failure leaves the rows stale and the files
+        replan next sync; a document with no chunks still persists its page
+        texts and source row. The embedding-identity gate and per-vector
+        dimension check mirror ``add_chunks``; a dimension mismatch raises and
+        the whole batch is rejected.
         """
-        items = [it for it in items if it.records]
         if not items:
             return 0
         with write_lock():
@@ -704,27 +796,47 @@ class Store:
             self._ensure_embedding_compat()
             self._fts_ready = False
             all_records = [rec for it in items for rec in it.records]
-            for rec in all_records:
-                vec = rec.get("vector", [])
-                if len(vec) != embedding_dim:
-                    raise ValueError(
-                        f"Vector dimension mismatch: expected {embedding_dim}, "
-                        f"got {len(vec)} (source={rec.get('source', '?')})"
-                    )
+            _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
-            for it in items:
-                if it.needs_cleanup:
-                    self._delete_by_source_unlocked(it.source)
-            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
-            table.add(all_records)
-            if self.get_meta() is None:
-                self._write_meta_unlocked(
-                    embedding_model=embedding_model, embedding_dim=embedding_dim
-                )
-            for it in items:
-                self._upsert_source_unlocked(it.source, it.file_hash, len(it.records))
+            self._cleanup_batch_unlocked(items)
+            self._add_page_texts_unlocked(db, items)
+            self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
+            self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
+
+    def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
+        """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
+        cleanup_sources = [it.source for it in items if it.needs_cleanup]
+        if cleanup_sources:
+            self._delete_by_sources_unlocked(cleanup_sources)
+
+    def _add_page_texts_unlocked(self, db: lancedb.DBConnection, items: list[ChunkWrite]) -> None:
+        """Add the batch's page-text rows. Caller holds ``write_lock()``."""
+        page_rows = [row for it in items for row in (it.page_texts or [])]
+        if page_rows:
+            ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
+
+    def _add_chunk_records_unlocked(
+        self,
+        db: lancedb.DBConnection,
+        all_records: list[dict],
+        embedding_model: str,
+        embedding_dim: int,
+    ) -> None:
+        """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
+        if not all_records:
+            return
+        ensure_table(db, CHUNKS_TABLE, self._chunks_schema()).add(all_records)
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+
+    def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
+        """One ``_sources`` row per batched document."""
+        return [
+            self._source_row(it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat)
+            for it in items
+        ]
 
     def _delete_source_unlocked(self, filename: str) -> None:
         """Remove the *filename* source record. Caller must hold ``write_lock()``."""

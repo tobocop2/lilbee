@@ -19,13 +19,17 @@ if TYPE_CHECKING:
 # One group holds every role with swap disabled, so llama-swap brings them all up
 # and never evicts one to load another (the co-residency the fleet needs).
 _GROUP_NAME = "lilbee"
-# Generous cold-load ceiling: a multi-hundred-GB giant can take minutes to map.
-_HEALTH_CHECK_TIMEOUT_S = 600
+# Cold-load ceiling floor; the heaviest member's weights scale it up from here.
+_HEALTH_CHECK_TIMEOUT_FLOOR_S = 600
+# Conservative cold-load disk rate; a slow network volume streams well under this.
+_COLD_LOAD_BYTES_PER_S = 150 * 1024 * 1024
 _LOG_LEVEL = "info"
 # Matches the --host every server argv binds (adapters); "localhost" would have
 # llama-swap dial [::1] first, where another process could hold the same port.
 _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
-_PORT_FLAG = "--port"
+# Shared with the swap manager, whose orphan-server sweep matches this flag's
+# value in survivor cmdlines.
+PORT_FLAG = "--port"
 _TTL_KEEP = 0  # never time a member out; the group keeps it resident
 
 # llama-swap config keys.
@@ -65,7 +69,7 @@ def build_swap_config(launches: list[InstanceLaunch], member_ports: Mapping[str,
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in launch.env_overrides.items()]
         models[launch.model_id] = entry
     config: dict[str, object] = {
-        _KEY_HEALTH_TIMEOUT: _HEALTH_CHECK_TIMEOUT_S,
+        _KEY_HEALTH_TIMEOUT: _health_check_timeout_s(launches),
         _KEY_LOG_LEVEL: _LOG_LEVEL,
         _KEY_MODELS: models,
         _KEY_GROUPS: {
@@ -80,6 +84,23 @@ def build_swap_config(launches: list[InstanceLaunch], member_ports: Mapping[str,
     return json.dumps(config, indent=2)
 
 
+def cold_load_timeout_s(weights_bytes: int) -> int:
+    """Cold-load ceiling for one member's weights at a conservative disk rate, floored.
+
+    The single source of the scaling formula: llama-swap's health-check timeout
+    and the provider's per-client request timeout both derive from it, so a model
+    whose load llama-swap would wait out can never time out the client first.
+    """
+    return max(_HEALTH_CHECK_TIMEOUT_FLOOR_S, weights_bytes // _COLD_LOAD_BYTES_PER_S)
+
+
+def _health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
+    """Cold-load ceiling of the heaviest member; the timeout is proxy-global in
+    llama-swap, so the slowest possible load sets it."""
+    heaviest = max((launch.weights_bytes for launch in launches), default=0)
+    return cold_load_timeout_s(heaviest)
+
+
 def _command_line(argv: list[str], port: int) -> str:
     """Shell command for a member: the role argv plus its explicit port.
 
@@ -91,4 +112,4 @@ def _command_line(argv: list[str], port: int) -> str:
         rendered = subprocess.list2cmdline(argv)
     else:
         rendered = shlex.join(argv)
-    return f"{rendered} {_PORT_FLAG} {port}"
+    return f"{rendered} {PORT_FLAG} {port}"

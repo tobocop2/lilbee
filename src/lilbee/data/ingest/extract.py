@@ -225,7 +225,7 @@ def _image_ocr_text(path: Path) -> str:
 
 
 def _image_to_png_bytes(path: Path) -> bytes:
-    """Load any mapped image extension (Pillow decodes them all) and re-encode as PNG for the projector."""
+    """Load any mapped image extension and re-encode as PNG for the projector."""
     with Image.open(path) as img:
         buf = BytesIO()
         img.convert("RGB").save(buf, format="PNG")

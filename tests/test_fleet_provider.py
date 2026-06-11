@@ -26,11 +26,14 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     return client
 
 
-def _fake_launch(role: WorkerRole, *, slots: int = 1, ctx: int = 0) -> MagicMock:
+def _fake_launch(
+    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0
+) -> MagicMock:
     launch = MagicMock()
     launch.role = role
     launch.slots = slots
     launch.ctx = ctx
+    launch.weights_bytes = weights_bytes
     return launch
 
 
@@ -39,12 +42,18 @@ class _FakeSwap:
 
     def __init__(self) -> None:
         self.started: list[list] = []
+        self.reaps = 0
         self.reloads = 0
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
+        self.running = True
+
+    def reap_stale(self) -> None:
+        self.reaps += 1
 
     def start(self, launches: list) -> None:
         self.started.append(launches)
+        self.running = True
 
     def endpoint(self) -> str:
         return "http://fake-endpoint"
@@ -57,6 +66,7 @@ class _FakeSwap:
 
     def shutdown(self) -> None:
         self.shutdowns += 1
+        self.running = False
 
 
 def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
@@ -259,6 +269,17 @@ def test_chat_model_override_raises(monkeypatch) -> None:
         p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf")
 
 
+def test_chat_model_override_error_is_bad_request_kind(monkeypatch) -> None:
+    """The mismatch is a client error; BAD_REQUEST maps it to a 400 envelope, not a 500."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.chat([{"role": "user", "content": "hi"}], model="org/repo/other.gguf")
+    assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
+
+
 def test_vision_call_returns_text() -> None:
     client = _fake_client()
     client.chat.return_value = "OCR text"
@@ -280,15 +301,6 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
     client.chat.return_value = "OCR text"
     prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
     assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
-
-
-def test_vision_call_rejects_non_text() -> None:
-    from lilbee.providers.base import ProviderError
-
-    client = _fake_client()
-    client.chat.return_value = iter(["streamed"])  # not a str
-    with pytest.raises(ProviderError, match="expected text"):
-        prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
 
 
 def test_chat_streams_from_server() -> None:
@@ -532,10 +544,10 @@ def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod, "_vision_call", _capture)
     result = p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=120.0)  # type: ignore[arg-type]
     assert result == [PageText(1, "ocr"), PageText(2, "ocr")]
-    # Budget is 2*120 + 300 = 540; both pages draw from it (far above any 120 cap),
-    # and the second page sees no more than the first since time only moves forward.
+    # Budget is 2*120 + 300 = 540; pages run concurrently, so each draws nearly
+    # the full remaining budget (far above any 120 cap), in either capture order.
     assert seen[0] == pytest.approx(540.0, abs=1.0)
-    assert seen[1] is not None and seen[0] is not None and seen[1] <= seen[0]
+    assert seen[1] == pytest.approx(540.0, abs=1.0)
     assert all(t is not None and t > 120.0 for t in seen)
 
 
@@ -583,6 +595,56 @@ def test_ensure_swap_defaults_chat_slots_without_chat_launch(monkeypatch) -> Non
     assert p._chat_ctx is None
 
 
+class _OrderedReapSwap(_FakeSwap):
+    """A fake swap appending reap events to a shared order log."""
+
+    def __init__(self, order: list[str]) -> None:
+        super().__init__()
+        self._order = order
+
+    def reap_stale(self) -> None:
+        super().reap_stale()
+        self._order.append("reap")
+
+
+def _ordered_planner(order: list[str], launches: list) -> object:
+    """A plan_all_launches stand-in appending to the shared order log."""
+
+    def _plan() -> list:
+        order.append("plan")
+        return launches
+
+    return _plan
+
+
+def test_ensure_swap_reaps_stale_swaps_before_planning(monkeypatch) -> None:
+    # An OOM-survivor llama-swap holds VRAM; reaping after planning would let
+    # the device probe see artificially reduced free memory and misplace.
+    order: list[str] = []
+    swap = _OrderedReapSwap(order)
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: swap)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
+    )
+    FleetProvider()._ensure_swap()
+    assert order == ["reap", "plan"]
+
+
+def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
+    order: list[str] = []
+    swap = _OrderedReapSwap(order)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", _ordered_planner(order, [_fake_launch(WorkerRole.CHAT)])
+    )
+    p = FleetProvider()
+    p._swap = swap
+    p._reload_pass()
+    assert order == ["reap", "plan"]
+    assert swap.reloads == 1
+
+
 def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
@@ -601,12 +663,8 @@ def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     assert p._clients == {}
 
 
-def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
-    # Each role's client carries the launch token_cap (embed/rerank input truncation,
-    # the in-process backstop) and a timeout long enough for a cold upstream load,
-    # matching the old supervisor's client construction.
-    launch = _fake_launch(WorkerRole.EMBED)
-    launch.token_cap = 2048
+def _captured_client_kwargs(monkeypatch, launch) -> dict:
+    """Build the engine around *launch* and return the client constructor kwargs."""
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: _FakeSwap())
     monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [launch])
     captured: list[dict] = []
@@ -617,8 +675,38 @@ def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
     FleetProvider()._ensure_swap()
-    assert captured[0]["token_cap"] == 2048
-    assert captured[0]["timeout"] == prov_mod._REQUEST_TIMEOUT_S
+    return captured[0]
+
+
+def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
+    # Each role's client carries the launch token_cap (embed/rerank input truncation,
+    # the in-process backstop) and a timeout long enough for a cold upstream load,
+    # matching the old supervisor's client construction.
+    launch = _fake_launch(WorkerRole.EMBED)
+    launch.token_cap = 2048
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["token_cap"] == 2048
+    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+
+
+def test_small_model_client_keeps_the_floor_timeout(monkeypatch) -> None:
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=4 * _GB)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+
+
+def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
+    # A split-GGUF giant loads longer than the fixed floor; the client request
+    # timeout must ride out the cold load llama-swap itself is willing to wait
+    # for, or the first chat marks the replica unhealthy mid-load.
+    from lilbee.providers.fleet import swap_config as swap_config_mod
+
+    launch = _fake_launch(WorkerRole.CHAT, weights_bytes=300 * _GB)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    health_timeout = swap_config_mod._health_check_timeout_s([launch])
+    assert health_timeout > prov_mod._REQUEST_TIMEOUT_FLOOR_S
+    assert kwargs["timeout"] >= health_timeout
+    assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
 
 
 def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
@@ -985,3 +1073,393 @@ class TestChatCapacityAndCtxGetters:
         p._swap = _FakeSwap()
         p._chat_ctx = 32768
         assert p.served_chat_ctx() == 32768
+
+
+class _FakeReplica:
+    """A minimal client double with real health/in-flight state for routing tests."""
+
+    def __init__(self, *, in_flight: int = 0, fail: Exception | None = None) -> None:
+        self.in_flight = in_flight
+        self.healthy = True
+        self.fail = fail
+        self.calls = 0
+
+    def mark_unhealthy(self) -> None:
+        self.healthy = False
+
+    def mark_healthy(self) -> None:
+        self.healthy = True
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return [[0.1]] * len(texts)
+
+    def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return [0.5] * len(candidates)
+
+
+class TestReplicaHealthRouting:
+    def test_least_in_flight_skips_unhealthy_clients(self) -> None:
+        dead, busy_but_alive = _FakeReplica(in_flight=0), _FakeReplica(in_flight=9)
+        dead.mark_unhealthy()
+        assert prov_mod._least_in_flight([dead, busy_but_alive]) is busy_but_alive
+
+    def test_least_in_flight_falls_back_when_all_unhealthy(self) -> None:
+        only = _FakeReplica()
+        only.mark_unhealthy()
+        assert prov_mod._least_in_flight([only]) is only
+
+    def test_embed_fails_over_once_to_a_healthy_replica(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        alive = _FakeReplica(in_flight=5)  # busier, picked only after failover
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, alive]})
+        assert p.embed(["a", "b"]) == [[0.1], [0.1]]
+        assert dead.healthy is False  # marked out of the pool
+        assert alive.calls == 1
+
+    def test_dead_replica_stops_receiving_traffic_after_failover(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        alive = _FakeReplica(in_flight=5)
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, alive]})
+        p.embed(["a"])
+        dead_calls_after_failover = dead.calls
+        p.embed(["b"])  # routed straight to the healthy replica now
+        assert dead.calls == dead_calls_after_failover
+
+    def test_all_dead_surfaces_provider_error(self) -> None:
+        import httpx as _httpx
+
+        from lilbee.providers.base import ProviderError
+
+        only = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        p = _provider_with_clients({WorkerRole.EMBED: [only]})
+        with pytest.raises(ProviderError, match="no healthy replica"):
+            p.embed(["a"])
+
+    def test_successful_call_restores_an_unhealthy_replica(self) -> None:
+        only = _FakeReplica()
+        only.mark_unhealthy()
+        p = _provider_with_clients({WorkerRole.EMBED: [only]})
+        assert p.embed(["a"]) == [[0.1]]
+        assert only.healthy is True
+
+    def test_model_level_errors_propagate_without_failover(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        broken = _FakeReplica(fail=ProviderError("bad input", provider="llama-server"))
+        sibling = _FakeReplica(in_flight=5)
+        p = _provider_with_clients({WorkerRole.EMBED: [broken, sibling]})
+        with pytest.raises(ProviderError, match="bad input"):
+            p.embed(["a"])
+        assert broken.healthy is True  # not a connection failure, stays in the pool
+        assert sibling.calls == 0
+
+    def test_rerank_fails_over_to_a_healthy_replica(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        alive = _FakeReplica(in_flight=5)
+        p = _provider_with_clients({WorkerRole.RERANK: [dead, alive]})
+        assert p.rerank("q", ["c"]) == [0.5]
+        assert alive.calls == 1
+
+    def test_failover_probes_a_cooling_replica_when_none_healthy(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        cooling = _FakeReplica(in_flight=5)
+        cooling.mark_unhealthy()  # the only sibling is mid cool-down
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, cooling]})
+        assert p.embed(["a"]) == [[0.1]]  # probed instead of "no healthy replica"
+        assert cooling.calls == 1
+        assert cooling.healthy is True  # the successful probe restored it
+
+    def test_retry_connection_failure_marks_the_second_replica_unhealthy(self) -> None:
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        also_dead = _FakeReplica(in_flight=5, fail=_httpx.ConnectError("refused"))
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, also_dead]})
+        with pytest.raises(_httpx.ConnectError):
+            p.embed(["a"])
+        assert dead.healthy is False
+        assert also_dead.healthy is False  # the retry target is taken out too
+
+    def test_retry_model_error_propagates_without_marking(self) -> None:
+        import httpx as _httpx
+
+        from lilbee.providers.base import ProviderError
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        broken = _FakeReplica(in_flight=5, fail=ProviderError("bad input", provider="llama-server"))
+        p = _provider_with_clients({WorkerRole.EMBED: [dead, broken]})
+        with pytest.raises(ProviderError, match="bad input"):
+            p.embed(["a"])
+        assert broken.healthy is True  # not a connection failure, stays in the pool
+
+    def test_cooled_down_replica_gets_traffic_again_and_recovers(self, monkeypatch) -> None:
+        import httpx as _httpx
+
+        from lilbee.providers.fleet import client as client_mod
+        from lilbee.providers.fleet.client import LlamaServerClient
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock["now"])
+        calls: dict[str, int] = {"recovered": 0, "sibling": 0}
+
+        def _handler(name: str):
+            def handler(_request: _httpx.Request) -> _httpx.Response:
+                calls[name] += 1
+                return _httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
+
+            return handler
+
+        def _real_client(name: str) -> LlamaServerClient:
+            http = _httpx.Client(
+                transport=_httpx.MockTransport(_handler(name)), base_url="http://gpu"
+            )
+            return LlamaServerClient("http://gpu", name, http=http)
+
+        recovered, sibling = _real_client("recovered"), _real_client("sibling")
+        recovered.mark_unhealthy()
+        p = _provider_with_clients({WorkerRole.EMBED: [recovered, sibling]})
+        p.embed(["a"])  # within the cool-down: routed to the sibling only
+        assert (calls["recovered"], calls["sibling"]) == (0, 1)
+        clock["now"] = client_mod._UNHEALTHY_RETRY_S
+        p.embed(["b"])  # cooled down: the replica is routable again (the probe)
+        assert calls["recovered"] == 1
+        assert recovered.healthy is True  # the successful probe restored it
+
+
+class TestVisionTimeout:
+    def test_wedged_vision_call_times_out_within_budget(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        release = threading.Event()
+        client = _fake_client(0)
+
+        def _wedged(*_a, **_k) -> str:
+            release.wait(5.0)
+            return "late"
+
+        client.chat.side_effect = _wedged
+        started = time.monotonic()
+        try:
+            with pytest.raises(ProviderError, match="timed out"):
+                prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 0.2)
+            assert time.monotonic() - started < 2.0  # did not block on executor exit
+        finally:
+            release.set()
+
+    def test_bounded_call_passes_the_deadline_to_the_http_request(self) -> None:
+        client = _fake_client(0)
+        client.chat.return_value = "text"
+        assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 9.0) == "text"
+        assert client.chat.call_args.kwargs["timeout"] == 9.0
+
+    def test_pdf_ocr_one_timed_out_page_does_not_abort_siblings(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.vision import PageText
+
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+        monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+        monkeypatch.setattr(
+            "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+        )
+
+        failed_once: list[bool] = []
+
+        def _vision(_client, _messages, _timeout) -> str:
+            if not failed_once:
+                failed_once.append(True)
+                raise ProviderError("Vision OCR timed out after 1s.", provider="llama-server")
+            return "page two"
+
+        monkeypatch.setattr(prov_mod, "_vision_call", _vision)
+        p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+        result = p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
+        assert result == [PageText(1, ""), PageText(2, "page two")]
+
+
+class TestReloadSingleFlight:
+    def test_concurrent_reload_calls_dispatch_one_reload(self, monkeypatch) -> None:
+        threads: list[object] = []
+
+        class _RecordingThread:
+            def __init__(self, *, target, name, daemon) -> None:
+                self.target = target
+                threads.append(self)
+
+            def start(self) -> None:
+                return None  # held un-run so the second call sees the in-flight guard
+
+        monkeypatch.setattr(prov_mod.threading, "Thread", _RecordingThread)
+        p = _provider_with_clients({})
+        p.reload_role(WorkerRole.CHAT)
+        p.reload_role(WorkerRole.EMBED)  # racing call while the first is in flight
+        assert len(threads) == 1
+        assert p._reload_pending is True  # queued for the in-flight thread, not dropped
+
+    def test_reload_requested_mid_flight_runs_a_second_pass(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True  # an in-flight reload that already snapshotted its plan
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p.reload_role(WorkerRole.EMBED)  # the second settings change arrives mid-flight
+        assert p._reload_pending is True
+        p._reload_blocking()  # the in-flight thread runs to completion
+        assert swap.reloads == 2  # one pass per request: the change was applied
+        assert p._reloading is False
+        assert p._reload_pending is False
+
+    def test_fresh_reload_clears_a_stale_pending_flag(self, monkeypatch) -> None:
+        threads: list[object] = []
+
+        class _RecordingThread:
+            def __init__(self, *, target, name, daemon) -> None:
+                threads.append(self)
+
+            def start(self) -> None:
+                return None
+
+        monkeypatch.setattr(prov_mod.threading, "Thread", _RecordingThread)
+        p = _provider_with_clients({})
+        p._reload_pending = True  # left over; the fresh pass plans from current cfg
+        p.reload_role(WorkerRole.CHAT)
+        assert len(threads) == 1
+        assert p._reload_pending is False
+
+    def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
+        class _ExplodingSwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                super().reload(launches)
+                raise RuntimeError("respawn failed")
+
+        swap = _ExplodingSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+        p._reload_pending = True
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        with pytest.raises(RuntimeError, match="respawn failed"):
+            p._reload_blocking()
+        assert swap.reloads == 2  # the pending pass still ran before the failure surfaced
+        assert p._reloading is False
+        assert p._reload_pending is False
+
+    def test_failed_pass_still_applies_the_pending_change(self, monkeypatch) -> None:
+        class _FlakySwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                super().reload(launches)
+                if self.reloads == 1:
+                    self.running = False  # the failed restart tore the process down
+                    raise RuntimeError("first pass failed")
+                self.running = True
+
+        swap = _FlakySwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+        p._reload_pending = True  # a settings change arrived during the failing pass
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p._reload_blocking()  # must not raise: the pending pass succeeded
+        assert swap.reloads == 2
+        assert p._swap is swap  # re-adopted by the successful pass
+        assert p._reloading is False
+        assert p._reload_pending is False
+
+    def test_final_pass_failure_drops_the_dead_swap(self, monkeypatch) -> None:
+        class _ExplodingSwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                self.running = False  # the failed restart tore the process down
+                raise RuntimeError("respawn failed")
+
+        p = FleetProvider()
+        p._swap = _ExplodingSwap()
+        p._reloading = True
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        with pytest.raises(RuntimeError, match="respawn failed"):
+            p._reload_blocking()
+        assert p._swap is None  # the next call rebuilds instead of hitting a dead swap
+
+    def test_planning_failure_keeps_a_live_swap(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+
+        def _broken_plan() -> list:
+            raise RuntimeError("no devices")
+
+        monkeypatch.setattr(planning_mod, "plan_all_launches", _broken_plan)
+        with pytest.raises(RuntimeError, match="no devices"):
+            p._reload_blocking()
+        assert p._swap is swap  # still running and serving the old config
+        assert swap.shutdowns == 0
+
+    def test_reload_clears_the_guard_when_done(self, monkeypatch) -> None:
+        swap = _FakeSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
+        p._reload_blocking()
+        assert swap.reloads == 1
+        assert p._reloading is False
+        p.reload_role(WorkerRole.CHAT)  # guard released -> a new reload can dispatch
+
+    def test_reload_blocking_noops_when_swap_already_gone(self) -> None:
+        p = FleetProvider()
+        p._reloading = True
+        p._reload_blocking()  # no swap -> nothing to reload, guard still released
+        assert p._reloading is False
+
+    def test_reload_racing_shutdown_serializes_and_leaks_nothing(self, monkeypatch) -> None:
+        order: list[str] = []
+        gate = threading.Event()
+
+        class _OrderedSwap(_FakeSwap):
+            def reload(self, launches: list) -> None:
+                order.append("reload")
+                super().reload(launches)
+
+            def shutdown(self) -> None:
+                order.append("shutdown")
+                super().shutdown()
+
+        swap = _OrderedSwap()
+        p = FleetProvider()
+        p._swap = swap
+        p._reloading = True
+
+        reload_entered = threading.Event()
+
+        def _slow_plan() -> list:
+            reload_entered.set()
+            gate.wait(5.0)
+            return []
+
+        monkeypatch.setattr(planning_mod, "plan_all_launches", _slow_plan)
+        reloader = threading.Thread(target=p._reload_blocking)
+        reloader.start()
+        assert reload_entered.wait(5.0)  # the reload holds the build lock first
+        shutter = threading.Thread(target=p._shutdown_swap)
+        shutter.start()
+        time.sleep(0.05)
+        assert order == []  # shutdown is blocked behind the in-flight reload
+        gate.set()
+        reloader.join(timeout=5.0)
+        shutter.join(timeout=5.0)
+        assert order == ["reload", "shutdown"]  # serialized, no interleaving
+        assert p._swap is None  # the shutdown's state cleanup still landed

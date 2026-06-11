@@ -7,6 +7,7 @@ Run before tagging. Not for CI. ``--families <list>`` narrows the matrix;
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,13 +22,13 @@ from harness_config import (
 )
 from models import (
     ModelCell,
-    _installed_ref_for_repo,
-    _pull_ref_for,
     _run_pull_with_group_kill,
     cleanup_cell_model,
     ensure_embedding_model_pulled,
+    is_ref_registered,
     load_models,
-    suspend_other_chat_manifests,
+    prewarm_model_blobs,
+    restore_suspended_manifests,
 )
 from opencode_driver import (
     launch_opencode_in_tmux,
@@ -58,19 +59,21 @@ def setup_cell(
     reset_opencode_session_state()
     port = free_port()
     if not args.no_pull:
-        pull_ref = _pull_ref_for(cell.ref)
-        print(f"[{cell.family}] pulling {pull_ref}")
-        _run_pull_with_group_kill(pull_ref)
-        installed = _installed_ref_for_repo(pull_ref)
-        if installed is not None and installed != cell.ref:
-            print(
-                f"[{cell.family}] pull installed {installed}; using it (models.toml had {cell.ref})"
-            )
-            cell.ref = installed
+        # Exact file ref: a repo-level pull may install a different quant than
+        # models.toml names, and a matrix that tests a different artifact than
+        # it reports is not reproducible.
+        print(f"[{cell.family}] pulling {cell.ref}")
+        _run_pull_with_group_kill(cell.ref)
+    if not is_ref_registered(cell.ref):
+        # Without a registered model the launcher serves zero models and the
+        # client silently falls back to its own provider; fail the cell now.
+        raise RuntimeError(f"{cell.ref} is not registered after pull")
+    print(f"[{cell.family}] prewarming model blobs into page cache")
+    prewarm_model_blobs(cell.ref)
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     print(f"[{cell.family}] seeded Godot corpus from {_GODOT_CORPUS}")
     print(f"[{cell.family}] scoping opencode tools to lilbee_search")
-    scope_opencode_tools()
+    scope_opencode_tools(workspace)
     return workspace, port, None
 
 
@@ -102,6 +105,9 @@ def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep
     # cell's load.
     subprocess.run(["pkill", "-f", "lilbee serve"], check=False)
     subprocess.run(["pkill", "-f", "llama-server"], check=False)
+    # llama-swap outlives its llama-server children and a stale proxy can
+    # respawn the prior cell's model on any stray request to its port.
+    subprocess.run(["pkill", "-f", "llama-swap"], check=False)
 
 
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
@@ -115,20 +121,18 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     try:
         workspace, _port, serve_proc = setup_cell(cell, args, log_path)
         try:
-            with suspend_other_chat_manifests(cell.ref):
-                print(f"[{cell.family}] launching opencode in tmux session {session}")
-                launch_opencode_in_tmux(workspace, session)
-                result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
-                if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
-                    print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
-                    wait_for_answer_settle(session)
-                pane = tmux_capture(session)
-                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-                (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
-                print(
-                    f"[{cell.family}] full pane -> results/{cell.family}.pane.txt "
-                    f"({len(pane)} chars)"
-                )
+            print(f"[{cell.family}] launching opencode in tmux session {session}")
+            launch_opencode_in_tmux(workspace, session)
+            result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
+            if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
+                print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
+                wait_for_answer_settle(session, workspace)
+            pane = tmux_capture(session)
+            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
+            print(
+                f"[{cell.family}] full pane -> results/{cell.family}.pane.txt ({len(pane)} chars)"
+            )
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)
@@ -146,6 +150,24 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
         print(f"[{cell.family}] cleaning up chat GGUF")
         cleanup_cell_model(cell)
     return result
+
+
+def arm_pod_watchdog() -> subprocess.Popen[bytes] | None:
+    """On a pod, stop it when the run stalls (no log/model writes, idle GPUs).
+
+    A hung or dead run leaves the pod billing for nothing; the watchdog powers
+    it off instead of letting it idle. No-op off-pod (RUNPOD_POD_ID unset).
+    """
+    if not os.environ.get("RUNPOD_POD_ID"):
+        return None
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    watch_paths = [str(LOG_DIR)]
+    for env_var in ("LILBEE_MODELS_DIR", "HF_HOME"):
+        path = os.environ.get(env_var)
+        if path:
+            watch_paths.append(path)
+    print(f"arming pod idle watchdog on {', '.join(watch_paths)}")
+    return subprocess.Popen(["bash", str(QA_DIR / "pod_watchdog.sh"), *watch_paths])
 
 
 def main() -> int:
@@ -178,9 +200,17 @@ def main() -> int:
         return 2
 
     print(f"running QA matrix for {len(cells)} model(s)")
-    if not args.no_pull:
-        ensure_embedding_model_pulled()
-    results = [run_cell(c, args) for c in cells]
+    healed = restore_suspended_manifests()
+    if healed:
+        print(f"restored {healed} manifest(s) a crashed earlier run left suspended")
+    watchdog = arm_pod_watchdog()
+    try:
+        if not args.no_pull:
+            ensure_embedding_model_pulled()
+        results = [run_cell(c, args) for c in cells]
+    finally:
+        if watchdog is not None:
+            watchdog.terminate()
     (RESULTS_DIR / "results.md").write_text(render_report(results))
     print(f"\nreport: {RESULTS_DIR / 'results.md'}")
 

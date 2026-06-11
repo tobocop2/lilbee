@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
-from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
 
 def test_passes_through_when_name_has_no_special_pattern() -> None:

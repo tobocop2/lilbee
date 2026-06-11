@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,17 +15,39 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
 
+@dataclass
+class ConceptRecords:
+    """Rows for the three concept tables, built from one or more files' chunks."""
+
+    nodes: list[dict]
+    edges: list[dict]
+    chunk_concepts: list[dict]
+
+    @classmethod
+    def merged(cls, batches: list[ConceptRecords]) -> ConceptRecords:
+        """Concatenate several record sets into one batched write unit."""
+        return cls(
+            nodes=[row for batch in batches for row in batch.nodes],
+            edges=[row for batch in batches for row in batch.edges],
+            chunk_concepts=[row for batch in batches for row in batch.chunk_concepts],
+        )
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 
     ``Store.write_chunks_batch`` folds many of these into a single locked
     transaction so bulk ingest doesn't pay a write-lock acquisition per document.
+    ``page_texts`` rows land in the same transaction, after the cleanup delete
+    and before the source row.
     """
 
     source: str
     file_hash: str
     records: list[dict]
     needs_cleanup: bool
+    stat: SourceStat | None = None
+    page_texts: list[dict] | None = None
 
 
 class ChunkType(StrEnum):
@@ -120,13 +142,55 @@ class SearchChunk(BaseModel):
 
 
 class SourceRecord(TypedDict):
-    """A tracked source document record."""
+    """A tracked source document record.
+
+    The stat columns are absent on rows read from stores created before they
+    existed; ``source_stat`` is the accessor that folds absence and the
+    ``SOURCE_STAT_UNKNOWN`` sentinel into ``None``.
+    """
 
     filename: str
     file_hash: str
     ingested_at: str
     chunk_count: int
     source_type: str
+    size_bytes: NotRequired[int]
+    mtime_ns: NotRequired[int]
+    stat_captured_ns: NotRequired[int]
+
+
+# Sentinel for the stat columns on rows written before they existed (or for
+# detached imports with no backing file). Planning treats it as "unknown: re-hash".
+SOURCE_STAT_UNKNOWN = -1
+
+
+class SourceStat(NamedTuple):
+    """File size and mtime captured when a source was hashed, plus the capture time.
+
+    ``captured_ns`` is the wall-clock time the stat was taken; the sync planner
+    hashes a file whose mtime is not strictly older than it (racily clean).
+    """
+
+    size_bytes: int
+    mtime_ns: int
+    captured_ns: int = SOURCE_STAT_UNKNOWN
+
+
+def source_stat(record: SourceRecord) -> SourceStat | None:
+    """Stored stat for a source row, or None when unknown."""
+    size = record.get("size_bytes", SOURCE_STAT_UNKNOWN)
+    mtime = record.get("mtime_ns", SOURCE_STAT_UNKNOWN)
+    captured = record.get("stat_captured_ns", SOURCE_STAT_UNKNOWN)
+    if size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
+        return None
+    return SourceStat(int(size), int(mtime), int(captured))
+
+
+class SourceStatBackfill(NamedTuple):
+    """An already-tracked source row paired with its freshly verified stat."""
+
+    record: SourceRecord
+    stat: SourceStat
 
 
 class PageTextRecord(TypedDict):

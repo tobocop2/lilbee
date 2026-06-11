@@ -82,6 +82,33 @@ def test_llama_server_raises_when_configured_path_missing(tmp_path: Path) -> Non
         resolve_llama_server()
 
 
+def test_llama_server_configured_path_wins_over_bundled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "lilbee_engine", _fake_engine(tmp_path, make_files=True))
+    custom = tmp_path / "custom-llama-server"
+    custom.write_text("#!/bin/sh\n")
+    cfg.llama_server_path = str(custom)
+    assert resolve_llama_server() == custom
+
+
+def test_llama_server_unset_falls_back_to_bundled_then_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg.llama_server_path = ""
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    empty_wheel_dir = tmp_path / "empty-wheel"
+    empty_wheel_dir.mkdir()
+    monkeypatch.setitem(sys.modules, "lilbee_engine", _fake_engine(wheel_dir, make_files=True))
+    monkeypatch.setattr(_WHICH, lambda _name: "/usr/local/bin/llama-server")
+    assert resolve_llama_server() == wheel_dir / "llama-server"
+    monkeypatch.setitem(
+        sys.modules, "lilbee_engine", _fake_engine(empty_wheel_dir, make_files=False)
+    )
+    assert resolve_llama_server() == Path("/usr/local/bin/llama-server")
+
+
 def test_llama_server_falls_back_to_path(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg.llama_server_path = ""
     monkeypatch.setattr(_WHICH, lambda _name: "/usr/local/bin/llama-server")

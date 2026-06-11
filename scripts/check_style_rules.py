@@ -14,8 +14,8 @@ cleanup of pre-existing ones).
 4. Stale single-file path references in ``src/`` for modules that have since
    become packages (``catalog.py``, ``store.py``, ``gen.py``, ``ingest.py``,
    ``commands.py``, ``handlers.py``, ``api.py``, ``clustering_embedding.py``,
-   ``worker_process.py``, ``llama_cpp_provider.py``), and the phrase
-   ``original X.py``. Project rule: docstrings name the current path.
+   ``worker_process.py``), and the phrase ``original X.py``. Project rule:
+   docstrings name the current path.
 5. New occurrences of the AGENTS.md "Code-Smell Triggers" (getattr-by-name on
    owned attributes, getattr-with-default on typed fields, owned-attribute
    type-ignores, production host-narrowing, string-typed closed sets,
@@ -71,7 +71,7 @@ ALLOW_HISTORY_TAG = "# style-check: allow-history"
 # (``lilbee.catalog``, ``catalog/download.py``, etc.) instead.
 STALE_SINGLE_FILE_RE = re.compile(
     r"\b(catalog|store|gen|ingest|commands|handlers|api|clustering_embedding"
-    r"|worker_process|llama_cpp_provider)\.py\b"
+    r"|worker_process)\.py\b"
 )
 
 # "the original X.py" / "original foo.py" phrasing is historical narrative

@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar, overload
 
 import httpx
 
@@ -107,18 +107,33 @@ def _raise_for_status(resp: httpx.Response) -> None:
     # server's own captured output so the actual exit reason is diagnosable.
     if _UPSTREAM_DIED_MARKER in body:
         _log_upstream_tail(resp)
-    # An input past the server's n_batch is a 500 whose body says "too large to
-    # process"; tagged CONTEXT_OVERFLOW so the embed path re-truncates exactly.
-    kind = (
-        ProviderErrorKind.CONTEXT_OVERFLOW
-        if _BATCH_OVERFLOW_MARKER in body
-        else ProviderErrorKind.UNKNOWN
-    )
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
-        kind=kind,
+        kind=_classify_error_body(body),
     )
+
+
+def _classify_error_body(body: str) -> ProviderErrorKind:
+    """Error kind from a llama-server/llama-swap error body.
+
+    An input past the server's n_batch is a 500 whose body says "too large to
+    process" (CONTEXT_OVERFLOW, so the embed path re-truncates exactly); a dead
+    upstream is CONNECTION, so the router can mark the replica unhealthy.
+    """
+    if _BATCH_OVERFLOW_MARKER in body:
+        return ProviderErrorKind.CONTEXT_OVERFLOW
+    if _UPSTREAM_DIED_MARKER in body:
+        return ProviderErrorKind.CONNECTION
+    return ProviderErrorKind.UNKNOWN
+
+
+def is_connection_failure(exc: Exception) -> bool:
+    """Whether *exc* signals a dead/unreachable replica rather than a model error."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    # isinstance: only ProviderError carries a kind; other exceptions pass through.
+    return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.CONNECTION
 
 
 def _log_upstream_tail(resp: httpx.Response) -> None:
@@ -149,12 +164,11 @@ def _fetch_log_tail(url: str) -> str:
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
-# Match the in-process embedder: llama-cpp-python's create_embedding does not
-# normalize (normalize=False), but llama-server normalizes pooled embeddings with
-# embd_normalize=2 (L2) by default. We send -1 (no normalization) per request so
-# the fleet returns the same raw vectors, and so rank-pooling rerank scores (a
-# single value per pair) are not collapsed to +-1 by L2 normalization. The server
-# only exposes this per request body, not as a startup flag.
+# llama-server L2-normalizes pooled embeddings by default (embd_normalize=2);
+# every embeddings request sends embd_normalize=-1 so the engine returns raw
+# vectors, and so a rank-pooling rerank score (a single value per pair) is not
+# collapsed to +-1 by normalization. The server only exposes this per request
+# body, not as a startup flag.
 _EMBD_NORMALIZE_NONE = -1
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
@@ -182,6 +196,11 @@ _HEALTH_TIMEOUT_S = 5.0
 # a cold replica fleet 429s the first ingest fan-out until its slots load.
 _BUSY_RETRIES = 6
 _BUSY_BACKOFF_BASE_S = 0.5
+# Half-open recovery: a replica marked unhealthy becomes routable again after
+# this cool-down. Recovery is probe-by-traffic and unmetered: every concurrent
+# caller sees it routable once cooled down (a success restores it, another
+# connection failure re-stamps the cool-down).
+_UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
 
 
@@ -211,6 +230,29 @@ class LlamaServerClient:
         self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
+        # Routing health: cleared on a connection-level failure (see _UNHEALTHY_RETRY_S).
+        self._healthy = True
+        # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
+        self._unhealthy_since = 0.0
+
+    @property
+    def healthy(self) -> bool:
+        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
+        with self._in_flight_lock:
+            if self._healthy:
+                return True
+            return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
+
+    def mark_unhealthy(self) -> None:
+        """Record a connection-level failure so the router skips this replica."""
+        with self._in_flight_lock:
+            self._healthy = False
+            self._unhealthy_since = time.monotonic()
+
+    def mark_healthy(self) -> None:
+        """Restore the replica to the routing pool after a successful call."""
+        with self._in_flight_lock:
+            self._healthy = True
 
     def health(self) -> bool:
         """True iff ``GET /health`` returns 200 (liveness, not readiness)."""
@@ -220,23 +262,59 @@ class LlamaServerClient:
             return False
         return resp.status_code == _HTTP_OK
 
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: Literal[False] = False,
+        timeout: float | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: Literal[True],
+        timeout: float | None = None,
+    ) -> Iterator[str]: ...
+
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: bool,
+        timeout: float | None = None,
+    ) -> str | Iterator[str]: ...
+
     def chat(
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
         options: dict[str, Any] | None = None,
         stream: bool = False,
+        timeout: float | None = None,
     ) -> str | Iterator[str]:
         """Chat completion. Returns the full text, or a token iterator if streaming.
 
         ``messages`` accepts both plain ``{role, content: str}`` and multipart
         ``content`` lists (vision image parts), so the vision path reuses this.
+        ``timeout`` overrides the client default for the non-streaming request,
+        so a caller-enforced deadline (vision OCR) ends the request itself.
         """
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
         if stream:
             return self._chat_stream(payload)
+        request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         with self._track():
-            resp = self._http.post(_CHAT_PATH, json={**payload, "stream": False})
+            resp = self._http.post(
+                _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
+            )
             _raise_for_status(resp)
             return str(resp.json()["choices"][0]["message"]["content"])
 
