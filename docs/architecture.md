@@ -531,8 +531,8 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
-- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, merge the lilbee provider into the client's config, install the lilbee skill, seed the model picker, exec the client, clean up on exit
-- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the same client config block for hand-wired setups
+- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
+- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the client config block for hand-wired persistent setups
 - `--json` / `-j` on any command for structured output
 
 ### TUI (Textual)

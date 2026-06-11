@@ -8,7 +8,6 @@ import shutil
 import sys
 from importlib import resources
 from pathlib import Path
-from typing import Any, TypedDict
 
 import typer
 
@@ -16,38 +15,15 @@ from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
 from lilbee.core.config import cfg
-from lilbee.providers.model_ref import default_first
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
 _SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
-_OPENCODE_PROVIDER_ID = "lilbee"
 _OPENCODE_CONFIG_ENV_VAR = "OPENCODE_CONFIG_CONTENT"
-_PICKER_STATE_RECENT_CAP = 10
 _SETUP_MARKER_NAME = "opencode-setup.json"
-
-
-def _opencode_config_path() -> Path:
-    """Path to opencode's persistent user config."""
-    return Path.home() / ".config" / "opencode" / "opencode.json"
-
-
-class PickerEntry(TypedDict):
-    providerID: str
-    modelID: str
-
-
-class PickerState(TypedDict):
-    recent: list[PickerEntry]
-    favorite: list[PickerEntry]
-    variant: dict[str, Any]
 
 
 def _opencode_skill_dest() -> Path:
     return Path.home() / ".config" / "opencode" / "skills" / "lilbee-mcp"
-
-
-def _opencode_state_file() -> Path:
-    return Path.home() / ".local" / "state" / "opencode" / "model.json"
 
 
 def _setup_marker_path() -> Path:
@@ -70,11 +46,10 @@ def _print_setup_plan() -> None:
     """Tell the user exactly which files the first-run setup writes."""
     typer.secho("First-time opencode setup will write:", fg=typer.colors.CYAN)
     typer.echo(f"  - lilbee MCP skill -> {_opencode_skill_dest()}")
-    typer.echo(f"  - provider + MCP config -> {_opencode_config_path()}")
-    typer.echo(f"  - model picker state -> {_opencode_state_file()}")
     typer.echo(
-        "Each write is skipped if already present. To undo, delete the skill dir "
-        "and the `lilbee` keys in opencode.json."
+        "The write is skipped if already present; everything else (provider, "
+        "MCP, model pin) is passed to opencode per session and persists nowhere. "
+        "To undo, delete the skill dir."
     )
 
 
@@ -120,101 +95,6 @@ def _install_lilbee_skill() -> Path | None:
     return dest
 
 
-def _update_opencode_picker_state(model_refs: list[str], default_ref: str) -> Path | None:
-    """Put lilbee models in opencode's picker, the configured chat model first.
-
-    opencode opens on ``recent[0]``; leading with *default_ref* makes it select the
-    chat model lilbee actually serves instead of the alphabetically-first installed
-    one (which otherwise leaves opencode on its own fallback provider). No-op when no
-    models are installed; same XDG-style state path on every platform.
-    """
-    if not model_refs:
-        return None
-    path = _opencode_state_file()
-    state = _read_opencode_state(path)
-    state["recent"] = _merge_recent(state.get("recent"), default_first(model_refs, default_ref))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_json(path, state)
-    return path
-
-
-def _read_opencode_state(path: Path) -> PickerState:
-    fallback: PickerState = {"recent": [], "favorite": [], "variant": {}}
-    if not path.exists():
-        return fallback
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return fallback
-    if not isinstance(loaded, dict):
-        return fallback
-    return PickerState(
-        recent=loaded.get("recent") or [],
-        favorite=loaded.get("favorite") or [],
-        variant=loaded.get("variant") or {},
-    )
-
-
-def _merge_recent(existing: object, model_refs: list[str]) -> list[PickerEntry]:
-    """Prepend lilbee entries, de-duplicating prior copies, and cap the list length."""
-    prior: list = existing if isinstance(existing, list) else []
-    new_set = set(model_refs)
-    kept = [
-        entry
-        for entry in prior
-        if not (
-            isinstance(entry, dict)
-            and entry.get("providerID") == _OPENCODE_PROVIDER_ID
-            and entry.get("modelID") in new_set
-        )
-    ]
-    fresh: list[PickerEntry] = [
-        {"providerID": _OPENCODE_PROVIDER_ID, "modelID": ref} for ref in model_refs
-    ]
-    return (fresh + kept)[:_PICKER_STATE_RECENT_CAP]
-
-
-def _atomic_write_json(path: Path, payload: PickerState) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def _merge_lilbee_provider_into_config(
-    *,
-    config_path: Path,
-    provider_block: dict[str, Any],
-) -> None:
-    """Write the lilbee provider into opencode's persistent config file.
-
-    Picker rendering is driven by the on-disk ``opencode.json``; the
-    env-var injection alone is not enough for opencode to render a
-    section header for our provider. Existing providers (ollama, etc.)
-    and any other top-level config keys (``plugin``, ``$schema``) are
-    preserved; only ``provider.lilbee`` is replaced. The file is created
-    if absent.
-    """
-    existing: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
-    if config_path.exists():
-        try:
-            loaded = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            loaded = None
-        if isinstance(loaded, dict):
-            existing = loaded
-    providers = existing.get("provider")
-    if not isinstance(providers, dict):
-        # ``provider`` is missing or the wrong shape; reset so the merge writes
-        # a valid provider section rather than silently dropping the lilbee entry.
-        providers = {}
-        existing["provider"] = providers
-    providers[_OPENCODE_PROVIDER_ID] = provider_block
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    os.replace(tmp, config_path)
-
-
 class OpencodeLauncher:
     """``Launcher`` implementation for opencode (https://opencode.ai/)."""
 
@@ -233,18 +113,19 @@ class OpencodeLauncher:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
         _install_lilbee_skill()
-        _update_opencode_picker_state(model_refs, str(cfg.chat_model))
+        # The injected block is the entire session contract: provider, MCP, and
+        # the startup-model pin all carry the session's port and bearer token,
+        # which are ephemeral by design. Persisting any of it (as earlier
+        # versions did with a provider merge into opencode.json and picker-state
+        # writes that current opencode discards) left dead endpoints and stale
+        # credentials in user config; `lilbee agent-config opencode` is the
+        # explicit path for hand-wired persistent setups.
         block = opencode_config(
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=token,
             model_refs=model_refs,
             chat_ctx=served_chat_ctx(port),
             default_ref=str(cfg.chat_model),
-        )
-        provider_block = block["provider"][_OPENCODE_PROVIDER_ID]
-        _merge_lilbee_provider_into_config(
-            config_path=_opencode_config_path(),
-            provider_block=provider_block,
         )
         env = {**os.environ, _OPENCODE_CONFIG_ENV_VAR: json.dumps(block)}
         return ([], env)
