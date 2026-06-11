@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from events import count_tool_dispatches, has_session_error, read_events
+from events import count_session_idles, count_tool_dispatches, has_session_error, read_events
 from harness_config import (
     _FAIL_FAST_MARKERS,
     _MULTI_TOOL_TIMEOUT_S,
@@ -238,20 +238,33 @@ def wait_for_answer_settle(session: str, workspace: Path) -> None:
     model that streams forever cannot hang the sweep.
     """
     deadline = time.monotonic() + _ANSWER_SETTLE_TIMEOUT_S
-    prev = tmux_capture(session)
+    idles_at_entry = count_session_idles(read_events(workspace))
+    prev_pane = tmux_capture(session)
+    prev_event_count = -1
     quiet = 0
     while time.monotonic() < deadline:
         time.sleep(_ANSWER_SETTLE_INTERVAL_S)
         events = read_events(workspace)
         if events:
-            if events[-1].get("type") == "session.idle":
+            # A fresh session.idle means opencode finished the turn. Trailing
+            # bookkeeping events (session.status etc.) can follow it, so also
+            # treat a quiet event stream as settled rather than requiring idle
+            # to be the literal last record.
+            if count_session_idles(events) > idles_at_entry:
                 return
+            if len(events) == prev_event_count:
+                quiet += 1
+                if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
+                    return
+            else:
+                quiet = 0
+                prev_event_count = len(events)
             continue
         cur = tmux_capture(session)
-        if cur == prev:
+        if cur == prev_pane:
             quiet += 1
             if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
                 return
         else:
             quiet = 0
-            prev = cur
+            prev_pane = cur
