@@ -22,6 +22,7 @@ from harness_config import (
     _TMUX_WINDOW_ROWS,
     _TOOLS_OFF,
     _UI_WAIT_HEARTBEAT_S,
+    LOG_DIR,
 )
 
 
@@ -135,6 +136,15 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
             f"cd {workspace} && exec uv run lilbee launch opencode --no-prompt",
         ],
         check=True,
+    )
+    # Stream the pane to a file from t=0: a cell that dies before its verdict
+    # otherwise leaves a blank final capture and no evidence (the tmux session
+    # is reaped on teardown, taking its scrollback with it).
+    stream_path = LOG_DIR / f"{session}.pane.stream"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["tmux", "pipe-pane", "-t", session, "-o", f"cat >> {stream_path}"],
+        check=False,
     )
     _wait_for_opencode_ui(session, workspace)
 
