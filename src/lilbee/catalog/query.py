@@ -262,15 +262,28 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
-        task = _task_for_repo(hf_repo)
+        task = _task_for_repo(hf_repo, model)
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
     featured = find_catalog_entry(model)
     if featured is not None:
         return featured
-    return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
+    if not _is_hf_repo_id(model):
+        return None
+    return build_adhoc_entry(model, task=_task_for_repo(model, model))
 
 
-def _task_for_repo(hf_repo: str) -> ModelTask:
-    """Task for a concrete-file pull: a featured repo's task, else CHAT."""
+def _task_for_repo(hf_repo: str, ref: str) -> ModelTask:
+    """Task for an ad-hoc pull: the featured entry's task, else classified by name.
+
+    Defaulting every non-featured repo to chat registered embedding and
+    reranker pulls (e.g. ``Qwen/Qwen3-Embedding-8B-GGUF``) as chat models,
+    surfacing them in chat pickers and misleading role validation.
+    """
     featured = find_catalog_entry(hf_repo)
-    return featured.task if featured is not None else ModelTask.CHAT
+    if featured is not None:
+        return featured.task
+    from lilbee.modelhub.model_manager.discovery import (  # deferred: modelhub is heavy
+        reclassify_by_name,
+    )
+
+    return ModelTask(reclassify_by_name(ref, ModelTask.CHAT))

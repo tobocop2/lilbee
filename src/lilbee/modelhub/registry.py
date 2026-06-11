@@ -342,7 +342,7 @@ class ModelRegistry:
         is resolvable but otherwise invisible (``lilbee model list``, the TUI
         catalog, the pull command's "already installed" check) until a manifest
         exists. The ``task`` comes from the featured catalog when the ref is
-        featured; otherwise it defaults to chat. Skipping non-catalog refs
+        featured, else is classified from the ref name. Skipping non-catalog refs
         instead left them permanently half-installed: resolvable (so a re-pull
         short-circuits on "already installed") yet absent from every listing.
         Best-effort: a read-only models dir or a write race must not break the
@@ -359,7 +359,12 @@ class ModelRegistry:
             )  # deferred: lilbee.catalog is a heavy import
 
             entry = find_catalog_entry(ref)
-            task = entry.task if entry is not None else ModelTask.CHAT
+            if entry is not None:
+                task = entry.task
+            else:
+                from lilbee.modelhub.model_manager.discovery import reclassify_by_name
+
+                task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
             self._write_manifest(
                 ModelManifest(
                     hf_repo=hf_repo,

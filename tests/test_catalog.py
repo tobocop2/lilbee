@@ -887,6 +887,23 @@ class TestResolvePullTarget:
     def test_unknown_short_name_returns_none(self) -> None:
         assert catalog.resolve_pull_target("not-a-real-model") is None
 
+    def test_resolve_pull_target_classifies_embedding_repo(self):
+        """Non-featured embedding repos must not register as chat models (bb-euk)."""
+        from lilbee.catalog.types import ModelTask
+
+        bare = catalog.resolve_pull_target("Qwen/Qwen3-Embedding-8B-GGUF")
+        assert bare is not None and bare.task is ModelTask.EMBEDDING
+        exact = catalog.resolve_pull_target(
+            "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+        )
+        assert exact is not None and exact.task is ModelTask.EMBEDDING
+
+    def test_resolve_pull_target_classifies_reranker_repo(self):
+        from lilbee.catalog.types import ModelTask
+
+        entry = catalog.resolve_pull_target("BAAI/bge-reranker-v2-m3-GGUF")
+        assert entry is not None and entry.task is ModelTask.RERANK
+
     @pytest.mark.parametrize(
         "value",
         ["https://huggingface.co/Qwen/Qwen3-8B-GGUF", "datasets/foo/bar", "foo--bar/baz"],
