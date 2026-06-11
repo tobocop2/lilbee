@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from lilbee.providers.worker.pool import shutdown_pool_runtime
+
+log = logging.getLogger(__name__)
 
 _RELOAD_CLOSE_TIMEOUT_S = 5.0
 """Wall-clock budget for closing a detached worker channel during reload_role.
@@ -209,12 +212,15 @@ def get_services() -> Services:
     # vision. Set ``cfg.worker_pool_eager_start = false`` for headless
     # scripts where mount time matters more than first-call latency.
     if cfg.worker_pool_eager_start:
-        from contextlib import suppress
-
-        with suppress(Exception):
+        try:
             provider.warm_up_pool()
             pool_runtime.start()
             pool_runtime.run_sync(worker_pool.start_eager(), timeout=30.0)
+        except Exception:
+            log.warning(
+                "Eager worker-pool start failed; workers will retry on first use",
+                exc_info=True,
+            )
     return _svc
 
 
