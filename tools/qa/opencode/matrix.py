@@ -105,6 +105,9 @@ def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep
     # cell's load.
     subprocess.run(["pkill", "-f", "lilbee serve"], check=False)
     subprocess.run(["pkill", "-f", "llama-server"], check=False)
+    # llama-swap outlives its llama-server children and a stale proxy can
+    # respawn the prior cell's model on any stray request to its port.
+    subprocess.run(["pkill", "-f", "llama-swap"], check=False)
 
 
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:

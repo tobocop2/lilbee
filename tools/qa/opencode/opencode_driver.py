@@ -170,8 +170,29 @@ def _pane_in_alternate_screen(session: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "1"
 
 
+def _opencode_process_alive() -> bool:
+    """True when an actual opencode binary is running on this host.
+
+    Corroborates the alternate-screen flag: the flag alone read true during
+    the launcher's warm spinner (before opencode existed), which let the
+    scenario type its prompt into the launcher's tty queue; opencode then
+    inherited that buffered input mid terminal-handshake and died blank.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "[.]opencode/bin/opencode"],
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
 def _wait_for_opencode_ui(session: str, workspace: Path) -> None:
-    """Block until opencode is up (first tap record or alternate-screen flip), then settle.
+    """Block until opencode is up (first tap record, or alternate screen backed
+    by a live opencode process), then settle.
 
     The wait must outlast the launcher's warm spinner (a giant's cold load runs
     minutes); the heartbeat keeps the wait visible in the matrix log.
@@ -182,7 +203,9 @@ def _wait_for_opencode_ui(session: str, workspace: Path) -> None:
     started = time.monotonic()
     next_heartbeat = started + _UI_WAIT_HEARTBEAT_S
     while time.monotonic() < deadline:
-        if plugin_active(workspace) or _pane_in_alternate_screen(session):
+        if plugin_active(workspace) or (
+            _pane_in_alternate_screen(session) and _opencode_process_alive()
+        ):
             time.sleep(_OPENCODE_BOOT_SETTLE_S)
             return
         if time.monotonic() >= next_heartbeat:

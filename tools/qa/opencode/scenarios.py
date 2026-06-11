@@ -180,12 +180,14 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
     deadline = start + scenario.timeout_s
     last_pane = ""
     last_change_at = start
-    last_pane_len = 0
+    prev_pane = ""
     while time.time() < deadline:
         pane = tmux_capture(session)
         last_pane = pane
-        if pane != "" and len(pane) != last_pane_len:
-            last_pane_len = len(pane)
+        # Full-content compare: a spinner swapping one glyph keeps the pane
+        # LENGTH constant, which the old length check read as idle.
+        if pane != "" and pane != prev_pane:
+            prev_pane = pane
             last_change_at = time.time()
         verdict = _poll_verdict(
             scenario,
