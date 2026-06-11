@@ -71,15 +71,34 @@ def enable_fault_log() -> Path:
     return _fault_log.enable()
 
 
+class _ExceptHook:
+    """Tracks whether the logging excepthook is installed."""
+
+    def __init__(self) -> None:
+        self.installed = False
+
+    def install(self) -> None:
+        """Install the logging excepthook once, chaining to the previous hook."""
+        if self.installed:
+            return
+        previous = sys.excepthook
+
+        def _hook(
+            exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+        ) -> None:
+            logger.critical("unhandled exception", exc_info=(exc_type, exc, tb))
+            previous(exc_type, exc, tb)
+
+        sys.excepthook = _hook
+        self.installed = True
+
+
+_except_hook = _ExceptHook()
+
+
 def install_excepthook() -> None:
-    """Log unhandled exceptions before the previous hook runs."""
-    previous = sys.excepthook
-
-    def _hook(exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None) -> None:
-        logger.critical("unhandled exception", exc_info=(exc_type, exc, tb))
-        previous(exc_type, exc, tb)
-
-    sys.excepthook = _hook
+    """Log unhandled exceptions before the previous hook runs. Idempotent."""
+    _except_hook.install()
 
 
 def setup_server_logging() -> None:

@@ -114,6 +114,7 @@ def _restore_excepthook() -> Iterator[None]:
     before = sys.excepthook
     yield
     sys.excepthook = before
+    serve_logging._except_hook.installed = False
 
 
 def test_fault_log_enabled(data_root: Path) -> None:
@@ -165,4 +166,15 @@ def test_excepthook_logs_and_chains(data_root: Path, caplog: pytest.LogCaptureFi
     with caplog.at_level(logging.CRITICAL):
         sys.excepthook(RuntimeError, err, None)
     assert "kaboom" in caplog.text
+    assert called == [RuntimeError]
+
+
+def test_excepthook_install_idempotent(data_root: Path, caplog: pytest.LogCaptureFixture) -> None:
+    called: list[type[BaseException]] = []
+    sys.excepthook = lambda tp, val, tb: called.append(tp)
+    install_excepthook()
+    install_excepthook()
+    with caplog.at_level(logging.CRITICAL):
+        sys.excepthook(RuntimeError, RuntimeError("once"), None)
+    assert caplog.text.count("unhandled exception") == 1
     assert called == [RuntimeError]
