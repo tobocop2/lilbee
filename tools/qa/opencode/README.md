@@ -61,13 +61,12 @@ IDLE_MIN=30 tools/qa/opencode/pod_watchdog.sh /workspace/qa_matrix.log
 
 ## What runs, per cell
 
-1. `lilbee model pull` the target GGUF (unless `--no-pull`).
-2. Make a fresh per-cell workspace; `cp -r /root/godot_corpus/data/lancedb` into it (shared Godot corpus, no re-embed).
-3. Rewrite `~/.local/state/opencode/model.json` so opencode boots with the target model selected.
-4. `lilbee launch opencode` inside a pod-side tmux session (200×50 pseudo-terminal). The launcher spawns its own `lilbee serve` internally and configures opencode's provider + MCP to point at it.
-5. Send the cell's tier prompt via `tmux send-keys`; poll `tmux capture-pane` for the pass marker (`⚙ lilbee_search`) and bail on any forbidden substring.
-6. Capture the final pane into `results/<family>.pane.txt` and the cell's status into `results/results.md`.
-7. Tear down. The tmux session **stays up on failure** for manual inspection; on success it's reaped.
+1. `lilbee model pull` the exact GGUF ref from models.toml (unless `--no-pull`), retried on transient failures; the cell hard-fails if the ref is not registered afterwards. The shards are then read once into page cache (the printed MB/s doubles as a volume health probe).
+2. Make a fresh per-cell workspace; `cp -r` the shared Godot corpus lancedb into it (no re-embed). The workspace gets a project-level `opencode.json` (built-in tools off, autoupdate off) and the event-tap plugin under `.opencode/plugins/`.
+3. `lilbee launch opencode` inside a pod-side tmux session (200×50 pseudo-terminal). The launcher spawns its own `lilbee serve` internally, wires opencode's provider + MCP to it, and pins the startup model via the injected config. The harness waits for the TUI (alternate-screen flag or first tap event) before the scenario clock starts.
+4. Send the cell's tier prompt via `tmux send-keys`. The PASS gate is a fresh `lilbee_search` tool-dispatch event from the tap (`.lilbee/qa-events.jsonl`); the pane is still scanned for forbidden raw-leak substrings, and the gear-glyph + completions-delta gate remains as the no-tap fallback.
+5. Capture the final pane into `results/<family>.pane.txt` and the cell's status into `results/results.md`.
+6. Tear down. The tmux session **stays up on failure** for manual inspection; on success it's reaped.
 
 ## Tier prompts
 

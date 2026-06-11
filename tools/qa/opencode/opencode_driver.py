@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import shutil
 import subprocess
@@ -11,7 +10,6 @@ from pathlib import Path
 
 from harness_config import (
     _OPENCODE_BOOT_SETTLE_S,
-    _OPENCODE_CONFIG,
     _OPENCODE_PICKER_STATE,
     _OPENCODE_SHARE_DIR,
     _OPENCODE_UI_TIMEOUT_S,
@@ -27,20 +25,22 @@ from harness_config import (
 )
 
 
-def scope_opencode_tools() -> None:
-    """Disable opencode's built-in tools so the model uses lilbee_search.
+def scope_opencode_tools(workspace: Path) -> None:
+    """Disable opencode's built-in tools for the cell so the model uses lilbee_search.
 
     Models drift to opencode's built-in webfetch/read/grep over the lilbee MCP
-    search unless those are turned off (search mode). The launcher merges the
-    lilbee provider + MCP into this same config and preserves the tools key.
+    search unless those are turned off (search mode). Written as the cell
+    workspace's project-level ``opencode.json`` (opencode merges it below the
+    launcher's injected env config), never the user's global config: a global
+    write outlives the QA run and disables the developer's own opencode tools.
+    ``autoupdate`` is pinned off so the binary cannot change mid-matrix.
     """
-    cfg: dict[str, object] = {}
-    if _OPENCODE_CONFIG.exists():
-        with contextlib.suppress(json.JSONDecodeError):
-            cfg = json.loads(_OPENCODE_CONFIG.read_text(encoding="utf-8"))
-    cfg["tools"] = {tool: False for tool in _TOOLS_OFF}
-    _OPENCODE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    _OPENCODE_CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "tools": {tool: False for tool in _TOOLS_OFF},
+        "autoupdate": False,
+    }
+    (workspace / "opencode.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def tmux_session_exists(name: str) -> bool:
@@ -197,15 +197,10 @@ def reset_opencode_session_state() -> None:
        ``KnownModelCache``) and the next cell's smoke matches them without
        its own model ever loading.
 
-    2. ``~/.local/state/opencode/model.json`` -- the picker state. Opencode
-       picks the first installed model in ``recent[]`` as its default. If
-       the previous cell pinned a model that's still installed (e.g.
-       ``Qwen3-8B`` left from the qwen3 cell), opencode silently falls back
-       to it for the next cell whose own ref isn't pulled yet -- and the
-       smoke ends up testing the WRONG model with a fake PASS.
-
-    ``lilbee launch opencode`` rewrites the picker on the next boot with the
-    cell's configured chat model as the default, so the scrub is safe.
+    2. ``~/.local/state/opencode/model.json`` -- the model-selection state.
+       The launcher pins the boot model via the injected config, but a stale
+       recent/variant selection from the prior cell is one more input opencode
+       may consult, so each cell starts from none.
     """
     if _OPENCODE_SHARE_DIR.exists():
         shutil.rmtree(_OPENCODE_SHARE_DIR)

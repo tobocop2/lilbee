@@ -22,14 +22,13 @@ from harness_config import (
 )
 from models import (
     ModelCell,
-    _installed_ref_for_repo,
-    _pull_ref_for,
     _run_pull_with_group_kill,
     cleanup_cell_model,
     ensure_embedding_model_pulled,
+    is_ref_registered,
     load_models,
     prewarm_model_blobs,
-    suspend_other_chat_manifests,
+    restore_suspended_manifests,
 )
 from opencode_driver import (
     launch_opencode_in_tmux,
@@ -60,25 +59,21 @@ def setup_cell(
     reset_opencode_session_state()
     port = free_port()
     if not args.no_pull:
-        pull_ref = _pull_ref_for(cell.ref)
-        print(f"[{cell.family}] pulling {pull_ref}")
-        _run_pull_with_group_kill(pull_ref)
-        installed = _installed_ref_for_repo(pull_ref)
-        if installed is None:
-            # Without a registered model the launcher serves zero models and the
-            # client silently falls back to its own provider; fail the cell now.
-            raise RuntimeError(f"pull of {pull_ref} completed but no model is registered")
-        if installed != cell.ref:
-            print(
-                f"[{cell.family}] pull installed {installed}; using it (models.toml had {cell.ref})"
-            )
-            cell.ref = installed
+        # Exact file ref: a repo-level pull may install a different quant than
+        # models.toml names, and a matrix that tests a different artifact than
+        # it reports is not reproducible.
+        print(f"[{cell.family}] pulling {cell.ref}")
+        _run_pull_with_group_kill(cell.ref)
+    if not is_ref_registered(cell.ref):
+        # Without a registered model the launcher serves zero models and the
+        # client silently falls back to its own provider; fail the cell now.
+        raise RuntimeError(f"{cell.ref} is not registered after pull")
     print(f"[{cell.family}] prewarming model blobs into page cache")
     prewarm_model_blobs(cell.ref)
     workspace = write_per_cell_workspace(cell.family, cell.ref)
     print(f"[{cell.family}] seeded Godot corpus from {_GODOT_CORPUS}")
     print(f"[{cell.family}] scoping opencode tools to lilbee_search")
-    scope_opencode_tools()
+    scope_opencode_tools(workspace)
     return workspace, port, None
 
 
@@ -123,20 +118,18 @@ def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     try:
         workspace, _port, serve_proc = setup_cell(cell, args, log_path)
         try:
-            with suspend_other_chat_manifests(cell.ref):
-                print(f"[{cell.family}] launching opencode in tmux session {session}")
-                launch_opencode_in_tmux(workspace, session)
-                result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
-                if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
-                    print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
-                    wait_for_answer_settle(session, workspace)
-                pane = tmux_capture(session)
-                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-                (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
-                print(
-                    f"[{cell.family}] full pane -> results/{cell.family}.pane.txt "
-                    f"({len(pane)} chars)"
-                )
+            print(f"[{cell.family}] launching opencode in tmux session {session}")
+            launch_opencode_in_tmux(workspace, session)
+            result.scenarios = run_smoke_scenarios(cell.family, cell.tier, session, workspace)
+            if any(s.status == ScenarioStatus.PASS for s in result.scenarios):
+                print(f"[{cell.family}] tool call seen; waiting for answer to finish rendering")
+                wait_for_answer_settle(session, workspace)
+            pane = tmux_capture(session)
+            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            (RESULTS_DIR / f"{cell.family}.pane.txt").write_text(pane, encoding="utf-8")
+            print(
+                f"[{cell.family}] full pane -> results/{cell.family}.pane.txt ({len(pane)} chars)"
+            )
         finally:
             keep = args.keep_on_fail and not result.passed
             teardown_cell(session, serve_proc, keep)
@@ -204,6 +197,9 @@ def main() -> int:
         return 2
 
     print(f"running QA matrix for {len(cells)} model(s)")
+    healed = restore_suspended_manifests()
+    if healed:
+        print(f"restored {healed} manifest(s) a crashed earlier run left suspended")
     watchdog = arm_pod_watchdog()
     try:
         if not args.no_pull:

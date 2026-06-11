@@ -46,7 +46,6 @@ _PANE_IDLE_TIMEOUT_S = 480.0
 _PANE_EXCERPT_TAIL = 2000
 _OPENCODE_PICKER_STATE = Path.home() / ".local" / "state" / "opencode" / "model.json"
 _OPENCODE_SHARE_DIR = Path.home() / ".local" / "share" / "opencode"
-_OPENCODE_CONFIG = Path.home() / ".config" / "opencode" / "opencode.json"
 # Pre-built Godot 4 class-reference corpus (one-time `lilbee add /root/godot/doc/classes`
 # into LILBEE_DATA=<this>); each cell copies its data/ + documents/ so lilbee_search
 # has the reference without re-embedding. Override with LILBEE_QA_CORPUS.
@@ -102,7 +101,6 @@ _CHAT_CTX_TARGET = 131072  # ~24K goes to opencode's system + tools schema; the
 # full window.
 _NUM_CTX_OVERRIDE = os.environ.get("LILBEE_QA_NUM_CTX", "").strip()
 _EMBED_REF = "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
-_EMBED_PULL_REF = "Qwen/Qwen3-Embedding-8B-GGUF"
 
 
 class ScenarioStatus(StrEnum):
