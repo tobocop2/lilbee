@@ -113,6 +113,12 @@ def write_per_cell_workspace(family: str, model_ref: str) -> Path:
     if _NUM_CTX_OVERRIDE:
         config_lines.append(f"num_ctx = {_NUM_CTX_OVERRIDE}")
     (config_dir / "config.toml").write_text("\n".join(config_lines) + "\n")
+    # opencode resolves its project root by traversing up to the nearest git
+    # directory; without this the workspace (which lives inside the lilbee
+    # repo) would resolve to the repo root, so the per-cell opencode.json and
+    # the event-tap plugin below would never load.
+    if not (workspace / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
     # Event tap: opencode loads project plugins from .opencode/plugins/; the tap
     # appends real bus events (tool dispatch, session idle/error) to
     # .lilbee/qa-events.jsonl, which scenarios.py prefers over pane scraping.

@@ -98,13 +98,21 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     tmux_kill(session)
     workspace_data = workspace / ".lilbee"
     env_flags = ["-e", f"LILBEE_DATA={workspace_data}"]
-    # The session runs `bash -lc`, a login shell that sources .bash_profile (not
-    # .bashrc), so a custom models dir set only in the rc files would be lost here
-    # and `lilbee launch opencode` would write a provider with no models. Forward it
-    # explicitly so installed_chat_model_refs() finds the cell's chat model.
-    models_dir = os.environ.get("LILBEE_MODELS_DIR")
-    if models_dir:
-        env_flags += ["-e", f"LILBEE_MODELS_DIR={models_dir}"]
+    # The session runs `bash -lc`, a login shell that does not inherit the
+    # matrix's environment, so anything the cell's `uv run` needs must be
+    # forwarded explicitly: the models dir (or the launcher serves no models)
+    # and the uv project env (or `uv run` syncs a FRESH venv whose lilbee-engine
+    # wheel is the empty placeholder, leaving the serve with no llama-server).
+    for env_var in (
+        "LILBEE_MODELS_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "UV_CACHE_DIR",
+        "UV_LINK_MODE",
+        "UV_NO_SYNC",
+    ):
+        value = os.environ.get(env_var)
+        if value:
+            env_flags += ["-e", f"{env_var}={value}"]
     # Forward QA diagnostic flags into the launched serve + its worker
     # subprocesses (multiprocessing-spawn inherits the tmux session env), so
     # LILBEE_QA_LOG_RAW reaches the chat worker where the raw-output tap lives.
