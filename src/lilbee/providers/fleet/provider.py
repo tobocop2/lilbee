@@ -15,9 +15,12 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -38,7 +41,6 @@ if TYPE_CHECKING:
         ClosableIterator,
         OcrBackend,
         PageText,
-        ProviderError,
     )
     from lilbee.providers.fleet.launch import InstanceLaunch
 
@@ -52,12 +54,8 @@ _CONTEXT_WINDOW_MARGIN = 128
 # starts an upstream on its first request, so warming issues one cheap call).
 _WARM_PROMPT = "warm"
 _WARM_MAX_TOKENS = 1
-# Per-role client request budget. llama-swap loads an upstream lazily on the first
-# request and holds it open during the cold load (up to its own health timeout), so
-# unlike the old supervisor -- which waited for ready before routing -- the first
-# request here covers load + generation. The floor covers generation on any model;
-# a heavier model's weights-scaled cold-load budget plus the margin raises it so
-# the first request rides out the load instead of timing out mid-load.
+# Per-role client request budget: the first request covers the lazy cold load plus
+# generation, so the weights-scaled cold-load budget plus the margin raises this floor.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # Jinja chat templates flag tool support by referencing one of these names as an
@@ -93,13 +91,8 @@ def _call_with_failover(
 ) -> _T:
     """Run *call* on the least-busy healthy client, retrying once on another replica.
 
-    A connection-level failure (dead replica, "exited prematurely") marks the
-    client unhealthy so the router skips it for the cool-down (after which it is
-    probed by live traffic, unmetered); the call retries once on a
-    different replica, preferring a healthy one but probing an unhealthy one
-    when none are (the same fallback ``_least_in_flight`` applies). The retry
-    replica is marked the same way if it also fails at the connection level.
-    With no other replica at all the failure surfaces.
+    A connection-level failure marks the client unhealthy and retries once on a
+    different replica; with no other replica the failure surfaces.
     """
     client = _least_in_flight(clients)
     try:
@@ -108,26 +101,34 @@ def _call_with_failover(
         if not is_connection_failure(exc):
             raise
         client.mark_unhealthy()
-        others = [c for c in clients if c is not client]
-        if not others:
-            raise _no_healthy_replica_error() from exc
-        retry = _least_in_flight(others)
-        try:
-            retry_result = call(retry)
-        except Exception as retry_exc:
-            if is_connection_failure(retry_exc):
-                retry.mark_unhealthy()
-            raise
-        retry.mark_healthy()
-        return retry_result
+        return _retry_on_other_replica(clients, client, call, exc)
     client.mark_healthy()
     return result
 
 
+def _retry_on_other_replica(
+    clients: list[LlamaServerClient],
+    failed: LlamaServerClient,
+    call: Callable[[LlamaServerClient], _T],
+    cause: Exception,
+) -> _T:
+    """Retry *call* once on a replica other than *failed*, marking its health."""
+    others = [c for c in clients if c is not failed]
+    if not others:
+        raise _no_healthy_replica_error() from cause
+    retry = _least_in_flight(others)
+    try:
+        retry_result = call(retry)
+    except Exception as retry_exc:
+        if is_connection_failure(retry_exc):
+            retry.mark_unhealthy()
+        raise
+    retry.mark_healthy()
+    return retry_result
+
+
 def _no_healthy_replica_error() -> ProviderError:
     """User-facing error for a call with no healthy replica left to retry on."""
-    from lilbee.providers.base import ProviderError, ProviderErrorKind
-
     return ProviderError(
         "The model server is not responding and no healthy replica is available. "
         "It may be restarting; try again in a moment.",
@@ -183,19 +184,11 @@ def _vision_call(
     a ``ProviderError`` so the page-level OCR caller can fail just that page.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.base import ProviderError
 
     options = {"max_tokens": cfg.vision_ocr_max_tokens}
     if timeout and timeout > 0:
-        result = _bounded_vision_chat(client, messages, options, timeout)
-    else:
-        result = client.chat(messages, options=options, stream=False)
-    if not isinstance(result, str):
-        raise ProviderError(
-            f"Vision server returned {type(result).__name__}, expected text.",
-            provider=_PROVIDER_NAME,
-        )
-    return result
+        return _bounded_vision_chat(client, messages, options, timeout)
+    return client.chat(messages, options=options, stream=False)
 
 
 def _bounded_vision_chat(
@@ -203,18 +196,13 @@ def _bounded_vision_chat(
     messages: Sequence[Mapping[str, Any]],
     options: dict[str, Any],
     timeout: float,
-) -> object:
+) -> str:
     """One vision chat whose caller returns by *timeout* with a result or an error.
 
     The httpx timeout is per-phase (connect/read/...), not a total deadline, so
     the worker thread can outlive the caller on a slowly trickling response; the
     executor is shut down without waiting so nothing blocks on it.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from concurrent.futures import TimeoutError as FutureTimeoutError
-
-    from lilbee.providers.base import ProviderError
-
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         future = pool.submit(client.chat, messages, options=options, stream=False, timeout=timeout)
@@ -345,8 +333,6 @@ class FleetProvider:
         upstream on its first request, so a returned client may still be cold. No
         in-process fallback, so a missing pool is a hard error.
         """
-        from lilbee.providers.base import ProviderError
-
         self._ensure_swap()
         with self._lock:
             clients = self._clients.get(role)
@@ -431,8 +417,6 @@ class FleetProvider:
         one" and is always accepted.
         """
         if model and model != configured:
-            from lilbee.providers.base import ProviderError, ProviderErrorKind
-
             raise ProviderError(
                 configured_model_message(role, configured, model),
                 provider=_PROVIDER_NAME,
@@ -535,8 +519,6 @@ class FleetProvider:
         tools, and the final turn exceed the window; the chat-completions route
         maps that to a 400 ``context_length_exceeded`` rather than a 500.
         """
-        from lilbee.providers.base import ProviderError, ProviderErrorKind
-
         # 0/None means the served context is unknown (no chat launch adopted yet);
         # a real per-slot context is always positive, so skip windowing.
         if not self._chat_ctx:
@@ -587,10 +569,7 @@ class FleetProvider:
         Rich progress to suppress). Pages are numbered 1-based to match
         ``PageText`` / ``ExtractEvent`` everywhere else in lilbee.
         """
-        from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-
         from lilbee.core.config import cfg
-        from lilbee.providers.base import ProviderError
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import (
             OCR_PROMPT,
@@ -691,7 +670,6 @@ class FleetProvider:
 
     def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata from GGUF headers, or ``None`` if unresolved."""
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -709,7 +687,6 @@ class FleetProvider:
         sidecar is present.
         """
         from lilbee.catalog import is_rerank_ref
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
         from lilbee.providers.gguf_meta import find_mmproj_for_model
 
@@ -736,7 +713,6 @@ class FleetProvider:
         GGUF header each request; a re-quantised file at the same path
         invalidates because its mtime changes.
         """
-        from lilbee.providers.base import ProviderError
         from lilbee.providers.engine_params import resolve_model_path
 
         try:

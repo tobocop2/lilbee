@@ -105,8 +105,9 @@ _ANN_NPROBES_FLOOR = 20
 _ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
 
-# Stat columns appended to ``_sources`` after its first release; legacy tables
-# are migrated in place with the SOURCE_STAT_UNKNOWN sentinel.
+# Stat columns of ``_sources``; mirrors the field names in ``schema._sources_schema``
+# and ``types.SourceRecord``. Legacy tables that predate these columns are migrated
+# in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
 
 # (table, source column) pairs deleted when a source's rows are replaced. The
@@ -778,23 +779,14 @@ class Store:
     def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
         """Write several documents' chunks in one locked transaction. Returns chunks added.
 
-        Bulk ingest otherwise pays one write-lock acquisition and one LanceDB
-        transaction per document. This folds many documents into a single
-        ``table.add`` plus one source-table update pass, so the lock is taken once
-        per batch and held only for the write -- never across extract or embed,
-        which run before this is called. The batch's cleanup deletes, page
-        texts, and source upserts run inside the same lock, so a reader never
-        observes a half-applied batch; the cleanup is one ``IN`` delete per
-        table covering every flagged document, the page texts land after it
-        (it clears the sources' old page-text rows) and before the source
-        rows, so a page-text failure leaves the rows stale and the files
-        replan next sync. A document with no chunks still persists its page
-        texts and source row, so a chunkless-but-processed file (e.g.
-        whitespace-only OCR) stops replanning.
-
-        The embedding-identity gate and per-vector dimension check mirror
-        ``add_chunks``; a dimension mismatch raises and the whole batch is rejected,
-        which the caller treats as a per-batch failure.
+        One ``write_lock`` acquisition covers the batch's cleanup deletes, page
+        texts, chunk add, and source upserts, so a reader never observes a
+        half-applied batch. Page texts land after the cleanup and before the
+        source rows, so a page-text failure leaves the rows stale and the files
+        replan next sync; a document with no chunks still persists its page
+        texts and source row. The embedding-identity gate and per-vector
+        dimension check mirror ``add_chunks``; a dimension mismatch raises and
+        the whole batch is rejected.
         """
         if not items:
             return 0
@@ -806,28 +798,45 @@ class Store:
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
-            cleanup_sources = [it.source for it in items if it.needs_cleanup]
-            if cleanup_sources:
-                self._delete_by_sources_unlocked(cleanup_sources)
-            page_rows = [row for it in items for row in (it.page_texts or [])]
-            if page_rows:
-                ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
-            if all_records:
-                table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
-                table.add(all_records)
-                if self.get_meta() is None:
-                    self._write_meta_unlocked(
-                        embedding_model=embedding_model, embedding_dim=embedding_dim
-                    )
-            source_rows = [
-                self._source_row(
-                    it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat
-                )
-                for it in items
-            ]
-            self._replace_source_rows_unlocked(source_rows)
+            self._cleanup_batch_unlocked(items)
+            self._add_page_texts_unlocked(db, items)
+            self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
+            self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
+
+    def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
+        """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
+        cleanup_sources = [it.source for it in items if it.needs_cleanup]
+        if cleanup_sources:
+            self._delete_by_sources_unlocked(cleanup_sources)
+
+    def _add_page_texts_unlocked(self, db: lancedb.DBConnection, items: list[ChunkWrite]) -> None:
+        """Add the batch's page-text rows. Caller holds ``write_lock()``."""
+        page_rows = [row for it in items for row in (it.page_texts or [])]
+        if page_rows:
+            ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
+
+    def _add_chunk_records_unlocked(
+        self,
+        db: lancedb.DBConnection,
+        all_records: list[dict],
+        embedding_model: str,
+        embedding_dim: int,
+    ) -> None:
+        """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
+        if not all_records:
+            return
+        ensure_table(db, CHUNKS_TABLE, self._chunks_schema()).add(all_records)
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+
+    def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
+        """One ``_sources`` row per batched document."""
+        return [
+            self._source_row(it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat)
+            for it in items
+        ]
 
     def _delete_source_unlocked(self, filename: str) -> None:
         """Remove the *filename* source record. Caller must hold ``write_lock()``."""

@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar, overload
 
 import httpx
 
@@ -230,22 +230,14 @@ class LlamaServerClient:
         self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
-        # Routing health: cleared on a connection-level failure so the router
-        # skips this replica; restored by a successful call, or half-open after
-        # the cool-down (probe-by-traffic, unmetered).
+        # Routing health: cleared on a connection-level failure (see _UNHEALTHY_RETRY_S).
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
 
     @property
     def healthy(self) -> bool:
-        """Whether the router should offer this replica traffic.
-
-        An unhealthy replica becomes routable again ``_UNHEALTHY_RETRY_S`` after
-        it was marked. The probe is by traffic and unmetered: every concurrent
-        reader sees it routable once the cool-down elapses; a success marks it
-        healthy, another connection failure re-stamps the cool-down.
-        """
+        """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
         with self._in_flight_lock:
             if self._healthy:
                 return True
@@ -269,6 +261,36 @@ class LlamaServerClient:
         except httpx.HTTPError:
             return False
         return resp.status_code == _HTTP_OK
+
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: Literal[False] = False,
+        timeout: float | None = None,
+    ) -> str: ...
+
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: Literal[True],
+        timeout: float | None = None,
+    ) -> Iterator[str]: ...
+
+    @overload
+    def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        stream: bool,
+        timeout: float | None = None,
+    ) -> str | Iterator[str]: ...
 
     def chat(
         self,

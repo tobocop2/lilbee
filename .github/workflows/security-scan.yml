@@ -68,10 +68,8 @@ jobs:
         with:
           inputs: .
           # Keep this list mirrored with osv-scanner.toml. Per-ID rationale:
-          # - CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
-          #   Direct lilbee dependency; no upstream fix. Exploitation requires
-          #   write access to the user's own cache dir (post-compromise
-          #   scenario). Revisit when diskcache ships a fix.
+          # - CVE-2025-69872: diskcache pickle serialization; exploiting it needs
+          #   write access to the user's own cache dir. No upstream fix yet.
           # - PYSEC-2022-42969: ReDoS in the unmaintained `py` package 1.11.0
           #   (py.path.svnwc). Pulled in transitively by pytest-forked>=1.6.0.
           #   Not reachable from lilbee or pytest-forked. No upstream fix.

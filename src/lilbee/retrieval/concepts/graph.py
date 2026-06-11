@@ -19,6 +19,7 @@ from lilbee.core.config import (
     CONCEPT_NODES_TABLE,
     Config,
 )
+from lilbee.data import store as data_store
 from lilbee.data.store import ConceptRecords, Store, escape_sql_string
 from lilbee.retrieval.concepts.community import Community, _compute_pmi, _leiden_partition
 from lilbee.retrieval.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
@@ -27,6 +28,7 @@ from lilbee.retrieval.concepts.schema import (
     _concept_edges_schema,
     _concept_nodes_schema,
 )
+from lilbee.runtime import lock
 
 log = logging.getLogger(__name__)
 
@@ -118,16 +120,13 @@ class ConceptGraph:
 
     def write_concept_records(self, records: ConceptRecords) -> None:
         """Write batched concept rows: one lock acquisition, at most one add per table."""
-        from lilbee.data.store import ensure_table
-        from lilbee.runtime.lock import write_lock
-
-        with write_lock():
+        with lock.write_lock():
             db = self._store.get_db()
             # Always create tables so get_graph() returns True even when
             # concept extraction yields no results for the current corpus.
-            nodes_tbl = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
-            edges_tbl = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
-            cc_tbl = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+            nodes_tbl = data_store.ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
+            edges_tbl = data_store.ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
+            cc_tbl = data_store.ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
             if records.nodes:
                 nodes_tbl.add(records.nodes)
             if records.edges:
@@ -271,9 +270,6 @@ class ConceptGraph:
 
     def rebuild_clusters(self) -> None:
         """Re-run Leiden clustering on the existing edge table, then compact."""
-        from lilbee.data.store import ensure_table
-        from lilbee.runtime.lock import write_lock
-
         edges_table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if edges_table is None:
             return
@@ -294,17 +290,17 @@ class ConceptGraph:
 
         self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
         if node_records:
-            with write_lock():
+            with lock.write_lock():
                 db = self._store.get_db()
-                nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
+                nodes_table = data_store.ensure_table(
+                    db, CONCEPT_NODES_TABLE, _concept_nodes_schema()
+                )
                 nodes_table.add(node_records)
         self.compact_tables()
 
     def compact_tables(self) -> None:
         """Compact the concept tables; per-file adds otherwise accrete tiny versions."""
-        from lilbee.runtime.lock import write_lock
-
-        with write_lock():
+        with lock.write_lock():
             for name in _CONCEPT_TABLES:
                 table = self._store.open_table(name)
                 if table is None:

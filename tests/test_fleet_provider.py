@@ -303,15 +303,6 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
     assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
 
 
-def test_vision_call_rejects_non_text() -> None:
-    from lilbee.providers.base import ProviderError
-
-    client = _fake_client()
-    client.chat.return_value = iter(["streamed"])  # not a str
-    with pytest.raises(ProviderError, match="expected text"):
-        prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
-
-
 def test_chat_streams_from_server() -> None:
     client = _fake_client(0)
     client.chat_stream_items.return_value = iter(["a", "b"])

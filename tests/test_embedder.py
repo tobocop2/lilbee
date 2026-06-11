@@ -90,7 +90,7 @@ class TestEmbedBatch:
         )
 
     def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
-        """A typical bulk-ingest batch is no longer split into 3-8 chunk requests."""
+        """A typical bulk-ingest batch of default-size chunks lands in one embed request."""
         chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
         texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
         mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]

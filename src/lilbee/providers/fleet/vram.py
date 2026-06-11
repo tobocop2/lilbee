@@ -14,15 +14,14 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
 
-# gguf-parser CLI flags.
+# gguf-parser CLI flags (the batch flags are shared with the llama-server argv builder).
 _FLAG_PATH = "--path"
 _FLAG_CTX = "--ctx-size"
 _FLAG_PARALLEL = "--parallel"
 _FLAG_GPU_LAYERS = "--gpu-layers"
-_FLAG_BATCH = "--batch-size"
-_FLAG_UBATCH = "--ubatch-size"
 _FLAG_CACHE_K = "--cache-type-k"
 _FLAG_CACHE_V = "--cache-type-v"
 _FLAG_MMPROJ = "--mmproj-path"
@@ -187,7 +186,7 @@ def estimator_argv(
     if batch_size is not None:
         # Pooled embed/rerank launch with --batch-size/--ubatch-size raised to the
         # context; the default ubatch (512) would under-estimate their compute buffer.
-        argv += [_FLAG_BATCH, str(batch_size), _FLAG_UBATCH, str(batch_size)]
+        argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if tensor_split:
         # The split proportions are gguf-parser's only signal for the device count,
         # so it returns one ``vrams[]`` entry per GPU instead of a single total.

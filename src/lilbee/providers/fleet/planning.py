@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config.enums import KvCacheType
+from lilbee.providers import model_cache
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
@@ -219,9 +220,8 @@ def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
     ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
     steps down to fit free memory instead of overcommitting."""
     from lilbee.core.config import cfg
-    from lilbee.providers.model_cache import get_available_memory
 
-    budget = int(get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
+    budget = int(model_cache.get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
     return budget
@@ -644,10 +644,9 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     fall back to the Vulkan VRAM probe, which reports the same index space.
     """
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
-    from lilbee.providers.model_cache import has_nvidia_gpu
 
     devices = probe_devices(binary)
-    if not devices and has_nvidia_gpu():
+    if not devices and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "
             "(%s --list-devices) reported none; placement is falling back to "
@@ -668,13 +667,11 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     RAM is not the constraint there."""
     if devices:
         return None
-    from lilbee.providers.model_cache import free_system_memory, total_system_memory
-
     floor = min(
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
-        total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
+        model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
-    return max(0, free_system_memory() - floor)
+    return max(0, model_cache.free_system_memory() - floor)
 
 
 def plan_launches(

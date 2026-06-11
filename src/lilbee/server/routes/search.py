@@ -39,12 +39,7 @@ _BAD_REQUEST_STATUS = 400
 _NOT_FOUND_STATUS = 404
 _SERVICE_UNAVAILABLE_STATUS = 503
 
-# Statuses for the non-stream /api chat surface, mirroring the stream path's
-# _STREAM_KIND_CODES. Kinds absent here (AUTH, RATE_LIMIT, CONNECTION, SERVER,
-# BAD_REQUEST) stay on the generic 503: shipped /api clients read 401/403 as a
-# lilbee session-token failure and 429 as their own stream rate limit, so an
-# upstream-backend failure must not borrow those statuses. The /v1 surface
-# applies its own completions-envelope mapping in chat_completions_api.errors.
+# Shipped clients read /api 401/429 as lilbee-session signals, so upstream kinds stay 503.
 _API_PROVIDER_KIND_STATUSES: dict[ProviderErrorKind, int] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: _BAD_REQUEST_STATUS,
     ProviderErrorKind.NOT_FOUND: _NOT_FOUND_STATUS,

@@ -65,9 +65,8 @@ async def list_models_endpoint(request: Request) -> Response:
     # client trims history to fit instead of overflowing on a long session.
     served_ctx = services.provider.served_chat_ctx()
     installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
-    # A remote-configured chat model is served without a registry entry;
-    # listing it keeps the picker truthful (same rule as the launcher). The
-    # configured model leads either way, mirroring the launcher's picker order.
+    # A remote-configured chat model has no registry entry but is still listed,
+    # configured model first (the launcher's picker order).
     listed = with_configured_remote_chat(sorted(installed), cfg.chat_model)
     refs = default_first(listed, cfg.chat_model)
     # A ref without a registry entry carries the newest native timestamp so a

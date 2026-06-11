@@ -68,11 +68,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# Kinds the /api SSE surface maps to a model-availability code; every other
-# kind is surfaced as its ProviderErrorKind string ("auth", "connection",
-# "server", ...) because shipped clients branch on that vocabulary. The /v1
-# surface applies its own completions-envelope mapping in
-# chat_completions_api.errors.
+# Unmapped kinds surface as their ProviderErrorKind string; shipped clients branch on it.
 _STREAM_KIND_CODES: dict[ProviderErrorKind, CompletionsErrorCode] = {
     ProviderErrorKind.CONTEXT_OVERFLOW: CompletionsErrorCode.CONTEXT_LENGTH_EXCEEDED,
     ProviderErrorKind.NOT_FOUND: CompletionsErrorCode.MODEL_NOT_FOUND,

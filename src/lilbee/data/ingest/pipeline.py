@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -193,6 +194,59 @@ def _stat_unchanged(stored: SourceStat, current: SourceStat) -> bool:
     return stored.captured_ns != SOURCE_STAT_UNKNOWN and current.mtime_ns < stored.captured_ns
 
 
+@dataclass(frozen=True)
+class _FileChangeVerdict:
+    """One file's sync verdict: process it, or unchanged (optionally backfilling its stat)."""
+
+    to_process: FileToProcess | None = None
+    backfill: SourceStatBackfill | None = None
+    is_update: bool = False
+
+
+def _classify_file_change(
+    name: str,
+    path: Path,
+    record: SourceRecord | None,
+    skip_markers: dict[str, str],
+) -> _FileChangeVerdict:
+    """Decide one file's verdict: stat-unchanged, hash-unchanged, skip-marked, or process."""
+    content_type = classify_file(path)
+    if content_type is None:
+        raise ValueError(f"Unsupported file slipped through discovery: {name}")
+    stored_stat = source_stat(record) if record is not None else None
+    current_stat = _disk_stat(path)
+    if (
+        record is not None
+        and stored_stat is not None
+        and current_stat is not None
+        and _stat_unchanged(stored_stat, current_stat)
+    ):
+        return _FileChangeVerdict()
+    old_hash = record["file_hash"] if record is not None else None
+    current_hash = file_hash(path)
+    if old_hash == current_hash:
+        # Content verified unchanged; persist the stat pair so the next
+        # sync skips the hash entirely.
+        backfill = (
+            SourceStatBackfill(record, current_stat)
+            if record is not None and current_stat is not None
+            else None
+        )
+        return _FileChangeVerdict(backfill=backfill)
+    if skip_markers.get(name) == current_hash:
+        # Failed last sync at this exact hash; skip the retry.
+        return _FileChangeVerdict()
+    # needs_cleanup=True unconditionally: delete_by_source is idempotent,
+    # and this closes the race where a prior ingest wrote chunks but died
+    # before upsert_source, leaving orphaned chunks that would duplicate.
+    return _FileChangeVerdict(
+        to_process=FileToProcess(
+            name, path, content_type, current_hash, needs_cleanup=True, stat=current_stat
+        ),
+        is_update=old_hash is not None,
+    )
+
+
 def _plan_file_changes(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
@@ -217,42 +271,14 @@ def _plan_file_changes(
     for name, path in sorted(disk_files.items()):
         if cancel and cancel.is_set():
             break
-        content_type = classify_file(path)
-        if content_type is None:
-            raise ValueError(f"Unsupported file slipped through discovery: {name}")
-        record = existing_sources.get(name)
-        stored_stat = source_stat(record) if record is not None else None
-        current_stat = _disk_stat(path)
-        if (
-            record is not None
-            and stored_stat is not None
-            and current_stat is not None
-            and _stat_unchanged(stored_stat, current_stat)
-        ):
+        verdict = _classify_file_change(name, path, existing_sources.get(name), skip_markers)
+        if verdict.to_process is None:
             unchanged += 1
+            if verdict.backfill is not None:
+                stat_backfills.append(verdict.backfill)
             continue
-        old_hash = record["file_hash"] if record is not None else None
-        current_hash = file_hash(path)
-        if old_hash == current_hash:
-            unchanged += 1
-            if record is not None and current_stat is not None:
-                # Content verified unchanged; persist the stat pair so the next
-                # sync skips the hash entirely.
-                stat_backfills.append(SourceStatBackfill(record, current_stat))
-            continue
-        if skip_markers.get(name) == current_hash:
-            # Failed last sync at this exact hash; skip the retry.
-            unchanged += 1
-            continue
-        # needs_cleanup=True unconditionally: delete_by_source is idempotent,
-        # and this closes the race where a prior ingest wrote chunks but died
-        # before upsert_source, leaving orphaned chunks that would duplicate.
-        files_to_process.append(
-            FileToProcess(
-                name, path, content_type, current_hash, needs_cleanup=True, stat=current_stat
-            )
-        )
-        if old_hash is not None:
+        files_to_process.append(verdict.to_process)
+        if verdict.is_update:
             updated[name] = None
         else:
             added[name] = None
@@ -661,32 +687,12 @@ async def _collect_results(
                 completed_count += 1
                 status = _classify_result(result, added, updated, failed, skipped)
                 if status is BatchStatus.INGESTED:
-                    buffer.append(result)
-                    # Zero-chunk files count one unit so the buffer stays bounded.
-                    buffered_chunks += max(result.chunk_count, 1)
-                    if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-                        await asyncio.to_thread(
-                            _flush_writes, buffer, added, updated, failed, flush_failed
-                        )
-                        buffered_chunks = 0
-                if progress is not None and ptask is not None:
-                    desc = (
-                        f"Ingested {result.name}"
-                        if result.error is None
-                        else f"Failed {result.name}"
+                    buffered_chunks = await _buffer_and_maybe_flush(
+                        result, buffer, buffered_chunks, added, updated, failed, flush_failed
                     )
-                    progress.update(ptask, description=desc)
-                    progress.advance(ptask)
-                with contextlib.suppress(TaskCancelledError):
-                    on_progress(
-                        EventType.BATCH_PROGRESS,
-                        BatchProgressEvent(
-                            file=result.name,
-                            status=status,
-                            current=completed_count,
-                            total=total,
-                        ),
-                    )
+                _report_file_progress(
+                    result, status, completed_count, total, on_progress, progress, ptask
+                )
             _refill_window(in_flight, pending, window)
     finally:
         # The inner finally guarantees the sibling cancel even if the flush
@@ -699,6 +705,51 @@ async def _collect_results(
                 task.cancel()
             if still_pending:
                 await asyncio.gather(*still_pending, return_exceptions=True)
+
+
+async def _buffer_and_maybe_flush(
+    result: _IngestResult,
+    buffer: list[_IngestResult],
+    buffered_chunks: int,
+    added: dict[str, None],
+    updated: dict[str, None],
+    failed: dict[str, None],
+    flush_failed: set[str] | None,
+) -> int:
+    """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
+    buffer.append(result)
+    # Zero-chunk files count one unit so the buffer stays bounded.
+    buffered_chunks += max(result.chunk_count, 1)
+    if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
+        await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
+        buffered_chunks = 0
+    return buffered_chunks
+
+
+def _report_file_progress(
+    result: _IngestResult,
+    status: BatchStatus,
+    completed_count: int,
+    total: int,
+    on_progress: DetailedProgressCallback,
+    progress: Progress | None,
+    ptask: Any,
+) -> None:
+    """Advance the Rich bar (when present) and emit one BATCH_PROGRESS event."""
+    if progress is not None and ptask is not None:
+        desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+        progress.update(ptask, description=desc)
+        progress.advance(ptask)
+    with contextlib.suppress(TaskCancelledError):
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=result.name,
+                status=status,
+                current=completed_count,
+                total=total,
+            ),
+        )
 
 
 def _classify_result(
@@ -715,11 +766,7 @@ def _classify_result(
     in ``added`` / ``updated`` until then.
     """
     if result.error is not None:
-        # Log the error message without the traceback: ingest failures are
-        # already surfaced to callers via SyncResult.failed, and the raw
-        # traceback from log.exception bleeds into the TUI chat pane via the
-        # stderr bridge. Full stack traces stay reachable by
-        # lowering LILBEE_LOG_LEVEL to DEBUG.
+        # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
         log.warning("Failed to ingest %s: %s", result.name, result.error)
         log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
         added.pop(result.name, None)
@@ -727,12 +774,8 @@ def _classify_result(
         failed[result.name] = None
         return BatchStatus.FAILED
     if result.chunk_count == 0 and not result.page_texts:
-        # Nothing extracted at all (e.g. scanned PDF without vision model).
-        # Don't record as a source so it gets retried on next sync, and
-        # surface as skipped so the user knows it did not land in the store.
-        # A zero-chunk file WITH page texts (whitespace-only OCR) stays
-        # ingested: the flush persists its pages and source row so it stops
-        # replanning every sync.
+        # Nothing extracted: no source row, so the file is retried next sync; a
+        # zero-chunk file WITH page texts stays ingested so it stops replanning.
         added.pop(result.name, None)
         updated.pop(result.name, None)
         skipped[result.name] = None
