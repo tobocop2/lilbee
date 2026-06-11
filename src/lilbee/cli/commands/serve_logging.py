@@ -80,3 +80,10 @@ def install_excepthook() -> None:
         previous(exc_type, exc, tb)
 
     sys.excepthook = _hook
+
+
+def setup_server_logging() -> None:
+    """File log, fault log, and excepthook for a ``serve`` process."""
+    setup_server_log_file()
+    enable_fault_log()
+    install_excepthook()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
+from lilbee.cli.commands.serve_logging import setup_server_logging
 from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
@@ -25,11 +27,23 @@ def _port_file() -> Path:
     return cfg.data_dir / "server.port"
 
 
+def _log_loop_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+    exc = context.get("exception")
+    # isinstance: asyncio's context dict is untyped; "exception" may be absent
+    if isinstance(exc, BaseException):
+        logging.getLogger(__name__).error("asyncio task error", exc_info=exc)
+    else:
+        logging.getLogger(__name__).error("asyncio task error: %s", context.get("message"))
+
+
 async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> None:
     """Start uvicorn, write port file, and clean up on shutdown."""
     import atexit
 
     from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
+
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(_log_loop_exception)
 
     port_path = _port_file()
 
@@ -89,7 +103,7 @@ def serve(
     if port is not None:
         cfg.server_port = port
 
-    import logging
+    setup_server_logging()
 
     import uvicorn
 

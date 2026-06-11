@@ -18,6 +18,7 @@ from lilbee.cli.commands.serve_logging import (
     enable_fault_log,
     install_excepthook,
     setup_server_log_file,
+    setup_server_logging,
 )
 from lilbee.core.config import cfg
 
@@ -146,6 +147,13 @@ def test_fault_log_reopens_closed_handle(data_root: Path) -> None:
     reopened = serve_logging._fault_log._handle
     assert reopened is not None
     assert not reopened.closed
+    assert faulthandler.is_enabled()
+
+
+def test_setup_server_logging_installs_everything(data_root: Path) -> None:
+    setup_server_logging()
+    assert _server_log_handlers(data_root / "logs" / "server.log")
+    assert (data_root / "logs" / "server-fault.log").exists()
     assert faulthandler.is_enabled()
 
 
