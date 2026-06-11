@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import logging.config
 import sys
 from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
@@ -95,6 +96,32 @@ def test_pins_notset_stream_handler_to_old_root_level(data_root: Path) -> None:
         handler.flush()
     assert "file only" in log_path.read_text()
     assert stream_handler.level == logging.WARNING
+
+
+def test_reinstalls_after_dictconfig_root_reset(data_root: Path) -> None:
+    log_path = setup_server_log_file()
+    logging.config.dictConfig(
+        {"version": 1, "disable_existing_loggers": False, "root": {"handlers": [], "level": "INFO"}}
+    )
+    assert not _server_log_handlers(log_path)
+    setup_server_log_file()
+    assert len(_server_log_handlers(log_path)) == 1
+    logging.getLogger("lilbee.test").info("after reset")
+    for handler in _server_log_handlers(log_path):
+        handler.flush()
+    assert "after reset" in log_path.read_text()
+
+
+def test_create_app_wipes_root_handlers_and_recall_restores(data_root: Path) -> None:
+    from lilbee.server import create_app
+
+    log_path = setup_server_log_file()
+    # Pins the litestar behavior serve() works around: app construction
+    # applies a dictConfig that replaces root's handlers.
+    create_app()
+    assert not _server_log_handlers(log_path)
+    setup_server_log_file()
+    assert len(_server_log_handlers(log_path)) == 1
 
 
 @pytest.fixture(autouse=True)

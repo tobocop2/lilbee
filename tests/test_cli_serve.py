@@ -90,29 +90,39 @@ class TestTokenCommand:
 
 
 class TestServeCommand:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_default_host_port(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
+    def test_default_host_port(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
         mock_setup_logging.assert_called_once()
+        mock_setup_log_file.assert_called_once()
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_custom_host_port(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
+    def test_custom_host_port(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "8080"])
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
-    def test_short_flags(self, mock_create_app, mock_asyncio_run, mock_setup_logging):
+    def test_short_flags(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve", "-H", "0.0.0.0", "-p", "9000"])
         assert result.exit_code == 0
