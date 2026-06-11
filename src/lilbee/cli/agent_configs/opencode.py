@@ -12,6 +12,10 @@ _NATIVE_REF_PARTS = 3
 _OUTPUT_TOKEN_LIMIT = 8192
 """Per-response output cap reported to opencode (it reserves this from the context)."""
 
+_MCP_TIMEOUT_MS = 120_000
+"""Remote-MCP request timeout. opencode defaults to 5000 ms, which the first
+``lilbee_search`` can exceed while the embedding model cold-loads."""
+
 _QUANT_TRAILER = re.compile(
     r"[-.](?P<quant>I?Q\d+(?:_[A-Z0-9]+)*|F16|F32|BF16)$",
     re.IGNORECASE,
@@ -96,6 +100,7 @@ def opencode_config(
                 "url": f"{base_url}/mcp",
                 "enabled": True,
                 "headers": {"Authorization": f"Bearer {api_key}"},
+                "timeout": _MCP_TIMEOUT_MS,
             }
         },
     }
