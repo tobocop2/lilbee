@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -109,7 +110,10 @@ class TestStart:
 
         _patch_http(monkeypatch, _refuse)
         monkeypatch.setattr(sm.time, "sleep", lambda _s: None)
-        clock = iter([0.0, 10.0, 20.0, 31.0, 31.0])
+        # sm.time is the global time module, so stray background threads (e.g.
+        # Textual timers from earlier TUI tests) also call this fake; an endless
+        # rising clock can be neither exhausted nor stalled by extra callers.
+        clock = itertools.count(0.0, 10.4)
         monkeypatch.setattr(sm.time, "monotonic", lambda: next(clock))
         with pytest.raises(ProviderError, match="did not start in time"):
             SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
@@ -595,6 +599,17 @@ class TestCrossRunReaping:
         assert state["owner_created_at"] == pytest.approx(
             sm.psutil.Process(os.getpid()).create_time()
         )
+
+    def test_start_records_the_swap_pgid_on_posix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Platform pinned so the posix pgid lines run on every CI platform.
+        monkeypatch.setattr(sm.sys, "platform", "linux")
+        monkeypatch.setattr(sm.os, "getpgid", lambda pid: 999, raising=False)
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        SwapManager(tmp_path).start([_launch(WorkerRole.CHAT)])
+        assert json.loads(_own_state_path(tmp_path).read_text())["pgid"] == 999
 
     def test_live_owner_leaves_swap_running_and_state_file_intact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

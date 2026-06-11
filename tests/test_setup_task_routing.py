@@ -55,18 +55,28 @@ class _PlainApp(LilbeeAppHost):
         self.push_screen(SetupWizard())
 
 
+# Generous ceiling: slow Windows CI runners need many pauses before the wizard's
+# model cards finish mounting; waiting for the screen alone races the cards.
+_WIZARD_WAIT_PAUSES = 60
+
+
+async def _wait_for_wizard_cards(app: LilbeeApp, pilot) -> SetupWizard:
+    """Wait until the SetupWizard is the active screen and its model cards exist."""
+    for _ in range(_WIZARD_WAIT_PAUSES):
+        await pilot.pause()
+        screen = app.screen
+        if isinstance(screen, SetupWizard) and list(screen.query(ModelCard)):
+            return screen
+    raise AssertionError("SetupWizard model cards never appeared")
+
+
 @pytest.mark.asyncio
 async def test_enter_on_non_installed_chat_card_submits_download() -> None:
     """Enter on a non-installed card submits to TaskBarController.start_download."""
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             assert chat_cards
             first = chat_cards[0]
@@ -89,12 +99,7 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
     captured: dict[str, object] = {}
     with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             assert not first.row.installed
@@ -141,12 +146,7 @@ async def test_enter_on_installed_card_does_not_submit_download() -> None:
     installed_chat = [FEATURED_CHAT[0].ref]
     with _patch_setup_scan(chat=installed_chat), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             installed_cards = [c for c in wizard.query(ModelCard) if c.row.installed]
             assert installed_cards
             chosen = installed_cards[0]
@@ -165,12 +165,7 @@ async def test_enter_does_not_resubmit_same_model_twice() -> None:
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
@@ -211,12 +206,7 @@ async def test_commit_selection_with_no_ref_returns_early() -> None:
     # app boots to the chat screen instead of the setup wizard. CI has no key.
     with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
 

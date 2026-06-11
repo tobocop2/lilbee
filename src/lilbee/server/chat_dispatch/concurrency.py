@@ -48,7 +48,10 @@ class ChatGate:
             waiter: asyncio.Future[None] = loop.create_future()
             self._waiters.append(waiter)
             try:
-                await asyncio.wait_for(waiter, timeout=remaining)
+                # asyncio.timeout, not wait_for: 3.11's wait_for swallows a task
+                # cancellation that races a completed waiter (fixed in 3.12).
+                async with asyncio.timeout(remaining):
+                    await waiter
             except TimeoutError as exc:
                 self._renotify_if_woken(waiter)
                 raise ChatBusyError(_busy_message(timeout)) from exc
@@ -61,7 +64,7 @@ class ChatGate:
         self._in_flight += 1
 
     async def release(self) -> None:
-        """Free a previously-acquired slot and wake one waiter.
+        """Free an acquired slot and wake one waiter.
 
         Contains no awaits: the decrement and wake-up run synchronously on the
         event loop, so a cancellation delivered to the caller (for example a
