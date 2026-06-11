@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -136,6 +137,24 @@ _PULL_ATTEMPTS = 3
 """Pulls resume from partial downloads, so retries convert transient volume
 I/O errors (network-FS Errno 5 on multi-GB shards) into incremental progress."""
 
+_PULL_STALL_CHECK_S = 60.0
+_PULL_STALL_S = 300.0
+"""Kill-and-retry a pull whose download tree stops growing for this long."""
+
+
+def _models_tree_bytes() -> int:
+    """Total bytes under the models dir; cheap (a few hundred files at most)."""
+    from lilbee.core.config import cfg
+
+    total = 0
+    for root, _dirs, files in os.walk(cfg.models_dir):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
+
 
 def _run_pull_with_group_kill(pull_ref: str) -> None:
     """Run ``lilbee model pull`` in its own process group so a timeout reaps the
@@ -144,10 +163,12 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
 
     A non-zero exit is retried, then raised: a cell must never proceed past a
     failed pull (the launcher would serve zero models and the scenario would
-    burn its full timeout against the client's fallback provider).
+    burn its full timeout against the client's fallback provider). A download
+    that stops growing is killed and retried the same way: a silently hung
+    HF transfer otherwise outlives every other budget on the box (it stalled
+    a full matrix until the idle watchdog powered the pod off).
     Progress bars are suppressed so the matrix stdout stays grep-able.
     """
-    import os
     import signal
 
     env = os.environ.copy()
@@ -159,14 +180,28 @@ def _run_pull_with_group_kill(pull_ref: str) -> None:
             env=env,
             start_new_session=True,
         )
-        try:
-            proc.wait(timeout=_MODEL_PULL_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait(timeout=10)
-            raise
-        if proc.returncode == 0:
+        deadline = time.monotonic() + _MODEL_PULL_TIMEOUT_S
+        last_size = _models_tree_bytes()
+        last_growth = time.monotonic()
+        stalled = False
+        while True:
+            try:
+                proc.wait(timeout=_PULL_STALL_CHECK_S)
+                break
+            except subprocess.TimeoutExpired:
+                size = _models_tree_bytes()
+                if size != last_size:
+                    last_size = size
+                    last_growth = time.monotonic()
+                elif time.monotonic() - last_growth > _PULL_STALL_S:
+                    print(f"pull of {pull_ref} stalled (no growth for {_PULL_STALL_S:.0f}s)")
+                    stalled = True
+                if stalled or time.monotonic() > deadline:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=10)
+                    break
+        if not stalled and proc.returncode == 0:
             return
         print(f"pull of {pull_ref} exited {proc.returncode} (attempt {attempt}/{_PULL_ATTEMPTS})")
     raise RuntimeError(f"pull of {pull_ref} failed after {_PULL_ATTEMPTS} attempts")
