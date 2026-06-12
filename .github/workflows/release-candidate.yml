@@ -90,20 +90,43 @@ jobs:
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
 
-  build-binaries:
+  # Pre-release shell created up front so executable build jobs can attach
+  # their asset the moment it builds instead of waiting for the slowest cell.
+  create-prerelease:
     needs: [resolve]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$REPO" --prerelease \
+                 --notes "Release candidate building; executables attach here as each one finishes."
+
+  build-binaries:
+    needs: [resolve, create-prerelease]
+    # create-prerelease is skipped on workflow_dispatch; only a real failure blocks.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
     uses: ./.github/workflows/release.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       skip_tests: ${{ inputs.skip_tests || false }}
+      release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
   build-cuda:
-    needs: [resolve]
+    needs: [resolve, create-prerelease]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
     uses: ./.github/workflows/build-cuda-executables.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       skip_tests: ${{ inputs.skip_tests || false }}
+      release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
   # Attach this run's executables AND every wheel to a GH pre-release. The
