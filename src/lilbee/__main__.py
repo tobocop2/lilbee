@@ -2,8 +2,32 @@
 
 from __future__ import annotations
 
+import os
 import runpy
 import sys
+from pathlib import Path
+
+_FLATPAK_INFO = Path("/.flatpak-info")  # present in every Flatpak sandbox
+
+
+def _isolate_vendored_openssl() -> None:
+    """Default ``OPENSSL_CONF`` to the empty config inside Flatpak sandboxes.
+
+    Flatpak's freedesktop runtime ships an openssl.cnf whose engine section
+    dlopens engine modules built against the runtime's own OpenSSL. Bundled
+    wheels that vendor a static OpenSSL (pyarrow's libarrow) honor that
+    config during import-time init, load the ABI-incompatible engine, and
+    segfault before any lilbee code runs. An empty config keeps every
+    vendored OpenSSL self-contained; certificate paths are unaffected.
+    Scoped to Flatpak sandboxes so every other install keeps reading the
+    host config, and an explicitly set ``OPENSSL_CONF`` always wins.
+    Deliberately not gated on a frozen-binary check: Nuitka does not set
+    ``sys.frozen``, and a pip install run inside a sandbox crashes the same
+    way.
+    """
+    if sys.platform != "linux" or not _FLATPAK_INFO.exists():
+        return
+    os.environ.setdefault("OPENSSL_CONF", os.devnull)
 
 
 def _multiprocessing_child_code(argv: list[str]) -> str | None:
@@ -72,6 +96,10 @@ def _dispatch_module_invocation() -> bool:
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry glue; logic is unit-tested above
+    # Must run before anything that can initialize OpenSSL (pyarrow import,
+    # ssl), including the multiprocessing child payloads dispatched below.
+    _isolate_vendored_openssl()
+
     # Make the frozen exe a valid subprocess target for multiprocessing's
     # sys.executable reinvocations, BEFORE any import that could pull typer.
     if _dispatch_module_invocation():
