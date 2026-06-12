@@ -90,8 +90,23 @@ mkdir -p "$WS/reels-out"
 ( cd "$WS" && VHS_NO_SANDBOX=true vhs reel.tape > "$OUT/vhs.log" 2>&1 ) || { echo "[reelrun] vhs FAILED"; tail -5 "$OUT/vhs.log"; exit 4; }
 cp "$WS/reels-out/$FAMILY".* "$OUT/" 2>/dev/null || true
 cp "$WS/reel.tape" "$OUT/"
-[ -f "$WS/level_generator.gd" ] && cp "$WS/level_generator.gd" "$OUT/" || true
-find "$WS" -name 'level_generator.gd' -exec cp {} "$OUT/" \; 2>/dev/null || true
+
+if [ "$TIER" = "coder" ] || [ "$TIER" = "giant" ]; then
+  echo "[reelrun] verifying the agent wrote the file"
+  GD="$(find "$WS" -name 'level_generator.gd' -not -path '*/reels-out/*' | head -1)"
+  if [ -z "$GD" ]; then
+    echo "[reelrun] ARTIFACT MISSING: level_generator.gd was never written"
+    exit 5
+  fi
+  SIZE=$(stat -c %s "$GD")
+  if [ "$SIZE" -lt 1000 ] || ! grep -qE 'extends|func ' "$GD"; then
+    echo "[reelrun] ARTIFACT INVALID: $GD ($SIZE bytes) lacks real GDScript"
+    exit 5
+  fi
+  cp "$GD" "$OUT/level_generator.gd"
+  echo "[reelrun] artifact OK: $GD ($SIZE bytes); head:"
+  head -15 "$GD"
+fi
 
 echo "[reelrun] extracting unique frames"
 mkdir -p "$OUT/frames"
