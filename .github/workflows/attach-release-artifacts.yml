@@ -1,0 +1,78 @@
+name: Attach release artifacts
+
+# Attach a release-candidate run's executables and wheels to the GH release at
+# a tag, downloading the artifacts inside GitHub (no local round trip). Use this
+# when a flaky build job stranded attach-prerelease but the assets that did
+# build should still ship. Re-runnable: existing assets are overwritten.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release-candidate run id that built the artifacts."
+        required: true
+      tag:
+        description: "Release tag to attach to (e.g. v0.6.66b494)."
+        required: true
+      version:
+        description: "PEP 440 version controlling the prerelease flag (e.g. 0.6.66b494)."
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: attach-release-artifacts-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download binaries from the run
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lilbee-*
+          path: bins/
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download default wheels from the run
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-default-*
+          path: default-wheels/
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download extra wheels from the run
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-extra-*
+          path: extra-wheels-staging/
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # Extra-backend wheels share PEP 427 filenames; stage them through a
+      # backend build tag (1.cu125 etc.) so all variants coexist on one release.
+      - name: Stage extra wheels with backend build tag
+        run: python3 -m tools.stage_release_assets extra-wheels-staging/ extra-wheels/
+
+      - name: List assets
+        run: ls -lh bins/ default-wheels/ extra-wheels/
+
+      - name: Attach to the GH release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            bins/*
+            default-wheels/*
+            extra-wheels/*
+          generate_release_notes: true
+          prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
