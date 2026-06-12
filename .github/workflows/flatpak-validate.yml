@@ -2,8 +2,11 @@ name: Flatpak validate
 
 # Builds the Linux executable like release.yml, then proves it boots inside a
 # real Flatpak sandbox (the freedesktop runtime segfault regression, #342).
-# The weekly run doubles as the main-branch ccache primer: tag-scoped release
-# builds can only restore caches saved on main, so this keeps them warm.
+# Two clocks, two triggers: the cron catches freedesktop runtime drift (their
+# schedule, not our commits) and keeps the main-branch ccache alive past
+# GitHub's 7-day eviction; the push trigger re-primes and re-validates the
+# moment compile inputs change (dep bumps are exactly when the vendored-lib
+# crash class can regress). Release builds can only restore main-saved caches.
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +16,17 @@ on:
         type: string
   schedule:
     - cron: '0 7 * * 1'  # Mondays 07:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - uv.lock
+      - pyproject.toml
+      - tools/wheel-build/**
+      - .github/workflows/flatpak-validate.yml
+
+concurrency:
+  group: flatpak-validate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
