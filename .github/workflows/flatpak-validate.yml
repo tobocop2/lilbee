@@ -2,6 +2,8 @@ name: Flatpak validate
 
 # Builds the Linux executable like release.yml, then proves it boots inside a
 # real Flatpak sandbox (the freedesktop runtime segfault regression, #342).
+# The weekly run doubles as the main-branch ccache primer: tag-scoped release
+# builds can only restore caches saved on main, so this keeps them warm.
 on:
   workflow_dispatch:
     inputs:
@@ -9,8 +11,8 @@ on:
         description: "Branch/tag/SHA to build"
         required: false
         type: string
-  push:
-    branches: [fix/flatpak-openssl-conf]
+  schedule:
+    - cron: '0 7 * * 1'  # Mondays 07:00 UTC
 
 jobs:
   build:
