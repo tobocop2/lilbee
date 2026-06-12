@@ -36,7 +36,8 @@ GPU_TYPES = [
 GPU_COUNT = 3
 IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 POD_NAME = "lilbee-qa"
-CONTAINER_DISK_GB = 450
+CONTAINER_DISK_GB = 100
+POD_VOLUME_GB = 400
 
 
 def _key() -> str:
@@ -93,6 +94,10 @@ def up() -> None:
         "computeType": "GPU",
         "interruptible": False,
         "containerDiskInGb": CONTAINER_DISK_GB,
+        # The pod volume at /workspace persists across restarts of this pod;
+        # without an explicit size RunPod allocates ~20GB, which model pulls
+        # fill instantly (everything then fails with ENOSPC).
+        "volumeInGb": POD_VOLUME_GB,
         "supportPublicIp": True,
         "ports": ["22/tcp"],
     }
