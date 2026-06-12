@@ -20,9 +20,13 @@ on:
         description: "Build the executables even if the test job fails (re-run past a known-flaky test)."
         type: boolean
         default: false
+      release_tag:
+        description: "GH release tag to eagerly attach each built executable to (empty = artifacts only)."
+        type: string
+        default: ""
 
 permissions:
-  contents: read
+  contents: write  # eager release_tag attach; otherwise read-only behavior is unchanged
   actions: read   # gate job: look up the CI workflow's conclusion for this commit
 
 jobs:
@@ -207,6 +211,8 @@ jobs:
         with:
           key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
           max-size: '2G'
+          # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
+          save: ${{ github.ref_type != 'tag' }}
 
       - name: Install dependencies
         # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
@@ -334,3 +340,13 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
+
+      # Eager attach: release-candidate creates the pre-release shell before
+      # calling, so the asset shows up as soon as this cell finishes.
+      - name: Attach binary to the GH pre-release
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$TAG" "dist/${{ matrix.asset_name }}" --clobber
