@@ -11,7 +11,7 @@ _FLATPAK_INFO = Path("/.flatpak-info")  # present in every Flatpak sandbox
 
 
 def _isolate_vendored_openssl() -> None:
-    """Default ``OPENSSL_CONF`` to the empty config in frozen Flatpak runs.
+    """Default ``OPENSSL_CONF`` to the empty config inside Flatpak sandboxes.
 
     Flatpak's freedesktop runtime ships an openssl.cnf whose engine section
     dlopens engine modules built against the runtime's own OpenSSL. Bundled
@@ -21,9 +21,10 @@ def _isolate_vendored_openssl() -> None:
     vendored OpenSSL self-contained; certificate paths are unaffected.
     Scoped to Flatpak sandboxes so every other install keeps reading the
     host config, and an explicitly set ``OPENSSL_CONF`` always wins.
+    Deliberately not gated on a frozen-binary check: Nuitka does not set
+    ``sys.frozen``, and a pip install run inside a sandbox crashes the same
+    way.
     """
-    if not hasattr(sys, "frozen"):
-        return
     if sys.platform != "linux" or not _FLATPAK_INFO.exists():
         return
     os.environ.setdefault("OPENSSL_CONF", os.devnull)
