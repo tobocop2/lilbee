@@ -59,6 +59,32 @@ nothing. It can also be run standalone against any log path:
 IDLE_MIN=30 tools/qa/opencode/pod_watchdog.sh /workspace/qa_matrix.log
 ```
 
+## Pod provisioning (infrastructure as code)
+
+`podctl.py` drives the RunPod REST API with the key from `~/.runpod/config.toml`
+(set once via `runpodctl config --apiKey ...`; the key never enters the repo).
+Pods are created on-demand in the secure cloud and are never interruptible, so
+spot eviction cannot kill a run mid-flight.
+
+```bash
+python3 tools/qa/opencode/podctl.py up      # create the QA pod, print ssh
+python3 tools/qa/opencode/podctl.py ls      # list pods
+python3 tools/qa/opencode/podctl.py rm <id> # terminate
+```
+
+The pod exposes direct sshd on a public port (real scp/rsync; no proxy).
+`RUNPOD_QA_VOLUME=<id>` attaches a network volume at /workspace for state that
+should outlive pods.
+
+## Demo reels
+
+`reelrun.sh <family> <ref> <small|mid|coder|giant>` records one reel per
+supported model against a pre-warmed serve: it rebuilds the cell workspace,
+records a `lilbee launch opencode` session with the tier prompt via VHS, and
+extracts the full unique-frame set (1 fps, consecutive duplicates collapsed)
+into `/workspace/reelfactory/<family>/` for frame-by-frame review. A reel is
+accepted only after every unique frame has been reviewed.
+
 ## What runs, per cell
 
 1. `lilbee model pull` the exact GGUF ref from models.toml (unless `--no-pull`), retried on transient failures; the cell hard-fails if the ref is not registered afterwards. The shards are then read once into page cache (the printed MB/s doubles as a volume health probe).
