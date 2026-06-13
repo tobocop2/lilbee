@@ -30,6 +30,7 @@ from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
     write_skip_markers,
+    write_skip_reasons,
 )
 from lilbee.data.ingest.types import (
     ChunkRecord,
@@ -385,6 +386,7 @@ async def sync(
     removed: list[str] = []
     failed: dict[str, None] = {}
     skipped: dict[str, None] = {}
+    reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
     flush_failed: set[str] = set()
 
     # Find files to remove (document sources whose file is gone; imports are kept)
@@ -421,6 +423,7 @@ async def sync(
             on_progress=on_progress,
             cancel=cancel,
             flush_failed=flush_failed,
+            reasons=reasons,
         )
 
     # A flush failure is a transient store-side problem, not a verdict on the
@@ -429,6 +432,10 @@ async def sync(
     _persist_skip_markers(
         skip_markers, pending_hashes, succeeded=[*added, *updated], failed=marker_failed
     )
+    # Persist the human-readable reason for each skip-marked file (informational;
+    # the hash markers above drive the resume logic). Only marker_failed files,
+    # so a transient flush failure doesn't leave a stale reason behind.
+    write_skip_reasons(cfg.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
 
     if files_to_process or removed:
         _store.ensure_fts_index()
@@ -504,6 +511,7 @@ async def ingest_batch(
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: threading.Event | None = None,
     flush_failed: set[str] | None = None,
+    reasons: dict[str, str] | None = None,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar.
     When *needs_cleanup* is True, old chunks are deleted immediately before
@@ -596,6 +604,7 @@ async def ingest_batch(
             window=window,
             on_progress=on_progress,
             flush_failed=flush_failed,
+            reasons=reasons,
         )
     else:
         with Progress(
@@ -625,6 +634,7 @@ async def ingest_batch(
                 progress=progress,
                 ptask=ptask,
                 flush_failed=flush_failed,
+                reasons=reasons,
             )
 
 
@@ -660,6 +670,7 @@ async def _collect_results(
     progress: Progress | None = None,
     ptask: Any = None,
     flush_failed: set[str] | None = None,
+    reasons: dict[str, str] | None = None,
 ) -> None:
     """Run *pending* through a bounded task window, batching writes and progress.
 
@@ -685,7 +696,7 @@ async def _collect_results(
             for fut in done:
                 result = fut.result()
                 completed_count += 1
-                status = _classify_result(result, added, updated, failed, skipped)
+                status = _classify_result(result, added, updated, failed, skipped, reasons)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result, buffer, buffered_chunks, added, updated, failed, flush_failed
@@ -758,12 +769,14 @@ def _classify_result(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, None],
+    reasons: dict[str, str] | None = None,
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
 
     Failures and zero-chunk files are tracked here; a successful file is reported
     as ``INGESTED`` and its chunks are persisted by the batched flush, so it stays
-    in ``added`` / ``updated`` until then.
+    in ``added`` / ``updated`` until then. When *reasons* is given, the
+    human-readable cause is recorded there (filename → reason) for reporting.
     """
     if result.error is not None:
         # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
@@ -772,6 +785,8 @@ def _classify_result(
         added.pop(result.name, None)
         updated.pop(result.name, None)
         failed[result.name] = None
+        if reasons is not None:
+            reasons[result.name] = f"{type(result.error).__name__}: {result.error}"
         return BatchStatus.FAILED
     if result.chunk_count == 0 and not result.page_texts:
         # Nothing extracted: no source row, so the file is retried next sync; a
@@ -779,6 +794,8 @@ def _classify_result(
         added.pop(result.name, None)
         updated.pop(result.name, None)
         skipped[result.name] = None
+        if reasons is not None:
+            reasons[result.name] = "no text extracted (0 chunks)"
         return BatchStatus.SKIPPED
     return BatchStatus.INGESTED
 
