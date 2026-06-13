@@ -326,12 +326,12 @@
         <div class="oschips"><span class="oschip">Linux x86_64</span></div>
         <div class="install">
           <span class="prompt">$</span>
-          <span class="cmd">sudo snap install ./lilbee_*.snap --dangerous --classic</span>
+          <span class="cmd">curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap &amp;&amp; sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-snap">details</button>
         <div class="notes-body" id="notes-snap" hidden>
-          <p class="extras">grab the <code>.snap</code> from the <a href="https://github.com/tobocop2/lilbee/releases/latest">latest release</a> first &nbsp;.&nbsp; <code>--dangerous</code> just means sideloaded and unsigned &nbsp;.&nbsp; no auto-update: download the new <code>.snap</code> to upgrade &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
+          <p class="extras"><code>--dangerous</code> just means sideloaded and unsigned &nbsp;.&nbsp; no auto-update: rerun the same command to upgrade &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
         </div>
       </div>
 

@@ -158,7 +158,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: gh release upload "$TAG" "${{ steps.build.outputs.snap }}" --repo "$GITHUB_REPOSITORY" --clobber
+        # Stable asset name so releases/latest/download/lilbee-linux-x86_64.snap works.
+        run: |
+          cp "${{ steps.build.outputs.snap }}" lilbee-linux-x86_64.snap
+          gh release upload "$TAG" lilbee-linux-x86_64.snap --repo "$GITHUB_REPOSITORY" --clobber
 
   nix-flake:
     needs: resolve
