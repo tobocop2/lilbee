@@ -9,6 +9,10 @@ on:
       tag:
         description: "Release tag to (re)publish (e.g. v0.6.66b469)."
         required: true
+      channels:
+        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,flatpak,snap."
+        required: false
+        default: "all"
 
 permissions:
   contents: read
@@ -66,6 +70,7 @@ jobs:
 
   homebrew:
     needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'homebrew')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -91,6 +96,7 @@ jobs:
 
   aur:
     needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'aur')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -104,6 +110,7 @@ jobs:
 
   flatpak:
     needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'flatpak')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,6 +127,7 @@ jobs:
 
   snap:
     needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'snap')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -165,6 +173,7 @@ jobs:
 
   nix-flake:
     needs: resolve
+    if: inputs.channels == 'all' || contains(inputs.channels, 'nix')
     runs-on: ubuntu-latest
     permissions:
       contents: write
