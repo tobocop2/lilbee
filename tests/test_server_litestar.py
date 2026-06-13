@@ -78,6 +78,19 @@ class TestStatusRoute:
         assert resp.json()["total_chunks"] == 0
 
 
+class TestWarmStreamRoute:
+    def test_streams_warm_events(self, client):
+        async def _fake_warm():
+            yield 'event: warm\ndata: {"phase": "ready"}\n\n'
+            yield "event: done\ndata: {}\n\n"
+
+        with mock.patch("lilbee.server.handlers.warm_stream", return_value=_fake_warm()):
+            resp = client.get("/api/warm/stream")
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert '"phase": "ready"' in resp.text
+
+
 class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_empty_results(self, mock_search, client):

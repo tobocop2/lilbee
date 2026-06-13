@@ -168,17 +168,30 @@ class TestWarmStream:
     async def test_emits_starting_then_exits_on_deadline(self, mock_svc):
         # Nothing loading and the engine not yet ready: emit STARTING placeholders
         # and end the stream when the budget elapses (the caller proceeds anyway).
+        # The clock is driven by hand so the loop runs a fixed number of iterations
+        # instead of busy-looping against a wall-clock deadline.
         from lilbee.providers.warm_progress import WarmPhase
 
         mock_svc.provider.warm_progress.return_value = None
         mock_svc.provider.role_ready.return_value = False
+        # Drive the clock by hand: the first two reads are inside the budget (the
+        # deadline calc plus one loop check), then it jumps past the deadline so
+        # the loop exits. Counter-based so extra monotonic() calls (asyncio) don't
+        # break it; one STARTING placeholder is emitted before the deadline.
+        calls = {"n": 0}
+
+        def _fake_monotonic() -> float:
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 2 else 99.0
+
         with (
             patch("lilbee.server.handlers._WARM_POLL_INTERVAL_S", 0),
-            patch("lilbee.server.handlers._WARM_STREAM_TIMEOUT_S", 0.05),
+            patch("lilbee.server.handlers._WARM_STREAM_TIMEOUT_S", 5.0),
+            patch("lilbee.server.handlers.time.monotonic", _fake_monotonic),
         ):
             chunks = [chunk async for chunk in handlers.warm_stream()]
         events = _parse_warm_events(chunks)
-        assert events  # at least one STARTING placeholder was emitted
+        assert events  # at least one STARTING placeholder before the deadline
         assert all(e["phase"] == WarmPhase.STARTING for e in events)
         assert "event: done" in chunks[-1]
 

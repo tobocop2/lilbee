@@ -90,6 +90,7 @@ def test_iter_skips_non_data_and_malformed_lines() -> None:
     lines = [
         "event: warm",
         "",
+        "data:",  # a data line with an empty payload (e.g. a keep-alive)
         "data: not-json",
         'data: {"no_phase": 1}',
         _sse(WarmProgress(phase=WarmPhase.READY)),
