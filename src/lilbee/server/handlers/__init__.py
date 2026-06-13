@@ -10,10 +10,16 @@ API consumed by ``server/routes/*.py``.
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import AsyncGenerator
+
 from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
@@ -65,6 +71,14 @@ from lilbee.server.handlers.sse import (
 )
 from lilbee.server.models import HealthResponse, StatusResponse
 
+# How often the warm stream re-snapshots provider state; sub-second so the read
+# bar advances smoothly without busy-spinning.
+_WARM_POLL_INTERVAL_S = 0.25
+# Upper bound on the warm stream; the launcher hands off when this elapses, so a
+# model still loading past it just warms on the client's first call. Generous to
+# cover a cold tensor-split giant off a slow filesystem.
+_WARM_STREAM_TIMEOUT_S = 1800.0
+
 
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
@@ -75,6 +89,33 @@ async def health() -> HealthResponse:
         chat_ready=provider.role_ready(WorkerRole.CHAT),
         chat_ctx=provider.served_chat_ctx(),
     )
+
+
+async def warm_stream() -> AsyncGenerator[str, None]:
+    """Stream chat-model cold-load progress as SSE until the engine is ready.
+
+    A launcher subscribes to render granular warm feedback. Each
+    :data:`SseEvent.WARM` event carries a :class:`WarmProgress` snapshot; a
+    terminal :data:`SseEvent.DONE` closes the stream once the chat role is ready
+    or has failed, or when the budget elapses (the caller proceeds either way, so
+    a still-loading model just warms on its first call). When nothing is loading
+    because the engine is already warm, a single ready snapshot is emitted.
+    """
+    provider = get_services().provider
+    deadline = time.monotonic() + _WARM_STREAM_TIMEOUT_S
+    while time.monotonic() < deadline:
+        snapshot = provider.warm_progress()
+        if snapshot is None:
+            if provider.role_ready(WorkerRole.CHAT):
+                yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
+                break
+            yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.STARTING).model_dump())
+        else:
+            yield sse_event(SseEvent.WARM, snapshot.model_dump())
+            if snapshot.phase in (WarmPhase.READY, WarmPhase.ERROR):
+                break
+        await asyncio.sleep(_WARM_POLL_INTERVAL_S)
+    yield sse_done({})
 
 
 async def status() -> StatusResponse:
@@ -123,4 +164,5 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
+    "warm_stream",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -128,9 +129,16 @@ def _poll_verdict(
     """One poll iteration's verdict, or ``None`` to keep waiting.
 
     PASS gate: a fresh ``lilbee_search`` dispatch event past this scenario's
-    baseline, else (tap never loaded) the pane gear marker plus
-    ``_TOOL_TURN_MIN_COMPLETIONS`` fresh completions; forbidden-marker checks
-    always run on the rendered pane.
+    baseline AND a fresh successful chat completion on lilbee's own serve, else
+    (tap never loaded) the pane gear marker plus ``_TOOL_TURN_MIN_COMPLETIONS``
+    fresh completions; forbidden-marker checks always run on the rendered pane.
+
+    The chat-completion requirement closes the Zen-fallback hole: if opencode's
+    model pin fails to resolve, opencode silently serves the chat from its own
+    hosted provider while still calling lilbee's MCP search tool, so the dispatch
+    event fires but lilbee serves no chat completion. Counting lilbee's own
+    ``POST /v1/chat/completions`` 200s proves lilbee served the chat, not just the
+    search.
     """
 
     def result(status: ScenarioStatus, detail: str) -> ScenarioResult:
@@ -153,13 +161,41 @@ def _poll_verdict(
     if has_session_error(events):
         return result(ScenarioStatus.FAIL, "session.error event from opencode")
     fresh_dispatches = count_tool_dispatches(events, _SEARCH_TOOL_SUBSTR) - baseline_dispatches
-    if fresh_dispatches >= 1:
-        return result(
-            ScenarioStatus.PASS, f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch event(s)"
-        )
-    missing = [s for s in scenario.expected if s.lower() not in pane_lower]
     fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
-    if not events and not missing and fresh_call >= _TOOL_TURN_MIN_COMPLETIONS:
+    missing = [s for s in scenario.expected if s.lower() not in pane_lower]
+    return _dispatch_verdict(
+        result, fresh_dispatches, fresh_call, has_events=bool(events), missing=missing
+    )
+
+
+def _dispatch_verdict(
+    result: Callable[[ScenarioStatus, str], ScenarioResult],
+    fresh_dispatches: int,
+    fresh_call: int,
+    *,
+    has_events: bool,
+    missing: list[str],
+) -> ScenarioResult | None:
+    """Resolve the tool-dispatch PASS gate (event tap first, then pane fallback).
+
+    A fresh dispatch without a fresh lilbee chat completion is the Zen-fallback
+    signature (the model pin fell back to opencode's own hosted provider, which
+    still calls the MCP search tool), so it FAILs rather than passing on the
+    search alone.
+    """
+    if fresh_dispatches >= 1:
+        if fresh_call < 1:
+            return result(
+                ScenarioStatus.FAIL,
+                f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch(es) but lilbee "
+                "served no chat completion: the model pin fell back to opencode's "
+                "own hosted provider, so lilbee served the search tool, not the chat",
+            )
+        return result(
+            ScenarioStatus.PASS,
+            f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch(es) + lilbee chat completion",
+        )
+    if not has_events and not missing and fresh_call >= _TOOL_TURN_MIN_COMPLETIONS:
         return result(
             ScenarioStatus.PASS, "gear dispatch + fresh chat completion (pane fallback; no tap)"
         )

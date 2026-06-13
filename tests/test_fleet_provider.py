@@ -866,6 +866,9 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     chat, embed = _fake_client(), _fake_client()
     embed.embed.return_value = [[0.1]]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    # Keep the unit hermetic: the chat warm path's shard prewarm reads cfg.chat_model
+    # off disk, which this test isn't exercising.
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
     spawning: list[WorkerRole] = []
     spawned: list[WorkerRole] = []
     p.add_spawn_listener(on_spawning=spawning.append, on_spawned=spawned.append)
@@ -1463,3 +1466,131 @@ class TestReloadSingleFlight:
         shutter.join(timeout=5.0)
         assert order == ["reload", "shutdown"]  # serialized, no interleaving
         assert p._swap is None  # the shutdown's state cleanup still landed
+
+
+class TestWarmProgressTracking:
+    """The chat-role warm path drives the WarmProgress tracker for launchers."""
+
+    @staticmethod
+    def _patch_registry(monkeypatch, registry: MagicMock) -> None:
+        # ModelRegistry is imported at the fleet module top, so patch it there.
+        monkeypatch.setattr(prov_mod, "ModelRegistry", lambda _dir: registry)
+
+    def test_prewarm_reads_shards_and_reports_full_byte_progress(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        shard_a = tmp_path / "model-00001.gguf"
+        shard_b = tmp_path / "model-00002.gguf"
+        shard_a.write_bytes(b"a" * 4096)
+        shard_b.write_bytes(b"b" * 2048)
+        registry = MagicMock()
+        registry.shard_paths.return_value = [shard_a, shard_b]
+        self._patch_registry(monkeypatch, registry)
+        monkeypatch.setattr(cfg, "chat_model", "repo/model-00001.gguf")
+
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        p._warm_tracker.begin("repo/model-00001.gguf")
+        p._prewarm_chat_weights()
+
+        snap = p._warm_tracker.snapshot()
+        assert snap.phase is WarmPhase.READING_WEIGHTS
+        assert snap.bytes_done == 4096 + 2048
+        assert snap.bytes_total == 4096 + 2048
+        assert snap.detail == "shard 2/2"  # multi-shard detail string
+
+    def test_prewarm_single_shard_omits_detail(self, monkeypatch, tmp_path: Path) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        shard = tmp_path / "solo.gguf"
+        shard.write_bytes(b"x" * 1024)
+        registry = MagicMock()
+        registry.shard_paths.return_value = [shard]
+        self._patch_registry(monkeypatch, registry)
+        monkeypatch.setattr(cfg, "chat_model", "repo/solo.gguf")
+
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        p._warm_tracker.begin("repo/solo.gguf")
+        p._prewarm_chat_weights()
+        snap = p._warm_tracker.snapshot()
+        assert snap.phase is WarmPhase.READING_WEIGHTS
+        assert snap.bytes_done == 1024
+        assert snap.detail is None  # single shard: no "shard N/M" label
+
+    def test_prewarm_skips_unresolvable_ref(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        registry = MagicMock()
+        registry.shard_paths.side_effect = KeyError("not registered")
+        self._patch_registry(monkeypatch, registry)
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        p._warm_tracker.begin("ghost/model.gguf")
+        p._prewarm_chat_weights()
+        # Returned before the read phase: the tracker stays at STARTING.
+        assert p._warm_tracker.snapshot().phase is WarmPhase.STARTING
+
+    def test_prewarm_skips_when_shards_are_empty(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        registry = MagicMock()
+        registry.shard_paths.return_value = []  # nothing to size -> total 0
+        self._patch_registry(monkeypatch, registry)
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        p._warm_tracker.begin("repo/m.gguf")
+        p._prewarm_chat_weights()
+        assert p._warm_tracker.snapshot().phase is WarmPhase.STARTING
+
+    def test_prewarm_tolerates_an_unreadable_shard_mid_read(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        good = tmp_path / "good.gguf"
+        good.write_bytes(b"a" * 2048)
+        # A directory stats fine (so sizing succeeds) but open('rb') raises
+        # IsADirectoryError (an OSError), exercising the inner read guard.
+        unreadable = tmp_path / "broken.gguf"
+        unreadable.mkdir()
+        registry = MagicMock()
+        registry.shard_paths.return_value = [good, unreadable]
+        self._patch_registry(monkeypatch, registry)
+        monkeypatch.setattr(cfg, "chat_model", "repo/m.gguf")
+
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        p._warm_tracker.begin("repo/m.gguf")
+        p._prewarm_chat_weights()  # must not raise
+        snap = p._warm_tracker.snapshot()
+        assert snap.phase is WarmPhase.READING_WEIGHTS
+        assert snap.bytes_done == 2048  # only the readable shard counted
+
+    def test_preload_marks_chat_ready_when_a_warm_request_returns(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+        monkeypatch.setattr(cfg, "chat_model", "repo/m.gguf")
+        p._preload_roles()  # the fake client's warm request returns -> ready
+        assert p._warm_tracker.snapshot().phase is WarmPhase.READY
+
+    def test_preload_marks_chat_failed_when_every_warm_request_raises(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        client = _fake_client()
+        client.chat.side_effect = RuntimeError("engine never came up")
+        p = _provider_with_clients({WorkerRole.CHAT: [client]})
+        monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+        monkeypatch.setattr(cfg, "chat_model", "repo/m.gguf")
+        p._preload_roles()
+        snap = p._warm_tracker.snapshot()
+        assert snap.phase is WarmPhase.ERROR
+        assert snap.error
+
+    def test_warm_progress_snapshot_exposed(self, monkeypatch) -> None:
+        from lilbee.providers.warm_progress import WarmPhase
+
+        p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+        assert p.warm_progress() is None  # nothing warming yet
+        p._warm_tracker.begin("repo/m.gguf")
+        p._warm_tracker.ready()
+        assert p.warm_progress().phase is WarmPhase.READY

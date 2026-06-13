@@ -244,6 +244,37 @@ def test_wait_for_chat_warm_returns_false_on_timeout(monkeypatch):
 
 
 @pytest.mark.no_warm_default
+def test_wait_for_chat_warm_returns_streamed_result(monkeypatch):
+    # When the progress stream runs, its verdict is returned directly without a
+    # second readiness poll (don't double-spend the budget).
+    from lilbee.cli.launchers import server as launch_mod
+
+    monkeypatch.setattr(launch_mod, "chat_ready", lambda _port: False)
+    monkeypatch.setattr(launch_mod, "render_warm", lambda _url, _timeout: True)
+    assert launch_mod.wait_for_chat_warm(8765, timeout_s=5.0) is True
+
+    monkeypatch.setattr(launch_mod, "render_warm", lambda _url, _timeout: False)
+    assert launch_mod.wait_for_chat_warm(8765, timeout_s=5.0) is False
+
+
+@pytest.mark.no_warm_default
+def test_wait_for_chat_warm_falls_back_to_poll_when_stream_unavailable(monkeypatch):
+    from lilbee.cli.launchers import server as launch_mod
+
+    calls = {"n": 0}
+
+    def _ready(_port):
+        calls["n"] += 1
+        return calls["n"] >= 2  # cold past the early check, warm on the poll
+
+    monkeypatch.setattr(launch_mod, "render_warm", lambda _url, _timeout: None)
+    monkeypatch.setattr(launch_mod, "chat_ready", _ready)
+    monkeypatch.setattr(launch_mod.time, "sleep", lambda _s: None)
+    assert launch_mod.wait_for_chat_warm(8765, timeout_s=5.0) is True
+    assert calls["n"] >= 2  # confirms the poll fallback actually ran
+
+
+@pytest.mark.no_warm_default
 def test_served_chat_ctx_reads_health_window(monkeypatch):
     from lilbee.cli.launchers import server as launch_mod
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import Response, get, patch
+from litestar.response import Stream
 from pydantic import ValidationError
 
 from lilbee.server import handlers
@@ -24,6 +25,13 @@ from lilbee.server.models import (
 async def health_route() -> HealthResponse:
     """Service health check returning server version and uptime status."""
     return await handlers.health()
+
+
+@get("/api/warm/stream")
+@read_only
+async def warm_stream_route() -> Stream:
+    """Stream chat-model cold-load progress as SSE for a launcher's warm indicator."""
+    return Stream(handlers.warm_stream(), media_type="text/event-stream")
 
 
 @get("/api/status")
