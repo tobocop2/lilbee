@@ -3,8 +3,8 @@
 A launcher consumes ``/api/warm/stream`` and drives a rich progress display so
 the user sees a real read-phase byte bar, then an engine-load spinner, while a
 large chat model loads, instead of a frozen line. Designed to degrade cleanly:
-when the stream is unavailable (an older server without the endpoint) the caller
-falls back to a plain readiness poll.
+when the stream can't be opened (server still binding, a transient transport
+error, or the endpoint absent) the caller falls back to a plain readiness poll.
 """
 
 from __future__ import annotations
@@ -23,19 +23,19 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.app import console
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
 _WARM_STREAM_PATH = "/api/warm/stream"
 _SSE_DATA_PREFIX = "data:"
 _STREAM_CONNECT_TIMEOUT_S = 5.0
+_DEFAULT_MODEL_LABEL = "chat model"
 
 
-def _short_model(ref: str | None) -> str:
-    """A compact model name for the bar (the GGUF filename, sans the repo path)."""
-    if not ref:
-        return "chat model"
-    return ref.rsplit("/", 1)[-1].removesuffix(".gguf")
+def _model_label(ref: str | None) -> str:
+    """The canonical UI label for the warming model, or a generic fallback."""
+    return display_label_for_ref(ref) if ref else _DEFAULT_MODEL_LABEL
 
 
 def _iter_warm_events(base_url: str, timeout_s: float) -> Iterator[WarmProgress]:
@@ -68,7 +68,7 @@ def _apply(progress: Progress, task_id: TaskID, snap: WarmProgress) -> None:
     if snap.phase is WarmPhase.READING_WEIGHTS:
         progress.update(
             task_id,
-            description=f"Reading {_short_model(snap.model_ref)} weights",
+            description=f"Reading {_model_label(snap.model_ref)} weights",
             total=snap.bytes_total or None,
             completed=snap.bytes_done,
             detail=snap.detail or "",

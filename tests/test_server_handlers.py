@@ -114,16 +114,6 @@ class TestHealth:
         mock_svc.provider.role_ready.return_value = True
         assert (await handlers.health()).chat_ready is True
 
-    async def test_health_carries_warm_snapshot(self, mock_svc):
-        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
-
-        snap = WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=3, bytes_total=4)
-        mock_svc.provider.warm_progress.return_value = snap
-        result = await handlers.health()
-        assert result.chat_warm is not None
-        assert result.chat_warm.phase is WarmPhase.READING_WEIGHTS
-        assert result.chat_warm.fraction == 0.75
-
 
 def _parse_warm_events(chunks: list[str]) -> list[dict]:
     """Pull the JSON payloads off ``warm`` SSE chunks, ignoring the [DONE] tail."""
@@ -174,6 +164,23 @@ class TestWarmStream:
         events = _parse_warm_events(chunks)
         assert events[-1]["phase"] == WarmPhase.ERROR
         assert events[-1]["error"] == "no vram"
+
+    async def test_emits_starting_then_exits_on_deadline(self, mock_svc):
+        # Nothing loading and the engine not yet ready: emit STARTING placeholders
+        # and end the stream when the budget elapses (the caller proceeds anyway).
+        from lilbee.providers.warm_progress import WarmPhase
+
+        mock_svc.provider.warm_progress.return_value = None
+        mock_svc.provider.role_ready.return_value = False
+        with (
+            patch("lilbee.server.handlers._WARM_POLL_INTERVAL_S", 0),
+            patch("lilbee.server.handlers._WARM_STREAM_TIMEOUT_S", 0.05),
+        ):
+            chunks = [chunk async for chunk in handlers.warm_stream()]
+        events = _parse_warm_events(chunks)
+        assert events  # at least one STARTING placeholder was emitted
+        assert all(e["phase"] == WarmPhase.STARTING for e in events)
+        assert "event: done" in chunks[-1]
 
 
 class TestStatus:

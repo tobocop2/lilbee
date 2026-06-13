@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.data.store import ChunkType, MemoryKind, SearchScope
-from lilbee.providers.warm_progress import WarmProgress
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 
@@ -177,10 +176,6 @@ class HealthResponse(BaseModel):
     chat_ctx: int | None = None
     """Per-slot context the chat engine serves, so a launcher can tell the client
     its window and the client trims history to fit. None until the engine is up."""
-    chat_warm: WarmProgress | None = None
-    """Cold-load progress for the chat role, or None when nothing is loading. A
-    non-streaming client reads a single snapshot here; a launcher prefers the
-    push-based ``/api/warm/stream`` for live updates."""
 
 
 class AskResponse(BaseModel):

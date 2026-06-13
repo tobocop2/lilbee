@@ -268,6 +268,22 @@ class TestRoutingProvider:
         assert rp.supports_tools(ref) is False
         mock_local.supports_tools.assert_called_once_with(ref)
 
+    def test_warm_progress_is_none_without_a_local_engine(self) -> None:
+        rp = self._make_provider()
+        rp._local = None
+        assert rp.warm_progress() is None
+
+    def test_warm_progress_delegates_to_local_engine(self) -> None:
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        rp = self._make_provider()
+        mock_local = mock.MagicMock()
+        snapshot = WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=1, bytes_total=2)
+        mock_local.warm_progress.return_value = snapshot
+        rp._local = mock_local
+        assert rp.warm_progress() is snapshot
+        mock_local.warm_progress.assert_called_once_with()
+
     def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()

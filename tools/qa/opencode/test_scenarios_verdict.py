@@ -1,8 +1,9 @@
 """Verdict tests for the opencode QA scenario gate (run on the pod harness).
 
 Flat-module imports match the harness's own layout, so run from this directory:
-``cd tools/qa/opencode && python -m pytest test_scenarios_verdict.py``. The main
-suite (``testpaths = ["tests"]``) does not collect these.
+``cd tools/qa/opencode && python -m pytest --noconftest test_scenarios_verdict.py``
+(``--noconftest`` skips the parent ``tools/qa/conftest.py``, which pulls pod-only
+deps). The main suite (``testpaths = ["tests"]``) does not collect these.
 """
 
 from __future__ import annotations

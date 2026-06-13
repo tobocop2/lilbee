@@ -20,6 +20,8 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
+from lilbee.core.config import cfg
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
@@ -778,12 +780,9 @@ class FleetProvider:
         llama-swap starts an upstream on its first request, so warming sends a
         minimal call to every replica of every role (firing the spawn listeners
         around each role). A per-replica failure is logged and skipped; that replica
-        still loads on its first real use. The chat role also drives the warm
-        tracker (read-phase byte progress, then the engine load) so a launcher can
-        render granular feedback while a large chat model loads.
+        still loads on its first real use. The chat role routes through
+        :meth:`_warm_chat_role` so a launcher gets granular progress.
         """
-        from lilbee.core.config import cfg
-
         with self._lock:
             pools = {role: list(clients) for role, clients in self._clients.items()}
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
@@ -791,21 +790,42 @@ class FleetProvider:
             if on_spawning is not None:
                 on_spawning(role)
             if role is WorkerRole.CHAT:
-                self._warm_tracker.begin(str(cfg.chat_model))
-                self._prewarm_chat_weights()
-                self._warm_tracker.loading_engine()
-            for client in clients:
-                try:
-                    _warm_role(role, client)
-                except Exception:
-                    log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
-            if role is WorkerRole.CHAT:
-                if self.role_ready(WorkerRole.CHAT):
-                    self._warm_tracker.ready()
-                else:
-                    self._warm_tracker.fail("The chat model did not finish loading.")
+                self._warm_chat_role(clients)
+            else:
+                self._warm_role_clients(role, clients)
             if on_spawned is not None:
                 on_spawned(role)
+
+    def _warm_role_clients(self, role: WorkerRole, clients: list[LlamaServerClient]) -> bool:
+        """Warm every replica of *role*; return whether at least one loaded."""
+        warmed = False
+        for client in clients:
+            try:
+                _warm_role(role, client)
+                warmed = True
+            except Exception:
+                log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
+        return warmed
+
+    def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
+        """Warm the chat role, driving the tracker through read -> load -> ready/fail.
+
+        Readiness is decided by whether a warm request actually returned, not by
+        re-probing llama-swap (which can transiently report empty right after a
+        successful load). The terminal phase is stamped in ``finally`` so an
+        unexpected error mid-warm still ends the launcher's progress stream.
+        """
+        self._warm_tracker.begin(str(cfg.chat_model))
+        warmed = False
+        try:
+            self._prewarm_chat_weights()
+            self._warm_tracker.loading_engine()
+            warmed = self._warm_role_clients(WorkerRole.CHAT, clients)
+        finally:
+            if warmed:
+                self._warm_tracker.ready()
+            else:
+                self._warm_tracker.fail("The chat model did not finish loading.")
 
     def _prewarm_chat_weights(self) -> None:
         """Page the chat model's GGUF shards into the OS cache, reporting byte progress.
@@ -813,20 +833,15 @@ class FleetProvider:
         Reading the shards before llama-swap loads them does two things: it gives a
         true read-phase percentage for the warm tracker, and it warms the page cache
         so the engine's mmap faults hit memory (a large win on a network filesystem,
-        where random mmap faults stalled cold loads). An unresolvable ref (the model
-        isn't registered yet) is skipped: the tracker just moves to the engine-load
-        phase and the model still loads on the warm request.
+        where random mmap faults stalled cold loads). Best-effort: any failure to
+        resolve or size the shards (unregistered ref, cache miss, I/O error) is
+        skipped, and the model still loads on the warm request.
         """
-        from lilbee.core.config import cfg
-        from lilbee.modelhub.registry import ModelRegistry
-
         try:
             shards = ModelRegistry(cfg.models_dir).shard_paths(str(cfg.chat_model))
-        except (KeyError, ValueError, OSError):
-            return
-        try:
             total = sum(shard.stat().st_size for shard in shards)
-        except OSError:
+        except Exception:
+            log.debug("Prewarm skipped; could not resolve chat shards.", exc_info=True)
             return
         if total <= 0:
             return

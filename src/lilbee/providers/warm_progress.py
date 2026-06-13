@@ -43,19 +43,6 @@ class WarmProgress(BaseModel):
     error: str | None = None
     elapsed_s: float = 0.0
 
-    @property
-    def fraction(self) -> float | None:
-        """Completion in ``0..1`` while reading weights, ``1`` once ready, else None.
-
-        None signals an indeterminate phase (starting / loading the engine) so a
-        renderer shows a spinner instead of a misleading bar.
-        """
-        if self.phase is WarmPhase.READING_WEIGHTS and self.bytes_total > 0:
-            return min(1.0, self.bytes_done / self.bytes_total)
-        if self.phase is WarmPhase.READY:
-            return 1.0
-        return None
-
 
 class WarmProgressTracker:
     """Thread-safe warm-state holder: the warm thread writes, handlers read.

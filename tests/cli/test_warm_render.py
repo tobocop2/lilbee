@@ -42,15 +42,23 @@ def _patch_stream(stream: _FakeStream):
     return mock.patch.object(warm_render.httpx, "stream", return_value=stream)
 
 
-def test_short_model_strips_repo_and_suffix() -> None:
+def test_model_label_uses_canonical_label_with_fallback() -> None:
     ref = "unsloth/GLM-4.5-Air-GGUF/GLM-4.5-Air-Q2_K.gguf"
-    assert warm_render._short_model(ref) == "GLM-4.5-Air-Q2_K"
-    assert warm_render._short_model(None) == "chat model"
+    # Reuses the project's canonical ref-to-label helper, so it matches the rest
+    # of the UI (cleaned repo name) rather than a bespoke filename.
+    assert warm_render._model_label(ref) == warm_render.display_label_for_ref(ref)
+    assert warm_render._model_label(None) == "chat model"
 
 
-def test_render_returns_true_when_stream_reaches_ready() -> None:
+def test_render_walks_all_phases_to_ready() -> None:
+    # Includes STARTING so the indeterminate-preparing branch of _apply is covered.
     lines = [
-        _sse(WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=5, bytes_total=10)),
+        _sse(WarmProgress(phase=WarmPhase.STARTING)),
+        _sse(
+            WarmProgress(
+                phase=WarmPhase.READING_WEIGHTS, bytes_done=5, bytes_total=10, detail="shard 1/2"
+            )
+        ),
         _sse(WarmProgress(phase=WarmPhase.LOADING_ENGINE)),
         _sse(WarmProgress(phase=WarmPhase.READY, bytes_total=10)),
         "data: [DONE]",

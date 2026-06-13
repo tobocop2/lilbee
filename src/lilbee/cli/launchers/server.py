@@ -135,7 +135,7 @@ def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:
     launched the instant the HTTP port binds would otherwise hit an
     apparently-dead stream during the cold model load. Streams ``/api/warm/stream``
     to render a real read-phase byte bar then an engine-load spinner; falls back
-    to a plain readiness poll when that stream is unavailable (an older server).
+    to a plain readiness poll when that stream can't be opened.
     Returns True once the chat engine reports ready, or False if the budget
     (weights-scaled via :func:`chat_warm_budget_s` unless given) elapses first;
     the caller proceeds either way, so a still-loading model just warms on the
