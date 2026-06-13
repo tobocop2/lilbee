@@ -1,0 +1,23 @@
+# Rendered per release by render_snapcraft.sh; CI stages the release binary
+# into payload/ (gitignored) before building.
+name: lilbee
+base: core24
+version: "0.0.0"
+summary: Local search engine you can talk to
+description: |
+  lilbee runs AI models locally, indexes your files and code, crawls the web
+  pages you point it at, and answers questions with citations down to the
+  file and line. One install covers the TUI, CLI, HTTP server, and MCP server.
+grade: stable
+confinement: classic
+platforms:
+  amd64:
+parts:
+  lilbee:
+    plugin: dump
+    source: payload
+    organize:
+      lilbee-linux-x86_64: bin/lilbee
+apps:
+  lilbee:
+    command: bin/lilbee
