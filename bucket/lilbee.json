@@ -1,0 +1,35 @@
+{
+    "version": "0.6.66b496",
+    "description": "Run and manage local AI models, and search everything you own with them, all in one program.",
+    "homepage": "https://lilbee.sh/",
+    "license": {
+        "identifier": "Elastic-2.0",
+        "url": "https://github.com/tobocop2/lilbee/blob/main/LICENSE"
+    },
+    "architecture": {
+        "64bit": {}
+    },
+    "pre_install": [
+        "$base = \"https://github.com/tobocop2/lilbee/releases/download/v$version\"",
+        "$cpuAsset = 'lilbee-windows-x86_64.exe'",
+        "$cpuHash = 'edc864c48c857885def5efa923bac02806280e4a913db877f076d14dd1f6a3a2'",
+        "$cudaAsset = 'lilbee-windows-x86_64-cu125.exe'",
+        "$cudaHash = '9967839d2f94b1ad296677b6995e4b685de6db32a76dd347549dd1d8c8a03941'",
+        "$asset = $cpuAsset; $expected = $cpuHash",
+        "$smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue",
+        "if ($smi) {",
+        "    $line = & nvidia-smi 2>$null | Select-String 'CUDA Version: (\\d+)\\.(\\d+)'",
+        "    if ($line) {",
+        "        $maj = [int]$line.Matches[0].Groups[1].Value",
+        "        $min = [int]$line.Matches[0].Groups[2].Value",
+        "        if ($maj -gt 12 -or ($maj -eq 12 -and $min -ge 5)) { $asset = $cudaAsset; $expected = $cudaHash }",
+        "    }",
+        "}",
+        "Write-Host \"lilbee: installing $asset\"",
+        "$exe = Join-Path $dir 'lilbee.exe'",
+        "Invoke-WebRequest -Uri \"$base/$asset\" -OutFile $exe",
+        "$actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()",
+        "if ($actual -ne $expected) { throw \"lilbee: checksum mismatch for $asset (expected $expected, got $actual)\" }"
+    ],
+    "bin": "lilbee.exe"
+}
