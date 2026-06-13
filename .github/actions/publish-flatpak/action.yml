@@ -1,0 +1,123 @@
+name: Publish Flatpak
+description: "Build the Flatpak from the release binary, smoke-test it, push the signed OSTree repo to the flatpak-lilbee Pages repo, and attach a .flatpak bundle to the release."
+
+inputs:
+  pages-token:
+    description: "Token with push rights to the flatpak-lilbee repo."
+    required: true
+  gpg-private-key:
+    description: "ASCII-armored private key that signs the OSTree repo."
+    required: true
+  version:
+    description: "Release version (e.g. 0.6.66b495)."
+    required: true
+  sha-linux:
+    description: "sha256 of the lilbee-linux-x86_64 release asset."
+    required: true
+  size-linux:
+    description: "Size in bytes of the lilbee-linux-x86_64 release asset."
+    required: true
+  tag:
+    description: "Release tag the .flatpak bundle is attached to."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install flatpak-builder and runtimes
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq flatpak flatpak-builder
+        flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak install --user -y --noninteractive flathub \
+          org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+    - name: Import signing key
+      id: gpg
+      shell: bash
+      env:
+        GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
+      run: |
+        set -euo pipefail
+        GNUPGHOME=$(mktemp -d)
+        echo "$GPG_PRIVATE_KEY" | gpg --homedir "$GNUPGHOME" --batch --import
+        KEYID=$(gpg --homedir "$GNUPGHOME" --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+        [ -n "$KEYID" ] || { echo "no secret key found in FLATPAK_GPG_PRIVATE_KEY"; exit 1; }
+        {
+          echo "gnupghome=$GNUPGHOME"
+          echo "keyid=$KEYID"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Clone the pages repo
+      shell: bash
+      env:
+        PAGES_TOKEN: ${{ inputs.pages-token }}
+      run: |
+        set -euo pipefail
+        git config --global user.name "lilbee-bot"
+        git config --global user.email "lilbee-bot@users.noreply.github.com"
+        git clone "https://x-access-token:${PAGES_TOKEN}@github.com/tobocop2/flatpak-lilbee.git" /tmp/pages
+
+    - name: Render manifest and build into the OSTree repo
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA_LINUX: ${{ inputs.sha-linux }}
+        SIZE_LINUX: ${{ inputs.size-linux }}
+        GNUPGHOME: ${{ steps.gpg.outputs.gnupghome }}
+        KEYID: ${{ steps.gpg.outputs.keyid }}
+      run: |
+        set -euo pipefail
+        bash packaging/tools/render_flatpak_manifest.sh \
+          packaging/flatpak/io.github.tobocop2.lilbee.yml "$VERSION" "$SHA_LINUX" "$SIZE_LINUX"
+        flatpak-builder --user --force-clean --disable-rofiles-fuse \
+          --repo=/tmp/pages/repo --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" \
+          /tmp/flatpak-build packaging/flatpak/io.github.tobocop2.lilbee.yml
+        flatpak build-update-repo --generate-static-deltas --prune --prune-depth=2 \
+          --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" /tmp/pages/repo
+
+    - name: Smoke test from the local repo
+      shell: bash
+      env:
+        EXPECTED: lilbee ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        flatpak remote-add --user --no-gpg-verify lilbee-local file:///tmp/pages/repo
+        flatpak install --user -y --noninteractive lilbee-local io.github.tobocop2.lilbee
+        ACTUAL=$(flatpak run io.github.tobocop2.lilbee --version)
+        echo "flatpak: $ACTUAL"
+        test "$ACTUAL" = "$EXPECTED"
+
+    - name: Build the single-file bundle
+      shell: bash
+      run: |
+        set -euo pipefail
+        flatpak build-bundle /tmp/pages/repo /tmp/lilbee.flatpak io.github.tobocop2.lilbee \
+          --repo-url=https://tobocop2.github.io/flatpak-lilbee/repo \
+          --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+    - name: Push the pages repo
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        cd /tmp/pages
+        git add -A
+        if git diff --cached --quiet; then
+          echo "no repo changes; skipping push"
+          exit 0
+        fi
+        git commit -m "lilbee ${VERSION} (flatpak)"
+        git push
+
+    - name: Attach the bundle to the release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        gh release upload "$TAG" /tmp/lilbee.flatpak --repo "$GITHUB_REPOSITORY" --clobber

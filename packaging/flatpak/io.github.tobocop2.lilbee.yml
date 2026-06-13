@@ -1,0 +1,34 @@
+app-id: io.github.tobocop2.lilbee
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: lilbee
+finish-args:
+  # Model downloads, `lilbee serve`, and MCP clients on localhost.
+  - --share=network
+  # Vaults live anywhere on disk, same reach as the other channels.
+  - --filesystem=host
+  # llama-server runs Vulkan inference; pulls the matching GL driver extension.
+  - --device=dri
+modules:
+  - name: lilbee
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 lilbee.sh /app/bin/lilbee
+      - install -Dm755 apply_extra.sh /app/bin/apply_extra
+      - install -Dm644 io.github.tobocop2.lilbee.metainfo.xml -t /app/share/metainfo
+    sources:
+      # url/sha256/size are rendered per release by render_flatpak_manifest.sh;
+      # extra-data keeps the ~300MB binary out of the OSTree repo (fetched at
+      # install time from the GitHub release instead).
+      - type: extra-data
+        filename: lilbee-bin
+        url: https://github.com/tobocop2/lilbee/releases/download/v0.0.0/lilbee-linux-x86_64
+        sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+        size: 0
+      - type: file
+        path: lilbee.sh
+      - type: file
+        path: apply_extra.sh
+      - type: file
+        path: io.github.tobocop2.lilbee.metainfo.xml
