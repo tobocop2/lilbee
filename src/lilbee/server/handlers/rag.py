@@ -14,7 +14,6 @@ from lilbee.app.memory import auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode
 from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -317,19 +316,25 @@ async def _stream_chat_response(
     for warming in _chat_warming_events():
         yield warming
 
-    try:
-        rag = get_services().searcher.build_rag_context(
-            question, top_k=top_k, history=history, chunk_type=chunk_type
-        )
-    except EmbeddingModelMismatchError as exc:
-        # detail carries the index's embedder so the client can offer to adopt it.
-        detail = exc.persisted_model if exc.dims_match else None
-        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-        return
-    if rag is None:
-        yield sse_error("No relevant documents found.")
-        return
-    sources, messages = rag
+    searcher = get_services().searcher
+    if searcher.skip_retrieval():
+        # Chat-only mode (or no embedder): answer directly with no RAG context.
+        sources: list[SearchChunk] = []
+        messages = searcher.direct_messages(question, history)
+    else:
+        try:
+            rag = searcher.build_rag_context(
+                question, top_k=top_k, history=history, chunk_type=chunk_type
+            )
+        except EmbeddingModelMismatchError as exc:
+            # detail carries the index's embedder so the client can offer to adopt it.
+            detail = exc.persisted_model if exc.dims_match else None
+            yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+            return
+        if rag is None:
+            yield sse_error("No relevant documents found.")
+            return
+        sources, messages = rag
 
     req = _build_canonical_request(messages, options)
     answer_parts: list[str] = []
@@ -441,14 +446,6 @@ def _text_from_event(event: Any) -> str:
     return ""
 
 
-def _retrieval_skipped() -> bool:
-    """Re-derive whether retrieval would have run; mirrors ``Searcher.ask_raw`` branches."""
-    services = get_services()
-    if cfg.chat_mode == ChatMode.CHAT.value:
-        return True
-    return not services.embedder.embedding_available()
-
-
 def _build_chat_messages(
     question: str,
     history: list[ChatMessage],
@@ -461,24 +458,15 @@ def _build_chat_messages(
     disabled or returns nothing; otherwise the augmented prompt from
     ``Searcher.build_rag_context``.
     """
-    services = get_services()
-    if _retrieval_skipped():
-        return [], _direct_messages(question, history)
-    rag = services.searcher.build_rag_context(
+    searcher = get_services().searcher
+    if searcher.skip_retrieval():
+        return [], searcher.direct_messages(question, history)
+    rag = searcher.build_rag_context(
         question, top_k=top_k, history=history, chunk_type=chunk_type
     )
     if rag is None:
-        return [], _direct_messages(question, history)
+        return [], searcher.direct_messages(question, history)
     return rag
-
-
-def _direct_messages(question: str, history: list[ChatMessage]) -> list[ChatMessage]:
-    """Direct-chat messages: general system prompt + history + user question."""
-    msgs: list[ChatMessage] = [{"role": "system", "content": cfg.general_system_prompt}]
-    if history:
-        msgs.extend(history)
-    msgs.append({"role": "user", "content": question})
-    return msgs
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

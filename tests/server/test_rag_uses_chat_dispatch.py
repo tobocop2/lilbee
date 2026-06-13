@@ -247,31 +247,6 @@ class TestRagHandlerHelpers:
         )
         assert out == "ab"
 
-    def test_direct_messages_appends_history_and_question(
-        self, services_with_chat_dispatch
-    ) -> None:
-        from lilbee.server.handlers.rag import _direct_messages
-
-        msgs = _direct_messages("q", [{"role": "user", "content": "hi"}])
-        assert msgs[0]["role"] == "system"
-        assert msgs[1] == {"role": "user", "content": "hi"}
-        assert msgs[-1] == {"role": "user", "content": "q"}
-
-    def test_retrieval_skipped_for_chat_mode(
-        self, services_with_chat_dispatch, monkeypatch
-    ) -> None:
-        from lilbee.core.config.enums import ChatMode
-        from lilbee.server.handlers.rag import _retrieval_skipped
-
-        monkeypatch.setattr(cfg, "chat_mode", ChatMode.CHAT.value)
-        assert _retrieval_skipped() is True
-
-    def test_retrieval_skipped_when_no_embedding(self, services_with_chat_dispatch) -> None:
-        from lilbee.server.handlers.rag import _retrieval_skipped
-
-        services_with_chat_dispatch.embedder.embedding_available = MagicMock(return_value=False)
-        assert _retrieval_skipped() is True
-
     def test_canonical_role_accepts_known_roles(self) -> None:
         from lilbee.server.handlers.rag import _canonical_role
 

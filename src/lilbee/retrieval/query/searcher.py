@@ -514,7 +514,14 @@ class Searcher:
             )
         return format_memory_block(preferences, facts, self._config.memory_token_budget)
 
-    def _direct_messages(
+    def skip_retrieval(self) -> bool:
+        """Whether this turn should bypass RAG: chat-only mode or no embedder."""
+        return (
+            self._config.chat_mode == ChatMode.CHAT.value
+            or not self._embedder.embedding_available()
+        )
+
+    def direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
     ) -> list[ChatMessage]:
         """Build messages for direct LLM chat (no RAG context)."""
@@ -540,7 +547,7 @@ class Searcher:
         options: dict[str, Any] | None,
     ) -> str:
         """Run a no-RAG chat turn and return the cleaned response."""
-        messages = self._direct_messages(question, history)
+        messages = self.direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         result = self._provider.chat(provider_messages, options=opts or None)
@@ -558,10 +565,7 @@ class Searcher:
     ) -> AskResult:
         """Ask a question. Skips retrieval when chat_mode is 'chat' or
         when no embedding model is configured."""
-        if (
-            self._config.chat_mode == ChatMode.CHAT.value
-            or not self._embedder.embedding_available()
-        ):
+        if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
@@ -601,7 +605,7 @@ class Searcher:
         options: dict[str, Any] | None,
     ) -> Generator[StreamToken, None, None]:
         """Streaming branch with the general system prompt (no RAG context)."""
-        messages = self._direct_messages(question, history)
+        messages = self.direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         events = stream_chat_with_cap(
@@ -627,10 +631,7 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
-        if (
-            self._config.chat_mode == ChatMode.CHAT.value
-            or not self._embedder.embedding_available()
-        ):
+        if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
             return
 

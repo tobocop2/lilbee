@@ -1641,20 +1641,20 @@ class TestStructuredQueryWikiRaw:
 
 class TestDirectMessagesNoEmbed:
     def test_builds_system_history_user(self, mock_svc):
-        """_direct_messages builds [system, ...history, user] when no embedding."""
+        """direct_messages builds [system, ...history, user] when no embedding."""
         searcher = get_services().searcher
         history = [
             {"role": "user", "content": "prev"},
             {"role": "assistant", "content": "prev answer"},
         ]
-        msgs = searcher._direct_messages("new question", history=history)
+        msgs = searcher.direct_messages("new question", history=history)
         assert msgs[0]["role"] == "system"
         assert msgs[1]["content"] == "prev"
         assert msgs[2]["content"] == "prev answer"
         assert msgs[3]["content"] == "new question"
 
     def test_no_history(self, mock_svc):
-        msgs = get_services().searcher._direct_messages("q")
+        msgs = get_services().searcher.direct_messages("q")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
         assert msgs[1]["role"] == "user"

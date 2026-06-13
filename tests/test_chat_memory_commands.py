@@ -132,6 +132,21 @@ def _patch_active_tasks(monkeypatch, queue, tasks):
     monkeypatch.setattr(type(queue), "active_tasks", property(lambda _self: tasks))
 
 
+def _fake_active_task(task_type):
+    """A real Task the TaskBar can render. A bare stub drifts from the render
+    interface (the bar reads name/progress/indeterminate when it repaints
+    mid-test), which made these tests flaky."""
+    from lilbee.cli.tui.task_queue import Task, TaskStatus
+
+    return Task(
+        task_id=f"t-{task_type}",
+        name=task_type,
+        task_type=task_type,
+        fn=lambda: None,
+        status=TaskStatus.ACTIVE,
+    )
+
+
 async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
     from lilbee.cli.tui.task_queue import Task, TaskType
 
@@ -169,11 +184,9 @@ async def test_maybe_extract_runs_when_idle(mock_svc):
 
 
 async def test_indexing_active_reflects_queue(mock_svc, monkeypatch):
-    from types import SimpleNamespace
-
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         _patch_active_tasks(monkeypatch, app.task_bar.queue, [])
         assert app.screen._indexing_active() is False
-        _patch_active_tasks(monkeypatch, app.task_bar.queue, [SimpleNamespace(task_type="add")])
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [_fake_active_task("add")])
         assert app.screen._indexing_active() is True

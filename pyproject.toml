@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b493"
+version = "0.6.66b496"
 description = "A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources. Per-project libraries, semantic and hybrid search, vision OCR, auto-built wiki. CLI, TUI, MCP server, REST API, and Python library in one process; no model server, no database server."
 readme = "README.md"
 license = "Elastic-2.0"
@@ -10,8 +10,10 @@ keywords = [
     "rag", "local-llm", "local-ai",
     "mcp", "mcp-server",
     "semantic-search", "vector-search", "retrieval",
-    "embeddings", "knowledge-base",
+    "embeddings", "knowledge-base", "knowledge-management",
     "huggingface", "ocr", "web-crawler",
+    "model-manager", "llama-cpp", "gguf", "ollama", "lm-studio",
+    "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

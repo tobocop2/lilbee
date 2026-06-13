@@ -2,10 +2,57 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest import mock
 
 from lilbee import __main__ as main_mod
+
+
+class TestIsolateVendoredOpenssl:
+    """Default OPENSSL_CONF to the empty config only inside Flatpak sandboxes."""
+
+    def test_sets_devnull_inside_flatpak(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".flatpak-info"
+        marker.touch()
+        with (
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(main_mod, "_FLATPAK_INFO", marker),
+            mock.patch.dict(os.environ, clear=True),
+        ):
+            main_mod._isolate_vendored_openssl()
+            assert os.environ["OPENSSL_CONF"] == os.devnull
+
+    def test_preserves_explicit_openssl_conf(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".flatpak-info"
+        marker.touch()
+        with (
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(main_mod, "_FLATPAK_INFO", marker),
+            mock.patch.dict(os.environ, {"OPENSSL_CONF": "/etc/custom.cnf"}, clear=True),
+        ):
+            main_mod._isolate_vendored_openssl()
+            assert os.environ["OPENSSL_CONF"] == "/etc/custom.cnf"
+
+    def test_noop_outside_flatpak(self, tmp_path: Path) -> None:
+        with (
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(main_mod, "_FLATPAK_INFO", tmp_path / "absent"),
+            mock.patch.dict(os.environ, clear=True),
+        ):
+            main_mod._isolate_vendored_openssl()
+            assert "OPENSSL_CONF" not in os.environ
+
+    def test_noop_on_other_platforms(self, tmp_path: Path) -> None:
+        marker = tmp_path / ".flatpak-info"
+        marker.touch()
+        with (
+            mock.patch.object(main_mod.sys, "platform", "darwin"),
+            mock.patch.object(main_mod, "_FLATPAK_INFO", marker),
+            mock.patch.dict(os.environ, clear=True),
+        ):
+            main_mod._isolate_vendored_openssl()
+            assert "OPENSSL_CONF" not in os.environ
 
 
 class TestMultiprocessingChildCode:

@@ -1,0 +1,158 @@
+name: Flatpak validate
+
+# Builds the Linux executable like release.yml, then proves it boots inside a
+# real Flatpak sandbox (the freedesktop runtime segfault regression, #342).
+# Two clocks, two triggers: the cron catches freedesktop runtime drift (their
+# schedule, not our commits) and keeps the main-branch ccache alive past
+# GitHub's 7-day eviction; the push trigger re-primes and re-validates the
+# moment compile inputs change (dep bumps are exactly when the vendored-lib
+# crash class can regress). Release builds can only restore main-saved caches.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/SHA to build"
+        required: false
+        type: string
+  schedule:
+    - cron: '0 7 * * 1'  # Mondays 07:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - uv.lock
+      - pyproject.toml
+      - tools/wheel-build/**
+      - .github/workflows/flatpak-validate.yml
+
+concurrency:
+  group: flatpak-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_34_x86_64
+    timeout-minutes: 300
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Compute version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          NUITKA_VERSION=$(echo "$VERSION" | tr -cs '0-9' ' ' | awk '{ printf "%s.%s.%s.%s", $1, $2, $3, $4 }')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "LILBEE_NUITKA_VERSION=$NUITKA_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install Vulkan SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dnf install -y libxkbcommon-devel libX11-devel libXrandr-devel libXcursor-devel libXi-devel libXinerama-devel mesa-libGL-devel
+          VULKAN_VERSION="1.3.296.0"
+          curl -L -o /tmp/vulkan-sdk.tar.xz \
+            "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz"
+          mkdir -p /opt/vulkan
+          tar -xf /tmp/vulkan-sdk.tar.xz -C /opt/vulkan --strip-components=1
+          {
+            echo "VULKAN_SDK=/opt/vulkan/x86_64"
+            echo "LD_LIBRARY_PATH=/opt/vulkan/x86_64/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          echo "/opt/vulkan/x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: nuitka-ubuntu-latest-vulkan
+          max-size: '2G'
+
+      - name: Install dependencies
+        run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
+
+      - name: Build llama-cpp-python from source
+        shell: bash
+        env:
+          BACKEND: vulkan
+          LLAMA_BUILD_DIR: "/tmp/llama-build"
+        run: bash tools/wheel-build/build_llama_cpp.sh
+
+      - name: Install the freshly-built llama-cpp-python
+        shell: bash
+        run: uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
+
+      - name: Build executable
+        shell: bash
+        env:
+          ASSET_NAME: lilbee-linux-x86_64
+          PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+        run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lilbee-linux-x86_64
+          path: dist/lilbee-linux-x86_64
+          if-no-files-found: error
+
+  sandbox:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APPDATA: /home/runner/.var/app/md.obsidian.Obsidian
+      EXPECTED: lilbee ${{ needs.build.outputs.version }}
+    steps:
+      - name: Install flatpak and Obsidian
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub md.obsidian.Obsidian
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lilbee-linux-x86_64
+          path: /tmp/dist
+
+      - name: Baseline outside the sandbox
+        run: |
+          chmod +x /tmp/dist/lilbee-linux-x86_64
+          ACTUAL=$(/tmp/dist/lilbee-linux-x86_64 --version)
+          echo "outside: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Validate inside the Obsidian Flatpak sandbox
+        run: |
+          mkdir -p "$APPDATA/data/lilbee/bin"
+          cp /tmp/dist/lilbee-linux-x86_64 "$APPDATA/data/lilbee/bin/lilbee"
+          cat > "$APPDATA/data/lilbee/validate.sh" <<EOF
+          #!/bin/sh
+          set -u
+          EXPECTED="$EXPECTED"
+          EOF
+          cat >> "$APPDATA/data/lilbee/validate.sh" <<'EOF'
+          BIN="$HOME/.var/app/md.obsidian.Obsidian/data/lilbee/bin/lilbee"
+          echo "=== onefile, default env ==="
+          ACTUAL=$("$BIN" --version); RC=$?
+          echo "stdout: $ACTUAL (exit=$RC)"
+          [ $RC -eq 0 ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: onefile"; exit 1; }
+          MAIN=$(echo "$XDG_CACHE_HOME"/lilbee/*/lilbee-linux-x86_64.bin)
+          echo "=== unpacked main, default env: $MAIN ==="
+          ACTUAL=$("$MAIN" --version); RC=$?
+          echo "stdout: $ACTUAL (exit=$RC)"
+          [ $RC -eq 0 ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: unpacked"; exit 1; }
+          echo "PASS: binary boots inside the Flatpak sandbox"
+          EOF
+          flatpak run --command=sh md.obsidian.Obsidian "$APPDATA/data/lilbee/validate.sh"

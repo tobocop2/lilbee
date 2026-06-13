@@ -27,6 +27,10 @@ on:
         description: "Build even if the smoke step fails."
         type: boolean
         default: false
+      release_tag:
+        description: "GH release tag to eagerly attach each built executable to (empty = artifacts only)."
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -112,6 +116,8 @@ jobs:
         if: runner.os == 'Linux'
         uses: hendrikmuhs/ccache-action@v1
         with:
+          # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
+          save: ${{ github.ref_type != 'tag' }}
           key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
           max-size: '2G'
 
@@ -174,9 +180,17 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
+      # workflow_call eager attach: the caller created the pre-release shell,
+      # so each cell's exe appears on the release as soon as it builds.
+      - name: Attach binary to the GH pre-release (call mode)
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$TAG" "dist/${{ matrix.asset_name }}" --clobber
+
       # Standalone-dispatch mode: attach to the named release tag directly.
-      # workflow_call mode skips this because the caller's attach-prerelease
-      # picks up the run artifact via the lilbee-* glob.
       - name: Attach binary to release (dispatch mode)
         if: inputs.tag != ''
         uses: softprops/action-gh-release@v3
