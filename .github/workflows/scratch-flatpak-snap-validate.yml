@@ -3,12 +3,16 @@
 # upload (secrets not provisioned yet). Delete before merging to main.
 name: Scratch flatpak+snap validate
 
+# The push trigger exists because GitHub won't register a dispatch-only
+# workflow that isn't on the default branch.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: "Existing release tag to validate against (e.g. v0.6.66b495)."
         required: true
+  push:
+    branches: [feat/flatpak-snap]
 
 permissions:
   contents: read
@@ -27,7 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'v0.6.66b495' }}
         run: |
           set -euo pipefail
           tag="${TAG}"
