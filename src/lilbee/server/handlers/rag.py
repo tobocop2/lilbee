@@ -13,7 +13,7 @@ from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
-from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
+from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
@@ -159,24 +159,35 @@ async def _stream_rag_response(
     top_k: int = 0,
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
+    *,
+    honor_chat_mode: bool = False,
 ) -> AsyncGenerator[str, None]:
-    """Shared SSE streaming for ask_stream and chat_stream."""
+    """Shared SSE streaming for ask_stream and chat_stream.
+
+    With ``honor_chat_mode`` (chat_stream), a chat-only mode or a missing embedder
+    streams a direct answer with no retrieval and no sources.
+    """
     yield ""  # force generator
 
-    try:
-        rag = get_services().searcher.build_rag_context(
-            question, top_k=top_k, history=history, chunk_type=chunk_type
-        )
-    except EmbeddingModelMismatchError as exc:
-        # detail carries the index's embedder so the client can offer to adopt it.
-        detail = exc.persisted_model if exc.dims_match else None
-        yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-        return
-    if rag is None:
-        yield sse_error("No relevant documents found.")
-        return
+    searcher = get_services().searcher
+    results: list[SearchChunk] = []
+    if honor_chat_mode and searcher.skip_retrieval():
+        messages = searcher.direct_messages(question, history)
+    else:
+        try:
+            rag = searcher.build_rag_context(
+                question, top_k=top_k, history=history, chunk_type=chunk_type
+            )
+        except EmbeddingModelMismatchError as exc:
+            # detail carries the index's embedder so the client can offer to adopt it.
+            detail = exc.persisted_model if exc.dims_match else None
+            yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+            return
+        if rag is None:
+            yield sse_error("No relevant documents found.")
+            return
+        results, messages = rag
 
-    results, messages = rag
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
     sse = SseStream()
@@ -244,5 +255,10 @@ def chat_stream(
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
     return _stream_rag_response(
-        question, history=history, top_k=top_k, options=options, chunk_type=chunk_type
+        question,
+        history=history,
+        top_k=top_k,
+        options=options,
+        chunk_type=chunk_type,
+        honor_chat_mode=True,
     )
