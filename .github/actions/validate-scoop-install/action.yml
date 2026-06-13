@@ -24,7 +24,10 @@ runs:
         Invoke-WebRequest -UseBasicParsing get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
         & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
         $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
-        scoop install "$env:MANIFEST"
+        # Resolve to a backslash path so Scoop reads it as a local manifest file
+        # instead of parsing the forward slash as a <bucket>/<app> reference.
+        $manifest = (Resolve-Path $env:MANIFEST).Path
+        scoop install $manifest
         if ($LASTEXITCODE -ne 0) { throw "scoop install failed" }
         $actual = (& lilbee --version | Out-String).Trim()
         Write-Host "scoop: $actual"
