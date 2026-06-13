@@ -461,9 +461,7 @@ def _build_chat_messages(
     searcher = get_services().searcher
     if searcher.skip_retrieval():
         return [], searcher.direct_messages(question, history)
-    rag = searcher.build_rag_context(
-        question, top_k=top_k, history=history, chunk_type=chunk_type
-    )
+    rag = searcher.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
     if rag is None:
         return [], searcher.direct_messages(question, history)
     return rag
