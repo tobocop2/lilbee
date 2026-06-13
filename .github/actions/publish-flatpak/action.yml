@@ -59,6 +59,13 @@ runs:
         git config --global user.name "lilbee-bot"
         git config --global user.email "lilbee-bot@users.noreply.github.com"
         git clone "https://x-access-token:${PAGES_TOKEN}@github.com/tobocop2/flatpak-lilbee.git" /tmp/pages
+        # git can't track empty directories, so OSTree's empty-but-required dirs are
+        # dropped on the round-trip through the pages repo. Restore them or build-update-repo
+        # aborts with "Listing refs: opendir(refs/remotes): No such file or directory".
+        if [ -f /tmp/pages/repo/config ]; then
+          mkdir -p /tmp/pages/repo/refs/remotes /tmp/pages/repo/refs/mirrors \
+            /tmp/pages/repo/tmp /tmp/pages/repo/state /tmp/pages/repo/extensions
+        fi
 
     - name: Render manifest and build into the OSTree repo
       shell: bash
