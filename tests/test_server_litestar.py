@@ -441,7 +441,10 @@ class TestEmbeddingMismatchSurfacing:
 
         async def _collect():
             with mock.patch.object(rag, "get_services") as mock_services:
-                mock_services.return_value.searcher.build_rag_context.side_effect = self._mismatch()
+                searcher = mock_services.return_value.searcher
+                # A mismatch only surfaces while retrieving, i.e. in search mode.
+                searcher.skip_retrieval.return_value = False
+                searcher.build_rag_context.side_effect = self._mismatch()
                 return [event async for event in rag.chat_stream(question="q", history=[])]
 
         events = asyncio.run(_collect())

@@ -69,6 +69,8 @@ def mock_svc():
     searcher.search.return_value = []
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
     searcher.build_rag_context.return_value = None
+    # Default to the retrieval path; chat-mode tests flip this explicitly.
+    searcher.skip_retrieval.return_value = False
     services = make_mock_services(searcher=searcher)
     svc_mod.set_services(services)
     yield services
@@ -248,6 +250,16 @@ class TestAskStream:
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
+
+    async def test_always_retrieves_ignoring_chat_mode(self, mock_svc):
+        """ask is an explicit document query: it retrieves even when the searcher
+        would skip retrieval in chat-only mode."""
+        mock_svc.searcher.skip_retrieval.return_value = True
+        mock_svc.searcher.build_rag_context.return_value = None
+        events = [e async for e in handlers.ask_stream("q")]
+        mock_svc.searcher.build_rag_context.assert_called_once()
+        mock_svc.searcher.direct_messages.assert_not_called()
+        assert any(e.startswith("event: error") for e in events if e)
 
     async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -500,6 +512,26 @@ class TestChatStream:
         token_events = [e for e in non_empty if e.startswith("event: token")]
         assert len(token_events) == 1
         assert "reply" in token_events[0]
+
+    async def test_chat_mode_streams_direct_without_retrieval(self, mock_svc):
+        """When the searcher would skip retrieval (chat-only mode or no embedder),
+        chat_stream answers directly with no RAG context and empty sources."""
+        mock_svc.searcher.skip_retrieval.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+        ]
+        mock_svc.provider.chat.return_value = iter(["hello"])
+        events = [e async for e in handlers.chat_stream("q", [])]
+
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_called_once()
+        types = _event_types(events)
+        assert "token" in types
+        assert "done" in types
+        sources_events = [e for e in events if e and e.startswith("event: sources")]
+        assert len(sources_events) == 1
+        assert _parse_data(sources_events[0]) == []
 
 
 def _event_types(events: list[str]) -> list[str]:
