@@ -1335,6 +1335,32 @@ class TestFileHash:
 
 
 class TestClassifyResult:
+    def test_records_reason_for_failed_and_skipped_files(self):
+        # The optional reasons map captures WHY a file was skipped (the exception
+        # for a failure, "no text" for a zero-chunk file) so a report can show it.
+        from lilbee.data.ingest.pipeline import _classify_result
+        from lilbee.data.ingest.types import _IngestResult
+
+        reasons: dict[str, str] = {}
+        _classify_result(
+            _IngestResult("err.pdf", Path("err.pdf"), 0, error=TimeoutError("OCR timed out")),
+            {},
+            {},
+            {},
+            {},
+            reasons,
+        )
+        _classify_result(
+            _IngestResult("blank.tiff", Path("blank.tiff"), chunk_count=0, error=None),
+            {},
+            {},
+            {},
+            {},
+            reasons,
+        )
+        assert reasons["err.pdf"] == "TimeoutError: OCR timed out"
+        assert reasons["blank.tiff"] == "no text extracted (0 chunks)"
+
     def test_zero_chunks_not_recorded_as_added(self):
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
