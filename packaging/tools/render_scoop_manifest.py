@@ -9,18 +9,10 @@ import sys
 from pathlib import Path
 
 
-def _replace_version(content: str, version: str) -> str:
-    new_content, count = re.subn(r'"version": "[^"]*"', f'"version": "{version}"', content)
+def _replace_once(content: str, pattern: re.Pattern[str], repl: str, what: str) -> str:
+    new_content, count = pattern.subn(repl, content)
     if count != 1:
-        sys.exit("expected exactly one version line")
-    return new_content
-
-
-def _replace_hash(content: str, var_name: str, new_sha: str) -> str:
-    pattern = re.compile(r"(\$" + re.escape(var_name) + r" = ')[0-9a-f]{64}(')")
-    new_content, count = pattern.subn(rf"\g<1>{new_sha}\g<2>", content)
-    if count != 1:
-        sys.exit(f"expected exactly one {var_name} line, found {count}")
+        sys.exit(f"expected exactly one {what}, found {count}")
     return new_content
 
 
@@ -33,9 +25,30 @@ def main() -> None:
     args = parser.parse_args()
 
     content = args.manifest.read_text()
-    content = _replace_version(content, args.version)
-    content = _replace_hash(content, "cpuHash", args.sha_windows)
-    content = _replace_hash(content, "cudaHash", args.sha_windows_cu125)
+    # The version field, the literal version in the CPU download URL (the cu125
+    # URL is built from $version at install time), the Scoop-verified CPU hash,
+    # and the cu125 hash checked by post_install.
+    content = _replace_once(
+        content, re.compile(r'"version": "[^"]*"'), f'"version": "{args.version}"', "version line"
+    )
+    content = _replace_once(
+        content,
+        re.compile(r"(releases/download/v)[^/]+(/lilbee-windows-x86_64\.exe)"),
+        rf"\g<1>{args.version}\g<2>",
+        "CPU download URL",
+    )
+    content = _replace_once(
+        content,
+        re.compile(r'("hash": ")[0-9a-f]{64}(")'),
+        rf"\g<1>{args.sha_windows}\g<2>",
+        "CPU hash",
+    )
+    content = _replace_once(
+        content,
+        re.compile(r"(\$cudaHash = ')[0-9a-f]{64}(')"),
+        rf"\g<1>{args.sha_windows_cu125}\g<2>",
+        "cu125 hash",
+    )
     args.manifest.write_text(content)
 
 
