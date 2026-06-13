@@ -6,7 +6,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from lilbee.catalog import is_rerank_ref
 from lilbee.core.config import cfg
@@ -21,6 +21,9 @@ from lilbee.providers.base import (
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
 from lilbee.providers.roles import OcrBackend, WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.providers.warm_progress import WarmProgress
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.vision import PageText
 
@@ -317,6 +320,12 @@ class RoutingProvider(LLMProvider):
         if self._local is None:
             return None
         return self._local.served_chat_ctx()
+
+    def warm_progress(self) -> WarmProgress | None:
+        """Cold-load progress of the local engine, or None when none exists yet."""
+        if self._local is None:
+            return None
+        return self._local.warm_progress()
 
     def add_spawn_listener(
         self,

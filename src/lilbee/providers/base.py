@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from lilbee.providers.roles import OcrBackend, WorkerRole
+    from lilbee.providers.warm_progress import WarmProgress
     from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
@@ -411,6 +412,16 @@ class LLMProvider(Protocol):
         A client trims its conversation to this so a long agentic session fits
         the model's actual window instead of overflowing. Default ``None``:
         providers without a managed context (SDK wrappers) advertise nothing.
+        """
+        return None
+
+    def warm_progress(self) -> WarmProgress | None:
+        """Snapshot of the chat model's cold-load progress, or None when idle.
+
+        A launcher streams this to render a real progress bar while a large chat
+        model loads. Default ``None``: providers without a managed load (SDK /
+        routing wrappers) expose nothing, so a launcher falls back to a plain
+        spinner. The fleet returns live read / engine-load state.
         """
         return None
 

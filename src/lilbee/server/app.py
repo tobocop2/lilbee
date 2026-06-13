@@ -34,6 +34,7 @@ from lilbee.server.routes.general import (
     health_route,
     source_content_route,
     status_route,
+    warm_stream_route,
 )
 from lilbee.server.routes.memory import (
     memories_list_route,
@@ -122,6 +123,7 @@ def create_app() -> Litestar:
         route_handlers=[
             mcp_route,
             health_route,
+            warm_stream_route,
             status_route,
             config_route,
             config_defaults_route,

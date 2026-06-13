@@ -89,6 +89,10 @@ def run_launcher(launcher: Launcher) -> None:
     if native_refs:
         wait_for_chat_warm(port)
     extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
+    # The client paints its own UI only after its runtime boots, a few silent
+    # seconds; announce the handoff so the warm bar isn't followed by a dead
+    # screen with no explanation.
+    typer.secho(f"Launching {launcher.name}...", fg=typer.colors.GREEN)
     try:
         # binary resolved via the launcher's find_binary on PATH; no shell.
         result = subprocess.run([binary, *extra_args], env=env, check=False)  # noqa: S603

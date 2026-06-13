@@ -19,6 +19,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.app import console
 from lilbee.cli.commands.servers import port_file
+from lilbee.cli.launchers.warm_render import render_warm
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -128,19 +129,32 @@ def chat_warm_budget_s() -> float:
 
 
 def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:
-    """Block until the chat model is loaded, showing a warming indicator.
+    """Block until the chat model is loaded, showing granular warm progress.
 
     The server warms the chat role on a background thread at startup, so a client
     launched the instant the HTTP port binds would otherwise hit an
-    apparently-dead stream during the cold model load. Returns True once the
-    chat engine reports ready, or False if the budget (weights-scaled via
-    :func:`chat_warm_budget_s` unless given) elapses first; the caller proceeds
-    either way, so a still-loading model just warms on the first call.
+    apparently-dead stream during the cold model load. Streams ``/api/warm/stream``
+    to render a real read-phase byte bar then an engine-load spinner; falls back
+    to a plain readiness poll when that stream is unavailable (an older server).
+    Returns True once the chat engine reports ready, or False if the budget
+    (weights-scaled via :func:`chat_warm_budget_s` unless given) elapses first;
+    the caller proceeds either way, so a still-loading model just warms on the
+    first call.
     """
     if timeout_s is None:
         timeout_s = chat_warm_budget_s()
     if chat_ready(port):
         return True
+    streamed = render_warm(f"http://{LOOPBACK}:{port}", timeout_s)
+    if streamed is not None:
+        # The stream ran (ready, error, or its own timeout); don't double-spend
+        # the budget on a second poll. The caller proceeds on False regardless.
+        return streamed
+    return _poll_chat_ready(port, timeout_s)
+
+
+def _poll_chat_ready(port: int, timeout_s: float) -> bool:
+    """Fallback warm wait when the progress stream is unavailable: poll readiness."""
     deadline = time.monotonic() + timeout_s
     with console.status("Warming the chat model..."):
         while time.monotonic() < deadline:
@@ -230,9 +244,10 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
 
 def _spawn_and_wait(port: int) -> subprocess.Popen[bytes] | None:
     """Spawn a server on *port* and wait for health; None when it never comes up."""
-    console.print(f"Starting lilbee server on port {port}...")
     spawned = spawn_server(port)
-    if wait_for_health(port):
+    with console.status(f"Starting lilbee server on port {port}..."):
+        healthy = wait_for_health(port)
+    if healthy:
         return spawned
     stop_spawned_server(spawned)
     return None
