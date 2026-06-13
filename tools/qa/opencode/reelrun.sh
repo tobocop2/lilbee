@@ -18,8 +18,8 @@ mkdir -p "$OUT"
 case "$TIER" in
   small) GEN_SLEEP=90;  PROMPT="Search the indexed Godot 4 class reference for the AStarGrid2D class and tell me, citing what the search returns, exactly what its get_id_path method returns." ;;
   mid)   GEN_SLEEP=120; PROMPT="In Godot 4 I am connecting signals between nodes. What is the exact signature of Object.connect, and what do the CONNECT_DEFERRED and CONNECT_ONE_SHOT flags do? Verify against my indexed reference and include their integer values." ;;
-  coder) GEN_SLEEP=200; PROMPT="write level_generator.gd: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
-  giant) GEN_SLEEP=280; PROMPT="write level_generator.gd: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
+  coder) GEN_SLEEP=200; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
+  giant) GEN_SLEEP=280; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
   *) echo "bad tier"; exit 2 ;;
 esac
 
@@ -28,7 +28,8 @@ lilbee model pull "$REF" >/dev/null 2>&1 || lilbee model pull "$REF"
 
 echo "[reelrun] rebuilding workspace"
 python3 - <<PYEOF
-import sys
+import os, sys
+os.environ["LILBEE_DATA"] = "$WS/.lilbee"
 sys.path.insert(0, "$QA")
 from workspace import write_per_cell_workspace
 ws = write_per_cell_workspace("$FAMILY", "$REF")
@@ -37,7 +38,12 @@ cfg = {"\$schema": "https://opencode.ai/config.json",
        "tools": {"webfetch": False, "bash": False, "question": False},
        "autoupdate": False}
 (ws / "opencode.json").write_text(json.dumps(cfg, indent=2))
+from lilbee.core.config import cfg as lilbee_cfg
+marker = lilbee_cfg.data_dir / "launchers" / "opencode-setup.json"
+marker.parent.mkdir(parents=True, exist_ok=True)
+marker.write_text('{"accepted": true}')
 print("workspace ready:", ws)
+print("setup marker:", marker)
 PYEOF
 
 echo "[reelrun] warming serve"
@@ -64,6 +70,7 @@ Set Width 1600
 Set Height 900
 Set FontSize 14
 Set PlaybackSpeed 1.0
+Set Theme { "name": "rose-pine", "background": "#191724", "foreground": "#e0def4", "cursor": "#e0def4", "selection": "#403d52", "black": "#26233a", "red": "#eb6f92", "green": "#9ccfd8", "yellow": "#f6c177", "blue": "#31748f", "magenta": "#c4a7e7", "cyan": "#ebbcba", "white": "#e0def4", "brightBlack": "#6e6a86", "brightRed": "#eb6f92", "brightGreen": "#9ccfd8", "brightYellow": "#f6c177", "brightBlue": "#31748f", "brightMagenta": "#c4a7e7", "brightCyan": "#ebbcba", "brightWhite": "#e0def4" }
 
 Env PATH "/root/lilbee_venv/bin:/root/.opencode/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Env LILBEE_DATA "$WS/.lilbee"
@@ -75,7 +82,10 @@ Sleep 2s
 Type "lilbee launch opencode"
 Sleep 500ms
 Enter
-Sleep 25s
+# Launch arc: the warm bar + "Launching opencode..." line cover this wait now;
+# the serve is pre-warmed so opencode paints within seconds. Tune per-tier on
+# the pod against the frame review if a model boots slower.
+Sleep 12s
 
 Type "$PROMPT"
 Sleep 1s
