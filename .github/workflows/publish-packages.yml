@@ -26,6 +26,7 @@ jobs:
       sha_linux: ${{ steps.info.outputs.sha_linux }}
       sha_macos_arm64: ${{ steps.info.outputs.sha_macos_arm64 }}
       sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
+      size_linux: ${{ steps.info.outputs.size_linux }}
     steps:
       - name: Resolve tag and asset digests
         id: info
@@ -38,12 +39,16 @@ jobs:
           tag="${TAG}"
           version="${tag#v}"
           gh api "/repos/${REPO}/releases/tags/${tag}" \
-            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
 
           get_sha() {
             awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
+          get_size() {
+            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
+          }
           sha_linux=$(get_sha lilbee-linux-x86_64)
+          size_linux=$(get_size lilbee-linux-x86_64)
           sha_macos_arm64=$(get_sha lilbee-macos-arm64)
           sha_macos_x86_64=$(get_sha lilbee-macos-x86_64)
 
@@ -56,6 +61,7 @@ jobs:
             echo "sha_linux=$sha_linux"
             echo "sha_macos_arm64=$sha_macos_arm64"
             echo "sha_macos_x86_64=$sha_macos_x86_64"
+            echo "size_linux=$size_linux"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -95,6 +101,64 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
           sha-linux: ${{ needs.resolve.outputs.sha_linux }}
           aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+  flatpak:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-flatpak
+        with:
+          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
+          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux }}
+          size-linux: ${{ needs.resolve.outputs.size_linux }}
+          tag: ${{ needs.resolve.outputs.tag }}
+
+  snap:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download and verify the release binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha_linux }}
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/snap/payload
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p lilbee-linux-x86_64 -O packaging/snap/payload/lilbee-linux-x86_64
+          echo "$SHA  packaging/snap/payload/lilbee-linux-x86_64" | sha256sum -c -
+          chmod +x packaging/snap/payload/lilbee-linux-x86_64
+      - name: Render snapcraft.yaml
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash packaging/tools/render_snapcraft.sh packaging/snap/snapcraft.yaml "$VERSION"
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: packaging/snap
+      - name: Smoke test
+        env:
+          EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
+          ACTUAL=$(/snap/bin/lilbee --version)
+          echo "snap: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: gh release upload "$TAG" "${{ steps.build.outputs.snap }}" --repo "$GITHUB_REPOSITORY" --clobber
 
   nix-flake:
     needs: resolve

@@ -151,7 +151,7 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 If your models already live in Ollama or LM Studio, point lilbee at the running endpoint and those models appear in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own models and any cloud models. They're read-only: lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use. Mix all of it freely, and pick whatever fits how you work.
 
-On a `pip` or `uv` install, talking to Ollama or LM Studio needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, and Docker builds already include it. See [Install](#install).
+On a `pip` or `uv` install, talking to Ollama or LM Studio needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
 
 ### See when a model won't load before you download it
 
@@ -207,7 +207,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 **Two routes, and the difference matters:**
 
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14). Uses the Python and tooling you already have, picks the fastest CPU code path for your machine at runtime, and upgrades like any other package. Recommended if you have Python.
-- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
+- **A self-contained bundle**: the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds that wrap it. Nothing else to install. The trade-off is a single large download (it bundles its own Python runtime, `llama.cpp`, and the optional extras) and a small cold-start cost the first time it self-extracts. Recommended if you'd rather not deal with Python.
 
 Have an NVIDIA GPU? Both routes have a CUDA build that's faster than the default Vulkan path. Skip to [On NVIDIA hardware](#on-nvidia-hardware).
 
@@ -221,6 +221,8 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
 | **Docker**            | `docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help` | GHCR image, tagged by version and `latest`. Data lives at `/home/lilbee/data`. Mount a volume there.                                                                                                                  |
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS.                                                                                 |
+| **Flatpak**           | `flatpak remote-add --if-not-exists lilbee https://tobocop2.github.io/flatpak-lilbee/lilbee.flatpakrepo && flatpak install lilbee io.github.tobocop2.lilbee` | Linux x86_64, any distro with flatpak. Needs the [Flathub remote](https://flathub.org/setup) for the runtime. Run with `flatpak run io.github.tobocop2.lilbee` (worth an alias); `flatpak update` picks up new releases. Data lives under `~/.var/app/io.github.tobocop2.lilbee/`. |
+| **Snap**              | [download the `.snap` &rarr;](https://github.com/tobocop2/lilbee/releases/latest) then `sudo snap install ./lilbee_*.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; grab the new `.snap` from the release page to upgrade. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it).                       |
 | **From source**       | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`  | For hacking on it. Needs `git` and `uv`.                                                                                                                                                                              |
 
@@ -253,7 +255,7 @@ The Linux x86_64 wheel and binary link the Vulkan loader at runtime. Most deskto
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker builds already include all three. lilbee works without them either way.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[crawler,litellm]'` (combine multiple, and `--extra-index-url` still works for CUDA). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all three. lilbee works without them either way.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
