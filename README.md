@@ -17,6 +17,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-2C3E50" alt="License: Elastic License 2.0"></a>
+  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-7c3aed?logo=obsidian&logoColor=white" alt="Obsidian community plugin"></a>
 </p>
 
 <p align="center">
@@ -309,7 +310,7 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 The HTTP server exposes a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) and the [usage guide](docs/usage.md#http-server) for setup.
 
-The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact spot. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact spot. It is an official [Obsidian community plugin](https://community.obsidian.md/plugins/lilbee): install it from Settings then Community plugins inside Obsidian. The [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ### Running as a service (optional)
 
