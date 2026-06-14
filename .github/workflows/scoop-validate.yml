@@ -1,0 +1,34 @@
+name: Scoop validate
+
+# Proves the committed Scoop manifest installs and runs on Windows: Scoop pulls
+# the pinned release exe, picks the CPU build (the runner has no CUDA GPU), and
+# `lilbee --version` must match the manifest's version.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - bucket/**
+      - packaging/tools/render_scoop_manifest.py
+      - .github/actions/validate-scoop-install/**
+      - .github/workflows/scoop-validate.yml
+
+concurrency:
+  group: scoop-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read manifest version
+        id: manifest
+        shell: pwsh
+        run: |
+          $version = (Get-Content bucket/lilbee.json | ConvertFrom-Json).version
+          "expected=lilbee $version" >> $env:GITHUB_OUTPUT
+      - uses: ./.github/actions/validate-scoop-install
+        with:
+          manifest-path: bucket/lilbee.json
+          expected-version: ${{ steps.manifest.outputs.expected }}
