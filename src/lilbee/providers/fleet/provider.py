@@ -557,11 +557,12 @@ class FleetProvider:
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
         from lilbee.core.config import cfg
-        from lilbee.vision import OCR_PROMPT, build_vision_messages
+        from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
         clients = self._require_clients(WorkerRole.VISION)
-        messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+        effective = model or str(cfg.vision_model)
+        messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         return _vision_call(_least_in_flight(clients), messages, timeout)
 
     def pdf_ocr(
@@ -585,16 +586,19 @@ class FleetProvider:
         from lilbee.core.config import cfg
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import (
-            OCR_PROMPT,
             PageText,
             build_vision_messages,
             pdf_page_count,
             rasterize_pdf,
+            resolve_ocr_prompt,
         )
 
         del quiet  # protocol parity; no server-side Rich progress to suppress.
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
         clients = self._require_clients(WorkerRole.VISION)
+        # The model is fixed for the whole document, so resolve its prompt once.
+        ocr_prompt = resolve_ocr_prompt(model or str(cfg.vision_model))
+        log.debug("OCR prompt for %s -> %r", model or cfg.vision_model, ocr_prompt)
         total = pdf_page_count(path)
         # One document-wide deadline (pages*per_page + load grace), not a per-page
         # cap: each page gets whatever budget remains, so a slow page borrows from
@@ -603,7 +607,7 @@ class FleetProvider:
         deadline = (time.monotonic() + budget) if budget is not None else None
 
         def _ocr(idx: int, png: bytes) -> tuple[int, str]:
-            messages = build_vision_messages(OCR_PROMPT, png)
+            messages = build_vision_messages(ocr_prompt, png)
             remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
             try:
                 return idx, _vision_call(_least_in_flight(clients), messages, remaining)
