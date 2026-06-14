@@ -99,7 +99,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
-- **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
+- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included) in 250-365 MB, or 600 MB+ with the CUDA backend. No Docker, no containers, no web stack, no separate vector database or model server, nothing to stand up or keep running. It loads on demand instead of running as a service you babysit. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
@@ -378,6 +378,7 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
+- [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
 
 ## Support
 
@@ -406,3 +407,4 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [MCP Python SDK]: https://github.com/modelcontextprotocol/python-sdk
 [Typer]: https://typer.tiangolo.com
 [Pydantic]: https://docs.pydantic.dev
+[Nuitka]: https://nuitka.net

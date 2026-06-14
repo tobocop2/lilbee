@@ -91,7 +91,7 @@
         <span class="surface">web API</span>
         <span class="surface">Python library</span>
       </div>
-      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one.</p>
+      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one. No Docker, no servers, no web stack to maintain, just one file you run on demand.</p>
     </section>
 
     <section>
@@ -270,7 +270,7 @@
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-brew">details</button>
         <div class="notes-body" id="notes-brew" hidden>
-          <p class="extras">prebuilt bundle: its own Python interpreter and llama.cpp backend, nothing to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
+          <p class="extras">prebuilt bundle, built with Nuitka: its own Python interpreter and llama.cpp backend, nothing for you to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
         </div>
       </div>
 
@@ -340,7 +340,7 @@
       </div>
 
       <div class="installpane" role="tabpanel" id="pane-binary" aria-labelledby="tab-binary" hidden>
-        <p class="binary-intro">Single self-contained binary. Bundles its own Python runtime and the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras. Click to download, or use the terminal one-liner.</p>
+        <p class="binary-intro">Single self-contained binary, compiled with <a href="https://nuitka.net">Nuitka</a>. Bundles its own Python runtime and the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras. Click to download, or use the terminal one-liner.</p>
 
         <div class="binary-row">
           <div class="binary-row-h">
