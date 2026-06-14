@@ -61,20 +61,35 @@ IDLE_MIN=30 tools/qa/opencode/pod_watchdog.sh /workspace/qa_matrix.log
 
 ## Pod provisioning (infrastructure as code)
 
-`podctl.py` drives the RunPod REST API with the key from `~/.runpod/config.toml`
-(set once via `runpodctl config --apiKey ...`; the key never enters the repo).
-Pods are created on-demand in the secure cloud and are never interruptible, so
-spot eviction cannot kill a run mid-flight.
+Provisioning is SkyPilot, reading the RunPod key from `~/.runpod/config.toml`. A
+reusable network volume holds the from-source engine, the pulled GGUFs, and the
+Godot corpus, so a torn-down pod loses nothing and a re-launch resumes. Pods are
+on-demand secure-cloud (never interruptible), so spot eviction can't kill a run.
+
+One-time:
 
 ```bash
-python3 tools/qa/opencode/podctl.py up      # create the QA pod, print ssh
-python3 tools/qa/opencode/podctl.py ls      # list pods
-python3 tools/qa/opencode/podctl.py rm <id> # terminate
+pip install "skypilot[runpod]"
+runpod config            # store the RunPod API key (key never enters the repo)
+sky check runpod
+make qa-pod-volume       # create/adopt the lilbee-qa network volume (once)
 ```
 
-The pod exposes direct sshd on a public port (real scp/rsync; no proxy).
-`RUNPOD_QA_VOLUME=<id>` attaches a network volume at /workspace for state that
-should outlive pods.
+Run the matrix on a fresh pod:
+
+```bash
+make qa-pod-up                              # provision + bootstrap + run the full matrix
+make qa-pod-up MATRIX_ARGS="--families qwen3 --keep-models"   # narrow it
+sky logs lilbee-qa                          # follow the run (or: make qa-pod-logs)
+ssh lilbee-qa                               # drive reels by hand (see below)
+make qa-pod-down                            # tear down; the volume + its state survive
+```
+
+`qa-pod.sky.yaml` mounts the volume at `/workspace`, runs `pod_bootstrap.sh` in
+`setup`, then in `run` builds the corpus (idempotent, `qa_corpus.sh`) and runs
+`matrix.py`. The GPU ladder leads with `A100-80GB:3` and degrades the count
+before dropping a tier; the volume pins the datacenter. `pod_watchdog.sh` still
+arms automatically as the idle-billing backstop.
 
 ## Demo reels
 

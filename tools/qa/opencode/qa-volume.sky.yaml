@@ -1,0 +1,15 @@
+# The reusable RunPod network volume for the opencode QA matrix. Create it ONCE;
+# it survives every pod teardown, so the built engine, pulled GGUFs, and the Godot
+# reference corpus are never re-fetched.
+#   sky volumes apply tools/qa/opencode/qa-volume.sky.yaml   # create/adopt (idempotent)
+#   sky volumes ls                                           # see it
+#   sky volumes delete lilbee-qa                             # only when truly done
+#
+# Datacenter is pinned: a network volume lives in ONE RunPod DC, and the pod that
+# mounts it must run there. US-KS-2 has the A100/H100 cards the matrix uses with
+# good availability (check: sky show-gpus --cloud runpod). Volume name max 30 chars.
+name: lilbee-qa
+type: runpod-network-volume
+infra: runpod/US/US-KS-2     # DataCenterId where the volume + GPUs live
+size: 400Gi                  # built engine + GGUFs (giants are ~130GB) + corpus, with headroom
+use_existing: true           # adopt the existing lilbee-qa volume (don't recreate)

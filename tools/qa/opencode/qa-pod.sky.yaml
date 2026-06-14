@@ -1,0 +1,55 @@
+# Provision the opencode QA pod as code (SkyPilot + RunPod) and run the matrix on a
+# REUSABLE network volume, so the engine, models, and corpus survive teardown.
+#
+# One-time setup (local):
+#   pip install "skypilot[runpod]"
+#   runpod config                                          # store the RunPod API key (-> ~/.runpod/config.toml)
+#   sky check runpod                                       # confirm: "RunPod: enabled"
+#   sky volumes apply tools/qa/opencode/qa-volume.sky.yaml # create/adopt the volume (once)
+#
+# Use (from the repo root):
+#   make qa-pod-up                 # provision + bootstrap + run the matrix
+#   sky logs lilbee-qa             # follow it
+#   ssh lilbee-qa                  # then drive reels: source /workspace/qa_env.sh; bash tools/qa/opencode/reelrun.sh ...
+#   make qa-pod-down               # tear down the POD; the VOLUME + its state survive
+#
+# Narrow the run or skip pulls with MATRIX_ARGS, e.g.
+#   sky launch -c lilbee-qa tools/qa/opencode/qa-pod.sky.yaml --env MATRIX_ARGS="--families qwen3 --keep-models"
+name: lilbee-qa
+
+resources:
+  cloud: runpod
+  disk_size: 100        # ephemeral container disk for the local-disk venv + the from-source
+                        # engine build; models / corpus / engine cache live on the volume.
+  # GPU value ladder. The volume pins the DC (US-KS-2), so SkyPilot only provisions there
+  # and degrades the COUNT before dropping a tier. 3x A100-80GB is the usual QA box (a
+  # tensor-split giant spans two cards, leaving the third for the embedder).
+  ordered:
+    - accelerators: A100-80GB:3
+    - accelerators: A100-80GB:2
+    - accelerators: A100-80GB:1
+    - accelerators: H100:3
+    - accelerators: H100:2
+
+# LILBEE_DATA / models / engine cache live here, so they outlive any pod.
+volumes:
+  /workspace: lilbee-qa
+
+envs:
+  BRANCH: feat/local-model-api   # the branch under test; pin a SHA for a recorded run
+  BACKEND: cu124                 # engine wheel backend the bootstrap builds
+  MATRIX_ARGS: ""                # passed to matrix.py, e.g. "--families qwen3 --keep-models"
+
+# The bootstrap self-clones the branch to /workspace/lilbee, builds the engine onto the
+# volume (cached across resumes), installs the toolchain + opencode + VHS, and writes
+# /workspace/qa_env.sh. Pulled from the branch so the pod matches what's under test.
+setup: |
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+
+run: |
+  cd /workspace/lilbee
+  source /workspace/qa_env.sh
+  # The Godot reference corpus is a one-time volume build; this is idempotent.
+  bash tools/qa/opencode/qa_corpus.sh
+  uv run python tools/qa/opencode/matrix.py ${MATRIX_ARGS}
