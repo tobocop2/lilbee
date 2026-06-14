@@ -36,6 +36,23 @@ OCR_PROMPT = (
     "Include all rows, columns, headers, and page text exactly as shown."
 )
 
+# Lowercase family token (as in the model ref or GGUF path) -> the model's
+# documented OCR prompt. Unlisted models fall back to OCR_PROMPT.
+_NATIVE_OCR_PROMPTS: tuple[tuple[str, str], ...] = (
+    ("deepseek-ocr", "<|grounding|>Convert the document to markdown."),
+    ("glm-ocr", "OCR"),
+)
+
+
+def resolve_ocr_prompt(model_ref: str) -> str:
+    """Return *model_ref*'s native OCR prompt, or the generic one if it has none."""
+    needle = model_ref.lower()
+    for family, prompt in _NATIVE_OCR_PROMPTS:
+        if family in needle:
+            return prompt
+    return OCR_PROMPT
+
+
 _RASTER_DPI = 150
 
 

@@ -249,9 +249,9 @@ class SdkLLMProvider(LLMProvider):
         timeout: float | None = None,
     ) -> str:
         """OCR via a multipart chat completion; ``timeout`` enforced via thread pool."""
-        from lilbee.vision import OCR_PROMPT, build_vision_messages
+        from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
-        messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+        messages = build_vision_messages(prompt or resolve_ocr_prompt(model), png_bytes)
         if timeout and timeout > 0:
             from concurrent.futures import ThreadPoolExecutor
 
