@@ -1,0 +1,36 @@
+name: Validate Scoop install
+description: "Install Scoop, install lilbee from a manifest, and assert it runs. Runs on a windows runner."
+
+inputs:
+  manifest-path:
+    description: "Path to the Scoop manifest to install (e.g. bucket/lilbee.json)."
+    required: true
+  expected-version:
+    description: "Expected 'lilbee --version' output (e.g. 'lilbee 0.6.66b496')."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Scoop and the lilbee manifest, then smoke test
+      shell: pwsh
+      env:
+        MANIFEST: ${{ inputs.manifest-path }}
+        EXPECTED: ${{ inputs.expected-version }}
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        # The hosted runner is admin, so Scoop needs -RunAsAdmin to install.
+        Invoke-WebRequest -UseBasicParsing get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+        & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
+        $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
+        # Resolve to a backslash path so Scoop reads it as a local manifest file
+        # instead of parsing the forward slash as a <bucket>/<app> reference.
+        $manifest = (Resolve-Path $env:MANIFEST).Path
+        scoop install $manifest
+        if ($LASTEXITCODE -ne 0) { throw "scoop install failed" }
+        $actual = (& lilbee --version | Out-String).Trim()
+        Write-Host "scoop: $actual"
+        if ($actual -ne $env:EXPECTED) {
+          throw "version mismatch: got '$actual', expected '$env:EXPECTED'"
+        }
