@@ -341,6 +341,20 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
+      # The Linux cell builds inside the manylinux container, which ships no gh
+      # CLI, so the attach below fails with "gh: command not found" (exit 127)
+      # every time, which silently strands the release fan-out. Install it here;
+      # the windows/macOS host runners already have gh.
+      - name: Install gh CLI in the build container
+        if: inputs.release_tag != '' && matrix.container != ''
+        shell: bash
+        run: |
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          dnf install -y gh
+          gh --version
+
       # Eager attach: release-candidate creates the pre-release shell before
       # calling, so the asset shows up as soon as this cell finishes.
       - name: Attach binary to the GH pre-release
