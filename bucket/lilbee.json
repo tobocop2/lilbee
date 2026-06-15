@@ -1,6 +1,6 @@
 {
     "version": "0.6.66b498",
-    "description": "Run and manage local AI models, and search everything you own with them, all in one program.",
+    "description": "Run and manage local AI models, then search your files, code, and crawled web pages, with answers that cite the source. One program, no server to run.",
     "homepage": "https://lilbee.sh/",
     "license": {
         "identifier": "Elastic-2.0",
