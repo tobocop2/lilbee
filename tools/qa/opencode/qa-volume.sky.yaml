@@ -6,10 +6,10 @@
 #   sky volumes delete lilbee-qa                             # only when truly done
 #
 # Datacenter is pinned: a network volume lives in ONE RunPod DC, and the pod that
-# mounts it must run there. lilbee QA runs in CA (Montreal) on purpose, so it does
-# NOT contend for GPU capacity with the lilbeekreuzbergstein corpus pod, which lives
-# in US-KS-2 on its own `lilbee-corpus` volume. Keep these two in separate DCs so
-# both projects can run at the same time. Volume name max 30 chars.
+# mounts it must run there. lilbee QA runs in CA (Montreal) on purpose so it does
+# NOT contend for GPU capacity with other RunPod work that may run in a different
+# DC on its own volume. Keep concurrent projects in separate DCs so they can run
+# at the same time. Volume name max 30 chars.
 name: lilbee-qa
 type: runpod-network-volume
 infra: runpod/CA/CA-MTL-3    # DataCenterId where the volume + GPUs live (A100-80GB-SXM)
