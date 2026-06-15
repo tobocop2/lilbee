@@ -516,9 +516,10 @@ def _premature_exit_response() -> httpx.Response:
     )
 
 
-def test_raise_for_status_logs_upstream_tail_on_premature_exit(monkeypatch, caplog) -> None:
-    # llama-swap masks the dead server's stderr behind "exited prematurely";
-    # the client fetches the upstream's captured output and logs it.
+def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, caplog) -> None:
+    # llama-swap masks the dead server's stderr behind "exited prematurely"; the
+    # client fetches the upstream's captured output, logs it, AND surfaces it in
+    # the raised error so the real exit reason reaches the caller.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.fleet.client import _raise_for_status
 
@@ -542,10 +543,13 @@ def test_raise_for_status_logs_upstream_tail_on_premature_exit(monkeypatch, capl
         return _FakeStream()
 
     monkeypatch.setattr(client_mod.httpx, "stream", _fake_stream)
-    with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="exited prematurely"):
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert seen["url"] == "http://127.0.0.1:9100/logs/stream/embed-0"
+    # The captured server output is both logged and surfaced in the error message.
     assert "couldn't bind HTTP server socket" in caplog.text
+    assert "couldn't bind HTTP server socket" in str(excinfo.value)
+    assert "exited prematurely" in str(excinfo.value)
 
 
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
@@ -557,8 +561,11 @@ def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch)
         raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(client_mod.httpx, "stream", _refuse)
-    with pytest.raises(ProviderError, match="exited prematurely"):
+    with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
+    # An unreadable tail appends nothing; the original error still propagates.
+    assert "exited prematurely" in str(excinfo.value)
+    assert "upstream server output:" not in str(excinfo.value)
 
 
 def test_chat_stream_surfaces_server_error_body() -> None:
@@ -1068,7 +1075,7 @@ def test_raise_for_status_tags_premature_exit_as_connection(monkeypatch) -> None
     from lilbee.providers.base import ProviderErrorKind
     from lilbee.providers.fleet.client import _raise_for_status
 
-    monkeypatch.setattr(client_mod, "_log_upstream_tail", lambda _resp: None)
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(_premature_exit_response())
     assert excinfo.value.kind is ProviderErrorKind.CONNECTION
