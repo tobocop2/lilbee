@@ -154,5 +154,14 @@ jobs:
           echo "stdout: $ACTUAL (exit=$RC)"
           [ $RC -eq 0 ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FAIL: unpacked"; exit 1; }
           echo "PASS: binary boots inside the Flatpak sandbox"
+          NODE=$(echo "$XDG_CACHE_HOME"/lilbee/*/playwright/driver/node)
+          echo "=== crawler: bundled Playwright node must not segfault: $NODE ==="
+          [ -x "$NODE" ] || { echo "FAIL: bundled node missing"; exit 1; }
+          "$NODE" --version; RC=$?
+          [ $RC -eq 0 ] || { echo "FAIL: bundled node segfaults (exit=$RC)"; exit 1; }
+          echo "=== crawler: setup crawler must install Chromium ==="
+          "$BIN" setup crawler; RC=$?
+          [ $RC -eq 0 ] || { echo "FAIL: setup crawler (exit=$RC)"; exit 1; }
+          echo "PASS: crawler installs inside the Flatpak sandbox"
           EOF
           flatpak run --command=sh md.obsidian.Obsidian "$APPDATA/data/lilbee/validate.sh"
