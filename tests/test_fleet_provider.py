@@ -303,6 +303,78 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
     assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
 
 
+def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
+    # The gate must cap in-flight vision requests at the fleet's real OCR capacity
+    # (replicas x per-server slots) and rebuild when that capacity changes.
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(cfg, "vision_replicas", 3)
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    gate = prov_mod._VISION_GATE.semaphore()
+    assert prov_mod._VISION_GATE._capacity == 12
+    monkeypatch.setattr(cfg, "vision_replicas", 1)
+    assert prov_mod._VISION_GATE.semaphore() is not gate
+    assert prov_mod._VISION_GATE._capacity == 4
+
+
+def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
+    # The ingest file fan-out can launch far more concurrent OCR requests than the
+    # vision server has slots; the gate (held by every vision entry point) caps
+    # concurrent holders at vision_replicas * vision_ocr_concurrency so a
+    # single-replica server isn't 429-stormed. All callers still run.
+    import threading
+    import time
+
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(cfg, "vision_replicas", 1)
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
+
+    lock = threading.Lock()
+    live = 0
+    peak = 0
+    ran = 0
+
+    def _hold() -> None:
+        nonlocal live, peak, ran
+        with prov_mod._VISION_GATE.semaphore():
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.02)
+            with lock:
+                live -= 1
+                ran += 1
+
+    threads = [threading.Thread(target=_hold) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert peak == 2  # the cap is both reached and never exceeded
+    assert ran == 8  # every caller ran, just serialized through the gate
+
+
+def test_ocr_pdf_page_skips_when_budget_exhausted(monkeypatch) -> None:
+    # A page that waited out the document deadline while queued is skipped (empty
+    # text), not run un-timed -- a 0 timeout would disable the per-page cap.
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr("lilbee.vision.build_vision_messages", lambda *_a, **_k: [])
+    called: list[object] = []
+    monkeypatch.setattr(prov_mod, "_vision_call", lambda *a, **_k: called.append(a) or "ocr")
+    idx, text = prov_mod._ocr_pdf_page(
+        3,
+        b"\x89PNG",
+        clients=[_fake_client()],
+        ocr_prompt="describe",
+        deadline=time.monotonic() - 1.0,  # already past
+        page_path=Path("doc.pdf"),
+    )
+    assert (idx, text) == (3, "")
+    assert called == []  # _vision_call never ran
+
+
 def test_chat_streams_from_server() -> None:
     client = _fake_client(0)
     client.chat_stream_items.return_value = iter(["a", "b"])

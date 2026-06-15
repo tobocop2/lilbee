@@ -179,6 +179,33 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     return _TOOL_TEMPLATE_PATTERN.search(template) is not None
 
 
+class _VisionRequestGate:
+    """Process-wide cap on concurrent vision-server requests at the fleet's OCR slots.
+
+    The ingest file fan-out runs many files at once and each file's ``pdf_ocr`` opens
+    its own ``vision_ocr_concurrency`` page pool, so without a shared cap the aggregate
+    over-subscribes a single-replica vision server into a 429 storm. The semaphore is
+    rebuilt when the configured capacity (``vision_replicas * vision_ocr_concurrency``)
+    changes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._capacity = 0
+        self._semaphore: threading.BoundedSemaphore | None = None
+
+    def semaphore(self) -> threading.BoundedSemaphore:
+        capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
+        with self._lock:
+            if self._semaphore is None or self._capacity != capacity:
+                self._capacity = capacity
+                self._semaphore = threading.BoundedSemaphore(capacity)
+            return self._semaphore
+
+
+_VISION_GATE = _VisionRequestGate()
+
+
 def _vision_call(
     client: LlamaServerClient, messages: Sequence[Mapping[str, Any]], timeout: float | None
 ) -> str:
@@ -188,6 +215,7 @@ def _vision_call(
     on one page (seen looping to tens of thousands of chars) can't dominate a
     scan's OCR time; a real page stays well under the cap. A timeout surfaces as
     a ``ProviderError`` so the page-level OCR caller can fail just that page.
+    Callers hold ``_VISION_GATE`` so queue time isn't billed against the timeout.
     """
     from lilbee.core.config import cfg
 
@@ -220,6 +248,46 @@ def _bounded_vision_chat(
         ) from None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _ocr_pdf_page(
+    idx: int,
+    png: bytes,
+    *,
+    clients: list[LlamaServerClient],
+    ocr_prompt: str,
+    deadline: float | None,
+    page_path: Path,
+) -> tuple[int, str]:
+    """OCR one rasterized page through the gated vision server; empty text on failure.
+
+    Acquires the gate before reading the clock so queue time isn't billed against the
+    page's share of the document-wide deadline; an exhausted budget skips the page
+    rather than running it un-timed.
+    """
+    from lilbee.vision import build_vision_messages
+
+    messages = build_vision_messages(ocr_prompt, png)
+    with _VISION_GATE.semaphore():
+        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
+        if remaining == 0.0:
+            log.warning(
+                "Vision OCR budget exhausted before page %d of %s; skipping.",
+                idx + 1,
+                page_path.name,
+            )
+            return idx, ""
+        try:
+            return idx, _vision_call(_least_in_flight(clients), messages, remaining)
+        except ProviderError:
+            # One failed/timed-out page yields empty text; siblings continue.
+            log.warning(
+                "Vision OCR failed for page %d of %s; skipping that page.",
+                idx + 1,
+                page_path.name,
+                exc_info=True,
+            )
+            return idx, ""
 
 
 def _pdf_drain_budget(total_pages: int, per_page_timeout_s: float | None) -> float | None:
@@ -563,7 +631,8 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.VISION)
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
-        return _vision_call(_least_in_flight(clients), messages, timeout)
+        with _VISION_GATE.semaphore():
+            return _vision_call(_least_in_flight(clients), messages, timeout)
 
     def pdf_ocr(
         self,
@@ -587,7 +656,6 @@ class FleetProvider:
         from lilbee.runtime.progress import EventType, ExtractEvent
         from lilbee.vision import (
             PageText,
-            build_vision_messages,
             pdf_page_count,
             rasterize_pdf,
             resolve_ocr_prompt,
@@ -606,20 +674,13 @@ class FleetProvider:
         budget = _pdf_drain_budget(total, per_page_timeout_s)
         deadline = (time.monotonic() + budget) if budget is not None else None
 
-        def _ocr(idx: int, png: bytes) -> tuple[int, str]:
-            messages = build_vision_messages(ocr_prompt, png)
-            remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
-            try:
-                return idx, _vision_call(_least_in_flight(clients), messages, remaining)
-            except ProviderError:
-                # One failed/timed-out page yields empty text; siblings continue.
-                log.warning(
-                    "Vision OCR failed for page %d of %s; skipping that page.",
-                    idx + 1,
-                    path.name,
-                    exc_info=True,
-                )
-                return idx, ""
+        _ocr = functools.partial(
+            _ocr_pdf_page,
+            clients=clients,
+            ocr_prompt=ocr_prompt,
+            deadline=deadline,
+            page_path=path,
+        )
 
         # OCR pages concurrently (a single-page decode underuses the GPU; the vision
         # server runs cfg.vision_ocr_concurrency batching slots). A bounded sliding
