@@ -42,25 +42,9 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
-# Nuitka shells out to `patchelf` to rewrite bundled binaries' RPATHs. The
-# patchelf 0.17.2 in the manylinux build image corrupts large binaries with many
-# notes, which silently breaks Playwright's ~121MB `node` driver: it segfaults at
-# startup, so `lilbee setup crawler` dies with SIGSEGV. Pin a known-good patchelf
-# ahead of it on PATH. Linux only; macOS relocates with install_name_tool.
-if [ "$(uname -s)" = "Linux" ]; then
-    PATCHELF_VERSION=0.14.5
-    PATCHELF_SHA256=514bb05d8f0e41ea0a6cb999041acb6aa386662e9ccdbdfbbfca469fb22d44fa
-    PATCHELF_DIR=$(mktemp -d)
-    curl -fsSL -o "$PATCHELF_DIR/patchelf.tar.gz" \
-        "https://github.com/NixOS/patchelf/releases/download/${PATCHELF_VERSION}/patchelf-${PATCHELF_VERSION}-x86_64.tar.gz"
-    echo "${PATCHELF_SHA256}  ${PATCHELF_DIR}/patchelf.tar.gz" | sha256sum -c -
-    tar -xf "$PATCHELF_DIR/patchelf.tar.gz" -C "$PATCHELF_DIR"
-    export PATH="$PATCHELF_DIR/bin:$PATH"
-    patchelf --version
-fi
-
 uv run --no-sync python -m nuitka \
     --mode=onefile \
+    --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
     --no-deployment-flag=self-execution \
     --onefile-cache-mode=cached \
     --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
