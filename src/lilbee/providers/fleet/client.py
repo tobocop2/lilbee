@@ -103,10 +103,13 @@ def _raise_for_status(resp: httpx.Response) -> None:
             kind=ProviderErrorKind.RATE_LIMIT,
         )
     detail = f": {body[:600]}" if body else ""
-    # llama-swap reports a dead server only as "exited prematurely"; log the
-    # server's own captured output so the actual exit reason is diagnosable.
+    # llama-swap masks a dead server as "exited prematurely"; surface the server's
+    # own captured output (a missing CUDA runtime, a model load failure, a bind
+    # error) so the real exit reason reaches the caller, not only the log.
     if _UPSTREAM_DIED_MARKER in body:
-        _log_upstream_tail(resp)
+        tail = _upstream_failure_tail(resp)
+        if tail:
+            detail = f"{detail}\nupstream server output:\n{tail}"
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
@@ -136,14 +139,16 @@ def is_connection_failure(exc: Exception) -> bool:
     return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.CONNECTION
 
 
-def _log_upstream_tail(resp: httpx.Response) -> None:
-    """Log the dead upstream's recent output from llama-swap's log stream."""
+def _upstream_failure_tail(resp: httpx.Response) -> str:
+    """Return (and log) the dead upstream's recent output, or empty when unreadable."""
     with contextlib.suppress(httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError):
         base = str(resp.request.url).split("/v1/")[0]
         model = json.loads(resp.request.content)["model"]
         tail = _fetch_log_tail(f"{base}/logs/stream/{model}")
         if tail:
             log.warning("%s exited prematurely; recent server output:\n%s", model, tail)
+            return tail
+    return ""
 
 
 def _fetch_log_tail(url: str) -> str:
