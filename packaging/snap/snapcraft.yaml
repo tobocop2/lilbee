@@ -5,9 +5,10 @@ base: core24
 version: "0.0.0"
 summary: Local search engine you can talk to
 description: |
-  lilbee runs AI models locally, indexes your files and code, crawls the web
-  pages you point it at, and answers questions with citations down to the
-  file and line. One install covers the TUI, CLI, HTTP server, and MCP server.
+  lilbee runs and manages local AI models, indexes your files and code, crawls
+  the web pages you point it at, and answers questions with citations down to
+  the file and line. One install covers the TUI, CLI, HTTP server, and MCP
+  server. It works with your own Ollama or LM Studio models too.
 grade: stable
 confinement: classic
 platforms:

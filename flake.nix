@@ -1,5 +1,5 @@
 {
-  description = "Local search engine and personal encyclopedia for your notes, code, and PDFs";
+  description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -26,7 +26,7 @@
         };
 
       mkMeta = pkgs: {
-        description = "Local search engine and personal encyclopedia for your notes, code, and PDFs";
+        description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
         homepage = "https://github.com/tobocop2/lilbee";
         license = pkgs.lib.licenses.elastic20;
         mainProgram = "lilbee";
