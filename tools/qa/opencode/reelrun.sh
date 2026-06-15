@@ -15,11 +15,17 @@ OUT="/workspace/reelfactory/$FAMILY"
 PORT=41700
 mkdir -p "$OUT"
 
+# GEN_SLEEP: seconds to record the answer. LAUNCH_WAIT: seconds to record the
+# launch arc. PREWARM=1 starts a serve first so launch is instant (the answer is
+# the subject); PREWARM=0 (spinner) lets `lilbee launch opencode` cold-load so the
+# warm progress bar + engine spinner render on camera (use a mid/giant ref so the
+# read bar is visibly several seconds).
 case "$TIER" in
-  small) GEN_SLEEP=90;  PROMPT="Search the indexed Godot 4 class reference for the AStarGrid2D class and tell me, citing what the search returns, exactly what its get_id_path method returns." ;;
-  mid)   GEN_SLEEP=120; PROMPT="In Godot 4 I am connecting signals between nodes. What is the exact signature of Object.connect, and what do the CONNECT_DEFERRED and CONNECT_ONE_SHOT flags do? Verify against my indexed reference and include their integer values." ;;
-  coder) GEN_SLEEP=200; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
-  giant) GEN_SLEEP=280; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
+  small) GEN_SLEEP=90;  LAUNCH_WAIT=12;  PREWARM=1; PROMPT="Search the indexed Godot 4 class reference for the AStarGrid2D class and tell me, citing what the search returns, exactly what its get_id_path method returns." ;;
+  mid)   GEN_SLEEP=120; LAUNCH_WAIT=12;  PREWARM=1; PROMPT="In Godot 4 I am connecting signals between nodes. What is the exact signature of Object.connect, and what do the CONNECT_DEFERRED and CONNECT_ONE_SHOT flags do? Verify against my indexed reference and include their integer values." ;;
+  coder) GEN_SLEEP=200; LAUNCH_WAIT=12;  PREWARM=1; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
+  giant) GEN_SLEEP=280; LAUNCH_WAIT=12;  PREWARM=1; PROMPT="write ./level_generator.gd here in the project root: a procedural level generator that places wall and floor tiles and scatters collectibles using pathfinding. Verify every Godot API you use against my indexed reference. Pick sensible defaults yourself and never ask me questions." ;;
+  spinner) GEN_SLEEP=60; LAUNCH_WAIT=150; PREWARM=0; PROMPT="Search the indexed Godot 4 class reference for the AStarGrid2D class and tell me what its get_id_path method returns." ;;
   *) echo "bad tier"; exit 2 ;;
 esac
 
@@ -46,19 +52,24 @@ print("workspace ready:", ws)
 print("setup marker:", marker)
 PYEOF
 
-echo "[reelrun] warming serve"
+# Always clear any stale serve so the run starts from a known state.
 tmux kill-session -t warmserve 2>/dev/null || true
 pkill -f 'lilbee serve' 2>/dev/null || true
 pkill -f 'llama-server' 2>/dev/null || true
 pkill -f 'llama-swap' 2>/dev/null || true
 sleep 2
-tmux new-session -d -s warmserve "bash -c 'source /workspace/qa_env.sh; export LILBEE_DATA=$WS/.lilbee; cd $WS; lilbee serve --port $PORT 2>&1 | tee $OUT/serve.log; sleep 7200'"
-for _ in $(seq 1 240); do
-  curl -s "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q '"chat_ready":true' && break
-  sleep 10
-done
-curl -s "http://127.0.0.1:$PORT/api/health" | grep -q '"chat_ready":true' || { echo "[reelrun] warm FAILED"; exit 3; }
-echo "[reelrun] warm ready"
+if [ "$PREWARM" = 1 ]; then
+  echo "[reelrun] warming serve"
+  tmux new-session -d -s warmserve "bash -c 'source /workspace/qa_env.sh; export LILBEE_DATA=$WS/.lilbee; cd $WS; lilbee serve --port $PORT 2>&1 | tee $OUT/serve.log; sleep 7200'"
+  for _ in $(seq 1 240); do
+    curl -s "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q '"chat_ready":true' && break
+    sleep 10
+  done
+  curl -s "http://127.0.0.1:$PORT/api/health" | grep -q '"chat_ready":true' || { echo "[reelrun] warm FAILED"; exit 3; }
+  echo "[reelrun] warm ready"
+else
+  echo "[reelrun] spinner mode: no pre-warm; launch opencode will cold-load and show the warm bar"
+fi
 
 echo "[reelrun] writing tape"
 cat > "$WS/reel.tape" <<TAPE
@@ -82,10 +93,10 @@ Sleep 2s
 Type "lilbee launch opencode"
 Sleep 500ms
 Enter
-# Launch arc: the warm bar + "Launching opencode..." line cover this wait now;
-# the serve is pre-warmed so opencode paints within seconds. Tune per-tier on
-# the pod against the frame review if a model boots slower.
-Sleep 12s
+# Launch arc. Prewarmed tiers paint in seconds; spinner mode cold-loads, so this
+# wait captures the warm read bar + engine spinner + handoff on camera. Tune
+# per-ref against the frame review if a model loads slower.
+Sleep ${LAUNCH_WAIT}s
 
 Type "$PROMPT"
 Sleep 1s

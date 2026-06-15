@@ -99,12 +99,18 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     tmux_kill(session)
     workspace_data = workspace / ".lilbee"
     env_flags = ["-e", f"LILBEE_DATA={workspace_data}"]
-    # The session runs `bash -lc`, a login shell that does not inherit the
-    # matrix's environment, so anything the cell's `uv run` needs must be
-    # forwarded explicitly: the models dir (or the launcher serves no models)
-    # and the uv project env (or `uv run` syncs a FRESH venv whose lilbee-engine
-    # wheel is the empty placeholder, leaving the serve with no llama-server).
+    # The session runs a NON-login `bash -c`. A login shell (`-lc`) re-runs the
+    # system profile, which resets PATH to a fixed system value and drops
+    # $HOME/.opencode/bin, so `lilbee launch opencode` could not find the opencode
+    # binary and the pane died instantly ('opencode binary not found on PATH'),
+    # failing every cell with an empty-pane timeout. A non-login shell keeps the
+    # environment we forward via -e, so everything the cell's `uv run` needs must
+    # be forwarded explicitly: PATH (the opencode + uv binaries), the models dir
+    # (or the launcher serves no models) and the uv project env (or `uv run`
+    # syncs a FRESH venv whose lilbee-engine wheel is the empty placeholder,
+    # leaving the serve with no llama-server).
     for env_var in (
+        "PATH",
         "LILBEE_MODELS_DIR",
         "UV_PROJECT_ENVIRONMENT",
         "UV_CACHE_DIR",
@@ -132,7 +138,7 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
             str(_TMUX_WINDOW_ROWS),
             *env_flags,
             "bash",
-            "-lc",
+            "-c",
             f"cd {workspace} && exec uv run lilbee launch opencode --no-prompt",
         ],
         check=True,

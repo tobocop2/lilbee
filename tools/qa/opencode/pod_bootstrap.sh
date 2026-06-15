@@ -77,7 +77,12 @@ VENV_ENGINE_BIN="$("$VENV_PY" -c 'import lilbee_engine,os;print(os.path.dirname(
 if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
   if [[ "$BACKEND" == cu* ]] && ! command -v nvcc >/dev/null; then
     log "installing CUDA build toolkit for $BACKEND"
-    BACKEND="$BACKEND" bash tools/wheel-build/install_gpu_toolkit.sh
+    : > /tmp/toolkit-env.sh
+    TOOLKIT_ENV_FILE=/tmp/toolkit-env.sh BACKEND="$BACKEND" bash tools/wheel-build/install_gpu_toolkit.sh
+    # GitHub Actions propagates the toolkit's location to later steps via
+    # $GITHUB_ENV; on a pod there is no such step boundary, so we source it
+    # ourselves to put nvcc on PATH for the cmake build below.
+    source /tmp/toolkit-env.sh
   fi
   log "building engine (BACKEND=$BACKEND) -- one-time ~20min, then cached"
   BACKEND="$BACKEND" bash tools/wheel-build/build_llama_server.sh
