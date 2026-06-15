@@ -296,8 +296,62 @@ class TestModelRegistryInstall:
         listed = registry.list_installed()
         assert listed[0].blob == hashlib.sha256(content).hexdigest()
 
+    def test_list_installed_includes_quant_subdir_ref(self, tmp_path: Path) -> None:
+        # unsloth stores quants under a subdirectory (Q4_K_S/<model>.gguf), so the
+        # manifest is written one level deeper than a flat ref. A non-recursive scan
+        # dropped it from `model list` + /v1/models, silently sending opencode to
+        # its fallback provider, so the recursive scan must surface it.
+        repo = "unsloth/MiniMax-M2-GGUF"
+        subdir_ref = "Q4_K_S/MiniMax-M2-Q4_K_S-00001-of-00003.gguf"
+        registry = ModelRegistry(tmp_path)
+        content = b"GGUF" + b"\x00" * 256
+        src = tmp_path / "source.gguf"
+        src.write_bytes(content)
+        manifest = _make_manifest(hf_repo=repo, gguf_filename=subdir_ref, size_bytes=len(content))
+        registry.install(repo, subdir_ref, src, manifest)
+        assert f"{repo}/{subdir_ref}" in [m.ref for m in registry.list_installed()]
+
+    def test_list_installed_includes_flat_and_subdir_quants_in_one_repo(
+        self, tmp_path: Path
+    ) -> None:
+        # A flat quant and a quant-subdir quant of the same repo both register and
+        # surface as distinct refs (the recursive scan must not drop or merge them).
+        repo = "unsloth/Some-GGUF"
+        registry = ModelRegistry(tmp_path)
+        flat = "Some-Q8_0.gguf"
+        subdir = "Q4_K_M/Some-Q4_K_M.gguf"
+        for filename, byte in ((flat, b"\x01"), (subdir, b"\x02")):
+            content = b"GGUF" + byte * 256
+            src = tmp_path / f"{byte!r}.gguf"
+            src.write_bytes(content)
+            registry.install(
+                repo,
+                filename,
+                src,
+                _make_manifest(hf_repo=repo, gguf_filename=filename, size_bytes=len(content)),
+            )
+        refs = {m.ref for m in registry.list_installed()}
+        assert refs == {f"{repo}/{flat}", f"{repo}/{subdir}"}
+
 
 class TestModelRegistryResolve:
+    def test_resolve_repo_only_finds_quant_subdir_manifest(self, tmp_path: Path) -> None:
+        # A bare org/repo ref must resolve through the fast manifest path even when
+        # the installed quant lives in a subdir, not fall through to cache recovery.
+        repo = "unsloth/Some-GGUF"
+        subdir_ref = "Q4_K_M/Some-Q4_K_M.gguf"
+        registry = ModelRegistry(tmp_path)
+        content = b"GGUF" + b"\x00" * 256
+        src = tmp_path / "source.gguf"
+        src.write_bytes(content)
+        registry.install(
+            repo,
+            subdir_ref,
+            src,
+            _make_manifest(hf_repo=repo, gguf_filename=subdir_ref, size_bytes=len(content)),
+        )
+        assert registry.resolve(repo) == registry.resolve(f"{repo}/{subdir_ref}")
+
     def test_resolve_not_installed(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         with pytest.raises(KeyError, match="not installed"):

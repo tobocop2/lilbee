@@ -254,7 +254,10 @@ class ModelRegistry:
         """
         manifest_dir = self._manifests_dir / repo_to_dir(hf_repo)
         if manifest_dir.is_dir():
-            for mf in sorted(manifest_dir.glob("*.gguf.json")):
+            # rglob, like list_installed: a quant-subdir ref writes its manifest one
+            # directory deeper, so a non-recursive scan would miss it and fall through
+            # to the slower huggingface_hub cache recovery.
+            for mf in sorted(manifest_dir.rglob("*.gguf.json")):
                 manifest = self._load_manifest_file(mf)
                 if manifest is None or manifest.blob is None:
                     continue
@@ -474,7 +477,11 @@ class ModelRegistry:
         for repo_dir in sorted(self._manifests_dir.iterdir()):
             if not repo_dir.is_dir():
                 continue
-            for tag_file in sorted(repo_dir.glob("*.gguf.json")):
+            # rglob, not glob: a quant-subdir ref (unsloth stores quants under e.g.
+            # Q4_K_S/<model>.gguf) writes its manifest one level deeper, so a
+            # non-recursive scan omitted it from `model list` and /v1/models, and
+            # opencode silently fell back to its own provider.
+            for tag_file in sorted(repo_dir.rglob("*.gguf.json")):
                 manifest = self._load_manifest_file(tag_file)
                 if manifest is not None and self._blob_present(manifest):
                     manifests.append(manifest)
