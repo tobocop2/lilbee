@@ -74,16 +74,23 @@ uv sync
 
 # 6. Engine: build once, cache on /workspace, copy into the venv on every boot.
 VENV_ENGINE_BIN="$("$VENV_PY" -c 'import lilbee_engine,os;print(os.path.dirname(lilbee_engine.__file__))')/bin"
+# The CUDA toolkit provides BOTH nvcc (for the build) and the runtime libs
+# (libcudart/libcublas) that llama-server links at RUNTIME. A fresh container has
+# neither, and a cached engine skips the build below -- so this must run on every
+# cu* boot when the runtime lib is absent, not only when building. Skipping it on a
+# cached-engine pod leaves llama-server dying with "libcudart.so.12: cannot open
+# shared object file" on every serve, which fails the whole matrix.
+if [[ "$BACKEND" == cu* ]] && ! ldconfig -p 2>/dev/null | grep -q 'libcudart\.so\.12'; then
+  log "installing CUDA toolkit (nvcc + runtime libs) for $BACKEND"
+  : > /tmp/toolkit-env.sh
+  TOOLKIT_ENV_FILE=/tmp/toolkit-env.sh BACKEND="$BACKEND" bash tools/wheel-build/install_gpu_toolkit.sh
+  # GitHub Actions propagates the toolkit's location to later steps via $GITHUB_ENV;
+  # on a pod there is no such boundary, so source it ourselves (nvcc on PATH) and
+  # refresh the linker cache so the engine resolves libcudart at runtime.
+  source /tmp/toolkit-env.sh
+  ldconfig
+fi
 if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
-  if [[ "$BACKEND" == cu* ]] && ! command -v nvcc >/dev/null; then
-    log "installing CUDA build toolkit for $BACKEND"
-    : > /tmp/toolkit-env.sh
-    TOOLKIT_ENV_FILE=/tmp/toolkit-env.sh BACKEND="$BACKEND" bash tools/wheel-build/install_gpu_toolkit.sh
-    # GitHub Actions propagates the toolkit's location to later steps via
-    # $GITHUB_ENV; on a pod there is no such step boundary, so we source it
-    # ourselves to put nvcc on PATH for the cmake build below.
-    source /tmp/toolkit-env.sh
-  fi
   log "building engine (BACKEND=$BACKEND) -- one-time ~20min, then cached"
   BACKEND="$BACKEND" bash tools/wheel-build/build_llama_server.sh
   mkdir -p "$ENGINE_CACHE"
