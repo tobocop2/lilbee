@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 
 import httpx
 import pytest
@@ -576,6 +577,126 @@ def test_chat_stream_surfaces_server_error_body() -> None:
 
     with pytest.raises(ProviderError, match="model is still loading"):
         list(_client(handler).chat([{"role": "user", "content": "hi"}], stream=True))
+
+
+_ALTERNATION_BODY = (
+    "Jinja Exception: After the optional system message, conversation roles "
+    "must alternate user/assistant/user/assistant/..."
+)
+_TOOL_LOOP_MESSAGES = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "find foo"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "grep", "arguments": "{}"}}],
+    },
+    {"role": "tool", "content": "a.py:1", "tool_call_id": "c1"},
+    {"role": "assistant", "content": "It is in a.py."},
+]
+
+
+def test_chat_result_retries_with_normalized_messages_on_alternation_error() -> None:
+    # A strict-alternation template 500s the OpenAI tool exchange; the client must
+    # retry once with normalized (strictly alternating) messages and return.
+    seen: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body["messages"])
+        if len(seen) == 1:
+            return httpx.Response(500, text=_ALTERNATION_BODY)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    result = _client(handler).chat_result(_TOOL_LOOP_MESSAGES)
+    assert result.text == "ok"
+    assert len(seen) == 2
+    # The retry's messages strictly alternate user/assistant after the system, with
+    # no tool role remaining.
+    retried = seen[1]
+    convo_roles = [m["role"] for m in retried if m["role"] != "system"]
+    assert "tool" not in convo_roles
+    for earlier, later in pairwise(convo_roles):
+        assert earlier != later
+
+
+def test_chat_result_does_not_retry_non_alternation_error() -> None:
+    # A different 500 must surface immediately, with exactly one request made.
+    seen: list[object] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        seen.append(1)
+        return httpx.Response(500, text="decode failure")
+
+    with pytest.raises(ProviderError, match="decode failure"):
+        _client(handler).chat_result(_TOOL_LOOP_MESSAGES)
+    assert len(seen) == 1
+
+
+def test_chat_result_propagates_alternation_error_when_retry_also_fails() -> None:
+    # If the normalized retry also hits the alternation error, the original error
+    # propagates rather than looping.
+    seen: list[object] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        seen.append(1)
+        return httpx.Response(500, text=_ALTERNATION_BODY)
+
+    with pytest.raises(ProviderError, match="roles must alternate"):
+        _client(handler).chat_result(_TOOL_LOOP_MESSAGES)
+    assert len(seen) == 2  # one original attempt + exactly one retry
+
+
+def test_chat_stream_items_retries_with_normalized_messages_on_alternation_error() -> None:
+    # The 500 surfaces at stream-open before any frame, so the stream path also
+    # retries once with normalized messages and then streams normally.
+    seen: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body["messages"])
+        if len(seen) == 1:
+            return httpx.Response(500, text=_ALTERNATION_BODY)
+        return httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+        )
+
+    frames = list(_client(handler).chat_stream_items(_TOOL_LOOP_MESSAGES))
+    assert frames == ["hi"]
+    assert len(seen) == 2
+    convo_roles = [m["role"] for m in seen[1] if m["role"] != "system"]
+    assert "tool" not in convo_roles
+
+
+def test_chat_stream_items_does_not_retry_non_alternation_error() -> None:
+    seen: list[object] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        seen.append(1)
+        return httpx.Response(500, text="decode failure")
+
+    with pytest.raises(ProviderError, match="decode failure"):
+        list(_client(handler).chat_stream_items(_TOOL_LOOP_MESSAGES))
+    assert len(seen) == 1
+
+
+def test_chat_stream_items_does_not_retry_after_a_frame_is_yielded(monkeypatch) -> None:
+    # A mid-stream failure (after frames were emitted) must not retry, or the
+    # caller would see duplicated content; the error propagates after the frame.
+    client = _client()
+    calls: list[int] = []
+
+    def fake_open(messages, tools, tool_choice, options):
+        calls.append(1)
+        yield "partial"
+        raise ProviderError(_ALTERNATION_BODY)
+
+    monkeypatch.setattr(client, "_open_chat_stream", fake_open)
+    stream = client.chat_stream_items(_TOOL_LOOP_MESSAGES)
+    assert next(stream) == "partial"
+    with pytest.raises(ProviderError, match="roles must alternate"):
+        next(stream)
+    assert calls == [1]  # the failure raised, no second (retry) stream opened
 
 
 def test_embed_subbatches_when_token_budget_exceeded() -> None:

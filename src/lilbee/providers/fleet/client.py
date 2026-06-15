@@ -26,6 +26,7 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.normalize import to_alternating
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
@@ -57,6 +58,10 @@ _EMBED_EST_CHARS_PER_TOKEN = 3
 _UPSTREAM_DIED_MARKER = "exited prematurely"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
+# A strict-alternation GGUF chat template (Mistral-Nemo, Cohere command-r) raises
+# this Jinja exception when an OpenAI tool exchange does not alternate plain
+# user/assistant turns; the chat path retries once with normalized messages.
+_ROLE_ALTERNATION_MARKER = "roles must alternate"
 _UPSTREAM_LOG_TAIL_CHARS = 2000
 _UPSTREAM_LOG_TIMEOUT_S = 2.0
 
@@ -137,6 +142,11 @@ def is_connection_failure(exc: Exception) -> bool:
         return True
     # isinstance: only ProviderError carries a kind; other exceptions pass through.
     return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.CONNECTION
+
+
+def _is_role_alternation_error(exc: Exception) -> bool:
+    """Whether *exc* is a strict-alternation chat-template rejection (retriable)."""
+    return isinstance(exc, ProviderError) and _ROLE_ALTERNATION_MARKER in str(exc)
 
 
 def _upstream_failure_tail(resp: httpx.Response) -> str:
@@ -380,22 +390,19 @@ class LlamaServerClient:
         The server is launched with ``--jinja`` so it parses the model's native
         tool-call syntax into structured ``message.tool_calls``. When a model
         instead emits a bare-JSON call as content (a native miss), recover it
-        and report ``tool_calls`` as the finish reason.
+        and report ``tool_calls`` as the finish reason. A strict-alternation
+        template that rejects the tool exchange triggers one retry with
+        :func:`to_alternating` messages.
         """
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            **(options or {}),
-        }
-        if tools is not None:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
-        with self._track():
-            resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
-            body = resp.json()
+
+        def _post(msgs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+            payload = self._chat_payload(msgs, tools, tool_choice, options, stream=False)
+            with self._track():
+                resp = self._http.post(_CHAT_PATH, json=payload)
+                _raise_for_status(resp)
+                return dict(resp.json())
+
+        body = self._retry_on_role_alternation(_post, messages)
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
@@ -432,27 +439,82 @@ class LlamaServerClient:
         Each SSE chunk's ``choices[0].delta`` carries a ``content`` token and/or
         a ``tool_calls`` array; both are surfaced as :data:`ChatStreamItem`
         frames (text strings and :class:`ToolCallDelta`). The dispatch's stream
-        translator accumulates the deltas by ``index``.
+        translator accumulates the deltas by ``index``. The 500 from a
+        strict-alternation template surfaces on the opening request before any
+        frame is yielded, so one retry with :func:`to_alternating` messages
+        recovers it.
         """
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            # include_usage makes llama-server emit a final SSE chunk carrying the
-            # token usage (with an empty choices list) just before [DONE].
-            "stream_options": {"include_usage": True},
-            **(options or {}),
-        }
-        if tools is not None:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        yielded = False
+        try:
+            for item in self._open_chat_stream(messages, tools, tool_choice, options):
+                yielded = True
+                yield item
+        except ProviderError as exc:
+            # The 500 surfaces at stream-open, before any frame; only then is a
+            # retry safe (re-running mid-stream would duplicate emitted frames).
+            if yielded or not _is_role_alternation_error(exc):
+                raise
+            yield from self._open_chat_stream(
+                to_alternating([dict(m) for m in messages]), tools, tool_choice, options
+            )
+
+    def _open_chat_stream(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> Iterator[str | ToolCallDelta | TokenUsage]:
+        """Open one SSE chat stream and yield its frames; raises before the first frame."""
+        payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         with (
             self._track(),
-            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
+            self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
         ):
             _raise_for_status(resp)
             for line in resp.iter_lines():
                 yield from _parse_sse_stream_items(line)
+
+    def _chat_payload(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Build the chat-completions request body shared by the stream and non-stream paths."""
+        payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": stream}
+        if stream:
+            # include_usage makes llama-server emit a final SSE chunk carrying the
+            # token usage (with an empty choices list) just before [DONE].
+            payload["stream_options"] = {"include_usage": True}
+        if tools is not None:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        payload.update(options or {})
+        return payload
+
+    def _retry_on_role_alternation(
+        self,
+        call: Callable[[Sequence[Mapping[str, Any]]], _T],
+        messages: Sequence[Mapping[str, Any]],
+    ) -> _T:
+        """Run *call*, retrying once with normalized messages on an alternation error.
+
+        A strict-alternation chat template (Mistral-Nemo, Cohere command-r) rejects
+        the OpenAI tool exchange with a Jinja exception. The single retry reshapes
+        the messages into strict user/assistant alternation; a second failure (or
+        any non-alternation error) propagates unchanged.
+        """
+        try:
+            return call(messages)
+        except ProviderError as exc:
+            if not _is_role_alternation_error(exc):
+                raise
+            return call(to_alternating([dict(m) for m in messages]))
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch via ``/v1/embeddings``."""
