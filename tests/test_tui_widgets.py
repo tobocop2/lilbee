@@ -5236,6 +5236,20 @@ async def test_crawl_dialog_browser_checkbox_defaults_from_config(monkeypatch):
         assert app.screen.query_one("#crawl-browser-checkbox", Checkbox).value is True
 
 
+async def test_crawl_dialog_browser_checkbox_unchecked_for_http(monkeypatch):
+    """With the default http config the browser checkbox starts unchecked."""
+    from textual.widgets import Checkbox
+
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#crawl-browser-checkbox", Checkbox).value is False
+
+
 async def test_crawl_dialog_cancel():
     """Cancel button dismisses with None."""
     app = CrawlDialogTestApp()
