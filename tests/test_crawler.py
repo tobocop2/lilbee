@@ -434,6 +434,28 @@ class TestCrawlSingle:
         setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
         assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
+    async def test_http_mode_omits_setup_bracket(self):
+        """HTTP mode opens a browserless client, so no 'browser' setup stage fires."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=_make_crawl4ai_result())
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_mod = _mock_crawl4ai(MagicMock(return_value=mock_instance))
+        mock_strategy = MagicMock()
+        mock_strategy.AsyncHTTPCrawlerStrategy = MagicMock()
+
+        events: list[tuple] = []
+        modules = {"crawl4ai": mock_mod, "crawl4ai.async_crawler_strategy": mock_strategy}
+        with patch.dict("sys.modules", modules):
+            result = await crawl_single(
+                "https://example.com",
+                render_mode=CrawlRenderMode.HTTP,
+                on_progress=lambda e, d: events.append((e, d)),
+            )
+        assert result.success
+        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
+        assert setup_types == []
+
     async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
         mock_instance = AsyncMock()
