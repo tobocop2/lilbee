@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
@@ -45,12 +46,17 @@ def _mock_crawl4ai_modules(instance: Any) -> dict[str, Any]:
     mock_dispatcher = MagicMock()
     mock_dispatcher.RateLimiter = MagicMock()
     mock_dispatcher.SemaphoreDispatcher = MagicMock()
+    mock_dispatcher.MemoryAdaptiveDispatcher = MagicMock()
+
+    mock_strategy = MagicMock()
+    mock_strategy.AsyncHTTPCrawlerStrategy = MagicMock()
 
     return {
         "crawl4ai": mock_crawl4ai,
         "crawl4ai.deep_crawling": mock_deep,
         "crawl4ai.deep_crawling.filters": mock_filters,
         "crawl4ai.async_dispatcher": mock_dispatcher,
+        "crawl4ai.async_crawler_strategy": mock_strategy,
     }
 
 
@@ -74,15 +80,20 @@ def _stub_chromium(monkeypatch):
 FetcherFactory = Callable[[], WebFetcher]
 
 
-def _crawl4ai_factory() -> WebFetcher:
-    """Build a :class:`Crawl4aiFetcher` for the contract run."""
-    return Crawl4aiFetcher(quiet=True)
+def _crawl4ai_http_factory() -> WebFetcher:
+    """Build an HTTP-mode :class:`Crawl4aiFetcher` for the contract run."""
+    return Crawl4aiFetcher(quiet=True, render_mode=CrawlRenderMode.HTTP)
 
 
-# Every backend implementation lives in this list; each must pass the
-# suite below. When a ``KreuzcrawlFetcher`` lands, add a second factory.
+def _crawl4ai_browser_factory() -> WebFetcher:
+    """Build a browser-mode :class:`Crawl4aiFetcher` for the contract run."""
+    return Crawl4aiFetcher(quiet=True, render_mode=CrawlRenderMode.BROWSER)
+
+
+# Every backend / mode lives in this list; each must pass the suite below.
 FETCHER_FACTORIES: list[tuple[str, FetcherFactory]] = [
-    ("crawl4ai", _crawl4ai_factory),
+    ("crawl4ai-http", _crawl4ai_http_factory),
+    ("crawl4ai-browser", _crawl4ai_browser_factory),
 ]
 
 

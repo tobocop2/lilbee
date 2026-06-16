@@ -59,7 +59,7 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode
+from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
@@ -685,8 +685,14 @@ class ChatScreen(Screen[None]):
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        depth, max_pages, include_subdomains = self._parse_crawl_flags(parts[1:])
-        self._start_crawl(url, depth, max_pages, include_subdomains=include_subdomains)
+        depth, max_pages, include_subdomains, render_mode = self._parse_crawl_flags(parts[1:])
+        self._start_crawl(
+            url,
+            depth,
+            max_pages,
+            include_subdomains=include_subdomains,
+            render_mode=render_mode,
+        )
 
     def _open_crawl_dialog(self) -> None:
         """Push the crawl modal and handle its result."""
@@ -694,7 +700,9 @@ class ChatScreen(Screen[None]):
 
         def _on_result(result: CrawlParams | None) -> None:
             if result is not None:
-                self._start_crawl(result.url, result.depth, result.max_pages)
+                self._start_crawl(
+                    result.url, result.depth, result.max_pages, render_mode=result.render_mode
+                )
 
         self.app.push_screen(CrawlDialog(), callback=_on_result)
 
@@ -705,46 +713,78 @@ class ChatScreen(Screen[None]):
         max_pages: int | None,
         *,
         include_subdomains: bool = False,
+        render_mode: CrawlRenderMode | None = None,
     ) -> None:
         """Enqueue a crawl task and run it in the background.
 
-        Bootstrap Chromium first via the controller helper. If the
-        browser isn't installed yet, a SETUP task renders in the Task
-        Center and the crawl kicks off from its on_success hook. On a
-        machine where Chromium is already present this is a synchronous
-        no-op and the crawl starts immediately (bb-wq8g).
+        Bootstrap Chromium first via the controller helper, but only for a
+        browser-mode crawl. HTTP mode needs no browser, so the SETUP task is
+        skipped and the crawl starts immediately. An explicit ``render_mode``
+        (from the dialog checkbox or ``--render``) is persisted so the choice
+        sticks for the next crawl.
         """
         from lilbee.cli.tui.task_queue import TaskType
+
+        mode = render_mode if render_mode is not None else cfg.crawl_render_mode
+        if render_mode is not None and render_mode is not cfg.crawl_render_mode:
+            self._persist_crawl_render_mode(render_mode)
 
         def _kick_off_crawl() -> None:
             self._task_bar.start_task(
                 msg.TASK_NAME_CRAWL.format(url=url),
                 TaskType.CRAWL,
                 lambda reporter: self._do_crawl(
-                    url, depth, max_pages, reporter, include_subdomains=include_subdomains
+                    url,
+                    depth,
+                    max_pages,
+                    reporter,
+                    include_subdomains=include_subdomains,
+                    render_mode=mode,
                 ),
                 on_success=lambda: call_from_thread(self, self._run_sync),
             )
 
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
-        self._task_bar.ensure_chromium(_kick_off_crawl)
+        if mode is CrawlRenderMode.BROWSER:
+            self._task_bar.ensure_chromium(_kick_off_crawl)
+        else:
+            _kick_off_crawl()
+
+    def _persist_crawl_render_mode(self, render_mode: CrawlRenderMode) -> None:
+        """Persist the chosen render mode so the dialog checkbox stays sticky."""
+        from lilbee.app.settings import apply_settings_update
+
+        try:
+            apply_settings_update({"crawl_render_mode": render_mode.value})
+        except (ValueError, OSError) as exc:
+            log.warning("Could not persist crawl_render_mode: %s", exc)
 
     @staticmethod
-    def _parse_crawl_flags(tokens: list[str]) -> tuple[int | None, int | None, bool]:
-        """Extract --depth, --max-pages, and --include-subdomains from tokens.
+    def _parse_crawl_flags(
+        tokens: list[str],
+    ) -> tuple[int | None, int | None, bool, CrawlRenderMode | None]:
+        """Extract --depth, --max-pages, --include-subdomains, --render from tokens.
 
         Numeric flags return None when absent so the caller inherits
         crawl_and_save's unbounded-by-default semantics. The boolean
         ``--include-subdomains`` flag defaults to False (exact-host scope).
+        ``--render http|browser`` returns None when absent so the caller
+        inherits ``cfg.crawl_render_mode``; an unrecognized value is ignored.
         """
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
         parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
         include_subdomains = False
+        render_mode: CrawlRenderMode | None = None
         i = 0
         while i < len(tokens):
             if tokens[i] == "--include-subdomains":
                 include_subdomains = True
                 i += 1
+                continue
+            if tokens[i] == "--render" and i + 1 < len(tokens):
+                with contextlib.suppress(ValueError):
+                    render_mode = CrawlRenderMode(tokens[i + 1])
+                i += 2
                 continue
             key = flag_map.get(tokens[i])
             if key and i + 1 < len(tokens):
@@ -753,7 +793,7 @@ class ChatScreen(Screen[None]):
                 i += 2
             else:
                 i += 1
-        return parsed["depth"], parsed["max_pages"], include_subdomains
+        return parsed["depth"], parsed["max_pages"], include_subdomains, render_mode
 
     def _do_crawl(
         self,
@@ -763,6 +803,7 @@ class ChatScreen(Screen[None]):
         reporter: ProgressReporter,
         *,
         include_subdomains: bool = False,
+        render_mode: CrawlRenderMode | None = None,
     ) -> None:
         """Crawl body. Runs on worker thread; reporter handles progress + cancel."""
         from lilbee.crawler import crawl_and_save
@@ -815,6 +856,7 @@ class ChatScreen(Screen[None]):
                 on_progress=on_progress,
                 quiet=True,
                 include_subdomains=include_subdomains,
+                render_mode=render_mode,
             )
         )
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))

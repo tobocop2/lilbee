@@ -31,6 +31,7 @@ from lilbee.app.settings import (
 )
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import is_url, require_valid_crawl_url
@@ -149,6 +150,7 @@ async def add(
     force: bool = False,
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
+    render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base and sync.
     Copies the given paths into the documents directory, then ingests them.
@@ -162,6 +164,9 @@ async def add(
             from chat model capabilities (None/omit).
         ocr_timeout: Per-page timeout in seconds for vision OCR. Overrides
             the configured default for this invocation only.
+        render_mode: How any URLs are crawled. None (default) uses the
+            configured crawl_render_mode; "http" is browserless, "browser"
+            runs Chromium with JavaScript.
     """
     from lilbee.app.ingest import copy_files
     from lilbee.data.ingest import sync as run_sync
@@ -194,7 +199,7 @@ async def add(
             except ValueError as exc:
                 errors.append(f"{url}: {exc}")
                 continue
-            crawled_paths = await crawl_and_save(url)
+            crawled_paths = await crawl_and_save(url, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
     copy_result = copy_files(valid, force=force)
@@ -222,6 +227,7 @@ def crawl(
     url: str,
     depth: int | None = None,
     max_pages: int | None = None,
+    render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Crawl a web page and add it to the knowledge base (non-blocking).
     Launches the crawl as a background task and returns immediately with a
@@ -233,6 +239,9 @@ def crawl(
             positive int caps link-follow depth.
         max_pages: None (default) means no page limit. Positive int caps total
             pages fetched.
+        render_mode: None (default) uses the configured crawl_render_mode.
+            "http" fetches without a browser (lightweight); "browser" runs
+            Chromium with JavaScript enabled for client-rendered sites.
     """
     from lilbee.crawler import crawler_available
 
@@ -243,7 +252,7 @@ def crawl(
     except ValueError as exc:
         return _error(str(exc))
 
-    task_id = start_crawl(url, depth=depth, max_pages=max_pages)
+    task_id = start_crawl(url, depth=depth, max_pages=max_pages, render_mode=render_mode)
     return {"status": "started", "task_id": task_id, "url": url}
 
 

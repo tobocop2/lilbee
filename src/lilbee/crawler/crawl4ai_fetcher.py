@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.models import (
@@ -27,24 +28,69 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Browser-mode memory levers. Constants, not config: there is no per-user knob
+# worth exposing, and they only apply on the heavy Chromium path. Recycling the
+# browser process every N pages caps the RSS growth of a long recursive crawl.
+_BROWSER_RECYCLE_PAGES = 50
+_BROWSER_EXTRA_ARGS = ("--disable-dev-shm-usage", "--disable-gpu")
 
-def _build_rate_limited_dispatcher(concurrency: ConcurrencySpec) -> Any:
-    """Build a SemaphoreDispatcher + RateLimiter from a ConcurrencySpec, or None.
+
+def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
+    """Construct a crawl4ai ``AsyncWebCrawler`` for the requested render mode.
+
+    HTTP mode swaps in the browserless HTTP strategy; browser mode tunes
+    Chromium for memory (light/text/memory-saving + periodic process recycle).
+    """
+    from crawl4ai import AsyncWebCrawler
+
+    if render_mode is CrawlRenderMode.HTTP:
+        from crawl4ai.async_crawler_strategy import AsyncHTTPCrawlerStrategy
+
+        return AsyncWebCrawler(crawler_strategy=AsyncHTTPCrawlerStrategy(), verbose=verbose)
+
+    from crawl4ai import BrowserConfig
+
+    config = BrowserConfig(
+        light_mode=True,
+        text_mode=True,
+        memory_saving_mode=True,
+        max_pages_before_recycle=_BROWSER_RECYCLE_PAGES,
+        extra_args=list(_BROWSER_EXTRA_ARGS),
+        verbose=verbose,
+    )
+    return AsyncWebCrawler(config=config, verbose=verbose)
+
+
+def _build_rate_limited_dispatcher(
+    concurrency: ConcurrencySpec, render_mode: CrawlRenderMode
+) -> Any:
+    """Build the recursive-crawl dispatcher from a ConcurrencySpec, or None.
 
     BFSDeepCrawlStrategy calls ``crawler.arun_many()`` without a dispatcher
     kwarg, so per-domain rate limiting is only reachable by threading a
-    dispatcher through AsyncWebCrawler itself. This helper centralizes the
-    spec read so the TUI / CLI / server all get identical behavior.
+    dispatcher through AsyncWebCrawler itself. Browser mode uses a
+    MemoryAdaptiveDispatcher so a crawl backs off when system memory is tight
+    rather than steamrolling the machine; HTTP mode is light enough to stay on
+    the plain semaphore path.
     """
     if not concurrency.retry_on_rate_limit:
         return None
-    from crawl4ai.async_dispatcher import RateLimiter, SemaphoreDispatcher
+    from crawl4ai.async_dispatcher import RateLimiter
 
     rate_limiter = RateLimiter(
         base_delay=(concurrency.retry_base_delay_min, concurrency.retry_base_delay_max),
         max_delay=concurrency.retry_max_backoff,
         max_retries=concurrency.retry_max_attempts,
     )
+    if render_mode is CrawlRenderMode.BROWSER:
+        from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher
+
+        return MemoryAdaptiveDispatcher(
+            max_session_permit=concurrency.semaphore_count,
+            rate_limiter=rate_limiter,
+        )
+    from crawl4ai.async_dispatcher import SemaphoreDispatcher
+
     return SemaphoreDispatcher(
         semaphore_count=concurrency.semaphore_count,
         rate_limiter=rate_limiter,
@@ -59,10 +105,8 @@ class _LilbeeAsyncCrawler:
     An explicit ``dispatcher=`` on the call still wins.
     """
 
-    def __init__(self, *, verbose: bool, dispatcher: Any) -> None:
-        from crawl4ai import AsyncWebCrawler
-
-        self._inner = AsyncWebCrawler(verbose=verbose)
+    def __init__(self, inner: Any, *, dispatcher: Any) -> None:
+        self._inner = inner
         self._dispatcher = dispatcher
 
     async def __aenter__(self) -> _LilbeeAsyncCrawler:
@@ -87,28 +131,31 @@ class _LilbeeAsyncCrawler:
 
 
 @contextlib.asynccontextmanager
-async def _open_crawler(*, quiet: bool = False, dispatcher: Any = None) -> AsyncIterator[Any]:
-    """Open an AsyncWebCrawler, wrapping with the dispatcher when provided.
+async def _open_crawler(
+    *, quiet: bool = False, render_mode: CrawlRenderMode, dispatcher: Any = None
+) -> AsyncIterator[Any]:
+    """Open an AsyncWebCrawler for ``render_mode``, wrapping with the dispatcher.
 
-    Raises :class:`CrawlerBrowserError` if the Chromium binary is missing so
-    Playwright's ASCII install banner does not leak into the TUI.
+    Browser mode requires the Chromium binary and raises
+    :class:`CrawlerBrowserError` if it is missing, so Playwright's ASCII install
+    banner does not leak into the TUI. HTTP mode needs no browser at all.
     """
-    if not bootstrap.chromium_installed():
+    if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
         raise CrawlerBrowserError(
             "Playwright Chromium browser not installed. "
-            "Run 'uv run playwright install chromium' to enable /crawl."
+            "Run 'uv run playwright install chromium' to enable browser-mode crawling."
         )
 
-    from crawl4ai import AsyncWebCrawler
+    inner = _build_inner_crawler(verbose=not quiet, render_mode=render_mode)
 
     stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     stderr_ctx = contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext()
     with stdout_ctx, stderr_ctx:
         if dispatcher is not None:
-            async with _LilbeeAsyncCrawler(verbose=not quiet, dispatcher=dispatcher) as crawler:
+            async with _LilbeeAsyncCrawler(inner, dispatcher=dispatcher) as crawler:
                 yield crawler
         else:
-            async with AsyncWebCrawler(verbose=not quiet) as crawler:
+            async with inner as crawler:
                 yield crawler
 
 
@@ -195,8 +242,9 @@ def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
 class Crawl4aiFetcher:
     """:class:`WebFetcher` implementation backed by crawl4ai."""
 
-    def __init__(self, *, quiet: bool = False) -> None:
+    def __init__(self, *, quiet: bool = False, render_mode: CrawlRenderMode) -> None:
         self._quiet = quiet
+        self._render_mode = render_mode
 
     async def __aenter__(self) -> Crawl4aiFetcher:
         # Crawl4ai opens a fresh ``AsyncWebCrawler`` per operation because
@@ -217,7 +265,7 @@ class Crawl4aiFetcher:
         from crawl4ai import CrawlerRunConfig
 
         config = CrawlerRunConfig(page_timeout=int(timeout * 1000))
-        async with _open_crawler(quiet=self._quiet) as crawler:
+        async with _open_crawler(quiet=self._quiet, render_mode=self._render_mode) as crawler:
             result = await crawler.arun(url=url, config=config)
         markdown = (result.markdown or "").strip()
         if markdown:
@@ -278,14 +326,16 @@ class Crawl4aiFetcher:
             stream=True,
         )
 
-        dispatcher = _build_rate_limited_dispatcher(concurrency)
+        dispatcher = _build_rate_limited_dispatcher(concurrency, self._render_mode)
         stream: Any = None
         strategy_cancelled = False
         # Exceptions propagate to the orchestration layer, which decides
         # whether to log cancel-teardown noise at debug vs surface a real
         # failure. The adapter's only housekeeping is stream close + BFS
         # strategy cancel so Playwright tears down in order.
-        async with _open_crawler(quiet=self._quiet, dispatcher=dispatcher) as crawler:
+        async with _open_crawler(
+            quiet=self._quiet, render_mode=self._render_mode, dispatcher=dispatcher
+        ) as crawler:
             stream = await crawler.arun(url=seed_url, config=config)
             try:
                 async for cr in _iter_crawl_stream(stream):
@@ -320,7 +370,7 @@ class Crawl4aiFetcher:
 # Protocol conformance check: Crawl4aiFetcher is structurally a WebFetcher.
 # We don't instantiate at import time so the check stays purely structural.
 if TYPE_CHECKING:
-    _: WebFetcher = Crawl4aiFetcher()
+    _: WebFetcher = Crawl4aiFetcher(render_mode=CrawlRenderMode.HTTP)
 
 
 @functools.cache

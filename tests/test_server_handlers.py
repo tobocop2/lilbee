@@ -2744,7 +2744,7 @@ class TestCrawlStream:
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
         from pathlib import Path
 
-        async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None):
+        async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None, render_mode=None):
             from lilbee.runtime.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
@@ -2776,7 +2776,9 @@ class TestCrawlStream:
 
         barrier = threading.Event()
 
-        async def blocking_crawl(url, *, depth, max_pages, on_progress, cancel=None):
+        async def blocking_crawl(
+            url, *, depth, max_pages, on_progress, cancel=None, render_mode=None
+        ):
             from lilbee.runtime.progress import CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
