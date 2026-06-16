@@ -142,11 +142,14 @@ async def dispatch_chat_stream(
     req: CanonicalChatRequest,
 ) -> AsyncIterator[CanonicalStreamEvent]:
     """Stream a canonical event sequence by translating provider frames on the fly."""
-    # The preflight can do blocking HTTP model discovery when its TTL lapses;
-    # run it in a thread so the event loop stays responsive.
+    # The preflight can do blocking HTTP model discovery when its TTL lapses, and
+    # opening the stream can issue a one-time template probe; run both in a thread
+    # so the event loop stays responsive.
     canonical_model = await asyncio.to_thread(preflight_chat_request, req)
-    stream = get_services().provider.chat(
-        stream=True, **_provider_chat_kwargs(req, canonical_model)
+    stream = await asyncio.to_thread(
+        lambda: get_services().provider.chat(
+            stream=True, **_provider_chat_kwargs(req, canonical_model)
+        )
     )
     try:
         yield MessageStart(id=_new_message_id(), model=canonical_model)

@@ -4,7 +4,8 @@ Some GGUF chat templates (Mistral-Nemo, Cohere command-r) reject a standard
 OpenAI tool exchange: they require plain user/assistant turns to alternate and
 raise a Jinja exception on the ``tool`` role or on two same-role turns in a row.
 :func:`to_alternating` rewrites the conversation into the shape those templates
-accept, used only as a retry after such a template rejects the request.
+accept. The fleet client learns which models need this by probing the live
+template once, then applies it proactively before every such request.
 """
 
 from __future__ import annotations
