@@ -1157,6 +1157,135 @@ def test_chat_stream_items_text_only() -> None:
     assert items == ["He", "llo"]
 
 
+def _content_sse(content: str) -> str:
+    """One OpenAI SSE chunk carrying *content* as a text delta."""
+    return f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+
+
+def _stream_handler(stream_body: str):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=stream_body)
+        return httpx.Response(404)
+
+    return handler
+
+
+def test_chat_stream_items_recovers_bare_json_tool_call() -> None:
+    """A model that streams a bare-JSON call as text yields recovered deltas, no
+    raw JSON leaking to the client."""
+    from lilbee.providers.base import ToolCallDelta
+
+    # Split the bare-JSON call across chunks so the buffer must reassemble the
+    # full call before parsing.
+    # A leading whitespace-only token (common from small models) must not resolve
+    # the buffer as plain text: it stays buffered until the '{' arrives.
+    head = '{"name": "lilbee_search", '
+    tail = '"arguments": {"query": "cats"}}'
+    body = _content_sse("  ") + _content_sse(head) + _content_sse(tail) + "data: [DONE]\n\n"
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items(
+            [{"role": "user", "content": "find cats"}], tools=_tools()
+        )
+    )
+    assert not any(isinstance(i, str) for i in items), "raw JSON text must not leak"
+    deltas = [i for i in items if isinstance(i, ToolCallDelta)]
+    assert len(deltas) == 1
+    assert deltas[0].index == 0
+    assert deltas[0].name == "lilbee_search"
+    assert json.loads(deltas[0].arguments_delta or "") == {"query": "cats"}
+
+
+def test_chat_stream_items_streams_normal_text_incrementally() -> None:
+    """Plain text is not buffered to the end; tokens arrive one frame at a time."""
+    body = _content_sse("He") + _content_sse("llo") + _content_sse(" there") + "data: [DONE]\n\n"
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items([{"role": "user", "content": "hi"}])
+    )
+    # Each content token is its own frame (incremental), not one coalesced blob.
+    assert items == ["He", "llo", " there"]
+
+
+def test_chat_stream_items_leading_whitespace_then_text_keeps_order() -> None:
+    """A whitespace-only first token is buffered (its first non-ws char is unknown),
+    then flushed in order once plain text resolves it -- not reordered to the end."""
+    body = _content_sse("  ") + _content_sse("Hello") + _content_sse(" world") + "data: [DONE]\n\n"
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items([{"role": "user", "content": "hi"}])
+    )
+    # The leading whitespace stays first; subsequent tokens stream through in order.
+    assert items == ["  ", "Hello", " world"]
+    assert "".join(i for i in items if isinstance(i, str)) == "  Hello world"
+
+
+def test_chat_stream_items_text_starting_with_brace_is_not_recovered() -> None:
+    """Text that opens with '{' but is not a tool call streams through as text."""
+    body = _content_sse("{not really") + _content_sse(" a call}") + "data: [DONE]\n\n"
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items(
+            [{"role": "user", "content": "x"}], tools=_tools()
+        )
+    )
+    from lilbee.providers.base import ToolCallDelta
+
+    assert not any(isinstance(i, ToolCallDelta) for i in items)
+    assert "".join(i for i in items if isinstance(i, str)) == "{not really a call}"
+
+
+def test_chat_stream_items_native_tool_calls_pass_through_untouched() -> None:
+    """Native tool_calls deltas are forwarded as is with no double-recovery. The
+    leading text opens with '{' so it is buffered as a candidate, then flushed
+    verbatim when the native delta proves it was just text."""
+    from lilbee.providers.base import ToolCallDelta
+
+    native_delta = {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "get_weather", "arguments": '{"city":"SF"}'},
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    body = (
+        _content_sse("{thinking} ") + f"data: {json.dumps(native_delta)}\n\n" + "data: [DONE]\n\n"
+    )
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items(
+            [{"role": "user", "content": "weather?"}], tools=_tools()
+        )
+    )
+    # The buffered '{...}' lead is flushed as text; exactly one native delta, not recovered.
+    assert items[0] == "{thinking} "
+    deltas = [i for i in items if isinstance(i, ToolCallDelta)]
+    assert len(deltas) == 1
+    assert deltas[0].id == "c1"
+    assert deltas[0].name == "get_weather"
+
+
+def test_chat_stream_items_recovery_still_emits_usage_terminator_last() -> None:
+    """The usage terminator is emitted after a recovered bare-JSON call."""
+    from lilbee.providers.base import TokenUsage, ToolCallDelta
+
+    call_text = '{"name": "lilbee_search", "arguments": {"query": "x"}}'
+    usage_chunk = '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}'
+    body = _content_sse(call_text) + f"data: {usage_chunk}\n\n" + "data: [DONE]\n\n"
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items(
+            [{"role": "user", "content": "x"}], tools=_tools()
+        )
+    )
+    assert isinstance(items[0], ToolCallDelta)
+    assert items[0].name == "lilbee_search"
+    assert items[-1] == TokenUsage(prompt_tokens=5, completion_tokens=2)
+
+
 def test_chat_result_forwards_tool_choice() -> None:
     seen: dict = {}
 

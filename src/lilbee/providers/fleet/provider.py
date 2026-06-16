@@ -783,16 +783,22 @@ class FleetProvider:
         return caps
 
     def supports_tools(self, model_ref: str) -> bool:
-        """True iff *model_ref*'s GGUF chat template references tool tokens.
+        """True iff *model_ref* can drive tools: it has an override template, or
+        its GGUF chat template references tool tokens.
 
-        The server parses native tool calls via ``--jinja``; a template that
-        declares tools is the signal that the model was trained to emit them.
-        Cached on ``(path, mtime)`` so a tool-bearing chat doesn't re-read the
-        GGUF header each request; a re-quantised file at the same path
-        invalidates because its mtime changes.
+        An override (:func:`resolve_chat_template`) supplies tool rendering for
+        models whose embedded template can't, so it short-circuits to True. Otherwise
+        the server parses native tool calls via ``--jinja``; a template that declares
+        tools is the signal that the model was trained to emit them. Cached on
+        ``(path, mtime)`` so a tool-bearing chat doesn't re-read the GGUF header each
+        request; a re-quantised file at the same path invalidates because its mtime
+        changes.
         """
         from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.fleet.chat_templates import resolve_chat_template
 
+        if resolve_chat_template(model_ref) is not None:
+            return True
         try:
             path = resolve_model_path(model_ref)
         except (ProviderError, OSError):

@@ -784,7 +784,9 @@ class TestBuildFleetWiring:
         assert "--flash-attn" not in argv  # embedding path applies no flash attn
         assert "--cache-type-k" not in argv
 
-    def _launch_for_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096):
+    def _launch_for_role(
+        self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096, model_ref: str = "ref"
+    ):
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 1000)
         monkeypatch.setattr(
@@ -796,7 +798,34 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: ctx)
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
-        return planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        return planning_mod._launch_for(plan, model_ref, Path("/bin/llama-server"), {0: device})
+
+    def test_launch_for_chat_appends_override_chat_template(self, tmp_path, monkeypatch) -> None:
+        from lilbee.providers.fleet.chat_templates import resolve_chat_template
+
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, model_ref="zai-org/glm-4-9b-chat-GGUF"
+        )
+        expected = str(resolve_chat_template("zai-org/glm-4-9b-chat-GGUF"))
+        assert launch.argv[launch.argv.index("--chat-template-file") + 1] == expected
+
+    def test_launch_for_chat_without_override_omits_chat_template(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, model_ref="unsloth/Qwen3-8B-GGUF"
+        )
+        assert "--chat-template-file" not in launch.argv
+
+    @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION])
+    def test_launch_for_non_chat_role_never_overrides_chat_template(
+        self, tmp_path, monkeypatch, role
+    ) -> None:
+        # Even when the ref matches an override family, only the chat role applies it.
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, role, model_ref="allenai/Olmo-3-7B-Instruct-GGUF"
+        )
+        assert "--chat-template-file" not in launch.argv
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
