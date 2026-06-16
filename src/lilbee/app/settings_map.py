@@ -9,7 +9,13 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from lilbee.core.config.enums import (
+    ChatMode,
+    ClustererBackend,
+    CrawlRenderMode,
+    KvCacheType,
+    WikiEntityMode,
+)
 
 
 class RenderStyle(StrEnum):
@@ -502,6 +508,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.CRAWLING,
         help_text="Optional recursion-depth cap (blank = no cap; per-crawl values win)",
+    ),
+    "crawl_render_mode": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "How crawls fetch pages. http = lightweight, no browser (default, best "
+            "for static and server-rendered sites). browser = Chromium with "
+            "JavaScript enabled for client-rendered sites, at much higher memory cost."
+        ),
+        choices=tuple(m.value for m in CrawlRenderMode),
     ),
     "crawl_max_pages": SettingDef(
         int,
