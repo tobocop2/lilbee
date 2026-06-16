@@ -527,9 +527,14 @@ class LlamaServerClient:
 
         Not a generator: the up-front probe runs when this is called, not deferred
         to the first iteration, matching the eager non-stream paths.
+
+        A model that emits a tool call as bare-JSON text instead of native
+        ``tool_calls`` (a native miss, as on the non-stream paths) is recovered by
+        wrapping the raw frames; see :func:`_recover_bare_json_stream`.
         """
-        return self._open_chat_stream(
-            self._prepare_chat_messages(messages), tools, tool_choice, options
+        prepared = self._prepare_chat_messages(messages)
+        return _recover_bare_json_stream(
+            self._open_chat_stream(prepared, tools, tool_choice, options)
         )
 
     def _open_chat_stream(
@@ -1078,3 +1083,93 @@ def _recover_bare_json_tool_calls(content: str) -> ChatToolResult:
     if not calls:
         return ChatToolResult(content=content, tool_calls=[])
     return ChatToolResult(content="", tool_calls=calls)
+
+
+# Leading non-whitespace characters that mark streamed text as a potential bare
+# JSON tool call (an object or an array of them); any other first char is plain
+# text and streams through untouched.
+_BARE_CALL_OPENERS = "{["
+
+
+def _tool_call_delta_from_recovered(call: ToolCall, index: int) -> ToolCallDelta:
+    """Shape a recovered bare-JSON :class:`ToolCall` as a single streaming delta.
+
+    Mirrors :func:`_tool_call_delta_from_chunk`: id and name ride the opener (the
+    only frame for a recovered call), the arguments JSON is the lone
+    ``arguments_delta``, and the position is the index.
+    """
+    return ToolCallDelta(
+        index=index,
+        id=call.id or None,
+        name=call.name or None,
+        arguments_delta=call.arguments or None,
+    )
+
+
+def _recover_bare_json_stream(
+    items: Iterator[str | ToolCallDelta | TokenUsage],
+) -> Iterator[str | ToolCallDelta | TokenUsage]:
+    """Wrap a raw chat stream to recover a tool call emitted as bare-JSON text.
+
+    Some small models print ``{"name": ..., "arguments": {...}}`` as content
+    instead of native ``tool_calls``; the non-stream paths recover this via
+    :func:`_recover_bare_json_tool_calls`. This applies the same recovery to the
+    stream, but only when the model emitted no native :class:`ToolCallDelta` and
+    the streamed text looks like a bare call from its first character. Normal text
+    still streams token by token: once the buffered head proves not to be a bare
+    call it is flushed and all later text passes straight through.
+    """
+    buffer = ""  # leading text held back as a potential bare call until resolved
+    saw_native = False
+    for item in items:
+        if isinstance(item, ToolCallDelta):
+            yield from _flush_plain(buffer)
+            buffer, saw_native = "", True
+            yield item
+        elif isinstance(item, TokenUsage):
+            yield from _recover_buffer(buffer)
+            buffer = ""
+            yield item
+        elif saw_native or _passthrough_text(buffer, item):
+            yield from _flush_plain(buffer)
+            buffer = ""
+            yield item
+        else:
+            buffer += item
+    yield from _recover_buffer(buffer)
+
+
+def _passthrough_text(buffer: str, text: str) -> bool:
+    """Whether *text* should stream through directly rather than buffer.
+
+    True once the accumulated head's first non-whitespace char is known and is not
+    a bare-call opener (plain text): the buffer is empty in that case, so the
+    caller yields *text* as is. While the head is all whitespace, or once it opens
+    with ``{``/``[``, the text is buffered (False) pending recovery.
+    """
+    head = (buffer + text).lstrip()
+    return bool(head) and head[0] not in _BARE_CALL_OPENERS
+
+
+def _flush_plain(buffer: str) -> Iterator[str]:
+    """Yield buffered leading text verbatim (it was not a bare call after all)."""
+    if buffer:
+        yield buffer
+
+
+def _recover_buffer(buffer: str) -> Iterator[str | ToolCallDelta]:
+    """Resolve the buffered leading text at a terminator or end of stream.
+
+    The buffer reaching here was held as a potential bare call (text starting with
+    ``{``/``[`` and no native call seen). Run :func:`_recover_bare_json_tool_calls`:
+    emit one delta per recovered call, or yield the text unchanged when it only
+    happened to start with ``{``/``[`` but is not a call.
+    """
+    if not buffer:
+        return
+    recovered = _recover_bare_json_tool_calls(buffer)
+    if not recovered.tool_calls:
+        yield buffer
+        return
+    for index, call in enumerate(recovered.tool_calls):
+        yield _tool_call_delta_from_recovered(call, index)
