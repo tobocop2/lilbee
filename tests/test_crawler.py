@@ -11,6 +11,7 @@ import pytest
 
 from lilbee.app.services import get_services, reset_services
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
@@ -27,7 +28,6 @@ from lilbee.crawler import (
 )
 from lilbee.crawler import bootstrap as bootstrap_mod
 from lilbee.crawler.bootstrap import CrawlerBrowserError
-from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
@@ -2185,7 +2185,7 @@ class TestCrawlDispatcher:
         assert sd_kwargs["rate_limiter"] is mock_rl.return_value
 
     async def test_browser_mode_uses_memory_adaptive_dispatcher(self):
-        """Browser mode swaps in MemoryAdaptiveDispatcher so crawls back off under memory pressure."""
+        """Browser mode swaps in MemoryAdaptiveDispatcher to back off under memory pressure."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
