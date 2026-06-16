@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawl_and_save
 from lilbee.runtime.progress import (
     CrawlPageEvent,
@@ -42,6 +43,7 @@ class CrawlTask:
     url: str
     depth: int | None
     max_pages: int | None
+    render_mode: CrawlRenderMode | None = None
     status: TaskStatus = TaskStatus.PENDING
     pages_crawled: int = 0
     pages_total: int | None = None
@@ -98,6 +100,7 @@ async def run_crawl(task: CrawlTask) -> None:
             depth=task.depth,
             max_pages=task.max_pages,
             on_progress=progress,
+            render_mode=task.render_mode,
         )
         task.status = TaskStatus.DONE
         task.pages_crawled = task.pages_crawled or len(paths)
@@ -140,10 +143,12 @@ def start_crawl(
     url: str,
     depth: int | None = None,
     max_pages: int | None = None,
+    render_mode: CrawlRenderMode | None = None,
 ) -> str:
     """Create a crawl task and launch it as an asyncio background task.
 
     Defaults to whole-site unbounded recursion. Pass depth=0 for single URL.
+    ``render_mode`` of ``None`` defers to ``cfg.crawl_render_mode``.
     Returns the task_id for status polling.
     """
     _evict_completed()
@@ -153,6 +158,7 @@ def start_crawl(
         url=url,
         depth=depth,
         max_pages=max_pages,
+        render_mode=render_mode,
     )
     _registry.tasks[task_id] = task
     task._async_task = asyncio.create_task(run_crawl(task))

@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, SearchScope
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
@@ -201,12 +202,14 @@ class CrawlRequest(BaseModel):
 
     depth: null / omitted = whole-site unbounded recursion. 0 = single URL
     only. Positive int = max depth. max_pages: null / omitted = no cap.
-    Positive int = explicit page cap.
+    Positive int = explicit page cap. render_mode: null / omitted = configured
+    default; "http" is browserless, "browser" runs Chromium with JavaScript.
     """
 
     url: str
     depth: int | None = Field(default=None, ge=0)
     max_pages: int | None = Field(default=None, ge=1)
+    render_mode: CrawlRenderMode | None = Field(default=None)
 
 
 class DocumentInfo(BaseModel):
