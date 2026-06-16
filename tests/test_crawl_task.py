@@ -146,6 +146,25 @@ class TestRunCrawl:
 
     @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_render_mode_forwarded_to_crawl_and_save(self, mock_crawl, mock_sync):
+        """A task's render_mode is forwarded to crawl_and_save."""
+        from pathlib import Path
+
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        mock_crawl.return_value = [Path("a.md")]
+        task = CrawlTask(
+            task_id="t1",
+            url="https://example.com",
+            depth=1,
+            max_pages=10,
+            render_mode=CrawlRenderMode.BROWSER,
+        )
+        await run_crawl(task)
+        assert mock_crawl.await_args.kwargs["render_mode"] is CrawlRenderMode.BROWSER
+
+    @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_sync_called_after_crawl(self, mock_crawl, mock_sync):
         """Auto-sync is triggered after a successful crawl (BEE-7ic)."""
         from pathlib import Path
@@ -196,6 +215,16 @@ class TestTaskRegistry:
         assert task.url == "https://example.com"
         assert task.depth == 1
         assert task.max_pages == 10
+        assert task.render_mode is None
+
+    @patch("lilbee.crawler.task.run_crawl", new_callable=AsyncMock)
+    async def test_start_crawl_stores_render_mode(self, mock_run):
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        task_id = start_crawl("https://example.com", render_mode=CrawlRenderMode.BROWSER)
+        task = get_task(task_id)
+        assert task is not None
+        assert task.render_mode is CrawlRenderMode.BROWSER
 
     def test_get_nonexistent(self):
         assert get_task("nonexistent") is None

@@ -704,6 +704,20 @@ class TestCrawl:
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
+    def test_passes_render_mode(self, mock_start, _mock_avail, isolated_env):
+        """An explicit render_mode is forwarded to start_crawl."""
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
+        mock_start.assert_called_once_with(
+            "https://example.com",
+            depth=None,
+            max_pages=None,
+            render_mode=CrawlRenderMode.BROWSER,
+        )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     def test_rejects_invalid_url(self, _mock_avail):
         result = crawl(url="ftp://bad.com")
         assert "error" in result

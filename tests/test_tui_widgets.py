@@ -5198,6 +5198,44 @@ async def test_crawl_dialog_submit_valid():
     assert result.max_pages == 10
 
 
+async def test_crawl_dialog_browser_checkbox_sets_browser_mode(monkeypatch):
+    """Checking the browser checkbox returns CrawlParams with render_mode=browser."""
+    from textual.widgets import Checkbox
+
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        app.screen.query_one("#crawl-browser-checkbox", Checkbox).value = True
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.render_mode is CrawlRenderMode.BROWSER
+
+
+async def test_crawl_dialog_browser_checkbox_defaults_from_config(monkeypatch):
+    """The browser checkbox pre-sets from cfg.crawl_render_mode."""
+    from textual.widgets import Checkbox
+
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.BROWSER)
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#crawl-browser-checkbox", Checkbox).value is True
+
+
 async def test_crawl_dialog_cancel():
     """Cancel button dismisses with None."""
     app = CrawlDialogTestApp()
