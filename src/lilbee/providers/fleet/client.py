@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import httpx
 
@@ -26,6 +26,7 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
@@ -57,6 +58,82 @@ _EMBED_EST_CHARS_PER_TOKEN = 3
 _UPSTREAM_DIED_MARKER = "exited prematurely"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
+
+
+class _ChatToolSpecFunction(TypedDict, total=False):
+    """The ``function`` payload of an OpenAI tool definition (wire shape)."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ChatTool(TypedDict, total=False):
+    """One OpenAI tool definition sent in a chat request (wire shape)."""
+
+    type: str
+    function: _ChatToolSpecFunction
+
+
+# Some GGUF chat templates (Mistral-Nemo, Cohere command-r) reject a standard
+# OpenAI tool exchange: they require plain user/assistant turns to alternate and
+# raise a Jinja exception on the tool role or two same-role turns in a row. Rather
+# than fail a real request and parse the engine's error text, the client probes
+# the live template once per server with this representative tool exchange: if the
+# server rejects it as sent but renders the to_alternating() form, the model is
+# flagged so every later request is reshaped up front. Two assistant tool-call
+# turns separated by tool results is the minimal shape that trips strict
+# alternation; max_tokens=1 keeps the probe to template rendering, not generation.
+_ALTERNATION_PROBE_TOOLS: list[ChatTool] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "probe",
+            "description": "Probe whether the chat template renders a tool exchange.",
+            # A single declared property (rather than an empty object) so a grammar
+            # that requires at least one parameter still renders the probe call.
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+]
+_ALTERNATION_PROBE_MESSAGES: list[ChatMessage] = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Look something up."},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "probe-1",
+                "type": "function",
+                "function": {"name": "probe", "arguments": '{"query": "x"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "probe-1", "content": "first result"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "probe-2",
+                "type": "function",
+                "function": {"name": "probe", "arguments": '{"query": "x"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "probe-2", "content": "second result"},
+    {"role": "user", "content": "Summarize."},
+]
+_ALTERNATION_PROBE_OPTIONS = {"max_tokens": 1}
+# The probe holds _alternation_lock across its request, so it uses a short, bounded
+# timeout rather than the chat default: a slow/wedged replica yields an inconclusive
+# (transient) result and a re-probe instead of blocking every first chat on the lock.
+_ALTERNATION_PROBE_TIMEOUT_S = 30.0
 _UPSTREAM_LOG_TAIL_CHARS = 2000
 _UPSTREAM_LOG_TIMEOUT_S = 2.0
 
@@ -137,6 +214,15 @@ def is_connection_failure(exc: Exception) -> bool:
         return True
     # isinstance: only ProviderError carries a kind; other exceptions pass through.
     return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.CONNECTION
+
+
+def _is_transient_probe_failure(exc: Exception) -> bool:
+    """Whether a probe failure is transient (dead replica or a busy 429), not a
+    template verdict. A cold replica 429s its first traffic, so a busy response
+    must not be read as the template rejecting the exchange."""
+    if is_connection_failure(exc):
+        return True
+    return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.RATE_LIMIT
 
 
 def _upstream_failure_tail(resp: httpx.Response) -> str:
@@ -235,6 +321,13 @@ class LlamaServerClient:
         self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
+        # Whether this server's chat template needs OpenAI tool exchanges reshaped
+        # into strict user/assistant alternation. Determined lazily by a one-time
+        # probe of the live template (see _prepare_chat_messages); None until then.
+        # A client is bound to one model for its lifetime, so the template (hence
+        # the verdict) is fixed once determined.
+        self._needs_alternation: bool | None = None
+        self._alternation_lock = threading.Lock()
         # Routing health: cleared on a connection-level failure (see _UNHEALTHY_RETRY_S).
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
@@ -350,7 +443,7 @@ class LlamaServerClient:
         """
         payload: dict[str, Any] = {
             "model": self._model,
-            "messages": messages,
+            "messages": self._prepare_chat_messages(messages),
             "tools": tools,
             "stream": False,
             **(options or {}),
@@ -380,22 +473,17 @@ class LlamaServerClient:
         The server is launched with ``--jinja`` so it parses the model's native
         tool-call syntax into structured ``message.tool_calls``. When a model
         instead emits a bare-JSON call as content (a native miss), recover it
-        and report ``tool_calls`` as the finish reason.
+        and report ``tool_calls`` as the finish reason. Messages are reshaped to
+        strict alternation up front when this server's template needs it (see
+        :meth:`_prepare_chat_messages`).
         """
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            **(options or {}),
-        }
-        if tools is not None:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        payload = self._chat_payload(
+            self._prepare_chat_messages(messages), tools, tool_choice, options, stream=False
+        )
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
             _raise_for_status(resp)
-            body = resp.json()
+            body = dict(resp.json())
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
@@ -432,27 +520,127 @@ class LlamaServerClient:
         Each SSE chunk's ``choices[0].delta`` carries a ``content`` token and/or
         a ``tool_calls`` array; both are surfaced as :data:`ChatStreamItem`
         frames (text strings and :class:`ToolCallDelta`). The dispatch's stream
-        translator accumulates the deltas by ``index``.
+        translator accumulates the deltas by ``index``. Messages are reshaped to
+        strict alternation up front when this server's template needs it (see
+        :meth:`_prepare_chat_messages`), so the open never fails on a template
+        that rejects the raw tool exchange.
+
+        Not a generator: the up-front probe runs when this is called, not deferred
+        to the first iteration, matching the eager non-stream paths.
         """
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            # include_usage makes llama-server emit a final SSE chunk carrying the
-            # token usage (with an empty choices list) just before [DONE].
-            "stream_options": {"include_usage": True},
-            **(options or {}),
-        }
-        if tools is not None:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        return self._open_chat_stream(
+            self._prepare_chat_messages(messages), tools, tool_choice, options
+        )
+
+    def _open_chat_stream(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> Iterator[str | ToolCallDelta | TokenUsage]:
+        """Open one SSE chat stream and yield its frames; raises before the first frame."""
+        payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         with (
             self._track(),
-            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
+            self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
         ):
             _raise_for_status(resp)
             for line in resp.iter_lines():
                 yield from _parse_sse_stream_items(line)
+
+    def _chat_payload(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Build the chat-completions request body shared by the stream and non-stream paths."""
+        payload: dict[str, Any] = {"model": self._model, "messages": messages, "stream": stream}
+        if stream:
+            # include_usage makes llama-server emit a final SSE chunk carrying the
+            # token usage (with an empty choices list) just before [DONE].
+            payload["stream_options"] = {"include_usage": True}
+        if tools is not None:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        payload.update(options or {})
+        return payload
+
+    def _prepare_chat_messages(
+        self, messages: Sequence[Mapping[str, Any]]
+    ) -> Sequence[Mapping[str, Any]]:
+        """Reshape *messages* to strict alternation when this server's template needs it.
+
+        The need is detected once per server by :meth:`_ensure_alternation_probed`
+        (a binary accept/reject of a representative tool exchange against the live
+        template), then cached, so real requests are normalized up front rather
+        than failing and retrying.
+        """
+        self._ensure_alternation_probed()
+        if self._needs_alternation:
+            return to_alternating([dict(m) for m in messages])
+        return messages
+
+    def _ensure_alternation_probed(self) -> None:
+        """Probe the live template once to learn whether it needs alternation.
+
+        Caches only a conclusive verdict: a transient unreachable server leaves
+        the flag unset so the next request re-probes rather than locking in a
+        wrong answer.
+        """
+        if self._needs_alternation is not None:
+            return
+        with self._alternation_lock:
+            if self._needs_alternation is not None:
+                return
+            verdict = self._probe_alternation()
+            if verdict is not None:
+                self._needs_alternation = verdict
+
+    def _probe_alternation(self) -> bool | None:
+        """Whether the template needs normalization: ``None`` when undetermined.
+
+        Renders the probe exchange as sent; if the template accepts it, no
+        normalization is needed. If it rejects it, normalization is needed only
+        when the reshaped exchange is accepted. A transient failure on either
+        render is inconclusive (``None``) so no verdict is cached; a genuine
+        rejection of both forms is a conclusive ``False`` (the template fault is
+        unrelated to alternation, so reshaping would not help).
+        """
+        raw = self._chat_probe(_ALTERNATION_PROBE_MESSAGES)
+        if raw is None:
+            return None  # transient; stay undetermined so the next request re-probes
+        if raw:
+            return False  # the template renders the raw OpenAI exchange as sent
+        reshaped = self._chat_probe(to_alternating([dict(m) for m in _ALTERNATION_PROBE_MESSAGES]))
+        if reshaped is None:
+            return None  # transient on the reshape probe; stay undetermined
+        return reshaped
+
+    def _chat_probe(self, messages: Sequence[Mapping[str, Any]]) -> bool | None:
+        """Post the probe exchange: ``True`` rendered, ``False`` rejected, ``None`` undetermined.
+
+        A connection failure or a server-busy (HTTP 429) response is transient and
+        unrelated to the template, so it is undetermined: only a clean render or a
+        genuine rejection is a verdict the caller may cache.
+        """
+        payload = self._chat_payload(
+            messages, _ALTERNATION_PROBE_TOOLS, None, _ALTERNATION_PROBE_OPTIONS, stream=False
+        )
+        try:
+            with self._track():
+                resp = self._http.post(
+                    _CHAT_PATH, json=payload, timeout=_ALTERNATION_PROBE_TIMEOUT_S
+                )
+                _raise_for_status(resp)
+        except (ProviderError, httpx.TransportError) as exc:
+            return None if _is_transient_probe_failure(exc) else False
+        return True
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch via ``/v1/embeddings``."""

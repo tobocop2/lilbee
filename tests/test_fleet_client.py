@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 
 import httpx
 import pytest
@@ -37,9 +38,19 @@ def _handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404)
 
 
-def _client(handler=_handler) -> LlamaServerClient:
+def _unprobed_client(handler=_handler) -> LlamaServerClient:
+    """A client whose template has not yet been probed for strict alternation."""
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     return LlamaServerClient("http://gpu0", "test-model", http=http)
+
+
+def _client(handler=_handler) -> LlamaServerClient:
+    # Most chat tests are orthogonal to alternation detection; treat the template
+    # as already probed-lenient so the one-time probe adds no request. The probe
+    # itself is exercised by the dedicated alternation tests below.
+    client = _unprobed_client(handler)
+    client._needs_alternation = False
+    return client
 
 
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
@@ -576,6 +587,215 @@ def test_chat_stream_surfaces_server_error_body() -> None:
 
     with pytest.raises(ProviderError, match="model is still loading"):
         list(_client(handler).chat([{"role": "user", "content": "hi"}], stream=True))
+
+
+_ALTERNATION_BODY = (
+    "Jinja Exception: After the optional system message, conversation roles "
+    "must alternate user/assistant/user/assistant/..."
+)
+_TOOL_LOOP_MESSAGES = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "find foo"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "grep", "arguments": "{}"}}],
+    },
+    {"role": "tool", "content": "a.py:1", "tool_call_id": "c1"},
+    {"role": "assistant", "content": "It is in a.py."},
+]
+
+
+def _strict_alternation_handler(request: httpx.Request) -> httpx.Response:
+    """Model a strict-alternation template: reject the tool role or two same-role
+    turns in a row after the system block, render anything else."""
+    if request.url.path == "/health":
+        return httpx.Response(200)
+    body = json.loads(request.content)
+    convo = [m["role"] for m in body["messages"] if m["role"] != "system"]
+    if "tool" in convo or any(earlier == later for earlier, later in pairwise(convo)):
+        return httpx.Response(500, text=_ALTERNATION_BODY)
+    if body.get("stream"):
+        return httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+        )
+    return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+
+def _is_probe(request: httpx.Request) -> bool:
+    """Whether *request* is the alternation probe (its tool is named ``probe``)."""
+    tools = json.loads(request.content).get("tools") or []
+    return bool(tools) and tools[0]["function"]["name"] == "probe"
+
+
+def test_chat_result_normalizes_when_template_requires_alternation() -> None:
+    # The probe finds the template rejects the raw tool exchange but renders the
+    # normalized one, so the real (non-probe) request is reshaped before sending.
+    sent: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions" and not _is_probe(request):
+            sent.append(json.loads(request.content)["messages"])
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    result = client.chat_result(_TOOL_LOOP_MESSAGES)
+
+    assert result.text == "ok"
+    assert client._needs_alternation is True
+    convo_roles = [m["role"] for m in sent[-1] if m["role"] != "system"]
+    assert "tool" not in convo_roles
+    for earlier, later in pairwise(convo_roles):
+        assert earlier != later
+
+
+def test_chat_result_keeps_raw_messages_when_template_accepts_tool_exchange() -> None:
+    # A lenient template renders the raw exchange, so the probe leaves messages
+    # untouched and the tool role survives into the real request.
+    sent: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions" and not _is_probe(request):
+            sent.append(json.loads(request.content)["messages"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = _unprobed_client(handler)
+    result = client.chat_result(_TOOL_LOOP_MESSAGES)
+
+    assert result.text == "ok"
+    assert client._needs_alternation is False
+    assert any(m["role"] == "tool" for m in sent[-1])
+
+
+def test_chat_stream_items_normalizes_when_template_requires_alternation() -> None:
+    # The stream path reshapes up front too, so the open never hits the rejection.
+    sent: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions" and not _is_probe(request):
+            sent.append(json.loads(request.content)["messages"])
+        return _strict_alternation_handler(request)
+
+    frames = list(_unprobed_client(handler).chat_stream_items(_TOOL_LOOP_MESSAGES))
+
+    assert frames == ["hi"]
+    convo_roles = [m["role"] for m in sent[-1] if m["role"] != "system"]
+    assert "tool" not in convo_roles
+
+
+def test_alternation_probe_runs_once_and_is_cached() -> None:
+    # The probe (raw + normalized) fires once; a second chat reuses the verdict.
+    probes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions" and _is_probe(request):
+            probes.append(1)
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    client.chat_result(_TOOL_LOOP_MESSAGES)
+    client.chat_result(_TOOL_LOOP_MESSAGES)
+
+    assert client._needs_alternation is True
+    assert len(probes) == 2  # one raw + one normalized, from the single probe round
+
+
+def test_alternation_probe_skips_when_another_thread_resolved_it() -> None:
+    # Double-checked locking: if another caller resolves the verdict between the
+    # outer check and the lock, the inner re-check returns without re-probing.
+    client = _unprobed_client()
+
+    class _ResolvingLock:
+        def __enter__(self) -> object:
+            client._needs_alternation = False
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    client._alternation_lock = _ResolvingLock()  # type: ignore[assignment]
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is False
+
+
+def test_alternation_probe_inconclusive_when_server_unreachable() -> None:
+    # A connection failure during the probe must not cache a verdict; once the
+    # server recovers, the next probe re-runs and resolves it.
+    state = {"up": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not state["up"]:
+            raise httpx.ConnectError("replica down")
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is None
+
+    state["up"] = True
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is True
+
+
+def test_alternation_probe_inconclusive_when_server_busy() -> None:
+    # A 429 (cold replica, slots warming) during the probe is transient, not a
+    # template verdict: it must not be cached, and the next probe resolves it.
+    state = {"busy": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        if state["busy"]:
+            return httpx.Response(429)
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is None
+
+    state["busy"] = False
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is True
+
+
+def test_alternation_probe_inconclusive_when_reshape_probe_is_busy() -> None:
+    # The raw exchange is rejected but the reshaped probe hits a transient 429;
+    # the verdict stays undetermined rather than caching a wrong False.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        convo = [m["role"] for m in json.loads(request.content)["messages"]]
+        if "tool" in convo:
+            return httpx.Response(500, text=_ALTERNATION_BODY)
+        return httpx.Response(429)
+
+    client = _unprobed_client(handler)
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is None
+
+
+def test_alternation_probe_skips_normalization_when_reshape_also_rejected() -> None:
+    # If even the normalized exchange is rejected (an unrelated template fault),
+    # the probe leaves the model un-normalized rather than guessing.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        return httpx.Response(500, text="decode failure")
+
+    client = _unprobed_client(handler)
+    client._ensure_alternation_probed()
+    assert client._needs_alternation is False
+
+
+def test_chat_result_propagates_server_error_after_probe() -> None:
+    # With no normalization flagged, the real request's error surfaces unchanged.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200)
+        return httpx.Response(500, text="decode failure")
+
+    with pytest.raises(ProviderError, match="decode failure"):
+        _unprobed_client(handler).chat_result(_TOOL_LOOP_MESSAGES)
 
 
 def test_embed_subbatches_when_token_budget_exceeded() -> None:
