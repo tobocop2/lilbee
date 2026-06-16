@@ -126,6 +126,7 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
         llama_server_runtime_env,
         resolve_llama_server,
     )
+    from lilbee.providers.fleet.chat_templates import resolve_chat_template
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.fleet.swap_manager import SwapManager
@@ -151,6 +152,9 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
             None if is_embed or cfg.kv_cache_type is KvCacheType.F16 else cfg.kv_cache_type.value
         ),
         batch_size=ctx if is_embed else None,
+        chat_template_file=(
+            resolve_chat_template(str(model_path)) if role is WorkerRole.CHAT else None
+        ),
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     launch = InstanceLaunch(

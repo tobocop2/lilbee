@@ -122,11 +122,14 @@ def build_server_argv(
     cache_type: str | None = None,
     batch_size: int | None = None,
     threads: int | None = None,
+    chat_template_file: Path | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
     ``--ctx-size`` is the per-slot context times the slot count, since
-    llama-server divides total context across parallel slots.
+    llama-server divides total context across parallel slots. ``chat_template_file``
+    (chat role only) overrides a model's tool-less or minja-incompatible embedded
+    template via ``--chat-template-file``.
     """
     argv = [
         str(binary),
@@ -152,6 +155,8 @@ def build_server_argv(
         argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
+    if chat_template_file is not None:  # override a tool-less/minja-broken embedded template
+        argv += ["--chat-template-file", str(chat_template_file)]
     if len(devices) > 1:
         ratio = tensor_split or tuple(1 for _ in devices)
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
