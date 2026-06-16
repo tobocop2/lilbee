@@ -27,6 +27,7 @@ from lilbee.crawler import (
 )
 from lilbee.crawler import bootstrap as bootstrap_mod
 from lilbee.crawler.bootstrap import CrawlerBrowserError
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
@@ -519,7 +520,8 @@ class TestCrawlSingle:
 
         with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
             await crawl_single("https://example.com", quiet=True)
-        mock_crawler_cls.assert_called_once_with(verbose=False)
+        mock_crawler_cls.assert_called_once()
+        assert mock_crawler_cls.call_args.kwargs["verbose"] is False
 
     async def test_missing_chromium_raises_crawler_browser_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1037,6 +1039,9 @@ class TestCrawlRecursive:
         mock_dispatcher_mod = MagicMock()
         mock_dispatcher_mod.RateLimiter = MagicMock()
         mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
+        mock_strategy_mod = MagicMock()
+        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
         # Recursive crawls also build a FilterChain with URLPatternFilter to
         # exclude WordPress noise patterns. Stub both.
         mock_filters_mod = MagicMock()
@@ -1047,6 +1052,7 @@ class TestCrawlRecursive:
             "crawl4ai.deep_crawling": mock_deep,
             "crawl4ai.deep_crawling.filters": mock_filters_mod,
             "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
         }
 
     async def test_returns_multiple_results(self):
@@ -1255,7 +1261,8 @@ class TestCrawlRecursive:
 
         with patch.dict("sys.modules", modules):
             await crawl_recursive("https://example.com", max_depth=1, quiet=True)
-        mock_crawler_cls.assert_called_once_with(verbose=False)
+        mock_crawler_cls.assert_called_once()
+        assert mock_crawler_cls.call_args.kwargs["verbose"] is False
 
     async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
         """CrawlerBrowserError raised inside the try block propagates past the broad except."""
@@ -1547,7 +1554,7 @@ class TestCrawlAndSave:
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
     ):
-        """bb-wq8g: crawl_and_save kicks off bootstrap_chromium on first use."""
+        """bb-wq8g: browser-mode crawl_and_save kicks off bootstrap_chromium on first use."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         called: list[object] = []
@@ -1556,8 +1563,25 @@ class TestCrawlAndSave:
             called.append(on_progress)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
-        await crawl_and_save("https://example.com", depth=0)
+        await crawl_and_save("https://example.com", depth=0, render_mode=CrawlRenderMode.BROWSER)
         assert called == [None]
+
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_http_mode_skips_chromium_bootstrap(
+        self, mock_crawl_single, isolated_env, monkeypatch
+    ):
+        """HTTP mode (the default) needs no browser, so it never bootstraps Chromium."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+        called: list[object] = []
+
+        async def _fake_bootstrap(on_progress=None):
+            called.append(on_progress)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
+        # Default render mode is http; bootstrap must not fire even with Chromium absent.
+        await crawl_and_save("https://example.com", depth=0)
+        assert called == []
 
     async def test_raises_backend_missing_before_bootstrap(self, isolated_env, monkeypatch):
         """Without [crawler] extra, fail fast: never trigger Chromium bootstrap."""
@@ -1882,6 +1906,9 @@ class TestCrawlCancel:
         mock_dispatcher_mod = MagicMock()
         mock_dispatcher_mod.RateLimiter = MagicMock()
         mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
+        mock_strategy_mod = MagicMock()
+        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
         mock_filters_mod = MagicMock()
         mock_filters_mod.FilterChain = MagicMock()
         mock_filters_mod.URLPatternFilter = MagicMock()
@@ -1890,6 +1917,7 @@ class TestCrawlCancel:
             "crawl4ai.deep_crawling": mock_deep,
             "crawl4ai.deep_crawling.filters": mock_filters_mod,
             "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
         }, mock_bfs_cls
 
     async def test_strategy_should_cancel_wired(self):
@@ -2091,6 +2119,9 @@ class TestCrawlDispatcher:
         mock_sd = MagicMock()
         mock_dispatcher_mod.RateLimiter = mock_rl
         mock_dispatcher_mod.SemaphoreDispatcher = mock_sd
+        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
+        mock_strategy_mod = MagicMock()
+        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
         mock_filters_mod = MagicMock()
         mock_filters_mod.FilterChain = MagicMock()
         mock_filters_mod.URLPatternFilter = MagicMock()
@@ -2100,6 +2131,7 @@ class TestCrawlDispatcher:
                 "crawl4ai.deep_crawling": mock_deep,
                 "crawl4ai.deep_crawling.filters": mock_filters_mod,
                 "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+                "crawl4ai.async_crawler_strategy": mock_strategy_mod,
             },
             mock_rl,
             mock_sd,
@@ -2126,7 +2158,7 @@ class TestCrawlDispatcher:
         assert kwargs["semaphore_count"] == 7
 
     async def test_rate_limiter_built_when_flag_on(self):
-        """crawl_retry_on_rate_limit=True instantiates RateLimiter + SemaphoreDispatcher."""
+        """HTTP mode: crawl_retry_on_rate_limit=True builds RateLimiter + SemaphoreDispatcher."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -2140,7 +2172,9 @@ class TestCrawlDispatcher:
         cfg.crawl_retry_max_attempts = 3
         cfg.crawl_concurrent_requests = 3
         with patch.dict("sys.modules", modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+            await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.HTTP
+            )
 
         rl_kwargs = mock_rl.call_args.kwargs
         assert rl_kwargs["base_delay"] == (1.0, 3.0)
@@ -2149,6 +2183,28 @@ class TestCrawlDispatcher:
         sd_kwargs = mock_sd.call_args.kwargs
         assert sd_kwargs["semaphore_count"] == 3
         assert sd_kwargs["rate_limiter"] is mock_rl.return_value
+
+    async def test_browser_mode_uses_memory_adaptive_dispatcher(self):
+        """Browser mode swaps in MemoryAdaptiveDispatcher so crawls back off under memory pressure."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
+        mad = modules["crawl4ai.async_dispatcher"].MemoryAdaptiveDispatcher
+
+        cfg.crawl_retry_on_rate_limit = True
+        cfg.crawl_concurrent_requests = 4
+        with patch.dict("sys.modules", modules):
+            await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.BROWSER
+            )
+
+        mock_sd.assert_not_called()
+        mad.assert_called_once()
+        mad_kwargs = mad.call_args.kwargs
+        assert mad_kwargs["max_session_permit"] == 4
+        assert mad_kwargs["rate_limiter"] is mock_rl.return_value
 
     async def test_rate_limiter_disabled_when_flag_off(self):
         """crawl_retry_on_rate_limit=False skips the dispatcher entirely."""
@@ -2171,10 +2227,8 @@ class TestCrawlDispatcher:
 
         inner = MagicMock()
         inner.arun_many = AsyncMock()
-        mock_awc = MagicMock(return_value=inner)
-        with patch.dict("sys.modules", {"crawl4ai": MagicMock(AsyncWebCrawler=mock_awc)}):
-            crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
-            await crawler.arun_many(["u"], config="C")
+        crawler = _LilbeeAsyncCrawler(inner, dispatcher="DEFAULT")
+        await crawler.arun_many(["u"], config="C")
         inner.arun_many.assert_awaited_once_with(["u"], config="C", dispatcher="DEFAULT")
 
     async def test_exclude_patterns_build_filter_chain(self):
@@ -2223,10 +2277,8 @@ class TestCrawlDispatcher:
 
         inner = MagicMock()
         inner.arun_many = AsyncMock()
-        mock_awc = MagicMock(return_value=inner)
-        with patch.dict("sys.modules", {"crawl4ai": MagicMock(AsyncWebCrawler=mock_awc)}):
-            crawler = _LilbeeAsyncCrawler(verbose=False, dispatcher="DEFAULT")
-            await crawler.arun_many(["u"], dispatcher="EXPLICIT")
+        crawler = _LilbeeAsyncCrawler(inner, dispatcher="DEFAULT")
+        await crawler.arun_many(["u"], dispatcher="EXPLICIT")
         inner.arun_many.assert_awaited_once_with(["u"], config=None, dispatcher="EXPLICIT")
 
 
@@ -2357,6 +2409,9 @@ class TestStreamingFlush:
         mock_dispatcher_mod = MagicMock()
         mock_dispatcher_mod.RateLimiter = MagicMock()
         mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
+        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
+        mock_strategy_mod = MagicMock()
+        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
         mock_filters_mod = MagicMock()
         mock_filters_mod.FilterChain = MagicMock()
         mock_filters_mod.URLPatternFilter = MagicMock()
@@ -2365,6 +2420,7 @@ class TestStreamingFlush:
             "crawl4ai.deep_crawling": mock_deep,
             "crawl4ai.deep_crawling.filters": mock_filters_mod,
             "crawl4ai.async_dispatcher": mock_dispatcher_mod,
+            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
         }
 
     async def test_cancel_preserves_written_pages(self, isolated_env):
@@ -2624,7 +2680,9 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(url: str, *, quiet: bool = False, on_progress=None) -> CrawlResult:
+        async def _fake_single(
+            url: str, *, quiet: bool = False, on_progress=None, render_mode=None
+        ) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 

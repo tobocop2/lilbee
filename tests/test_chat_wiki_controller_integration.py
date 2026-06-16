@@ -243,7 +243,14 @@ def test_do_crawl_reports_setup_progress() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_crawl(
-        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+        url,
+        *,
+        depth,
+        max_pages,
+        on_progress,
+        quiet=False,
+        include_subdomains=False,
+        render_mode=None,
     ):
         on_progress(EventType.SETUP_START, object())
         on_progress(
@@ -286,7 +293,14 @@ def test_do_crawl_reports_page_progress() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_crawl(
-        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+        url,
+        *,
+        depth,
+        max_pages,
+        on_progress,
+        quiet=False,
+        include_subdomains=False,
+        render_mode=None,
     ):
         on_progress(
             EventType.CRAWL_PAGE,
