@@ -497,25 +497,29 @@ class TestFetchedToResult:
         assert result.error == "timeout"
 
 
-class TestResolveLimit:
-    """Pure-Python limit resolver: None / positive / zero-negative."""
+class TestResolveDepth:
+    """Pure-Python depth resolver: None / positive / seed-only-zero / negative."""
 
     def test_none_with_no_ceiling_is_none(self):
-        assert runner_mod._resolve_limit(None, None) is None
+        assert runner_mod._resolve_depth(None, None) is None
 
     def test_none_with_ceiling_uses_ceiling(self):
-        assert runner_mod._resolve_limit(None, 25) == 25
+        assert runner_mod._resolve_depth(None, 25) == 25
 
     def test_positive_value_wins_over_ceiling(self):
-        assert runner_mod._resolve_limit(99, 10) == 99
+        assert runner_mod._resolve_depth(99, 10) == 99
 
-    def test_zero_raises(self):
-        with pytest.raises(ValueError, match="positive"):
-            runner_mod._resolve_limit(0, 10)
+    def test_zero_is_seed_only_not_rejected(self):
+        # Depth 0 is the documented "single page / seed only" value.
+        assert runner_mod._resolve_depth(0, 10) == 0
+
+    def test_none_value_with_zero_ceiling_is_seed_only(self):
+        # A cfg ceiling of 0 means "seed only", not an error (bb-4j2p).
+        assert runner_mod._resolve_depth(None, 0) == 0
 
     def test_negative_raises(self):
-        with pytest.raises(ValueError, match="positive"):
-            runner_mod._resolve_limit(-1, None)
+        with pytest.raises(ValueError, match="seed only"):
+            runner_mod._resolve_depth(-1, None)
 
 
 class TestFetcherModuleNotDirectlyImported:
