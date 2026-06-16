@@ -62,9 +62,10 @@ if [ ! -d "$REPO_DIR/.git" ]; then
   git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git "$REPO_DIR"
 else
   log "updating lilbee ($BRANCH)"
-  git -C "$REPO_DIR" fetch origin -q
-  git -C "$REPO_DIR" checkout -q "$BRANCH"
-  git -C "$REPO_DIR" reset --hard "origin/$BRANCH"
+  # The cached clone is shallow + single-branch, so a bare `fetch origin` won't
+  # pull a branch it wasn't cloned with; fetch the target branch explicitly.
+  git -C "$REPO_DIR" fetch --depth 1 origin "$BRANCH" -q
+  git -C "$REPO_DIR" checkout -q -B "$BRANCH" FETCH_HEAD
 fi
 cd "$REPO_DIR"
 
