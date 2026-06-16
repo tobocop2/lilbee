@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import httpx
 
@@ -26,7 +26,7 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
-from lilbee.providers.fleet.normalize import to_alternating
+from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
@@ -58,6 +58,23 @@ _EMBED_EST_CHARS_PER_TOKEN = 3
 _UPSTREAM_DIED_MARKER = "exited prematurely"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
+
+
+class _ChatToolSpecFunction(TypedDict, total=False):
+    """The ``function`` payload of an OpenAI tool definition (wire shape)."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ChatTool(TypedDict, total=False):
+    """One OpenAI tool definition sent in a chat request (wire shape)."""
+
+    type: str
+    function: _ChatToolSpecFunction
+
+
 # Some GGUF chat templates (Mistral-Nemo, Cohere command-r) reject a standard
 # OpenAI tool exchange: they require plain user/assistant turns to alternate and
 # raise a Jinja exception on the tool role or two same-role turns in a row. Rather
@@ -67,7 +84,7 @@ _BATCH_OVERFLOW_MARKER = "too large to process"
 # flagged so every later request is reshaped up front. Two assistant tool-call
 # turns separated by tool results is the minimal shape that trips strict
 # alternation; max_tokens=1 keeps the probe to template rendering, not generation.
-_ALTERNATION_PROBE_TOOLS = [
+_ALTERNATION_PROBE_TOOLS: list[ChatTool] = [
     {
         "type": "function",
         "function": {
@@ -83,7 +100,7 @@ _ALTERNATION_PROBE_TOOLS = [
         },
     }
 ]
-_ALTERNATION_PROBE_MESSAGES: list[dict[str, Any]] = [
+_ALTERNATION_PROBE_MESSAGES: list[ChatMessage] = [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Look something up."},
     {
@@ -535,7 +552,7 @@ class LlamaServerClient:
     def _chat_payload(
         self,
         messages: Sequence[Mapping[str, Any]],
-        tools: list[dict[str, Any]] | None,
+        tools: Sequence[Mapping[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         options: dict[str, Any] | None,
         *,

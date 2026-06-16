@@ -11,18 +11,48 @@ template once, then applies it proactively before every such request.
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Final, Literal, TypedDict
 
-_SYSTEM_ROLE = "system"
-_USER_ROLE = "user"
-_ASSISTANT_ROLE = "assistant"
-_TOOL_ROLE = "tool"
+# Roles this reshaper understands; an unrecognized role falls through to a plain
+# user turn, so the Literal documents the set without rejecting foreign input.
+ChatRole = Literal["system", "user", "assistant", "tool"]
+_SYSTEM_ROLE: Final = "system"
+_USER_ROLE: Final = "user"
+_ASSISTANT_ROLE: Final = "assistant"
+_TOOL_ROLE: Final = "tool"
 # A tool result carried as a user turn is labelled so the model reads it as a
 # result rather than a fresh user instruction.
 _TOOL_RESULT_PREFIX = "Tool result:"
 # An assistant turn whose only payload was tool_calls becomes a short text note
 # so the turn is non-empty (the templates reject empty content).
 _TOOL_CALL_NOTE_PREFIX = "Calling tool"
+
+
+class ChatToolCallFunction(TypedDict, total=False):
+    """The ``function`` payload of an OpenAI tool call (wire shape)."""
+
+    name: str
+    arguments: str
+
+
+class ChatToolCall(TypedDict, total=False):
+    """One entry of an assistant message's ``tool_calls`` (wire shape)."""
+
+    id: str
+    type: str
+    function: ChatToolCallFunction
+
+
+class ChatMessage(TypedDict, total=False):
+    """One OpenAI chat message in transit. Keys are partial: which are present
+    depends on the role (a tool result carries ``tool_call_id``, an assistant
+    tool call carries ``tool_calls``)."""
+
+    role: ChatRole
+    content: Any
+    tool_calls: list[ChatToolCall]
+    tool_call_id: str
 
 
 def _content_text(content: Any) -> str:
@@ -61,13 +91,13 @@ def _tool_calls_note(tool_calls: Any) -> str:
     return "\n".join(note for call in tool_calls if (note := _one_tool_call_note(call)))
 
 
-def _assistant_text(message: dict[str, Any]) -> str:
+def _assistant_text(message: Mapping[str, Any]) -> str:
     """Assistant turn text: its content plus a note for any tool_calls it made."""
     pieces = [_content_text(message.get("content")), _tool_calls_note(message.get("tool_calls"))]
     return "\n".join(piece for piece in pieces if piece)
 
 
-def _to_turn(message: dict[str, Any]) -> tuple[str, str]:
+def _to_turn(message: Mapping[str, Any]) -> tuple[ChatRole, str]:
     """Map one OpenAI message to a ``(user|assistant, text)`` pair.
 
     An assistant turn keeps its content and gains a note for any tool calls; a
@@ -84,7 +114,7 @@ def _to_turn(message: dict[str, Any]) -> tuple[str, str]:
     return _USER_ROLE, _content_text(message.get("content"))
 
 
-def _append_or_merge(turns: list[dict[str, Any]], turn: dict[str, Any]) -> None:
+def _append_or_merge(turns: list[ChatMessage], turn: ChatMessage) -> None:
     """Append a turn, or fold it into the previous turn when the role repeats."""
     if turns and turns[-1]["role"] == turn["role"]:
         turns[-1]["content"] = f"{turns[-1]['content']}\n{turn['content']}"
@@ -92,7 +122,7 @@ def _append_or_merge(turns: list[dict[str, Any]], turn: dict[str, Any]) -> None:
         turns.append(turn)
 
 
-def to_alternating(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def to_alternating(messages: Sequence[Mapping[str, Any]]) -> list[ChatMessage]:
     """Rewrite an OpenAI tool conversation into strict user/assistant alternation.
 
     Keeps any leading system messages verbatim, maps each remaining message to a
@@ -102,7 +132,7 @@ def to_alternating(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     emitted turn has non-empty content, so a strict-alternation template accepts
     it.
     """
-    leading_system: list[dict[str, Any]] = []
+    leading_system: list[ChatMessage] = []
     index = 0
     while index < len(messages) and messages[index].get("role") == _SYSTEM_ROLE:
         leading_system.append(
@@ -110,7 +140,7 @@ def to_alternating(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         index += 1
 
-    turns: list[dict[str, Any]] = []
+    turns: list[ChatMessage] = []
     for message in messages[index:]:
         role, text = _to_turn(message)
         if text:
