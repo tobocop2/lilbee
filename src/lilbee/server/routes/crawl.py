@@ -19,5 +19,7 @@ async def crawl_route(data: CrawlRequest) -> Stream:
         require_valid_crawl_url(data.url)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-    gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
+    gen = handlers.crawl_stream(
+        url=data.url, depth=data.depth, max_pages=data.max_pages, render_mode=data.render_mode
+    )
     return Stream(gen, media_type="text/event-stream")
