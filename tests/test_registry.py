@@ -322,7 +322,9 @@ class TestModelRegistryInstall:
         subdir = "Q4_K_M/Some-Q4_K_M.gguf"
         for filename, byte in ((flat, b"\x01"), (subdir, b"\x02")):
             content = b"GGUF" + byte * 256
-            src = tmp_path / f"{byte!r}.gguf"
+            # Name the temp source by the byte's hex, not repr(): repr(b"\x01") is
+            # "b'\\x01'", whose backslash is a path separator on Windows.
+            src = tmp_path / f"src-{byte.hex()}.gguf"
             src.write_bytes(content)
             registry.install(
                 repo,
