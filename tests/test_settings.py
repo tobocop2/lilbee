@@ -174,6 +174,47 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is True  # None = auto/all
         assert get_default("n_gpu_layers") is None
 
+    def test_crawl_render_mode_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        defn = SETTINGS_MAP["crawl_render_mode"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.choices == tuple(m.value for m in CrawlRenderMode)
+
+    def test_crawl_render_mode_is_writable_for_programmatic_surfaces(self):
+        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+
+        # The TUI checkbox persists the choice via apply_settings_update, so the
+        # field must be writable through the HTTP / MCP / programmatic contract.
+        assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
+
+
+class TestCrawlRenderModeConfig:
+    def test_default_is_http(self):
+        from lilbee.core.config.enums import CrawlRenderMode
+        from lilbee.core.config.model import Config
+
+        assert Config().crawl_render_mode is CrawlRenderMode.HTTP
+
+    def test_env_var_overrides_to_browser(self, monkeypatch):
+        from lilbee.core.config.enums import CrawlRenderMode
+        from lilbee.core.config.model import Config
+
+        monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "browser")
+        assert Config().crawl_render_mode is CrawlRenderMode.BROWSER
+
+    def test_invalid_value_is_rejected(self, monkeypatch):
+        import pytest
+        from pydantic import ValidationError
+
+        from lilbee.core.config.model import Config
+
+        monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
+        with pytest.raises(ValidationError):
+            Config()
+
 
 class TestOverlayPersistedSettings:
     def test_empty_string_value_is_skipped(self, tmp_path):

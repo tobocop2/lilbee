@@ -24,7 +24,7 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, KvCacheType, WikiEntityMode
+from .enums import ChatMode, ClustererBackend, CrawlRenderMode, KvCacheType, WikiEntityMode
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -248,6 +248,12 @@ class Config(BaseSettings):
     max_reasoning_chars: int = ConfigField(default=64_000, ge=0, writable=True)
 
     # Web crawling.
+
+    # How crawls fetch pages. ``http`` (default) uses a plain HTTP client with
+    # no browser, the lightweight path for static / server-rendered sites.
+    # ``browser`` launches a tuned Chromium with JavaScript enabled for sites
+    # that render content client-side, at a much higher memory cost.
+    crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
 
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
