@@ -1,0 +1,32 @@
+{# Source: adapted from THUDM/glm-4-9b-chat tokenizer_config.json chat_template + its README_en.md function-call format, rewritten to read the top-level OpenAI `tools` list (the upstream template only rendered a per-message `item['tools']` field, which llama-server's --jinja path never populates) while keeping GLM-4's native [gMASK]<sop>/<|system|>/<|assistant|>/<|observation|> tokens. NEEDS POD VALIDATION: GLM-4-9B's tool-call output parse-back under minja/llama.cpp is unverified. #}
+[gMASK]<sop>
+{%- if tools is defined and tools is not none -%}
+{{- '<|system|>\n你是一个名为 ChatGLM 的人工智能助手。\n\n# 可用工具' -}}
+{%- for tool in tools -%}
+{%- set fn = tool['function'] if tool.get('function', none) is not none else tool -%}
+{{- '\n\n## ' + fn['name'] + '\n\n' -}}
+{{- fn | tojson(indent=4) -}}
+{{- '\n在调用上述函数时，请使用 Json 格式表示调用的参数。' -}}
+{%- endfor -%}
+{%- endif -%}
+{%- for message in messages -%}
+{%- if message['role'] == 'system' -%}
+{{- '<|system|>\n' + message['content'] -}}
+{%- elif message['role'] == 'user' -%}
+{{- '<|user|>\n' + message['content'] -}}
+{%- elif message['role'] == 'assistant' -%}
+{%- if message.get('tool_calls', none) is not none -%}
+{%- for tool_call in message['tool_calls'] -%}
+{%- set fn = tool_call['function'] if tool_call.get('function', none) is not none else tool_call -%}
+{{- '<|assistant|>' + fn['name'] + '\n' + (fn['arguments'] | tojson) -}}
+{%- endfor -%}
+{%- else -%}
+{{- '<|assistant|>\n' + (message['content'] if message.get('content', none) is not none else '') -}}
+{%- endif -%}
+{%- elif message['role'] == 'tool' or message['role'] == 'observation' -%}
+{{- '<|observation|>\n' + message['content'] -}}
+{%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+{{- '<|assistant|>' -}}
+{%- endif -%}

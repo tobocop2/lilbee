@@ -533,6 +533,21 @@ def test_supports_tools_tolerates_unstattable_path(monkeypatch, _clear_tools_cac
     assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
 
 
+def test_supports_tools_true_for_override_without_reading_gguf(monkeypatch, _clear_tools_cache):
+    """An override-template family short-circuits to True before touching the GGUF.
+
+    The override supplies tool rendering, so neither ``resolve_model_path`` nor the
+    GGUF header is consulted: both raise here to prove they're never reached.
+    """
+
+    def _fail(_m):
+        raise AssertionError("override should short-circuit before GGUF probing")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _fail)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", _fail)
+    assert FleetProvider().supports_tools("zai-org/glm-4-9b-chat-GGUF") is True
+
+
 def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
     from lilbee.runtime.progress import EventType
     from lilbee.vision import PageText

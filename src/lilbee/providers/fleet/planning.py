@@ -18,6 +18,7 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
+from lilbee.providers.fleet.chat_templates import resolve_chat_template
 from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
@@ -618,6 +619,7 @@ def _launch_for(
         cache_type=_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
+        chat_template_file=resolve_chat_template(model_ref) if is_chat else None,
     )
     return InstanceLaunch(
         role=plan.role,
