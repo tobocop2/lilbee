@@ -190,6 +190,22 @@ class TestMemoryTuningSettingsMap:
         # field must be writable through the HTTP / MCP / programmatic contract.
         assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
 
+    def test_browser_memory_levers_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
+        assert recycle.writable is True
+        assert recycle.type is int
+        assert get_default("crawl_browser_recycle_pages") == 50
+
+        extra = SETTINGS_MAP["crawl_browser_extra_args"]
+        assert extra.writable is True
+        assert extra.type is list
+        assert get_default("crawl_browser_extra_args") == [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ]
+
 
 class TestCrawlRenderModeConfig:
     def test_default_is_http(self):
@@ -214,6 +230,13 @@ class TestCrawlRenderModeConfig:
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
         with pytest.raises(ValidationError):
             Config()
+
+    def test_browser_memory_lever_defaults(self):
+        from lilbee.core.config.model import Config
+
+        c = Config()
+        assert c.crawl_browser_recycle_pages == 50
+        assert c.crawl_browser_extra_args == ["--disable-dev-shm-usage", "--disable-gpu"]
 
 
 class TestOverlayPersistedSettings:

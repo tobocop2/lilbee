@@ -255,6 +255,19 @@ class Config(BaseSettings):
     # that render content client-side, at a much higher memory cost.
     crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
 
+    # Browser-mode memory levers (only used when crawl_render_mode is browser).
+    # Recycle the Chromium process every N fetched pages to cap RSS growth on a
+    # long recursive crawl; 0 disables recycling. Raise on a roomy machine for
+    # fewer restarts, lower it if memory is tight.
+    crawl_browser_recycle_pages: int = ConfigField(default=50, ge=0, writable=True)
+
+    # Extra Chromium launch flags for browser-mode crawls. Defaults trim shared
+    # memory and GPU use; override to pass site- or environment-specific flags.
+    crawl_browser_extra_args: list[str] = ConfigField(
+        default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
+        writable=True,
+    )
+
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
