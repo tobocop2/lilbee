@@ -90,6 +90,10 @@ if [[ "$BACKEND" == cu* ]] && ! ldconfig -p 2>/dev/null | grep -q 'libcudart\.so
   source /tmp/toolkit-env.sh
   ldconfig
 fi
+if [ -n "${FORCE_ENGINE_REBUILD:-}" ]; then
+  log "FORCE_ENGINE_REBUILD set; clearing cached engine so it rebuilds from the pin"
+  rm -rf "$ENGINE_CACHE"
+fi
 if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
   log "building engine (BACKEND=$BACKEND) -- one-time ~20min, then cached"
   BACKEND="$BACKEND" bash tools/wheel-build/build_llama_server.sh
