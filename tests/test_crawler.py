@@ -2228,6 +2228,21 @@ class TestCrawlDispatcher:
         assert mad_kwargs["max_session_permit"] == 4
         assert mad_kwargs["rate_limiter"] is mock_rl.return_value
 
+    def test_browser_config_reads_memory_levers_from_cfg(self, monkeypatch):
+        """Browser-mode BrowserConfig is built from the configurable memory levers."""
+        from lilbee.crawler import crawl4ai_fetcher
+
+        monkeypatch.setattr(cfg, "crawl_browser_recycle_pages", 7)
+        monkeypatch.setattr(cfg, "crawl_browser_extra_args", ["--flag-a", "--flag-b"])
+        mock_mod = MagicMock()
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            crawl4ai_fetcher._build_inner_crawler(
+                verbose=False, render_mode=CrawlRenderMode.BROWSER
+            )
+        bc_kwargs = mock_mod.BrowserConfig.call_args.kwargs
+        assert bc_kwargs["max_pages_before_recycle"] == 7
+        assert bc_kwargs["extra_args"] == ["--flag-a", "--flag-b"]
+
     async def test_rate_limiter_disabled_when_flag_off(self):
         """crawl_retry_on_rate_limit=False skips the dispatcher entirely."""
         mock_instance = AsyncMock()
