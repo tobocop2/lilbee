@@ -187,6 +187,36 @@ def test_build_argv_omits_optional_flags_by_default() -> None:
         assert flag not in argv
 
 
+def test_build_argv_appends_chat_template_file_when_given() -> None:
+    template = Path("/pkg/chat_template_files/glm4.jinja")
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/glm4.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        chat_template_file=template,
+    )
+    assert argv[argv.index("--chat-template-file") + 1] == str(template)
+    # The override is additional to --jinja, not a replacement for it.
+    assert "--jinja" in argv
+
+
+def test_build_argv_omits_chat_template_file_by_default() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+    )
+    assert "--chat-template-file" not in argv
+
+
 def test_chat_server_spec_enables_jinja() -> None:
     from lilbee.providers.fleet.adapters import ROLE_SPECS
     from lilbee.providers.roles import WorkerRole

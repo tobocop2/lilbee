@@ -1,0 +1,37 @@
+{# Source: InternLM/InternLM chat/chat_format.md (official InternLM2-Chat plugin/tool format), rendered against the top-level OpenAI `tools` list so llama-server's --jinja path describes tools to the model. NEEDS POD VALIDATION: llama.cpp may lack a native InternLM2 tool-call output parser, so structured tool_calls parse-back is not guaranteed. #}
+{%- if messages[0]['role'] == 'system' -%}
+{{- '<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n' -}}
+{%- set messages = messages[1:] -%}
+{%- endif -%}
+{%- if tools is defined and tools is not none -%}
+{{- '<|im_start|>system name=<|plugin|>\n[' -}}
+{%- for tool in tools -%}
+{{- (tool['function'] if tool.get('function', none) is not none else tool) | tojson -}}
+{%- if not loop.last -%}{{- ', ' -}}{%- endif -%}
+{%- endfor -%}
+{{- ']<|im_end|>\n' -}}
+{%- endif -%}
+{%- for message in messages -%}
+{%- if message['role'] == 'user' -%}
+{{- '<|im_start|>user\n' + message['content'] + '<|im_end|>\n' -}}
+{%- elif message['role'] == 'assistant' -%}
+{{- '<|im_start|>assistant\n' -}}
+{%- if message.get('content', none) is not none -%}{{- message['content'] -}}{%- endif -%}
+{%- if message.get('tool_calls', none) is not none -%}
+{%- for tool_call in message['tool_calls'] -%}
+{%- set fn = tool_call['function'] if tool_call.get('function', none) is not none else tool_call -%}
+{{- '<|action_start|><|plugin|>\n' -}}
+{{- {'name': fn['name'], 'parameters': fn['arguments']} | tojson -}}
+{{- '<|action_end|>' -}}
+{%- endfor -%}
+{%- endif -%}
+{{- '<|im_end|>\n' -}}
+{%- elif message['role'] == 'tool' or message['role'] == 'environment' -%}
+{{- '<|im_start|>environment name=<|plugin|>\n' + message['content'] + '<|im_end|>\n' -}}
+{%- elif message['role'] == 'system' -%}
+{{- '<|im_start|>system\n' + message['content'] + '<|im_end|>\n' -}}
+{%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+{{- '<|im_start|>assistant\n' -}}
+{%- endif -%}
