@@ -56,18 +56,22 @@ def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     return get_services().crawler_semaphore
 
 
-def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
-    """Resolve a caller-provided crawl limit to the number the fetcher consumes.
+def _resolve_depth(value: int | None, cfg_ceiling: int | None) -> int | None:
+    """Resolve a crawl depth to the value the dispatcher consumes.
+
+    Depth has its own contract, distinct from the page-count limit: ``0`` is a
+    valid "seed only / single page" depth, not "unbounded". (Page counts use
+    :func:`_resolve_page_limit`, where ``0`` means "no limit".)
 
     None    -> cfg_ceiling (itself may be None; ``None`` means unbounded)
-    n > 0   -> n (explicit caller intent; cfg is not a ceiling here)
-    n <= 0  -> ValueError (use None for unbounded, not 0)
+    n >= 0  -> n (0 = seed only; explicit caller intent overrides cfg)
+    n < 0   -> ValueError (use None for unbounded)
     """
     effective = value if value is not None else cfg_ceiling
     if effective is None:
         return None
-    if effective <= 0:
-        raise ValueError("crawl limit must be a positive int or None")
+    if effective < 0:
+        raise ValueError("crawl depth must be 0 (seed only) or a positive int")
     return effective
 
 
@@ -188,7 +192,10 @@ async def crawl_recursive(
     disk incrementally and keep partial output across cancellation.
     """
     validate_crawl_url(url)
-    depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
+    # ``_run_crawl`` already resolved the depth ceiling (and routed a seed-only
+    # 0 to the single-page path), so the recursive path takes ``max_depth`` as
+    # given: None = unbounded, a positive int = the cap.
+    depth = max_depth
     pages = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
@@ -363,7 +370,13 @@ async def _run_crawl(
     flush_page: Callable[[Any], Awaitable[Path | None]],
     render_mode: CrawlRenderMode,
 ) -> int:
-    """Run the single-URL or recursive crawl. Returns ``pages_seen``."""
+    """Run the single-URL or recursive crawl. Returns ``pages_seen``.
+
+    Resolves the depth ceiling here (permitting the seed-only ``0``) so a
+    ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
+    blowing up inside the recursive resolver.
+    """
+    depth = _resolve_depth(depth, cfg.crawl_max_depth)
     if depth == 0:
         result = await crawl_single(
             url, quiet=quiet, on_progress=on_progress, render_mode=render_mode
