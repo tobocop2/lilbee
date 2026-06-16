@@ -1572,6 +1572,30 @@ class TestCrawlAndSave:
         assert len(paths) == 1
         assert paths[0].exists()
 
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_cfg_max_depth_zero_routes_to_single_page(
+        self, mock_crawl_single, mock_crawl_recursive, isolated_env
+    ):
+        """bb-4j2p: a cfg.crawl_max_depth ceiling of 0 means seed-only, not an error.
+
+        depth=None inherits the ceiling; 0 must route to the single-page path
+        instead of raising in the recursive resolver.
+        """
+        cfg.crawl_max_depth = 0
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        paths = await crawl_and_save("https://example.com", depth=None)
+        assert len(paths) == 1
+        mock_crawl_single.assert_awaited_once()
+        mock_crawl_recursive.assert_not_called()
+
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_negative_depth_is_rejected(self, mock_crawl_single, isolated_env):
+        """A negative depth is invalid (use None for unbounded)."""
+        with pytest.raises(ValueError, match="seed only"):
+            await crawl_and_save("https://example.com", depth=-1)
+        mock_crawl_single.assert_not_called()
+
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
