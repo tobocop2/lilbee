@@ -99,6 +99,12 @@ _STREAM_FLUSH_INTERVAL = 0.05
 # Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
 _STREAM_SCROLL_INTERVAL = 0.15
 
+# ``/crawl`` command flags.
+_CRAWL_FLAG_DEPTH = "--depth"
+_CRAWL_FLAG_MAX_PAGES = "--max-pages"
+_CRAWL_FLAG_INCLUDE_SUBDOMAINS = "--include-subdomains"
+_CRAWL_FLAG_RENDER = "--render"
+
 
 class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
@@ -771,17 +777,17 @@ class ChatScreen(Screen[None]):
         ``--render http|browser`` returns None when absent so the caller
         inherits ``cfg.crawl_render_mode``; an unrecognized value is ignored.
         """
-        flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
+        flag_map = {_CRAWL_FLAG_DEPTH: "depth", _CRAWL_FLAG_MAX_PAGES: "max_pages"}
         parsed: dict[str, int | None] = {"depth": None, "max_pages": None}
         include_subdomains = False
         render_mode: CrawlRenderMode | None = None
         i = 0
         while i < len(tokens):
-            if tokens[i] == "--include-subdomains":
+            if tokens[i] == _CRAWL_FLAG_INCLUDE_SUBDOMAINS:
                 include_subdomains = True
                 i += 1
                 continue
-            if tokens[i] == "--render" and i + 1 < len(tokens):
+            if tokens[i] == _CRAWL_FLAG_RENDER and i + 1 < len(tokens):
                 with contextlib.suppress(ValueError):
                     render_mode = CrawlRenderMode(tokens[i + 1])
                 i += 2

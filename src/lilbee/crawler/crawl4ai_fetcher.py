@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
@@ -28,18 +29,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Browser-mode memory levers. Constants, not config: there is no per-user knob
-# worth exposing, and they only apply on the heavy Chromium path. Recycling the
-# browser process every N pages caps the RSS growth of a long recursive crawl.
-_BROWSER_RECYCLE_PAGES = 50
-_BROWSER_EXTRA_ARGS = ("--disable-dev-shm-usage", "--disable-gpu")
-
 
 def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
     """Construct a crawl4ai ``AsyncWebCrawler`` for the requested render mode.
 
     HTTP mode swaps in the browserless HTTP strategy; browser mode tunes
-    Chromium for memory (light/text/memory-saving + periodic process recycle).
+    Chromium for memory (light/text/memory-saving + periodic process recycle),
+    reading the recycle threshold and launch flags from config.
     """
     from crawl4ai import AsyncWebCrawler
 
@@ -54,8 +50,8 @@ def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
         light_mode=True,
         text_mode=True,
         memory_saving_mode=True,
-        max_pages_before_recycle=_BROWSER_RECYCLE_PAGES,
-        extra_args=list(_BROWSER_EXTRA_ARGS),
+        max_pages_before_recycle=cfg.crawl_browser_recycle_pages,
+        extra_args=list(cfg.crawl_browser_extra_args),
         verbose=verbose,
     )
     return AsyncWebCrawler(config=config, verbose=verbose)
