@@ -13,6 +13,7 @@ from textual.widgets import Button, Checkbox, Collapsible, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 
 
 @dataclass(frozen=True)
@@ -22,11 +23,13 @@ class CrawlParams:
     depth: None = whole-site unbounded. 0 = single URL only. Positive int =
     explicit link-follow depth cap. max_pages: CRAWL_PAGES_UNLIMITED (0) = no
     limit (the user cleared the field); positive int = explicit page cap.
+    render_mode: http (browserless) or browser (Chromium with JavaScript).
     """
 
     url: str
     depth: int | None
     max_pages: int
+    render_mode: CrawlRenderMode
 
 
 class CrawlDialog(ModalScreen[CrawlParams | None]):
@@ -51,6 +54,13 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 msg.CRAWL_DIALOG_RECURSIVE_LABEL,
                 value=True,
                 id="crawl-recursive-checkbox",
+            )
+            # Defaults to the persisted crawl_render_mode; toggling it sticks
+            # (the chat screen writes the choice back when the crawl starts).
+            yield Checkbox(
+                msg.CRAWL_DIALOG_BROWSER_LABEL,
+                value=cfg.crawl_render_mode is CrawlRenderMode.BROWSER,
+                id="crawl-browser-checkbox",
             )
             # Max pages is the cap users actually reach for, so it sits at the top
             # level (not behind Advanced) prefilled with the protective default;
@@ -119,8 +129,11 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
 
         url = self.query_one("#crawl-url-input", Input).value.strip()
         recursive = self.query_one("#crawl-recursive-checkbox", Checkbox).value
+        use_browser = self.query_one("#crawl-browser-checkbox", Checkbox).value
         depth_str = self.query_one("#crawl-depth-input", Input).value.strip()
         max_pages_str = self.query_one("#crawl-max-pages-input", Input).value.strip()
+
+        render_mode = CrawlRenderMode.BROWSER if use_browser else CrawlRenderMode.HTTP
 
         if not url:
             return msg.CRAWL_DIALOG_URL_REQUIRED
@@ -134,7 +147,9 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return msg.CRAWL_DIALOG_INVALID_URL.format(error=exc)
 
         if not recursive:
-            return CrawlParams(url=url, depth=0, max_pages=CRAWL_PAGES_UNLIMITED)
+            return CrawlParams(
+                url=url, depth=0, max_pages=CRAWL_PAGES_UNLIMITED, render_mode=render_mode
+            )
 
         try:
             # depth=0 means "single URL" per the crawler contract; allow it.
@@ -147,7 +162,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         except ValueError:
             return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
 
-        return CrawlParams(url=url, depth=depth, max_pages=max_pages)
+        return CrawlParams(url=url, depth=depth, max_pages=max_pages, render_mode=render_mode)
 
     def _try_submit(self) -> None:
         """Validate inputs and dismiss with CrawlParams or show an error."""

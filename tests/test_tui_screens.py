@@ -43,6 +43,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -6296,17 +6297,17 @@ class TestParseCrawlFlags:
     def test_empty(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags([]) == (None, None, False)
+        assert ChatScreen._parse_crawl_flags([]) == (None, None, False, None)
 
     def test_depth_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None, False)
+        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, None, False, None)
 
     def test_max_pages_only(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20, False)
+        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (None, 20, False, None)
 
     def test_both(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -6315,28 +6316,29 @@ class TestParseCrawlFlags:
             2,
             15,
             False,
+            None,
         )
 
     def test_invalid_values(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None, False)
+        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (None, None, False, None)
 
     def test_missing_value(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None, False)
+        assert ChatScreen._parse_crawl_flags(["--depth"]) == (None, None, False, None)
 
     def test_unknown_flags_skipped(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None, False)
+        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (None, None, False, None)
 
     def test_include_subdomains_flag(self):
         """--include-subdomains opts into sibling-subdomain crawl."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert ChatScreen._parse_crawl_flags(["--include-subdomains"]) == (None, None, True)
+        assert ChatScreen._parse_crawl_flags(["--include-subdomains"]) == (None, None, True, None)
 
     def test_include_subdomains_with_depth(self):
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -6345,7 +6347,35 @@ class TestParseCrawlFlags:
             2,
             None,
             True,
+            None,
         )
+
+    def test_render_flag_browser(self):
+        """--render browser selects browser mode."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--render", "browser"]) == (
+            None,
+            None,
+            False,
+            CrawlRenderMode.BROWSER,
+        )
+
+    def test_render_flag_http(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--render", "http"]) == (
+            None,
+            None,
+            False,
+            CrawlRenderMode.HTTP,
+        )
+
+    def test_render_flag_invalid_ignored(self):
+        """An unrecognized --render value is ignored, leaving the configured default."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--render", "bogus"]) == (None, None, False, None)
 
 
 async def test_chat_vim_g_scrolls_home():
@@ -11827,10 +11857,14 @@ async def test_chat_crawl_dialog_callback_triggers_start():
             app.screen._cmd_crawl("")
             await _pilot.pause()
             # Dismiss the dialog with params
-            params = CrawlParams(url="https://test.com", depth=1, max_pages=10)
+            params = CrawlParams(
+                url="https://test.com", depth=1, max_pages=10, render_mode=CrawlRenderMode.HTTP
+            )
             app.screen.dismiss(params)
             await _pilot.pause()
-        mock_start.assert_called_once_with("https://test.com", 1, 10)
+        mock_start.assert_called_once_with(
+            "https://test.com", 1, 10, render_mode=CrawlRenderMode.HTTP
+        )
 
 
 async def test_chat_crawl_dialog_callback_none_noop():

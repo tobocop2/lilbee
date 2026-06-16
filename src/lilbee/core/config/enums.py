@@ -10,6 +10,13 @@ class ChatMode(StrEnum):
     CHAT = "chat"
 
 
+class CrawlRenderMode(StrEnum):
+    """How a crawl fetches pages. ``http`` uses no browser; ``browser`` runs Chromium with JS."""
+
+    HTTP = "http"
+    BROWSER = "browser"
+
+
 class ClustererBackend(StrEnum):
     """Known wiki clusterer backends."""
 
