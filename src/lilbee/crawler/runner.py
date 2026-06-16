@@ -375,9 +375,14 @@ async def _run_crawl(
     Resolves the depth ceiling here (permitting the seed-only ``0``) so a
     ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
     blowing up inside the recursive resolver.
+
+    A resolved page limit of 1 is also a single-page crawl: crawl4ai's BFS
+    under-counts tiny ``max_pages`` (``max_pages=1`` yields 0 pages), so route
+    the "at most one page" request to the reliable single-URL fetch.
     """
     depth = _resolve_depth(depth, cfg.crawl_max_depth)
-    if depth == 0:
+    pages = _resolve_page_limit(max_pages)
+    if depth == 0 or pages == 1:
         result = await crawl_single(
             url, quiet=quiet, on_progress=on_progress, render_mode=render_mode
         )

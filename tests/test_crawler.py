@@ -1596,6 +1596,23 @@ class TestCrawlAndSave:
             await crawl_and_save("https://example.com", depth=-1)
         mock_crawl_single.assert_not_called()
 
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_max_pages_one_routes_to_single_page(
+        self, mock_crawl_single, mock_crawl_recursive, isolated_env
+    ):
+        """bb-7oh9: max_pages=1 is a single-page crawl.
+
+        crawl4ai's BFS under-counts tiny max_pages (max_pages=1 yields 0), so a
+        one-page request must route to the reliable single-URL fetch and index
+        the seed rather than nothing.
+        """
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        paths = await crawl_and_save("https://example.com", max_pages=1)
+        assert len(paths) == 1
+        mock_crawl_single.assert_awaited_once()
+        mock_crawl_recursive.assert_not_called()
+
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
         self, mock_crawl_single, isolated_env, monkeypatch
