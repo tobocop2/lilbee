@@ -7,6 +7,8 @@ launches the animation process, then performs the heavy
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 
@@ -22,8 +24,19 @@ def _shell_completion_active() -> bool:
     )
 
 
+def _force_utf8_stdio() -> None:
+    """Make stdio UTF-8 so a no-locale (GUI-spawned) launch can't crash on non-ASCII output."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            # Swallow on an already-detached stream; non-TextIOWrapper streams
+            # (StringIO redirects, capture shims) need no reconfiguration.
+            with contextlib.suppress(ValueError, OSError):
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
+    _force_utf8_stdio()
     args = sys.argv[1:]
     is_interactive = (not args or args[0] in ("chat", "")) and not _shell_completion_active()
 
