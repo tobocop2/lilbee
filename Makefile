@@ -62,8 +62,8 @@ release:  ## Bump the beta version, tag, and push; CI builds + publishes
 
 release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
 	@tag="$(TAG)"; \
-	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 1 --json tagName -q '.[0].tagName'); \
-	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 2 --json tagName -q '.[1].tagName'); \
+	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\")))"); \
+	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\") and . != \"$$tag\"))"); \
 	echo "release-promote: $$tag (notes diff from $$prev)"; \
 	notes=$$(mktemp); \
 	bash scripts/release_notes.sh tobocop2/lilbee "$$tag" "$$prev" > "$$notes"; \
