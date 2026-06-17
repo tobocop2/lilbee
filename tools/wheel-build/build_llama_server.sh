@@ -18,7 +18,7 @@ set -euxo pipefail
 # llama.cpp commit we build the server from. Bump deliberately (and re-run the
 # Metal/CPU/GPU self-check matrix) rather than tracking latest. llama-cpp-python
 # is only a BUILD-TIME source here -- lilbee no longer depends on it at runtime.
-_DEFAULT_LLAMA_CPP_VERSION="0.3.23"
+_DEFAULT_LLAMA_CPP_VERSION="0.3.30"
 
 # Pinned source tags for the two Go engine helpers bundled alongside llama-server.
 # Built from source (deterministic, no release-asset-name guessing); the wheel-build

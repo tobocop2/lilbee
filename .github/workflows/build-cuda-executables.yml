@@ -54,7 +54,7 @@ jobs:
             backend: cu121
             cuda: "12.1.0"
             asset_name: lilbee-linux-x86_64-cu121
-            llama-cpp-version: "0.3.20"
+            llama-cpp-version: "0.3.30"
           - os: ubuntu-22.04
             backend: cu124
             cuda: "12.4.0"
