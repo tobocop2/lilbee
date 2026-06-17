@@ -140,7 +140,11 @@ def test_aux_tool_raises_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None
         resolve_gguf_parser()
 
 
-def test_runtime_env_is_empty() -> None:
-    # The self-contained wheel (rpath-baked) and a BYO binary both carry their own
-    # libs, so the fleet injects no library search path.
-    assert llama_server_runtime_env() == {}
+def test_runtime_env_delegates_to_cuda_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The self-contained wheel and a BYO binary carry their own libs; the only
+    # per-spawn env is the CUDA-runtime wheel path that driver-only images need.
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.cuda_runtime_env",
+        lambda: {"LD_LIBRARY_PATH": "/wheel/lib"},
+    )
+    assert llama_server_runtime_env() == {"LD_LIBRARY_PATH": "/wheel/lib"}
