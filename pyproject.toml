@@ -58,7 +58,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.50"]
+litellm = ["litellm>=1.84.0"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.9"]
 release = ["lilbee[crawler,litellm,graph]"]
