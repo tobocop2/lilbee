@@ -8,7 +8,8 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
@@ -64,8 +65,10 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
     ),
 }
 
-# Decoder-arch rerankers (Qwen3-Reranker, mxbai-rerank-v2) are served generatively.
-_DECODER_RERANK_ARCHS: frozenset[str] = frozenset(
+# Decoder-only architectures. Served generatively as rerankers (Qwen3-Reranker,
+# mxbai-rerank-v2), and their embeddings use last-token (EOS) pooling, not the
+# encoder default of mean/cls.
+_DECODER_ARCHS: frozenset[str] = frozenset(
     {"qwen2", "qwen3", "llama", "mistral", "gemma", "gemma2", "gemma3", "phi3"}
 )
 
@@ -97,7 +100,7 @@ def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> Rerank
         return RerankMode.LLM
     if reranker_type is RerankerType.CROSS_ENCODER:
         return RerankMode.CROSS_ENCODER
-    if arch in _DECODER_RERANK_ARCHS:
+    if arch in _DECODER_ARCHS:
         return RerankMode.LLM
     return RerankMode.CROSS_ENCODER
 
@@ -105,6 +108,42 @@ def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> Rerank
 def rerank_spec(mode: RerankMode) -> RoleServerSpec:
     """The server spec for a RERANK launch given its resolved mode."""
     return _RERANK_MODE_SPECS[mode]
+
+
+class PoolingType(StrEnum):
+    """A llama-server ``--pooling`` value (also the GGUF pooling_type enum names)."""
+
+    NONE = "none"
+    MEAN = "mean"
+    CLS = "cls"
+    LAST = "last"
+    RANK = "rank"
+
+
+# GGUF <arch>.pooling_type integer (as read_gguf_metadata returns it, a string) ->
+# the --pooling value. NONE (0) is omitted: a 0 on an embedder is the unset default,
+# so it falls through to the arch-based choice rather than per-token (non-)pooling.
+_GGUF_POOLING: dict[str, PoolingType] = {
+    "1": PoolingType.MEAN,
+    "2": PoolingType.CLS,
+    "3": PoolingType.LAST,
+    "4": PoolingType.RANK,
+}
+
+
+def embed_spec(meta: dict[str, str] | None) -> RoleServerSpec:
+    """The EMBED server spec with the model's pooling resolved for llama-server."""
+    # The GGUF's declared pooling wins; else a decoder-only embedder pools on its
+    # last/EOS token (llama-server would otherwise default to mean, which is wrong).
+    arch = meta.get("architecture") if meta else None
+    pooling_type = meta.get("pooling_type") if meta else None
+    pooling = _GGUF_POOLING.get(pooling_type or "")
+    if pooling is None and arch in _DECODER_ARCHS:
+        pooling = PoolingType.LAST
+    base = ROLE_SPECS[WorkerRole.EMBED]
+    if pooling is None:
+        return base
+    return replace(base, extra_args=(*base.extra_args, "--pooling", pooling.value))
 
 
 def build_server_argv(

@@ -1153,3 +1153,36 @@ class TestWeightsBytes:
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
         assert launch.weights_bytes == 2048  # both shards, not just the served file
+
+
+def test_server_spec_embed_decoder_forces_last_pooling() -> None:
+    spec = planning_mod._server_spec(WorkerRole.EMBED, None, {"architecture": "qwen3"})
+    assert spec.extra_args == ("--embeddings", "--pooling", "last")
+
+
+def test_server_spec_embed_honors_declared_pooling() -> None:
+    spec = planning_mod._server_spec(
+        WorkerRole.EMBED, None, {"architecture": "qwen3", "pooling_type": "1"}
+    )
+    assert spec.extra_args == ("--embeddings", "--pooling", "mean")
+
+
+def test_server_spec_embed_without_meta_is_plain() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+
+    spec = planning_mod._server_spec(WorkerRole.EMBED, None, None)
+    assert spec is ROLE_SPECS[WorkerRole.EMBED]
+
+
+def test_server_spec_rerank_uses_rerank_spec() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+
+    spec = planning_mod._server_spec(WorkerRole.RERANK, RerankMode.CROSS_ENCODER, None)
+    assert spec is ROLE_SPECS[WorkerRole.RERANK]
+
+
+def test_server_spec_other_role_uses_role_default() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+
+    spec = planning_mod._server_spec(WorkerRole.CHAT, None, None)
+    assert spec is ROLE_SPECS[WorkerRole.CHAT]

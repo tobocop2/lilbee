@@ -3988,6 +3988,26 @@ class TestSelfCheckHelpers:
         setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
         assert seen["model"] == "chat-0"
 
+    def test_self_check_embed_applies_decoder_pooling(self, monkeypatch, tmp_path) -> None:
+        # The embed self-check must launch with the same pooling a real ingest uses,
+        # so a decoder embedder is exercised with --pooling last (bb-872r).
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        self._patch_fleet_primitives(monkeypatch, swap=mock.MagicMock(), client=mock.MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+        )
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.adapters.build_server_argv",
+            lambda **kw: seen.update(kw) or ["/bin/llama-server"],
+        )
+        setup._self_check_server(WorkerRole.EMBED, tmp_path / "embed.gguf")
+        assert seen["spec"].extra_args == ("--embeddings", "--pooling", "last")
+
 
 class TestSelfCheckExtras:
     """`lilbee self-check-extras` probes the optional extras for the frozen-binary smoke test."""

@@ -13,7 +13,9 @@ from lilbee.providers import model_cache
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
+    RoleServerSpec,
     build_server_argv,
+    embed_spec,
     rerank_spec,
     resolve_rerank_mode,
 )
@@ -294,6 +296,18 @@ def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
 def _role_rerank_mode(role: WorkerRole, meta: dict[str, str] | None) -> RerankMode | None:
     """The RERANK serving mode for *role*, or ``None`` for every other role."""
     return _rerank_mode_for(meta) if role is WorkerRole.RERANK else None
+
+
+def _server_spec(
+    role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
+) -> RoleServerSpec:
+    """The llama-server spec for a launch: rerank mode, decoder-aware embed pooling,
+    or the role default. EMBED forces ``--pooling last`` for decoder-only archs."""
+    if rerank_mode is not None:
+        return rerank_spec(rerank_mode)
+    if role is WorkerRole.EMBED:
+        return embed_spec(meta)
+    return ROLE_SPECS[role]
 
 
 def _pooled_batch_size(role: WorkerRole, rerank_mode: RerankMode | None, ctx: int) -> int | None:
@@ -600,7 +614,7 @@ def _launch_for(
             rerank_mode=rerank_mode,
         )
     )
-    spec = rerank_spec(rerank_mode) if rerank_mode is not None else ROLE_SPECS[plan.role]
+    spec = _server_spec(plan.role, rerank_mode, meta)
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank

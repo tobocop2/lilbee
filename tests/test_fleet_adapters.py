@@ -11,6 +11,7 @@ from lilbee.providers.fleet.adapters import (
     LLM_RERANK_SPEC,
     ROLE_SPECS,
     build_server_argv,
+    embed_spec,
     rerank_spec,
     resolve_rerank_mode,
 )
@@ -224,4 +225,39 @@ def test_llm_rerank_spec_is_generative_chat() -> None:
     assert LLM_RERANK_SPEC.role is WorkerRole.RERANK
     assert LLM_RERANK_SPEC.endpoint_path == "/v1/chat/completions"
     assert LLM_RERANK_SPEC.extra_args == ("--jinja",)
+
+
+def test_embed_spec_encoder_arch_uses_plain_spec() -> None:
+    # No declared pooling + a non-decoder arch keeps the GGUF's own mean/cls (no flag).
+    assert embed_spec({"architecture": "bert"}) is ROLE_SPECS[WorkerRole.EMBED]
+
+
+def test_embed_spec_without_metadata_is_plain() -> None:
+    assert embed_spec(None) is ROLE_SPECS[WorkerRole.EMBED]
+
+
+def test_embed_spec_decoder_arch_forces_last_token_pooling() -> None:
+    spec = embed_spec({"architecture": "qwen3"})
+    assert spec.extra_args == ("--embeddings", "--pooling", "last")
+
+
+@pytest.mark.parametrize(
+    ("pooling_type", "expected"),
+    [("1", "mean"), ("2", "cls"), ("3", "last"), ("4", "rank")],
+)
+def test_embed_spec_honors_declared_pooling_type(pooling_type, expected) -> None:
+    # A declared GGUF pooling_type wins, even over a decoder arch's default.
+    meta = {"architecture": "qwen3", "pooling_type": pooling_type}
+    assert embed_spec(meta).extra_args == ("--embeddings", "--pooling", expected)
+
+
+def test_embed_spec_declared_none_falls_through_to_arch() -> None:
+    # pooling_type 0 (NONE) is the unset default: a decoder arch still gets last,
+    assert embed_spec({"architecture": "qwen3", "pooling_type": "0"}).extra_args == (
+        "--embeddings",
+        "--pooling",
+        "last",
+    )
+    # and an encoder arch keeps the plain spec.
+    assert embed_spec({"architecture": "bert", "pooling_type": "0"}) is ROLE_SPECS[WorkerRole.EMBED]
     assert LLM_RERANK_SPEC.server_capable is True
