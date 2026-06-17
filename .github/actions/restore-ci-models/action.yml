@@ -43,6 +43,10 @@ runs:
           echo "restored=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        tar -xzf "$tmp/$asset" -C "$models_dir"
+        if ! tar -xzf "$tmp/$asset" -C "$models_dir"; then
+          echo "Failed to extract $asset; caller falls back to HuggingFace." >&2
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         echo "Restored CI models into $models_dir"
         echo "restored=true" >> "$GITHUB_OUTPUT"

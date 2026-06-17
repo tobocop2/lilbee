@@ -38,6 +38,7 @@ jobs:
               --target main \
               --title "CI model mirror" \
               --notes "Fixed GGUF model set mirrored for CI so integration tests and qa-matrix don't hit HuggingFace rate limits. Refreshed by the warm-ci-models workflow." \
+              --prerelease \
               --latest=false
           fi
 
