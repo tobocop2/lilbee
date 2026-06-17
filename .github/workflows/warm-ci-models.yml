@@ -1,0 +1,100 @@
+name: Warm CI model mirror
+
+# Pulls the fixed CI model set once (authenticated) and uploads per-OS tarballs
+# to the ci-models release so integration tests and qa-matrix never hit
+# HuggingFace rate limits. The models don't change, so run on demand or monthly.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 1 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warm-ci-models
+  cancel-in-progress: false
+
+env:
+  # Keep aligned with tests/integration/conftest.py and tools/qa/conftest.py.
+  CI_MODELS: >-
+    Qwen/Qwen3-0.6B-GGUF
+    nomic-ai/nomic-embed-text-v1.5-GGUF
+    gpustack/bge-reranker-v2-m3-GGUF
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure ci-models release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view ci-models --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-models \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "CI model mirror" \
+              --notes "Fixed GGUF model set mirrored for CI so integration tests and qa-matrix don't hit HuggingFace rate limits. Refreshed by the warm-ci-models workflow." \
+              --latest=false
+          fi
+
+  warm:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # Mirror ci.yml's baseline build flags so the wheel builds on every runner.
+      - name: Install lilbee
+        run: uv sync --locked --all-extras
+        env:
+          CMAKE_ARGS: >-
+            -DGGML_METAL=OFF
+            -DGGML_NATIVE=OFF
+            -DGGML_CUDA=OFF
+            ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
+            ${{ runner.arch == 'X64' && '-DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF' || '' }}
+
+      - name: Pull models (authenticated)
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          for ref in $CI_MODELS; do
+            for i in 1 2 3 4 5; do
+              if uv run lilbee model pull "$ref"; then break; fi
+              echo "pull $ref attempt $i failed; retrying in $((i * 10))s"
+              sleep $((i * 10))
+            done
+          done
+
+      - name: Pack and upload mirror
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)   models_dir="$HOME/.local/share/lilbee/models";            asset="ci-models-linux.tar.gz" ;;
+            macOS)   models_dir="$HOME/Library/Application Support/lilbee/models"; asset="ci-models-macos.tar.gz" ;;
+            Windows) models_dir="$HOME/AppData/Local/lilbee/models";            asset="ci-models-windows.tar.gz" ;;
+          esac
+          tar -czf "$asset" -C "$models_dir" .
+          gh release upload ci-models "$asset" --repo "$GITHUB_REPOSITORY" --clobber

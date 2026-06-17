@@ -1,0 +1,48 @@
+name: Restore CI model mirror
+description: "Download the fixed CI GGUF model set from the ci-models GitHub Release and extract it into the lilbee models directory. No HuggingFace contact; sets restored=true on success."
+
+inputs:
+  models-dir:
+    description: "Directory to extract the models into. Defaults to the canonical platform models dir. A leading ~/ is expanded."
+    required: false
+    default: ""
+  release-tag:
+    description: "Release tag holding the per-OS model tarballs."
+    required: false
+    default: "ci-models"
+
+outputs:
+  restored:
+    description: "true when the mirror was restored, false when the asset was missing (caller should fall back to HuggingFace)."
+    value: ${{ steps.restore.outputs.restored }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download and extract model mirror
+      id: restore
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_MODELS_DIR: ${{ inputs.models-dir }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        set -uo pipefail
+        case "$RUNNER_OS" in
+          Linux)   default_dir="$HOME/.local/share/lilbee/models";            asset="ci-models-linux.tar.gz" ;;
+          macOS)   default_dir="$HOME/Library/Application Support/lilbee/models"; asset="ci-models-macos.tar.gz" ;;
+          Windows) default_dir="$HOME/AppData/Local/lilbee/models";            asset="ci-models-windows.tar.gz" ;;
+          *) echo "Unsupported runner OS: $RUNNER_OS" >&2; echo "restored=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+        esac
+        models_dir="${INPUT_MODELS_DIR:-$default_dir}"
+        models_dir="${models_dir/#\~\//$HOME/}"
+        mkdir -p "$models_dir"
+        tmp="$(mktemp -d)"
+        if ! gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$tmp"; then
+          echo "Mirror asset $asset not in release $RELEASE_TAG; caller falls back to HuggingFace." >&2
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        tar -xzf "$tmp/$asset" -C "$models_dir"
+        echo "Restored CI models into $models_dir"
+        echo "restored=true" >> "$GITHUB_OUTPUT"
