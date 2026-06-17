@@ -254,27 +254,6 @@ jobs:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
 
-      - name: Cache GGUF models (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/cache@v5
-        with:
-          path: ~/.local/share/lilbee/models
-          key: gguf-models-Linux-v4
-
-      - name: Cache GGUF models (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/cache@v5
-        with:
-          path: ~/Library/Application Support/lilbee/models
-          key: gguf-models-macOS-v4
-
-      - name: Cache GGUF models (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: ~\AppData\Local\lilbee\models
-          key: gguf-models-Windows-v4
-
       - name: Cache HuggingFace models
         uses: actions/cache@v5
         with:
@@ -331,8 +310,16 @@ jobs:
           & C:\ollama\ollama.exe pull qwen3:0.6b
           & C:\ollama\ollama.exe pull nomic-embed-text
 
-      - name: Pre-download GGUF models
+      - name: Restore GGUF models from release mirror
+        id: ci-models
+        uses: ./.github/actions/restore-ci-models
+
+      # Only runs if the mirror asset is missing; HF_TOKEN lifts the anon rate limit.
+      - name: Pre-download GGUF models from HuggingFace (fallback)
+        if: steps.ci-models.outputs.restored != 'true'
         shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           for i in 1 2 3; do
             uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF && \
@@ -348,3 +335,4 @@ jobs:
           LILBEE_LLM_PROVIDER: llama-cpp
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
