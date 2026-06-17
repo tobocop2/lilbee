@@ -100,7 +100,8 @@
       <div class="tutorial">
         <div class="tutorial-watch"><a class="tutorial-cta" href="tutorial/">▶&nbsp; watch the full tutorial reel</a></div>
         <div class="tutorialtabs" role="tablist" aria-label="Tutorial reel">
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="true"  tabindex="0">first run</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-whatis"   aria-controls="tutorial-pane-whatis"   aria-selected="true"  tabindex="0">what is lilbee</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="false" tabindex="-1">first run</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
@@ -117,7 +118,14 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
         </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-setup" aria-labelledby="tutorial-tab-setup">
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Index lilbee's own README, ask "what is lilbee in one sentence?", and get a cited answer drawn straight from the source.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-setup" aria-labelledby="tutorial-tab-setup" hidden>
           <div class="tutorial-clip">
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
