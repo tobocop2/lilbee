@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,10 +33,10 @@ def test_runtime_env_sets_wheel_dirs_without_existing_path(
 ) -> None:
     _force_linux(monkeypatch)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    monkeypatch.setattr(
-        cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/a/lib"), Path("/b/lib")]
-    )
-    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": "/a/lib:/b/lib"}
+    dirs = [Path("/a/lib"), Path("/b/lib")]
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: dirs)
+    # os.pathsep / str(Path) keep this host-agnostic (':' vs ';', / vs \).
+    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": os.pathsep.join(str(d) for d in dirs)}
 
 
 def test_runtime_env_prepends_wheel_dirs_before_existing_path(
@@ -43,8 +44,9 @@ def test_runtime_env_prepends_wheel_dirs_before_existing_path(
 ) -> None:
     _force_linux(monkeypatch)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib")
-    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/a/lib")])
-    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": "/a/lib:/usr/lib"}
+    lib = Path("/a/lib")
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [lib])
+    assert cuda_runtime_env() == {"LD_LIBRARY_PATH": os.pathsep.join([str(lib), "/usr/lib"])}
 
 
 def test_wheel_lib_dir_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
