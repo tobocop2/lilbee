@@ -38,7 +38,13 @@ from opencode_driver import (
     tmux_kill,
 )
 from report import CellResult, render_report
-from scenarios import ScenarioResult, run_scenario, scenario_for_tier, wait_for_answer_settle
+from scenarios import (
+    ScenarioResult,
+    run_multi_turn_scenario,
+    run_scenario,
+    scenario_for_tier,
+    wait_for_answer_settle,
+)
 from serve import _count_ok_chat_completions, _scrape_serve_errors, stop_serve
 from workspace import free_port, write_per_cell_workspace
 
@@ -82,9 +88,17 @@ def run_smoke_scenarios(
 ) -> list[ScenarioResult]:
     scen = scenario_for_tier(tier)
     print(f"[{family}] running {scen.name}: {scen.prompt[:60]}...")
-    result = run_scenario(session, scen, workspace)
-    print(f"[{family}]   -> {result.status.value} ({result.elapsed_s:.1f}s) {result.detail}")
-    return [result]
+    single = run_scenario(session, scen, workspace)
+    print(f"[{family}]   -> {single.status.value} ({single.elapsed_s:.1f}s) {single.detail}")
+    # Settle the single-call answer before the multi-turn sequence reuses the
+    # session, so its first turn starts from a quiet pane.
+    wait_for_answer_settle(session, workspace)
+    print(f"[{family}] running {tier} multi-turn tool sequence...")
+    multi = run_multi_turn_scenario(session, tier, workspace)
+    print(
+        f"[{family}]   multi-turn -> {multi.status.value} ({multi.elapsed_s:.1f}s) {multi.detail}"
+    )
+    return [single, multi]
 
 
 def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep: bool) -> None:
