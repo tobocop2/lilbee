@@ -953,6 +953,35 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
         assert planning_mod.plan_all_launches() == [sentinel]
 
+    def test_plan_all_launches_preflights_cuda_before_probing(self, monkeypatch) -> None:
+        # A missing CUDA runtime must surface before the device probe, which would
+        # otherwise fail opaquely on the same absent libraries.
+        seen: list[str] = []
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.preflight_cuda_runtime",
+            lambda _binary: seen.append("preflight"),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: seen.append("probe") or [],
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: ([], {}, 0),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda *a, **kw: Placement(instances=(), unplaceable_roles=()),
+        )
+        planning_mod.plan_all_launches()
+        assert seen == ["preflight", "probe"]
+
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate

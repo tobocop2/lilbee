@@ -714,11 +714,15 @@ def plan_all_launches() -> list[InstanceLaunch]:
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any
     ``cfg.gpu_devices`` pin before the probe and plan (both inherit the env).
+    Preflights the CUDA runtime before the device probe so a driver-only image
+    fails with an install hint instead of an opaque probe error.
     """
+    from lilbee.providers.fleet.cuda_runtime import preflight_cuda_runtime
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
+    preflight_cuda_runtime(binary)
     devices = resolve_devices(binary)
     by_index = {d.index: d for d in devices}
     return plan_launches(None, binary, by_index, devices)
