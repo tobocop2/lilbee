@@ -106,6 +106,7 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
@@ -158,6 +159,13 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption"><code>/crawl &lt;url&gt;</code> fetches a page into your library, then answers against it with a page citation.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-crawlsite" aria-labelledby="tutorial-tab-crawlsite" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Recursive crawl (depth 1) of a whole site: hundreds of Wikipedia pages indexed (fast-forwarded), then one multipart question synthesized across them, cited, with Qwen3-8B and a reranker.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-catalog" aria-labelledby="tutorial-tab-catalog" hidden>
