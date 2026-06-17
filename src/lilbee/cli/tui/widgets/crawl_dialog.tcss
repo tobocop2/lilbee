@@ -2,10 +2,10 @@ CrawlDialog {
     align: center middle;
 }
 
-CrawlDialog > Vertical {
+CrawlDialog > VerticalScroll {
     width: 64;
     height: auto;
-    max-height: 28;
+    max-height: 90%;
     border: thick $primary;
     background: $surface;
     padding: 1 2;
@@ -20,11 +20,6 @@ CrawlDialog #crawl-title {
 
 CrawlDialog #crawl-recursive-checkbox {
     margin-top: 1;
-}
-
-CrawlDialog Collapsible {
-    margin-top: 1;
-    background: transparent;
 }
 
 CrawlDialog .crawl-field-label {

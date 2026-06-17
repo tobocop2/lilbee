@@ -7,9 +7,9 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, Vertical
+from textual.containers import Center, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Collapsible, Input, Label, Static
+from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
@@ -43,7 +43,9 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
     ]
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        # Scrollable body so the full form (incl. depth + the action buttons)
+        # stays reachable on short terminals rather than clipping at max-height.
+        with VerticalScroll():
             yield Static(msg.CRAWL_DIALOG_TITLE, id="crawl-title")
             yield Label(msg.CRAWL_DIALOG_URL_LABEL)
             yield Input(
@@ -71,12 +73,14 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
                 id="crawl-max-pages-input",
             )
-            with Collapsible(title=msg.CRAWL_DIALOG_ADVANCED_TITLE, id="crawl-advanced"):
-                yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
-                yield Input(
-                    placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
-                    id="crawl-depth-input",
-                )
+            # Depth sits at the top level (not behind a collapsible) so it is
+            # discoverable and always reachable; it only applies to recursive
+            # crawls and is ignored when Recursive is unchecked.
+            yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
+            yield Input(
+                placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
+                id="crawl-depth-input",
+            )
             yield Static("", id="crawl-error")
             with Center():
                 yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
