@@ -61,6 +61,14 @@ dependencies = [
 remote = ["litellm>=1.50"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.6"]
+# The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
+# wheels. Markers keep it a no-op off Linux x86_64 (no wheel exists elsewhere);
+# fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
+cuda12 = [
+    "nvidia-cuda-runtime-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+]
 release = ["lilbee[crawler,remote,graph]"]
 
 [project.urls]
