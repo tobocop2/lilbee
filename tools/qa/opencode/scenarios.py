@@ -35,6 +35,10 @@ class Scenario:
     expected: tuple[str, ...]
     forbidden: tuple[str, ...]
     timeout_s: float
+    # Minimum distinct lilbee_search dispatches the cell must drive to PASS. >1
+    # forces sequential tool calls, which exercises the model's (and the engine's)
+    # tool-call parse-back on more than the trivial single-call happy path.
+    min_dispatches: int = 1
 
 
 _TOOL_DISPATCH_MARKER = "⚙ lilbee_search"
@@ -52,24 +56,29 @@ completion count so a stale pane can't carry a prior cell's glyph.
 
 
 # Tier prompts run against the indexed Godot 4 class reference. One prompt per
-# tier (same yardstick across same-tier models). Natural phrasing -- the model
-# should discover the lilbee_search MCP tool itself; only Smalls get a "look up"
-# nudge. See tools/qa/opencode/README.md for the rationale.
+# tier (same yardstick across same-tier models). Each names TWO unrelated class
+# details that no single search can return together, so a genuine answer needs
+# at least two distinct lilbee_search calls -- a sequential-tool-use bar, not the
+# trivial single-call one. Only Smalls get a "look up" nudge. See
+# tools/qa/opencode/README.md for the rationale.
 _TIER_PROMPTS: dict[str, str] = {
-    # Small models answer common Godot API from memory (Node._process etc.), so the
-    # small-tier prompt is explicit ("search the indexed reference") and targets an
-    # obscure class detail the model cannot fabricate, forcing a real lilbee_search.
+    # Small models answer common Godot API from memory, so the small-tier prompt is
+    # explicit ("search the indexed reference") and targets two obscure, unrelated
+    # class details the model cannot fabricate, forcing two real lilbee_search calls.
     "small": (
-        "Search the indexed Godot 4 class reference for the AStarGrid2D class. "
-        "Then, using only what the search returns, tell me what its get_id_path "
-        "method returns."
+        "Search the indexed Godot 4 class reference for two separate things: first, "
+        "what AStarGrid2D.get_id_path returns; second, what the TileMap.set_cell "
+        "method does and its parameters. Look each up with its own search, then, "
+        "using only what the searches return, give me both answers."
     ),
-    # Mid models discover the tool on their own: natural phrasing, anchored to exact
-    # signatures and flag values they would have to verify against the reference.
+    # Mid models discover the tool on their own: natural phrasing, anchored to two
+    # exact, unrelated details they would each have to verify against the reference.
     "mid": (
-        "In Godot 4 I am connecting signals between nodes. What is the exact "
-        "signature of Object.connect, and what do the CONNECT_DEFERRED and "
-        "CONNECT_ONE_SHOT flags do? Include their integer values."
+        "In Godot 4 I am wiring up node signals and grid pathfinding, and I need two "
+        "things verified against the reference. First, the exact signature of "
+        "Object.connect and what the CONNECT_DEFERRED flag does with its integer "
+        "value. Second, what AStarGrid2D.get_id_path returns and the parameters it "
+        "takes. Look each up separately and give me both, citing only the reference."
     ),
     # Giants get the published level-generator prompt verbatim, from the
     # godot-level-generator RAG-vs-no-RAG benchmark (docs/benchmarks/
@@ -83,14 +92,20 @@ _TIER_PROMPTS: dict[str, str] = {
 }
 
 
+_MIN_TOOL_DISPATCHES = 2
+"""A passing cell must drive at least this many distinct lilbee_search calls, so
+the gate proves sequential tool use rather than a single lucky dispatch."""
+
+
 def scenario_for_tier(tier: str) -> Scenario:
     """The single QA scenario for a model's tier (Godot-reference prompt)."""
     return Scenario(
-        name=f"{tier} godot",
+        name=f"{tier} godot multi-tool",
         prompt=_TIER_PROMPTS.get(tier, _TIER_PROMPTS["small"]),
         expected=(_TOOL_DISPATCH_MARKER,),
         forbidden=_RAW_MARKER_FORBIDDEN,
         timeout_s=_MULTI_TOOL_TIMEOUT_S,
+        min_dispatches=_MIN_TOOL_DISPATCHES,
     )
 
 
@@ -164,7 +179,12 @@ def _poll_verdict(
     fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
     missing = [s for s in scenario.expected if s.lower() not in pane_lower]
     return _dispatch_verdict(
-        result, fresh_dispatches, fresh_call, has_events=bool(events), missing=missing
+        result,
+        fresh_dispatches,
+        fresh_call,
+        has_events=bool(events),
+        missing=missing,
+        min_dispatches=scenario.min_dispatches,
     )
 
 
@@ -175,15 +195,22 @@ def _dispatch_verdict(
     *,
     has_events: bool,
     missing: list[str],
+    min_dispatches: int,
 ) -> ScenarioResult | None:
     """Resolve the tool-dispatch PASS gate (event tap first, then pane fallback).
 
-    A fresh dispatch without a fresh lilbee chat completion is the Zen-fallback
-    signature (the model pin fell back to opencode's own hosted provider, which
-    still calls the MCP search tool), so it FAILs rather than passing on the
-    search alone.
+    PASS needs at least *min_dispatches* fresh ``lilbee_search`` calls, so a cell
+    only clears once the model has driven the required number of sequential tool
+    calls. A fresh dispatch without a fresh lilbee chat completion is the
+    Zen-fallback signature (the model pin fell back to opencode's own hosted
+    provider, which still calls the MCP search tool), so it FAILs rather than
+    passing on the search alone.
     """
-    if fresh_dispatches >= 1:
+    if fresh_call >= 1 and 1 <= fresh_dispatches < min_dispatches:
+        # The model called the tool and lilbee served the chat, but not enough
+        # times yet; keep polling until it reaches min_dispatches or goes idle.
+        return None
+    if fresh_dispatches >= min_dispatches:
         if fresh_call < 1:
             return result(
                 ScenarioStatus.FAIL,
@@ -240,7 +267,10 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
             return ScenarioResult(
                 name=scenario.name,
                 status=ScenarioStatus.TIMEOUT,
-                detail=f"pane idle {idle_for:.0f}s without a {_SEARCH_TOOL_SUBSTR} dispatch",
+                detail=(
+                    f"pane idle {idle_for:.0f}s before {scenario.min_dispatches} "
+                    f"{_SEARCH_TOOL_SUBSTR} dispatch(es)"
+                ),
                 pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
                 elapsed_s=time.time() - start,
             )
@@ -248,7 +278,10 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
     return ScenarioResult(
         name=scenario.name,
         status=ScenarioStatus.TIMEOUT,
-        detail=f"no {_SEARCH_TOOL_SUBSTR} dispatch within {scenario.timeout_s:.0f}s",
+        detail=(
+            f"under {scenario.min_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch(es) "
+            f"within {scenario.timeout_s:.0f}s"
+        ),
         pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
         elapsed_s=scenario.timeout_s,
     )
