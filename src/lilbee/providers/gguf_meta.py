@@ -35,6 +35,8 @@ _ARCH_FIELD_SUFFIXES: dict[str, str] = {
     "attention.head_count": "head_count",
     "attention.key_length": "key_length",
     "attention.value_length": "value_length",
+    # Embedding pooling the model was trained for; absent on most non-embedders.
+    "pooling_type": "pooling_type",
 }
 
 

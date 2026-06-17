@@ -2493,6 +2493,18 @@ class TestReadGgufMetadata:
             "name": "Test Model",
         }
 
+    def test_exposes_declared_pooling_type(self, tmp_path: Path) -> None:
+        """An embedder's <arch>.pooling_type is surfaced for the embed-pooling choice."""
+        from lilbee.providers.gguf_meta import read_gguf_metadata
+
+        path = write_test_gguf(
+            tmp_path / "model.gguf",
+            arch="qwen3",
+            fields={"qwen3.pooling_type": 3},
+        )
+
+        assert read_gguf_metadata(path) == {"architecture": "qwen3", "pooling_type": "3"}
+
     def test_returns_none_for_empty_metadata(self, tmp_path: Path) -> None:
         """read_gguf_metadata returns None when the header carries no fields."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
