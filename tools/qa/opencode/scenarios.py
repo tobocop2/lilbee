@@ -300,3 +300,64 @@ def wait_for_answer_settle(session: str, workspace: Path) -> None:
         else:
             quiet = 0
             prev_pane = cur
+
+
+# Multi-turn tool sequence: each turn is its own user message naming a NEW class
+# detail no single search answers, so the model must call lilbee_search again on
+# every turn. Topics differ from the single-call prompts above so the shared
+# session can't let the model answer a later turn from an earlier search.
+_MULTI_TURN_PROMPTS: dict[str, tuple[str, ...]] = {
+    "small": (
+        "Now search the indexed Godot 4 reference for what the TileMap.set_cell "
+        "method does, and answer using only what that search returns.",
+        "Now search the reference for what Tween.tween_property does and the "
+        "parameters it takes, and answer using only that search.",
+    ),
+    "mid": (
+        "Now look up in the Godot 4 reference what AStarGrid2D.get_point_path "
+        "returns and the parameters it takes, citing only the reference.",
+        "Now look up what the Camera2D limit_left and limit_right properties do, "
+        "citing only the reference.",
+    ),
+    "giant": (
+        "Now look up in the Godot 4 reference how TileMap.set_cell is called and its parameters.",
+        "Now look up AStarGrid2D.get_point_path and how it is used for pathfinding, "
+        "citing only the reference.",
+    ),
+}
+
+
+def run_multi_turn_scenario(session: str, tier: str, workspace: Path) -> ScenarioResult:
+    """Drive a multi-turn conversation; PASS only if EVERY turn lands a fresh dispatch.
+
+    Each turn is its own user message that needs a lilbee_search to answer, sent
+    one after another in the same session. :func:`run_scenario` rebaselines the
+    dispatch count at the start of each call, so a turn passes only on a dispatch
+    beyond the prior turns -- proving sequential tool use, not one lucky call.
+    """
+    prompts = _MULTI_TURN_PROMPTS.get(tier, _MULTI_TURN_PROMPTS["small"])
+    start = time.time()
+    for index, prompt in enumerate(prompts, start=1):
+        turn = Scenario(
+            name=f"{tier} multi-turn t{index}",
+            prompt=prompt,
+            expected=(_TOOL_DISPATCH_MARKER,),
+            forbidden=_RAW_MARKER_FORBIDDEN,
+            timeout_s=_MULTI_TOOL_TIMEOUT_S,
+        )
+        outcome = run_scenario(session, turn, workspace)
+        if outcome.status is not ScenarioStatus.PASS:
+            return ScenarioResult(
+                name=f"{tier} multi-turn",
+                status=outcome.status,
+                detail=f"turn {index}/{len(prompts)} did not dispatch: {outcome.detail}",
+                pane_excerpt=outcome.pane_excerpt,
+                elapsed_s=time.time() - start,
+            )
+        wait_for_answer_settle(session, workspace)
+    return ScenarioResult(
+        name=f"{tier} multi-turn",
+        status=ScenarioStatus.PASS,
+        detail=f"{len(prompts)} sequential tool turns each dispatched",
+        elapsed_s=time.time() - start,
+    )
