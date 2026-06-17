@@ -88,7 +88,7 @@ jobs:
           #   (py.path.svnwc). Pulled in transitively by pytest-forked>=1.6.0.
           #   Not reachable from lilbee or pytest-forked. No upstream fix.
           # - GHSA-vfmq-68hx-4jfw: XXE in lxml <6.1 default iterparse config.
-          #   Transitively pinned to 5.x by crawl4ai 0.8.6 (`lxml~=5.3`);
+          #   Transitively pinned to 5.x by crawl4ai 0.8.9 (`lxml~=5.3`);
           #   only installed with the `crawler` extra. Revisit when crawl4ai
           #   allows lxml 6.x.
           # - GHSA-xqmj-j6mv-4862: SSTI in the LiteLLM Proxy server's
@@ -118,6 +118,12 @@ jobs:
           #   (CVE-2024-34997). NumpyArrayWrapper only reads joblib-produced
           #   cache files (trusted content). joblib is transitive via nltk via
           #   crawl4ai (`crawler` extra); lilbee never imports it.
+          # - GHSA-p4gq-832x-fm9v: path traversal in nltk.data.load()
+          #   (CVE-2026-54293). No fixed nltk on PyPI (3.9.4 is latest).
+          #   Transitive via crawl4ai (`crawler` extra); lilbee never imports
+          #   nltk and crawl4ai only loads hardcoded resource names, so the
+          #   attacker-controlled-path vector is unreachable. bb-m851 tracks
+          #   the bump to nltk >= 3.10 once it ships.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
@@ -128,6 +134,7 @@ jobs:
             GHSA-wxxx-gvqv-xp7p
             PYSEC-2025-183
             PYSEC-2024-277
+            GHSA-p4gq-832x-fm9v
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)
