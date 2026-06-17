@@ -148,6 +148,10 @@ Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor'
 
 ![/crawl a Wikipedia page, then ask a cited question against it](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
 
+Or crawl a whole site, not just one page. With recursive crawling on, lilbee follows the links and indexes the lot; watch the page count climb in the Task Center.
+
+![crawl a whole site at depth 1: hundreds of pages indexed, with live progress in the Task Center](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.gif)
+
 ### Documents, code, and scanned images
 
 lilbee splits indexing by what's being read:
