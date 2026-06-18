@@ -384,5 +384,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # GH_REPO is load-bearing: without it gh resolves the repo from the
+          # git remote, and inside the root-run manylinux container git refuses
+          # the runner-owned checkout ("detected dubious ownership"), so the
+          # Linux upload fails. Passing the repo explicitly skips git entirely.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
         run: gh release upload "$TAG" "dist/${{ matrix.asset_name }}" --clobber
