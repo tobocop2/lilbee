@@ -1007,6 +1007,19 @@ class TestResolveDevicesProbeFailureWarning:
             assert planning_mod.resolve_devices(Path("/bin/llama-server")) == [device]
         assert not caplog.records
 
+    def test_raises_when_cuda_build_enumerates_no_device(self, monkeypatch) -> None:
+        # The bb-3xnx failure: a CUDA-linked engine + an NVIDIA GPU, but the probe
+        # sees nothing (a runtime the probe can't load). Must hard-fail, not fall back.
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet import cuda_runtime
+
+        monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
+        with pytest.raises(ProviderError, match="no CUDA-capable device"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"))
+
 
 def _parse_flags(argv: list[str]) -> dict[str, str | None]:
     """Map each ``--flag`` in *argv* to its value token (None for bare flags)."""
