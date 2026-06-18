@@ -48,12 +48,19 @@ def _prestart_mp_resource_tracker() -> None:
     (Nuitka onefile), where ``sys.executable`` is the lilbee exe itself
     and the tracker's spawn would re-enter typer with ``-B -s -E`` as
     CLI args (``__main__._dispatch_frozen_child`` handles that case).
+
+    Detecting the frozen build via :func:`lilbee._frozen.is_frozen` is
+    load-bearing: Nuitka never sets ``sys.frozen``, so a check on that
+    attribute alone would let the tracker spawn fire inside the onefile
+    binary and surface the typer error.
     """
     import sys as _sys
 
+    from lilbee._frozen import is_frozen
+
     if _sys.platform == "win32":
         return
-    if getattr(_sys, "frozen", False):
+    if is_frozen():
         return
     try:
         from multiprocessing import resource_tracker
