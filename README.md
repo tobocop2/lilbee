@@ -95,7 +95,9 @@ lilbee does all of it, in one install: it finds and runs the models for you, pro
 
 ## How lilbee compares
 
-lilbee isn't another model server you point an app at. It's a local search engine with the model runner built in, so it sits between two worlds: the desktop runners that get a model chatting on your machine, and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across your GPUs in a single executable.
+lilbee is built for consumer hardware and for people who don't want to babysit infrastructure. One install gives you a model manager, a search engine over your files, a web crawler, and an MCP server for coding agents (with native [opencode](https://opencode.ai) support on the way), all in a single executable. The goal is to make local AI something anyone can use to get the most out of the hardware they already own, not a setup reserved for people who enjoy wiring tools together.
+
+It isn't another model server you point an app at. It's a local search engine with the model runner built in, so it sits between two worlds: the desktop runners that get a model chatting on your machine, and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
 
 | | lilbee | [LM Studio](https://lmstudio.ai/) | [Ollama](https://ollama.com/) | [vLLM](https://github.com/vllm-project/vllm) |
 |---|---|---|---|---|
@@ -108,12 +110,11 @@ lilbee isn't another model server you point an app at. It's a local search engin
 | Built for many-user throughput at scale | single-user focus | — | limited | ✓ this is its job |
 | Web crawler built in | ✓ | — | — | — |
 | Long-term memory (opt-in) | ✓ | — | — | — |
-| OpenAI-compatible API | ✓ | ✓ | ✓ | ✓ |
-| Interfaces | TUI, CLI, MCP, REST, Python | desktop GUI, API | CLI, GUI, API | API server |
-| MCP server for coding agents | built in | — | — | — |
+| Single-file footprint, GPU build (excludes models) | ✓ ~675 MB, whole stack | Electron app + per-backend runtimes | ~1.3 GB, runner only | multi-GB Python + CUDA stack |
+| Interfaces | TUI, CLI, MCP, REST, Python, Obsidian GUI | desktop GUI, API | CLI, GUI, API | API server |
 | Use your existing Ollama / LM Studio / cloud as a backend | ✓ | — | — | — |
 
-Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the entire stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router, then ships it all as one file. Already on Ollama or LM Studio? lilbee runs on top of them.
+Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router. On a CUDA box that entire stack is a single ~675 MB binary, smaller than Ollama's ~1.3 GB runner-only build and a fraction of a vLLM and PyTorch environment. Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
 
 ## What you can do with it
 
