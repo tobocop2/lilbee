@@ -30,6 +30,20 @@ def _isolate_vendored_openssl() -> None:
     os.environ.setdefault("OPENSSL_CONF", os.devnull)
 
 
+def _is_frozen() -> bool:
+    """True when running from a frozen build.
+
+    A deliberate local copy of :func:`lilbee._frozen.is_frozen`: the dispatch
+    path below must import nothing from the ``lilbee`` package (the splash
+    subprocess this intercepts is stdlib-only and must stay light), so it
+    cannot import the shared helper. PyInstaller/cx_Freeze set ``sys.frozen``;
+    Nuitka never does, but injects a ``__compiled__`` global into every module
+    it compiles. Both must be checked so the dispatchers fire in the shipped
+    Nuitka onefile binary, not just under PyInstaller.
+    """
+    return bool(sys.__dict__.get("frozen")) or "__compiled__" in globals()
+
+
 def _multiprocessing_child_code(argv: list[str]) -> str | None:
     """Return the ``-c`` payload if *argv* is a multiprocessing child reinvocation.
 
@@ -59,7 +73,7 @@ def _multiprocessing_child_code(argv: list[str]) -> str | None:
 
 def _dispatch_frozen_child() -> bool:
     """Exec a multiprocessing child payload and return True when handled."""
-    if not getattr(sys, "frozen", False):
+    if not _is_frozen():
         return False
     code = _multiprocessing_child_code(sys.argv)
     if code is None:
@@ -83,7 +97,7 @@ def _dispatch_module_invocation() -> bool:
     Restricted to the ``lilbee.*`` namespace so a stray ``lilbee -m foo`` typed
     by a user can't reach exec.
     """
-    if not getattr(sys, "frozen", False):
+    if not _is_frozen():
         return False
     if len(sys.argv) < _DASH_M_MIN_ARGV or sys.argv[1] != "-m":
         return False
