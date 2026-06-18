@@ -10,9 +10,12 @@ import pytest
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import cuda_runtime
 from lilbee.providers.fleet.cuda_runtime import (
+    apply_cuda_runtime_env,
+    assert_cuda_devices_usable,
     cuda_runtime_env,
     preflight_cuda_runtime,
 )
+from lilbee.providers.fleet.devices import FleetDevice
 
 
 def _force_linux(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,3 +157,107 @@ def test_preflight_silent_when_ldd_unavailable(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(cuda_runtime.subprocess, "run", _raise)
     preflight_cuda_runtime(Path("/bin/llama-server"))  # no raise
+
+
+def _ldd_returns(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+    _have_ldd(monkeypatch)
+    monkeypatch.setattr(
+        cuda_runtime.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(stdout=stdout, stderr=""),
+    )
+
+
+_LINKS_CUDA = "\tlibcudart.so.12 => /usr/lib/libcudart.so.12 (0x00007f00)\n"
+_NO_CUDA = "\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x00007f00)\n"
+
+
+def test_links_cuda_runtime_true_when_soname_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is True
+
+
+def test_links_cuda_runtime_true_when_soname_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A CUDA build whose runtime is missing still names the soname -- it is a CUDA build.
+    _ldd_returns(monkeypatch, "\tlibcudart.so.12 => not found\n")
+    assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is True
+
+
+def test_links_cuda_runtime_false_for_non_cuda_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is False
+
+
+def test_links_cuda_runtime_false_when_ldd_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cuda_runtime.shutil, "which", lambda _name: None)
+    assert cuda_runtime._links_cuda_runtime(Path("/bin/llama-server"), {}) is False
+
+
+def test_apply_cuda_runtime_env_updates_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_linux(monkeypatch)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/wheel/lib")])
+    apply_cuda_runtime_env()
+    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == "/wheel/lib"
+
+
+def test_apply_cuda_runtime_env_noop_when_no_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_linux(monkeypatch)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    apply_cuda_runtime_env()
+    assert "LD_LIBRARY_PATH" not in cuda_runtime.os.environ
+
+
+def _cuda_gpu_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Linux box: a CUDA-linked binary and an NVIDIA GPU the driver can see."""
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+
+
+def test_assert_devices_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cuda_runtime.sys, "platform", "darwin")
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("must not probe off Linux")
+
+    monkeypatch.setattr(cuda_runtime.subprocess, "run", _boom)
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+
+
+def test_assert_devices_passes_when_a_device_enumerated(monkeypatch: pytest.MonkeyPatch) -> None:
+    _cuda_gpu_host(monkeypatch)
+    device = FleetDevice("CUDA", 0, "gpu", 1, 1)
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [device])  # no raise
+
+
+def test_assert_devices_passes_for_non_cuda_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A Vulkan/CPU build on an NVIDIA box legitimately falls back; never hard-fails.
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _NO_CUDA)
+    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+
+
+def test_assert_devices_passes_when_no_nvidia_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A CUDA build on a CPU-only host should fall back to CPU, not error.
+    _force_linux(monkeypatch)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
+    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+
+
+def test_assert_devices_raises_when_cuda_build_sees_no_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cuda_gpu_host(monkeypatch)
+    with pytest.raises(ProviderError) as exc:
+        assert_cuda_devices_usable(Path("/bin/llama-server"), [])
+    message = str(exc.value)
+    assert "no CUDA-capable device" in message
+    assert "nvidia-smi" in message
+    assert "12.4" in message  # names the matching runtime to pin (cu124 build)

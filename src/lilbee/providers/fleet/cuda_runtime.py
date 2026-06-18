@@ -22,8 +22,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from lilbee.providers import model_cache
 from lilbee.providers.base import ProviderError
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.devices import FleetDevice
 
 log = logging.getLogger(__name__)
 
@@ -81,11 +86,21 @@ def cuda_runtime_env() -> dict[str, str]:
     return {"LD_LIBRARY_PATH": os.pathsep.join(parts)}
 
 
-def _missing_cuda_libs(binary: Path, env: dict[str, str]) -> list[str]:
-    """CUDA runtime sonames *binary* links but ``ldd`` cannot resolve under *env*."""
+def apply_cuda_runtime_env() -> None:
+    """Put the CUDA-runtime wheel libs on this process's ``LD_LIBRARY_PATH``.
+
+    The device probe and the child servers then resolve the same runtime the
+    preflight checked, so a zero-device probe reflects a genuinely unusable GPU
+    rather than a probe that merely ran without the wheel libraries.
+    """
+    os.environ.update(cuda_runtime_env())
+
+
+def _ldd_output(binary: Path, env: dict[str, str]) -> str | None:
+    """``ldd`` stdout for *binary* under *env*; None when ldd can't run on it."""
     ldd = shutil.which("ldd")
     if ldd is None:
-        return []
+        return None
     try:
         proc = subprocess.run(  # noqa: S603 - ldd path and the resolved binary
             [ldd, str(binary)],
@@ -96,9 +111,25 @@ def _missing_cuda_libs(binary: Path, env: dict[str, str]) -> list[str]:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        # Not an ELF, a static binary, or a timeout: nothing to preflight.
+        # Not an ELF, a static binary, or a timeout: nothing to inspect.
+        return None
+    return proc.stdout
+
+
+def _missing_cuda_libs(binary: Path, env: dict[str, str]) -> list[str]:
+    """CUDA runtime sonames *binary* links but ``ldd`` cannot resolve under *env*."""
+    out = _ldd_output(binary, env)
+    if out is None:
         return []
-    return [soname for soname in _SONAME_TO_PACKAGE if f"{soname} => not found" in proc.stdout]
+    return [soname for soname in _SONAME_TO_PACKAGE if f"{soname} => not found" in out]
+
+
+def _links_cuda_runtime(binary: Path, env: dict[str, str]) -> bool:
+    """True when *binary* lists a CUDA runtime soname (a CUDA build), resolved or not."""
+    out = _ldd_output(binary, env)
+    if out is None:
+        return False
+    return any(soname in out for soname in _SONAME_TO_PACKAGE)
 
 
 def preflight_cuda_runtime(binary: Path) -> None:
@@ -120,4 +151,32 @@ def preflight_cuda_runtime(binary: Path) -> None:
         "found on this host (common on driver-only GPU images). Install the runtime with: "
         f"pip install {packages} -- lilbee adds their libraries to the engine's search path "
         "automatically. Or set LD_LIBRARY_PATH to a directory that contains them."
+    )
+
+
+def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None:
+    """Fail loud when a CUDA build links a runtime it cannot initialize a GPU with.
+
+    *devices* is the engine's own ``--list-devices`` result. When it is empty yet
+    *binary* is a CUDA build and the host has an NVIDIA GPU, the runtime loaded but
+    enumerated nothing -- typically a ``libcudart`` newer than the driver supports,
+    which reports "no CUDA-capable device" while ``nvidia-smi`` still sees the card.
+    Raising here stops placement from silently falling back to CPU.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    if devices:
+        return
+    env = {**os.environ, **cuda_runtime_env()}
+    if not _links_cuda_runtime(binary, env):
+        return
+    if not model_cache.has_nvidia_gpu():
+        return
+    raise ProviderError(
+        "The engine links the CUDA runtime and this host has an NVIDIA GPU, but it "
+        "enumerated no CUDA-capable device. This usually means the installed CUDA "
+        "runtime is newer than the GPU driver supports. Check the driver's CUDA "
+        "version with 'nvidia-smi' and install runtime wheels that match the engine's "
+        "CUDA build: a cu124 build needs the 12.4.x nvidia-cuda-runtime-cu12 / "
+        "nvidia-cublas-cu12 / nvidia-cuda-nvrtc-cu12 wheels (or a newer driver)."
     )

@@ -643,9 +643,13 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     The binary's ``--list-devices`` is authoritative; when it enumerates nothing,
     fall back to the Vulkan VRAM probe, which reports the same index space.
     """
+    from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
 
     devices = probe_devices(binary)
+    # A CUDA build that links a runtime it cannot init a GPU with must fail loud,
+    # not silently fall back to CPU (the Vulkan VRAM probe below would mask it).
+    assert_cuda_devices_usable(binary, devices)
     if not devices and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "
@@ -717,12 +721,18 @@ def plan_all_launches() -> list[InstanceLaunch]:
     Preflights the CUDA runtime before the device probe so a driver-only image
     fails with an install hint instead of an opaque probe error.
     """
-    from lilbee.providers.fleet.cuda_runtime import preflight_cuda_runtime
+    from lilbee.providers.fleet.cuda_runtime import (
+        apply_cuda_runtime_env,
+        preflight_cuda_runtime,
+    )
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     preflight_cuda_runtime(binary)
+    # Put the CUDA-runtime wheels on the process path so the device probe sees the
+    # same runtime the servers will, before resolve_devices enumerates GPUs.
+    apply_cuda_runtime_env()
     devices = resolve_devices(binary)
     by_index = {d.index: d for d in devices}
     return plan_launches(None, binary, by_index, devices)
