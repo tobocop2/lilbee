@@ -14,7 +14,6 @@ can't be a baked rpath because the wheels' location is only known at install tim
 from __future__ import annotations
 
 import importlib.util
-import logging
 import os
 import shutil
 import subprocess
@@ -28,8 +27,6 @@ from lilbee.providers.base import ProviderError
 if TYPE_CHECKING:
     from lilbee.providers.fleet.devices import FleetDevice
 
-log = logging.getLogger(__name__)
-
 # Subpackages the nvidia-*-cu12 wheels install under the ``nvidia`` namespace
 # (the ``cuda12`` extra: nvidia-cuda-runtime-cu12, nvidia-cublas-cu12,
 # nvidia-cuda-nvrtc-cu12).
@@ -41,8 +38,12 @@ _CUDA_WHEEL_IMPORTS: tuple[str, ...] = (
 # The sonames those wheels provide, used to tell from ``ldd`` whether a binary is a
 # CUDA build (it lists the soname whether or not the runtime resolves).
 _CUDA_SONAMES: tuple[str, ...] = ("libcudart.so.12", "libcublas.so.12", "libnvrtc.so.12")
+# Substrings that mark a CUDA init failure in the engine's --list-devices output.
+_CUDA_ERROR_MARKERS: tuple[str, ...] = ("error", "fail", "no cuda")
 _LDD_TIMEOUT_S = 10
 _LIST_DEVICES_TIMEOUT_S = 60
+# How much of the probe output to quote when no specific error line is found.
+_DIAGNOSTIC_TAIL_CHARS = 300
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
@@ -121,11 +122,7 @@ def _links_cuda_runtime(binary: Path, env: dict[str, str]) -> bool:
 
 
 def _device_probe_diagnostic(binary: Path, env: dict[str, str]) -> str:
-    """The engine's own ``--list-devices`` error line (or a short tail) for diagnostics.
-
-    Surfacing the engine's real output keeps the failure honest: the cause is what the
-    engine reports (e.g. ``ggml_cuda_init: ... no CUDA-capable device``), not a guess.
-    """
+    """The engine's own ``--list-devices`` CUDA error line, or a short tail of its output."""
     try:
         proc = subprocess.run(  # noqa: S603 - the resolved llama-server binary
             [str(binary), "--list-devices"],
@@ -140,9 +137,9 @@ def _device_probe_diagnostic(binary: Path, env: dict[str, str]) -> str:
     out = f"{proc.stderr}\n{proc.stdout}".strip()
     for line in out.splitlines():
         lowered = line.lower()
-        if "cuda" in lowered and ("error" in lowered or "fail" in lowered or "no cuda" in lowered):
+        if "cuda" in lowered and any(marker in lowered for marker in _CUDA_ERROR_MARKERS):
             return line.strip()
-    return out[-300:] if out else "(the engine's device probe printed nothing)"
+    return out[-_DIAGNOSTIC_TAIL_CHARS:] if out else "(the engine's device probe printed nothing)"
 
 
 def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None:

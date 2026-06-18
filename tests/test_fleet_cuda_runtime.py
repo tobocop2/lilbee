@@ -204,3 +204,44 @@ def test_cuda_wheel_lib_dirs_collects_only_installed(monkeypatch: pytest.MonkeyP
     }
     monkeypatch.setattr(cuda_runtime, "_wheel_lib_dir", lambda name: found[name])
     assert cuda_runtime._cuda_wheel_lib_dirs() == [Path("/r/lib"), Path("/n/lib")]
+
+
+def test_ldd_output_none_when_subprocess_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _have_ldd(monkeypatch)
+
+    def _raise(*_a: object, **_k: object) -> None:
+        raise OSError("not an ELF binary")
+
+    monkeypatch.setattr(cuda_runtime.subprocess, "run", _raise)
+    assert cuda_runtime._ldd_output(Path("/bin/llama-server"), {}) is None
+
+
+def test_device_probe_diagnostic_returns_tail_when_no_error_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cuda_runtime.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(stdout="CUDA0: NVIDIA L40 (45 GiB)\n", stderr=""),
+    )
+    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
+    assert "NVIDIA L40" in out  # no error marker -> falls through to the output tail
+
+
+def test_device_probe_diagnostic_when_no_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cuda_runtime.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(stdout="", stderr=""),
+    )
+    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
+    assert out == "(the engine's device probe printed nothing)"
+
+
+def test_device_probe_diagnostic_when_probe_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*_a: object, **_k: object) -> None:
+        raise OSError("binary not found")
+
+    monkeypatch.setattr(cuda_runtime.subprocess, "run", _raise)
+    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
+    assert out == "(the engine's device probe could not be run)"
