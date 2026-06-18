@@ -273,6 +273,28 @@ jobs:
             exit 1
           fi
 
+          # Frozen multiprocessing reinvocations must be intercepted before typer.
+          # Two real reinvocation shapes the running binary spawns into itself:
+          #   1. the splash subprocess: [exe, -m, lilbee.runtime._splash_runner, <fd>]
+          #   2. the resource tracker:  [exe, -c, "from multiprocessing... main(<fd>)"]
+          # Nuitka never sets sys.frozen, so a build that mis-detects frozen state
+          # leaks these into typer ("No such command '<fd>'", "No such option: -c"),
+          # which is what users see on TUI exit. Drive both shapes directly; fd 999
+          # is unopened so the splash runner sees a dead pipe and exits immediately.
+          MP=$(mktemp)
+          "$EXE" -m lilbee.runtime._splash_runner 999 > "$MP" 2>&1 || true
+          if grep -qE "No such command|No such option" "$MP"; then
+            echo "FAIL: splash -m reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+          "$EXE" -c "import multiprocessing" > "$MP" 2>&1 || true
+          if grep -qE "No such command|No such option" "$MP"; then
+            echo "FAIL: resource-tracker -c reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+
           # Boot server, scan stderr for the spawn-loop pattern, verify /api/health version.
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"
