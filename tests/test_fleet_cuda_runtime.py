@@ -62,9 +62,11 @@ def test_links_cuda_runtime_false_when_ldd_absent(monkeypatch: pytest.MonkeyPatc
 def test_apply_cuda_runtime_env_updates_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_linux(monkeypatch)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [Path("/wheel/lib")])
+    wheel = Path("/wheel/lib")
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
     apply_cuda_runtime_env()
-    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == "/wheel/lib"
+    # str(Path) keeps this host-agnostic (/ vs \ between Linux and Windows).
+    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == str(wheel)
 
 
 def test_apply_cuda_runtime_env_noop_when_no_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
