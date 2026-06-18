@@ -261,3 +261,26 @@ def test_assert_devices_raises_when_cuda_build_sees_no_device(
     assert "no CUDA-capable device" in message
     assert "nvidia-smi" in message
     assert "12.4" in message  # names the matching runtime to pin (cu124 build)
+
+
+def test_assert_devices_surfaces_engine_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The error reports what the engine actually said + lists causes, rather than
+    # asserting a single guessed cause.
+    _force_linux(monkeypatch)
+    _have_ldd(monkeypatch)
+    monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
+    cuda_err = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
+
+    def _run(cmd: list[str], *_a: object, **_k: object) -> SimpleNamespace:
+        if "--list-devices" in cmd:
+            return SimpleNamespace(stdout="", stderr=cuda_err + "\n")
+        return SimpleNamespace(stdout=_LINKS_CUDA, stderr="")  # ldd resolves the soname
+
+    monkeypatch.setattr(cuda_runtime.subprocess, "run", _run)
+    with pytest.raises(ProviderError) as exc:
+        assert_cuda_devices_usable(Path("/bin/llama-server"), [])
+    message = str(exc.value)
+    assert "failed to initialize CUDA" in message  # the engine's own diagnostic, surfaced
+    assert "Likely causes" in message
+    assert "CUDA_VISIBLE_DEVICES" in message  # causes listed, not one asserted

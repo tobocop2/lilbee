@@ -42,6 +42,7 @@ _CUDA_WHEEL_PACKAGES: tuple[tuple[str, str, str], ...] = (
 _SONAME_TO_PACKAGE = {soname: pkg for _imp, pkg, soname in _CUDA_WHEEL_PACKAGES}
 
 _LDD_TIMEOUT_S = 10
+_LIST_DEVICES_TIMEOUT_S = 60
 
 
 def _wheel_lib_dir(import_name: str) -> Path | None:
@@ -154,14 +155,38 @@ def preflight_cuda_runtime(binary: Path) -> None:
     )
 
 
+def _device_probe_diagnostic(binary: Path, env: dict[str, str]) -> str:
+    """The engine's own ``--list-devices`` error line (or a short tail) for diagnostics.
+
+    Surfacing the engine's real output keeps the failure honest: the cause is what the
+    engine reports (e.g. ``ggml_cuda_init: ... no CUDA-capable device``), not a guess.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603 - the resolved llama-server binary
+            [str(binary), "--list-devices"],
+            capture_output=True,
+            text=True,
+            timeout=_LIST_DEVICES_TIMEOUT_S,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "(the engine's device probe could not be run)"
+    out = f"{proc.stderr}\n{proc.stdout}".strip()
+    for line in out.splitlines():
+        lowered = line.lower()
+        if "cuda" in lowered and ("error" in lowered or "fail" in lowered or "no cuda" in lowered):
+            return line.strip()
+    return out[-300:] if out else "(the engine's device probe printed nothing)"
+
+
 def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None:
     """Fail loud when a CUDA build links a runtime it cannot initialize a GPU with.
 
     *devices* is the engine's own ``--list-devices`` result. When it is empty yet
     *binary* is a CUDA build and the host has an NVIDIA GPU, the runtime loaded but
-    enumerated nothing -- typically a ``libcudart`` newer than the driver supports,
-    which reports "no CUDA-capable device" while ``nvidia-smi`` still sees the card.
-    Raising here stops placement from silently falling back to CPU.
+    enumerated no device. The engine's own diagnostic is surfaced and the likely causes
+    are listed (rather than asserting one), so placement does not silently fall to CPU.
     """
     if not sys.platform.startswith("linux"):
         return
@@ -172,11 +197,14 @@ def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None
         return
     if not model_cache.has_nvidia_gpu():
         return
+    diagnostic = _device_probe_diagnostic(binary, env)
     raise ProviderError(
         "The engine links the CUDA runtime and this host has an NVIDIA GPU, but it "
-        "enumerated no CUDA-capable device. This usually means the installed CUDA "
-        "runtime is newer than the GPU driver supports. Check the driver's CUDA "
-        "version with 'nvidia-smi' and install runtime wheels that match the engine's "
-        "CUDA build: a cu124 build needs the 12.4.x nvidia-cuda-runtime-cu12 / "
-        "nvidia-cublas-cu12 / nvidia-cuda-nvrtc-cu12 wheels (or a newer driver)."
+        "enumerated no CUDA-capable device, so GPU work would silently fall back to CPU.\n"
+        f"The engine reported: {diagnostic}\n"
+        "Likely causes: the installed CUDA runtime is newer than the GPU driver supports "
+        "(check the driver's CUDA version with 'nvidia-smi' and match the "
+        "nvidia-cuda-runtime-cu12 / nvidia-cublas-cu12 / nvidia-cuda-nvrtc-cu12 wheels to "
+        "the engine's CUDA build, e.g. 12.4.x for a cu124 build, or update the driver); a "
+        "restrictive CUDA_VISIBLE_DEVICES; or a GPU/driver fault."
     )
