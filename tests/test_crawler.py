@@ -917,6 +917,21 @@ class TestResolvePlaywrightRunner:
         with pytest.raises(RuntimeError, match="API drift"):
             bootstrap_mod._resolve_playwright_runner()
 
+    def test_compute_driver_failure_under_nuitka_propagates(self, monkeypatch):
+        """Nuitka sets __compiled__ but never sys.frozen; still propagate (no -m fallback)."""
+        from lilbee import _frozen
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setattr(_frozen, "__compiled__", object(), raising=False)
+
+        def _boom() -> tuple[str, str]:
+            raise RuntimeError("playwright API drift")
+
+        self._install_fake_driver_module(monkeypatch, compute=_boom, env={})
+
+        with pytest.raises(RuntimeError, match="API drift"):
+            bootstrap_mod._resolve_playwright_runner()
+
     def test_playwright_missing_raises_actionable_error(self, monkeypatch):
         """ImportError on playwright raises CrawlerBrowserError with install hint."""
         import builtins
