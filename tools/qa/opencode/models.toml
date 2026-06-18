@@ -33,11 +33,16 @@ ref = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4
 size_gb = 17.0
 tier = "giant"
 
+# Dropped: functionary emits its own >>>recipient tool syntax, not standard
+# tool-call JSON, so llama-server's --jinja parser never surfaces a tool call
+# and opencode never dispatches. Old (Llama-3.1 era) and superseded by the
+# native tool-callers already covered here.
 [[model]]
 family = "functionary"
 ref = "meetkai/functionary-small-v3.2-GGUF/functionary-small-v3.2.Q8_0.gguf"
 size_gb = 8.5
 tier = "mid"
+skip = true
 
 [[model]]
 family = "mistral-nemo"
