@@ -93,6 +93,28 @@ lilbee does all of it, in one install: it finds and runs the models for you, pro
 
 > **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a reference layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
+## How lilbee compares
+
+lilbee isn't another model server you point an app at. It's a local search engine with the model runner built in, so it sits between two worlds: the desktop runners that get a model chatting on your machine, and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across your GPUs in a single executable.
+
+| | lilbee | [LM Studio](https://lmstudio.ai/) | [Ollama](https://ollama.com/) | [vLLM](https://github.com/vllm-project/vllm) |
+|---|---|---|---|---|
+| **Primary focus** | search engine over your files | desktop app to run and chat with models | simple local model runner | high-throughput GPU serving |
+| Runs local models | ✓ | ✓ | ✓ | ✓ |
+| Search your own files, with citations | ✓ full RAG pipeline | attach a few docs per chat | drag files into a chat | — |
+| Chat, embedding, vision, rerank as one managed fleet | ✓ | — | — | — |
+| Multi-GPU model placement | ✓ VRAM-aware tensor-split | basic split | ✓ auto layer-split | ✓ tensor + pipeline parallel |
+| Scales the whole stack, not just one model | ✓ per-GPU replicas + load-balancing router | — | — | one model per server |
+| Built for many-user throughput at scale | single-user focus | — | limited | ✓ this is its job |
+| Web crawler built in | ✓ | — | — | — |
+| Long-term memory (opt-in) | ✓ | — | — | — |
+| OpenAI-compatible API | ✓ | ✓ | ✓ | ✓ |
+| Interfaces | TUI, CLI, MCP, REST, Python | desktop GUI, API | CLI, GUI, API | API server |
+| MCP server for coding agents | built in | — | — | — |
+| Use your existing Ollama / LM Studio / cloud as a backend | ✓ | — | — | — |
+
+Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the entire stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router, then ships it all as one file. Already on Ollama or LM Studio? lilbee runs on top of them.
+
 ## What you can do with it
 
 ### A library of your own files
