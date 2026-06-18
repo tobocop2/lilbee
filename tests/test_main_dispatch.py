@@ -90,6 +90,51 @@ class TestMultiprocessingChildCode:
         assert main_mod._multiprocessing_child_code(["bin", "-c", "print('hi')"]) is None
 
 
+class TestIsFrozen:
+    """Detect frozen builds via sys.frozen (PyInstaller) or __compiled__ (Nuitka)."""
+
+    def test_true_when_sys_frozen_set(self) -> None:
+        with mock.patch.object(main_mod.sys, "frozen", True, create=True):
+            assert main_mod._is_frozen() is True
+
+    def test_true_when_nuitka_compiled_marker_present(self) -> None:
+        # Nuitka injects __compiled__ into every module but never sets sys.frozen.
+        with (
+            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(main_mod, "__compiled__", object(), create=True),
+        ):
+            assert main_mod._is_frozen() is True
+
+    def test_false_in_plain_interpreter(self) -> None:
+        with mock.patch.object(main_mod.sys, "frozen", False, create=True):
+            assert main_mod._is_frozen() is False
+
+
+class TestSharedIsFrozen:
+    """lilbee._frozen.is_frozen is the canonical helper for package-level code."""
+
+    def test_true_when_sys_frozen_set(self) -> None:
+        from lilbee import _frozen
+
+        with mock.patch.object(_frozen.sys, "frozen", True, create=True):
+            assert _frozen.is_frozen() is True
+
+    def test_true_when_nuitka_compiled_marker_present(self) -> None:
+        from lilbee import _frozen
+
+        with (
+            mock.patch.object(_frozen.sys, "frozen", False, create=True),
+            mock.patch.object(_frozen, "__compiled__", object(), create=True),
+        ):
+            assert _frozen.is_frozen() is True
+
+    def test_false_in_plain_interpreter(self) -> None:
+        from lilbee import _frozen
+
+        with mock.patch.object(_frozen.sys, "frozen", False, create=True):
+            assert _frozen.is_frozen() is False
+
+
 class TestDispatchFrozenChild:
     """Run multiprocessing `-c` payloads inside the frozen exe."""
 
@@ -100,6 +145,23 @@ class TestDispatchFrozenChild:
             mock.patch.object(main_mod.sys, "argv", argv),
         ):
             assert main_mod._dispatch_frozen_child() is False
+
+    def test_execs_payload_under_nuitka_without_sys_frozen(self, tmp_path: Path) -> None:
+        # Regression: Nuitka onefile never sets sys.frozen, so gating the
+        # dispatcher on it leaks the resource_tracker reinvocation into typer
+        # ("No such command '3'"). __compiled__ is the Nuitka frozen marker.
+        marker = tmp_path / "marker.txt"
+        payload = (
+            f"from multiprocessing.resource_tracker import main\n"
+            f"open({str(marker)!r}, 'w').write('ran')"
+        )
+        with (
+            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(main_mod, "__compiled__", object(), create=True),
+            mock.patch.object(main_mod.sys, "argv", ["bin", "-c", payload]),
+        ):
+            assert main_mod._dispatch_frozen_child() is True
+        assert marker.read_text() == "ran"
 
     def test_returns_false_when_no_payload(self) -> None:
         with (
@@ -152,6 +214,20 @@ class TestDispatchModuleInvocation:
         ):
             assert main_mod._dispatch_module_invocation() is False
 
+    def test_routes_under_nuitka_without_sys_frozen(self) -> None:
+        # Regression: same Nuitka frozen-detection gap as the mp-child dispatcher.
+        argv_in = ["bin", "-m", "lilbee.core.system", "extra"]
+        with (
+            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(main_mod, "__compiled__", object(), create=True),
+            mock.patch.object(main_mod.sys, "argv", argv_in),
+            mock.patch("runpy.run_module") as run_module,
+        ):
+            assert main_mod._dispatch_module_invocation() is True
+        run_module.assert_called_once_with(
+            "lilbee.core.system", run_name="__main__", alter_sys=True
+        )
+
     def test_routes_lilbee_module_through_runpy(self) -> None:
         argv_in = ["bin", "-m", "lilbee.core.system", "extra"]
         captured: dict[str, object] = {}
@@ -173,3 +249,41 @@ class TestDispatchModuleInvocation:
         assert captured["run_name"] == "__main__"
         assert captured["alter_sys"] is True
         assert captured["argv_at_call"] == ["lilbee.core.system", "extra"]
+
+
+class TestPrestartMpResourceTracker:
+    """The package-import prestart must skip frozen builds, including Nuitka."""
+
+    def test_skips_under_nuitka_without_sys_frozen(self) -> None:
+        # Regression: under the bug this prestart spawned the resource_tracker
+        # child inside the onefile binary, surfacing "No such command '<fd>'".
+        # The guard delegates to lilbee._frozen.is_frozen, which reads its own
+        # __compiled__ marker.
+        from multiprocessing import resource_tracker
+
+        import lilbee
+        from lilbee import _frozen
+
+        called: list[int] = []
+        with (
+            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(_frozen, "__compiled__", object(), create=True),
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
+        ):
+            lilbee._prestart_mp_resource_tracker()
+        assert called == []
+
+    def test_prestarts_on_posix_when_not_frozen(self) -> None:
+        from multiprocessing import resource_tracker
+
+        import lilbee
+
+        called: list[int] = []
+        with (
+            mock.patch.object(main_mod.sys, "frozen", False, create=True),
+            mock.patch.object(main_mod.sys, "platform", "linux"),
+            mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
+        ):
+            lilbee._prestart_mp_resource_tracker()
+        assert called == [1]
