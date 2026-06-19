@@ -146,6 +146,22 @@ def embed_spec(meta: dict[str, str] | None) -> RoleServerSpec:
     return replace(base, extra_args=(*base.extra_args, "--pooling", pooling.value))
 
 
+def chat_spec(meta: dict[str, str] | None) -> RoleServerSpec:
+    """The CHAT server spec, with a vendored chat-template override when one applies.
+
+    A quant whose embedded template strips tool support is served a tool-aware
+    template via ``--chat-template-file`` (see :mod:`chat_template_overrides`);
+    every other model keeps ``--jinja`` over its own embedded template.
+    """
+    from lilbee.providers.fleet.chat_template_overrides import chat_template_override
+
+    base = ROLE_SPECS[WorkerRole.CHAT]
+    override = chat_template_override(meta)
+    if override is None:
+        return base
+    return replace(base, extra_args=(*base.extra_args, "--chat-template-file", str(override)))
+
+
 def build_server_argv(
     *,
     binary: Path,

@@ -15,6 +15,7 @@ from lilbee.providers.fleet.adapters import (
     ROLE_SPECS,
     RoleServerSpec,
     build_server_argv,
+    chat_spec,
     embed_spec,
     rerank_spec,
     resolve_rerank_mode,
@@ -302,11 +303,14 @@ def _server_spec(
     role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
 ) -> RoleServerSpec:
     """The llama-server spec for a launch: rerank mode, decoder-aware embed pooling,
-    or the role default. EMBED forces ``--pooling last`` for decoder-only archs."""
+    chat-template override, or the role default. EMBED forces ``--pooling last`` for
+    decoder-only archs; CHAT may add ``--chat-template-file`` for tool-less quants."""
     if rerank_mode is not None:
         return rerank_spec(rerank_mode)
     if role is WorkerRole.EMBED:
         return embed_spec(meta)
+    if role is WorkerRole.CHAT:
+        return chat_spec(meta)
     return ROLE_SPECS[role]
 
 

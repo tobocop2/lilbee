@@ -493,6 +493,25 @@ def test_supports_tools_false_for_plain_template(monkeypatch, tmp_path, _clear_t
     assert FleetProvider().supports_tools("org/repo/chat.gguf") is False
 
 
+def test_supports_tools_true_for_override_arch_with_tool_less_template(
+    monkeypatch, tmp_path, _clear_tools_cache
+):
+    # A quant whose embedded template strips tools still supports tool calls when
+    # the fleet serves it a vendored tool-aware template (the chat_spec seam adds
+    # --chat-template-file for the same arch).
+    from lilbee.providers.fleet.chat_template_overrides import _ARCH_TEMPLATE_OVERRIDES
+
+    override_arch = next(iter(_ARCH_TEMPLATE_OVERRIDES))
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"gguf")
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _m: gguf)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata",
+        lambda _p: {"architecture": override_arch, "chat_template": _PLAIN_TEMPLATE},
+    )
+    assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
+
+
 def test_supports_tools_false_when_metadata_unreadable(monkeypatch, tmp_path, _clear_tools_cache):
     gguf = tmp_path / "chat.gguf"
     gguf.write_bytes(b"gguf")

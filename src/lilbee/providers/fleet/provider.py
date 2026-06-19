@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -64,11 +63,6 @@ _PREWARM_CHUNK_BYTES = 8 * 1024 * 1024
 # generation, so the weights-scaled cold-load budget plus the margin raises this floor.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
-# Jinja chat templates flag tool support by referencing one of these names as an
-# identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
-# The server parses tool calls natively via ``--jinja``; this probe only decides
-# whether to offer tools to a given model at all.
-_TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
 _T = TypeVar("_T")
 
 
@@ -168,15 +162,20 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at the
     same path invalidates automatically because its mtime changes.
     """
+    from lilbee.providers.fleet.chat_template_overrides import (
+        chat_template_override,
+        template_is_tool_aware,
+    )
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     meta = read_gguf_metadata(Path(path_str))
     if not isinstance(meta, dict):
         return False
-    template = meta.get("chat_template")
-    if not isinstance(template, str):
-        return False
-    return _TOOL_TEMPLATE_PATTERN.search(template) is not None
+    if template_is_tool_aware(meta.get("chat_template")):
+        return True
+    # A quant whose embedded template strips tools still supports tool calls when
+    # the fleet serves it a vendored tool-aware template via --chat-template-file.
+    return chat_template_override(meta) is not None
 
 
 class _VisionRequestGate:
