@@ -23,6 +23,7 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
 )
 
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+_IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
 
 
 def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -34,16 +35,16 @@ def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
     """Return the IPv4 an IPv6 address embeds, if any.
 
     Covers IPv4-mapped (``::ffff:a.b.c.d``), 6to4 (``2002::``), the NAT64
-    well-known prefix, and the deprecated IPv4-compatible (``::a.b.c.d``) form.
-    Each can reach the same host as its bare IPv4, so the embedded address must
-    face the blocklist too.
+    well-known prefix, the IPv4-translated/SIIT prefix (``::ffff:0:a.b.c.d``),
+    and the deprecated IPv4-compatible (``::a.b.c.d``) form. Each can reach the
+    same host as its bare IPv4, so the embedded address must face the blocklist.
     """
     if ip.ipv4_mapped is not None:
         return ip.ipv4_mapped
     if ip.sixtofour is not None:
         return ip.sixtofour
     low32 = int(ip) & 0xFFFFFFFF
-    if ip in _NAT64_PREFIX:
+    if ip in _NAT64_PREFIX or ip in _IPV4_TRANSLATED:
         return ipaddress.IPv4Address(low32)
     # IPv4-compatible ::a.b.c.d: top 96 bits zero, excluding :: and ::1.
     if int(ip) >> 32 == 0 and low32 > 1:

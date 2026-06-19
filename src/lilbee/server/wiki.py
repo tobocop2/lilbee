@@ -12,6 +12,7 @@ from litestar.params import Parameter
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
@@ -105,7 +106,7 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
         diff = diff_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
-    except ValueError as exc:
+    except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftDiffResponse(slug=slug, diff=diff)
 
@@ -123,7 +124,7 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
         result = accept_draft(slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
-    except ValueError as exc:
+    except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftAcceptResponse(**result.to_dict())
 
@@ -137,7 +138,7 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
         reject_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
-    except ValueError as exc:
+    except PathTraversalError as exc:
         raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftRejectResponse(slug=slug)
 

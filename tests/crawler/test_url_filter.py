@@ -109,6 +109,7 @@ class TestValidateCrawlUrl:
             "64:ff9b::a9fe:a9fe",  # NAT64 embedding 169.254.169.254
             "2002:a9fe:a9fe::",  # 6to4 embedding 169.254.169.254
             "::169.254.169.254",  # IPv4-compatible embedding metadata
+            "::ffff:0:7f00:1",  # IPv4-translated/SIIT embedding 127.0.0.1
         ],
     )
     def test_rejects_reserved_via_embedding_or_range(self, monkeypatch, addr):
@@ -120,6 +121,21 @@ class TestValidateCrawlUrl:
         )
         with pytest.raises(ValueError, match="private/reserved"):
             validate_crawl_url("http://sneaky.example.com")
+
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "2001:4860:4860::8888",  # public IPv6 (Google DNS)
+            "2002:808:808::",  # public 6to4 embedding 8.8.8.8
+        ],
+    )
+    def test_accepts_public_ipv6(self, monkeypatch, addr):
+        # Guards against an over-eager _embedded_ipv4 edit blocking public v6.
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
+        )
+        validate_crawl_url("http://public.example.com")  # must not raise
 
 
 class TestRequireValidCrawlUrl:

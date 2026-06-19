@@ -17,6 +17,7 @@ from lilbee.app.version import get_version
 from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
@@ -3172,7 +3173,9 @@ class TestWikiDraftsCli:
         cfg.wiki_dir = "wiki"
         with mock.patch(
             "lilbee.wiki.drafts.diff_draft",
-            side_effect=ValueError(f"Path escapes allowed directory: {isolated_env}/secret.md"),
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
         ):
             result = runner.invoke(app, ["wiki", "drafts", "diff", "anything"])
         assert result.exit_code == 1
@@ -3184,7 +3187,9 @@ class TestWikiDraftsCli:
         cfg.wiki_dir = "wiki"
         with mock.patch(
             "lilbee.wiki.drafts.accept_draft",
-            side_effect=ValueError(f"Path escapes allowed directory: {isolated_env}/secret.md"),
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
         ):
             result = runner.invoke(app, ["wiki", "drafts", "accept", "anything"])
         assert result.exit_code == 1
@@ -3196,12 +3201,26 @@ class TestWikiDraftsCli:
         cfg.wiki_dir = "wiki"
         with mock.patch(
             "lilbee.wiki.drafts.reject_draft",
-            side_effect=ValueError(f"Path escapes allowed directory: {isolated_env}/secret.md"),
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
         ):
             result = runner.invoke(app, ["wiki", "drafts", "reject", "anything"])
         assert result.exit_code == 1
         assert "invalid draft slug" in result.output
         assert str(isolated_env) not in result.output
+
+    def test_accept_indexing_valueerror_is_not_masked(self, mock_svc, isolated_env):
+        # A non-traversal ValueError from re-indexing must not be reported as
+        # "invalid draft slug" (only PathTraversalError gets the generic mapping).
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=ValueError("Vector dimension mismatch: expected 768, got 1024"),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "real-slug"])
+        assert "invalid draft slug" not in result.output
 
     def test_accept_moves_draft_into_published(self, mock_svc, isolated_env):
         self._seed(isolated_env)

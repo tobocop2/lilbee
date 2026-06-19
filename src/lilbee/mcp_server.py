@@ -837,6 +837,7 @@ def wiki_drafts_list() -> dict[str, Any]:
 @_tool_if(cfg.wiki)
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Unified diff of a draft against its published counterpart."""
+    from lilbee.core.security import PathTraversalError
     from lilbee.wiki.drafts import diff_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -844,7 +845,7 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
         diff = diff_draft(slug, wiki_root)
     except FileNotFoundError as exc:
         return _error(str(exc))
-    except ValueError:
+    except PathTraversalError:
         return _error(INVALID_DRAFT_SLUG_ERROR)
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 

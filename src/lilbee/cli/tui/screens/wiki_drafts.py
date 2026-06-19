@@ -25,6 +25,7 @@ from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.wiki.drafts import accept_draft, diff_draft, list_drafts, reject_draft
 from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
@@ -198,7 +199,7 @@ class WikiDraftsScreen(Screen[None]):
         except FileNotFoundError:
             self._show_diff(msg.WIKI_DRAFTS_DIFF_EMPTY)
             return
-        except ValueError:
+        except PathTraversalError:
             # Traversal slug: show the generic, path-free message its sibling
             # transports use rather than leaking the absolute candidate path.
             self._show_diff(INVALID_DRAFT_SLUG_ERROR)
@@ -285,7 +286,7 @@ class WikiDraftsScreen(Screen[None]):
         except FileNotFoundError:
             self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=f"missing: {slug}"))
             return
-        except ValueError:
+        except PathTraversalError:
             self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
             return
         except Exception as exc:
@@ -322,7 +323,7 @@ class WikiDraftsScreen(Screen[None]):
         except FileNotFoundError:
             self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=f"missing: {slug}"))
             return
-        except ValueError:
+        except PathTraversalError:
             self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
             return
         except Exception as exc:
