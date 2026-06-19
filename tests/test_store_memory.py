@@ -202,6 +202,47 @@ class TestUpdateAndDelete:
         assert store.get_memories(owner_predicate=LOCAL_PREDICATE) == []
 
 
+class TestSwallowedDeleteFailOpen:
+    """A swallowed LanceDB delete must not corrupt state or report false success."""
+
+    @staticmethod
+    def _fail_delete(monkeypatch):
+        # Simulate _safe_delete_unlocked swallowing a delete failure (returns False
+        # without removing anything), as it does on a real LanceDB delete error.
+        monkeypatch.setattr("lilbee.data.store.core._safe_delete_unlocked", lambda *a, **k: False)
+
+    def test_delete_memory_reports_failure(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))
+        self._fail_delete(monkeypatch)
+        assert store.delete_memory("d1", owner=LOCAL_OWNER) is False
+        assert len(store.get_memories(owner_predicate=LOCAL_PREDICATE)) == 1
+
+    def test_update_memory_failed_delete_adds_no_duplicate(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="x", memory_id="u1", axis=0))
+        self._fail_delete(monkeypatch)
+        assert store.update_memory("u1", shared=True, owner=LOCAL_OWNER) is False
+        assert len(store.get_memories(owner_predicate=LOCAL_PREDICATE)) == 1
+
+    def test_add_memory_failed_dedup_delete_keeps_distinct_ids(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="orig", axis=0, memory_id="first"))
+        self._fail_delete(monkeypatch)
+        # Same vector/owner/kind -> dedup path; the dedup delete fails, so the new
+        # row must keep a fresh id rather than collide with the surviving original.
+        store.add_memory(_memory(store, text="new", axis=0, memory_id="second"))
+        rows = store.get_memories(owner_predicate=LOCAL_PREDICATE)
+        ids = [r.id for r in rows]
+        assert len(ids) == len(set(ids))  # no id collision
+
+    def test_get_meta_returns_newest_when_duplicate_rows_exist(self, store, monkeypatch):
+        dim = store._config.embedding_dim
+        store._write_meta_unlocked(embedding_model="model-a", embedding_dim=dim)
+        self._fail_delete(monkeypatch)
+        store._write_meta_unlocked(embedding_model="model-b", embedding_dim=dim)
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == "model-b"
+
+
 class TestHumanRecallPredicate:
     """The human's view includes local memories plus agent-shared ones."""
 

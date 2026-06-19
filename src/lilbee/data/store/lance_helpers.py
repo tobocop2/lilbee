@@ -55,18 +55,25 @@ def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lanc
         return db.open_table(name)
 
 
-def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
+def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> bool:
+    """Delete rows matching predicate. Caller must hold write lock.
+
+    Returns True when the delete succeeded, False when it raised (logged). The
+    return lets delete-then-add callers avoid corrupting state on a swallowed
+    failure (e.g. inserting a row whose stale predecessor was never removed).
+    """
     try:
         table.delete(predicate)
+        return True
     except Exception:
         log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
+        return False
 
 
-def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure."""
+def safe_delete(table: lancedb.table.Table, predicate: str) -> bool:
+    """Delete rows matching predicate, logging on failure. Returns success."""
     with write_lock():
-        _safe_delete_unlocked(table, predicate)
+        return _safe_delete_unlocked(table, predicate)
 
 
 def escape_sql_string(value: str) -> str:
