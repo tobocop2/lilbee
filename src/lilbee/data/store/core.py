@@ -1089,10 +1089,7 @@ class Store:
     @staticmethod
     def _owned_memory_predicate(memory_id: str, owner: str) -> str:
         """SQL predicate matching a single memory id within *owner*'s namespace."""
-        return (
-            f"id = '{escape_sql_string(memory_id)}' "
-            f"AND owner = '{escape_sql_string(owner)}'"
-        )
+        return f"id = '{escape_sql_string(memory_id)}' AND owner = '{escape_sql_string(owner)}'"
 
     def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[list[float]]]) -> int:
         """Re-embed every memory under the current model, recreating the table.
