@@ -164,7 +164,10 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     """Memoised tool-template probe keyed on the GGUF's path + mtime.
 
     The mtime arg participates in the cache key only; a re-quantised file at the
-    same path invalidates automatically because its mtime changes.
+    same path invalidates automatically because its mtime changes. The result
+    also depends on the chat-template override registry, which is process-static
+    (vendored templates shipped in the package), so it is intentionally not part
+    of the key.
     """
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
