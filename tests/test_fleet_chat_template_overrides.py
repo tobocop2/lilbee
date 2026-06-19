@@ -77,3 +77,29 @@ def test_chat_spec_is_base_for_non_override_model() -> None:
     base = ROLE_SPECS[WorkerRole.CHAT]
     assert chat_spec({"architecture": "llama", "chat_template": _TOOL_AWARE}) == base
     assert chat_spec(None) == base
+
+
+# The fleet warms each chat server with a single no-tools message. A template
+# with an UNGUARDED ``tojson`` (or other reference to an undefined ``tools``) on
+# that path crashes llama-server's jinja engine on load -- the exact failure
+# that disqualified olmo3. Render every vendored template on that payload, and
+# on a tools payload, to lock the guard in (HF renders these with jinja2 too).
+_WARMUP_MESSAGES = [{"role": "user", "content": "warm"}]
+_TOOLS_PAYLOAD = [
+    {
+        "type": "function",
+        "function": {"name": "search", "description": "search", "parameters": {}},
+    }
+]
+
+
+@pytest.mark.parametrize("filename", sorted(_ARCH_TEMPLATE_OVERRIDES.values()))
+def test_vendored_templates_render_without_raising(filename: str) -> None:
+    jinja2 = pytest.importorskip("jinja2")
+    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
+    env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(ValueError(message))
+    template = env.from_string((_CHAT_TEMPLATES_DIR / filename).read_text(encoding="utf-8"))
+    # No-tools warmup must not raise (the olmo3 unguarded-tojson failure class).
+    template.render(messages=_WARMUP_MESSAGES, add_generation_prompt=True)
+    # The tools path must also render, since that is what exercises the tojson.
+    template.render(messages=_WARMUP_MESSAGES, tools=_TOOLS_PAYLOAD, add_generation_prompt=True)

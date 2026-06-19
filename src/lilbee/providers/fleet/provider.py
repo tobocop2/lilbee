@@ -23,6 +23,10 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
+from lilbee.providers.fleet.chat_template_overrides import (
+    chat_template_override,
+    template_is_tool_aware,
+)
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
@@ -162,10 +166,6 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     The mtime arg participates in the cache key only; a re-quantised file at the
     same path invalidates automatically because its mtime changes.
     """
-    from lilbee.providers.fleet.chat_template_overrides import (
-        chat_template_override,
-        template_is_tool_aware,
-    )
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     meta = read_gguf_metadata(Path(path_str))
@@ -782,13 +782,16 @@ class FleetProvider:
         return caps
 
     def supports_tools(self, model_ref: str) -> bool:
-        """True iff *model_ref*'s GGUF chat template references tool tokens.
+        """True when *model_ref* is served a tool-aware chat template.
 
         The server parses native tool calls via ``--jinja``; a template that
         declares tools is the signal that the model was trained to emit them.
-        Cached on ``(path, mtime)`` so a tool-bearing chat doesn't re-read the
-        GGUF header each request; a re-quantised file at the same path
-        invalidates because its mtime changes.
+        True when the GGUF's embedded template declares tools, or when its
+        architecture has a vendored tool-aware override the fleet serves via
+        ``--chat-template-file`` (see :mod:`chat_template_overrides`). Cached on
+        ``(path, mtime)`` so a tool-bearing chat doesn't re-read the GGUF header
+        each request; a re-quantised file at the same path invalidates because
+        its mtime changes.
         """
         from lilbee.providers.engine_params import resolve_model_path
 

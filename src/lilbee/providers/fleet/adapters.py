@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.fleet.chat_template_overrides import chat_template_override
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _HOST = "127.0.0.1"
@@ -153,8 +154,6 @@ def chat_spec(meta: dict[str, str] | None) -> RoleServerSpec:
     template via ``--chat-template-file`` (see :mod:`chat_template_overrides`);
     every other model keeps ``--jinja`` over its own embedded template.
     """
-    from lilbee.providers.fleet.chat_template_overrides import chat_template_override
-
     base = ROLE_SPECS[WorkerRole.CHAT]
     override = chat_template_override(meta)
     if override is None:

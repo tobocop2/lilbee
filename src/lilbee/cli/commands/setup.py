@@ -121,7 +121,12 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
         resolve_embed_ctx,
         resolve_n_gpu_layers,
     )
-    from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv, embed_spec
+    from lilbee.providers.fleet.adapters import (
+        ROLE_SPECS,
+        build_server_argv,
+        chat_spec,
+        embed_spec,
+    )
     from lilbee.providers.fleet.binary import (
         llama_server_runtime_env,
         resolve_llama_server,
@@ -137,7 +142,15 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
         ctx = resolve_embed_ctx(meta, model_path)
     else:
         ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
-    spec = embed_spec(meta) if is_embed else ROLE_SPECS[role]
+    # Mirror the fleet's _server_spec so the self-check serves the same argv the
+    # real chat path does, including a --chat-template-file override for archs
+    # whose embedded template strips tools.
+    if is_embed:
+        spec = embed_spec(meta)
+    elif role is WorkerRole.CHAT:
+        spec = chat_spec(meta)
+    else:
+        spec = ROLE_SPECS[role]
     argv = build_server_argv(
         binary=resolve_llama_server(),
         spec=spec,
