@@ -129,8 +129,8 @@ def memory_remove(
     if not memory_enabled():
         _disabled()
         return
-    forget(memory_id)
+    deleted = forget(memory_id)
     if cfg.json_mode:
-        json_output({"removed": memory_id})
+        json_output({"id": memory_id, "deleted": deleted})
         return
-    console.print(f"Removed {memory_id}.")
+    console.print(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")

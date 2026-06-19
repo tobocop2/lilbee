@@ -19,7 +19,7 @@ from lilbee.data.store import (
     SearchChunk,
     Store,
     cosine_sim,
-    local_owner_predicate,
+    human_recall_predicate,
 )
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.embedder import Embedder
@@ -498,7 +498,8 @@ class Searcher:
         """
         if not self._config.memory_enabled:
             return ""
-        owner_predicate = local_owner_predicate()
+        # The human's answers see their own memories plus any an agent shared.
+        owner_predicate = human_recall_predicate()
         preferences = self._store.get_memories(
             owner_predicate=owner_predicate,
             kind=MemoryKind.PREFERENCE,

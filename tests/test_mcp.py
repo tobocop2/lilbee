@@ -1007,6 +1007,15 @@ class TestWikiDraftsMcp:
         result = wiki_drafts_diff("missing")
         assert "error" in result
 
+    def test_wiki_drafts_diff_traversal_slug_generic_error_no_leak(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "drafts").mkdir(parents=True)
+        result = wiki_drafts_diff("../../secret")
+        assert result == {"error": "invalid draft slug"}
+        assert str(isolated_env) not in str(result)
+
 
 class TestSettingsMcp:
     """MCP settings_* tools read and write through the canonical write boundary."""

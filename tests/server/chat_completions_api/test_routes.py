@@ -99,9 +99,12 @@ def services_with_chat_model(monkeypatch):
 def _auth_token():
     """Install an auth token for the duration of the test."""
     previous = _auth_mod.session_manager.token
+    previous_init = _auth_mod.session_manager._initialized
     _auth_mod.session_manager.token = "test-token-" + "x" * 40
+    _auth_mod.session_manager._initialized = True
     yield
     _auth_mod.session_manager.token = previous
+    _auth_mod.session_manager._initialized = previous_init
 
 
 @pytest.fixture(autouse=True)
@@ -1139,16 +1142,36 @@ class TestAuth:
         assert resp.json()["error"]["code"] == "invalid_api_key"
 
     async def test_no_token_set_means_auth_disabled(self, services_with_chat_model):
-        # In test mode where session_manager.token is None, requests succeed
-        # without a bearer header (matches AuthMiddleware.validate semantics).
+        # Auth explicitly disabled (the test-harness path) accepts requests
+        # without a bearer header; this is distinct from the uninitialized
+        # state, which now fails closed.
         previous = _auth_mod.session_manager.token
-        _auth_mod.session_manager.token = None
+        previous_init = _auth_mod.session_manager._initialized
+        _auth_mod.session_manager.disable()
         try:
             async with AsyncTestClient(_build_app()) as client:
                 resp = await client.get("/v1/models")
             assert resp.status_code == 200
         finally:
             _auth_mod.session_manager.token = previous
+            _auth_mod.session_manager._initialized = previous_init
+
+    async def test_uninitialized_auth_returns_401_envelope(self, services_with_chat_model):
+        # Uninitialized (pre-lifespan) state fails closed: validate() raises
+        # NotAuthorizedException, which _auth_failure maps to the 401 OpenAI
+        # envelope rather than letting it escape as a 500.
+        previous = _auth_mod.session_manager.token
+        previous_init = _auth_mod.session_manager._initialized
+        _auth_mod.session_manager.token = None
+        _auth_mod.session_manager._initialized = False
+        try:
+            async with AsyncTestClient(_build_app()) as client:
+                resp = await client.get("/v1/models")
+            assert resp.status_code == 401
+            assert resp.json()["error"]["code"] == "invalid_api_key"
+        finally:
+            _auth_mod.session_manager.token = previous
+            _auth_mod.session_manager._initialized = previous_init
 
 
 class TestBusy:

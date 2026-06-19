@@ -438,6 +438,16 @@ def wiki_drafts_list(
     console.print(table)
 
 
+def _draft_slug_error() -> None:
+    """Report a rejected (traversal) draft slug generically, without leaking paths."""
+    message = "invalid draft slug"
+    if cfg.json_mode:
+        json_output({"error": message})
+    else:
+        console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+    raise typer.Exit(1) from None
+
+
 @drafts_app.command(name="diff")
 def wiki_drafts_diff(
     slug: str = typer.Argument(..., help="Draft slug (e.g. chevrolet)."),
@@ -457,6 +467,8 @@ def wiki_drafts_diff(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except ValueError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
@@ -483,6 +495,8 @@ def wiki_drafts_accept(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except ValueError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_accept", **result.to_dict()})
@@ -512,6 +526,8 @@ def wiki_drafts_reject(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except ValueError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_reject", "slug": slug})

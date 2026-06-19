@@ -13,6 +13,7 @@ from lilbee.data.store import (
     MemorySource,
     agent_owner,
     agent_recall_predicate,
+    human_recall_predicate,
     local_owner_predicate,
 )
 from lilbee.providers.base import ChatResult, FinishReason
@@ -90,13 +91,14 @@ class TestRemember:
 
 
 class TestRecall:
-    def test_local_uses_local_predicate(self, svc):
+    def test_local_uses_human_recall_predicate(self, svc):
         cfg.memory_top_k = 7
         cfg.memory_max_distance = 0.4
         app_memory.recall("where is auth")
         svc.embedder.embed_query.assert_called_once_with("where is auth")
         kwargs = svc.store.search_memories.call_args.kwargs
-        assert kwargs["owner_predicate"] == local_owner_predicate()
+        # The human recalls their own memories plus any an agent shared.
+        assert kwargs["owner_predicate"] == human_recall_predicate()
         assert kwargs["top_k"] == 7
         assert kwargs["max_distance"] == 0.4
 
@@ -111,7 +113,9 @@ class TestRecall:
 
 
 class TestListForgetFlags:
-    def test_list_local(self, svc):
+    def test_list_local_is_owner_scoped(self, svc):
+        # The management list stays narrow (only rows the human can act on),
+        # unlike recall() which unions agent-shared memories.
         app_memory.list_memories()
         assert svc.store.get_memories.call_args.kwargs["owner_predicate"] == local_owner_predicate()
 
@@ -121,11 +125,11 @@ class TestListForgetFlags:
 
     def test_forget(self, svc):
         app_memory.forget("d1")
-        svc.store.delete_memory.assert_called_once_with("d1")
+        svc.store.delete_memory.assert_called_once_with("d1", owner=LOCAL_OWNER)
 
     def test_set_shared(self, svc):
         assert app_memory.set_memory_shared("u1", shared=True) is True
-        svc.store.update_memory.assert_called_once_with("u1", shared=True)
+        svc.store.update_memory.assert_called_once_with("u1", shared=True, owner=LOCAL_OWNER)
 
 
 def _chat_result(text: str) -> ChatResult:

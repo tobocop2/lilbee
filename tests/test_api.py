@@ -327,5 +327,11 @@ class TestMemory:
 
         bee = Lilbee(tmp_path / "mem")
         memory_id = bee.remember("disposable note")
-        bee.forget(memory_id)
+        assert bee.forget(memory_id) is True
         assert bee.memories() == []
+
+    def test_forget_unknown_id_returns_false(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "mem")
+        assert bee.forget("does-not-exist") is False

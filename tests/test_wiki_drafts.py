@@ -402,3 +402,38 @@ class TestAcceptPendingParse:
         assert "losing body that won curation" in body
         assert "PENDING" not in body
         assert not draft.exists()
+
+
+class TestPathTraversalRejected:
+    """A crafted slug must not let draft routes touch files outside the wiki tree."""
+
+    def test_diff_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        secret = tmp_path / "secret.md"
+        _write(secret, "TOP SECRET")
+        with pytest.raises(ValueError, match="escapes"):
+            diff_draft("../../secret", wiki_root)
+        assert secret.read_text() == "TOP SECRET"
+
+    def test_reject_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        victim = tmp_path / "victim.md"
+        _write(victim, "do not delete")
+        with pytest.raises(ValueError, match="escapes"):
+            reject_draft("../../victim", wiki_root)
+        assert victim.exists()
+
+    def test_accept_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        victim = tmp_path / "victim.md"
+        _write(victim, "original")
+        with pytest.raises(ValueError, match="escapes"):
+            accept_draft("../../victim", wiki_root, MagicMock())
+        assert victim.read_text() == "original"
+
+    def test_legitimate_nested_slug_still_resolves(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "src" / "page.md", _draft_content("hi"))
+        # No traversal: diff against an absent published page returns the draft body.
+        out = diff_draft("src/page", wiki_root)
+        assert "hi" in out

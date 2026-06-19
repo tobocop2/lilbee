@@ -60,9 +60,12 @@ def services_with_chat_model(monkeypatch):
 def auth_token():
     """Install a session token for the duration of the test."""
     previous = _auth_mod.session_manager.token
+    previous_init = _auth_mod.session_manager._initialized
     _auth_mod.session_manager.token = "smoke-token-" + "x" * 40
+    _auth_mod.session_manager._initialized = True
     yield _auth_mod.session_manager.token
     _auth_mod.session_manager.token = previous
+    _auth_mod.session_manager._initialized = previous_init
 
 
 @pytest.fixture(autouse=True)

@@ -54,6 +54,7 @@ def store():
     store = MagicMock()
     store.get_memories.return_value = []
     store.update_memory.return_value = True
+    store.delete_memory.return_value = True
     set_services(make_mock_services(store=store))
     yield store
     set_services(None)
@@ -129,8 +130,33 @@ async def test_delete_confirmed_removes_memory(store, notes):
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
-        store.delete_memory.assert_called_once_with("id0")
+        store.delete_memory.assert_called_once_with("id0", owner=LOCAL_OWNER)
         assert msg.MEMORIES_DELETED in notes
+
+
+async def test_toggle_shared_missing_reports_not_found(store, notes):
+    store.get_memories.return_value = [_row("uses rust", shared=False)]
+    store.update_memory.return_value = False
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert msg.MEMORIES_FLAG_NOT_FOUND in notes
+        assert msg.MEMORIES_SHARED_ON not in notes
+
+
+async def test_delete_missing_memory_reports_not_found(store, notes):
+    store.get_memories.return_value = [_row("uses rust")]
+    store.delete_memory.return_value = False
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert msg.MEMORIES_DELETE_NOT_FOUND in notes
 
 
 async def test_delete_cancelled_keeps_memory(store):
@@ -152,7 +178,7 @@ async def test_toggle_shared_flips_flag(store, notes):
         await pilot.pause()
         await pilot.press("s")
         await pilot.pause()
-        store.update_memory.assert_called_once_with("id0", shared=True)
+        store.update_memory.assert_called_once_with("id0", shared=True, owner=LOCAL_OWNER)
         assert msg.MEMORIES_SHARED_ON in notes
 
 

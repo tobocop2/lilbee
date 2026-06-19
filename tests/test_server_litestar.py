@@ -35,10 +35,10 @@ def client():
     import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
-    auth_mod.session_manager.token = None  # disable auth for route-level tests
+    auth_mod.session_manager.disable()  # disable auth for route-level tests
     app = create_app()
     yield TestClient(app)
-    auth_mod.session_manager.token = None
+    auth_mod.session_manager.cleanup()
 
 
 async def mock_async_gen(*events):
@@ -1298,6 +1298,13 @@ class TestSetupCrawlerRoutes:
         assert resp.status_code == 200
         assert resp.json()["installed"] is False
 
+    def test_status_route_is_read_only(self):
+        """Parity with the other status GETs: no auth token required to poll."""
+        from lilbee.server.auth import is_read_only
+        from lilbee.server.routes.setup import setup_crawler_status_route
+
+        assert is_read_only(setup_crawler_status_route.fn)
+
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
         from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupStartEvent
@@ -1505,6 +1512,42 @@ class TestSessionManagerPersistence:
         assert second == first
 
 
+class TestSessionManagerFailClosed:
+    """validate() must fail closed until auth is initialized or explicitly disabled."""
+
+    def test_validate_denies_when_uninitialized(self):
+        from lilbee.server.auth import SessionManager
+
+        mgr = SessionManager()  # never load_or_generate()'d, never disabled
+        with pytest.raises(NotAuthorizedException):
+            mgr.validate("Bearer anything")
+
+    def test_validate_denies_after_cleanup(self):
+        from lilbee.server.auth import SessionManager
+
+        mgr = SessionManager()
+        mgr.disable()
+        mgr.cleanup()
+        with pytest.raises(NotAuthorizedException):
+            mgr.validate("Bearer anything")
+
+    def test_disable_allows_any_header(self):
+        from lilbee.server.auth import SessionManager
+
+        mgr = SessionManager()
+        mgr.disable()
+        assert mgr.validate("") is True
+
+    def test_real_token_still_compares(self):
+        from lilbee.server.auth import SessionManager
+
+        mgr = SessionManager()
+        mgr.token = "s3cret"
+        mgr._initialized = True
+        assert mgr.validate("Bearer s3cret") is True
+        assert mgr.validate("Bearer wrong") is False
+
+
 class TestAuthMiddleware:
     @pytest.fixture()
     def middleware(self):
@@ -1556,7 +1599,9 @@ class TestAuthMiddleware:
         import lilbee.server.auth as auth_mod
 
         old = auth_mod.session_manager.token
+        old_init = auth_mod.session_manager._initialized
         auth_mod.session_manager.token = "valid_token"
+        auth_mod.session_manager._initialized = True
         try:
             scope = {
                 "type": "http",
@@ -1567,14 +1612,17 @@ class TestAuthMiddleware:
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
             auth_mod.session_manager.token = old
+            auth_mod.session_manager._initialized = old_init
 
     @pytest.mark.asyncio
-    async def test_empty_token_raises(self, middleware):
-        """When session token is empty string, requests are denied."""
+    async def test_uninitialized_denies(self, middleware):
+        """Before the lifespan initializes auth, mutating requests are denied."""
         import lilbee.server.auth as auth_mod
 
         old = auth_mod.session_manager.token
-        auth_mod.session_manager.token = ""
+        old_init = auth_mod.session_manager._initialized
+        auth_mod.session_manager.token = None
+        auth_mod.session_manager._initialized = False
         try:
             scope = {
                 "type": "http",
@@ -1585,6 +1633,7 @@ class TestAuthMiddleware:
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
             auth_mod.session_manager.token = old
+            auth_mod.session_manager._initialized = old_init
 
 
 class TestAuthRequiredRoutes:
@@ -1595,14 +1644,27 @@ class TestAuthRequiredRoutes:
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
+        previous_init = auth_mod.session_manager._initialized
         auth_mod.session_manager.token = "test-secret"
+        # Mark initialized so 401s come from the token comparison, not the
+        # uninitialized fail-closed gate (the app is built without its lifespan).
+        auth_mod.session_manager._initialized = True
         app = create_app()
         yield TestClient(app)
         auth_mod.session_manager.token = None
+        auth_mod.session_manager._initialized = previous_init
 
     def test_patch_config_requires_auth(self, auth_client):
         resp = auth_client.patch("/api/config", json={"temperature": 0.5})
         assert resp.status_code == 401
+
+    def test_patch_config_accepts_valid_bearer(self, auth_client):
+        resp = auth_client.patch(
+            "/api/config",
+            json={"temperature": 0.5},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code != 401
 
     def test_put_models_embedding_requires_auth(self, auth_client):
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
@@ -1708,11 +1770,14 @@ class TestImportRoute:
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
+        previous_init = auth_mod.session_manager._initialized
         auth_mod.session_manager.token = "test-secret"
+        auth_mod.session_manager._initialized = True
         try:
             resp = TestClient(create_app()).post(
                 "/api/import", params={"format": "jsonl"}, content=b""
             )
         finally:
             auth_mod.session_manager.token = None
+            auth_mod.session_manager._initialized = previous_init
         assert resp.status_code == 401

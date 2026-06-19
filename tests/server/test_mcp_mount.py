@@ -31,6 +31,42 @@ def test_configures_localhost_transport_security() -> None:
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
+def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", "192.168.1.50")
+    security = _transport_security()
+    assert "192.168.1.50:*" in security.allowed_hosts
+    assert "http://192.168.1.50:*" in security.allowed_origins
+    # Loopback stays allowed as the default.
+    assert "127.0.0.1:*" in security.allowed_hosts
+
+
+def test_transport_security_brackets_ipv6_bind_host(monkeypatch) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", "fd00::1")
+    security = _transport_security()
+    assert "[fd00::1]:*" in security.allowed_hosts
+    assert "http://[fd00::1]:*" in security.allowed_origins
+    # IPv6 loopback is bracketed and allowed by default too.
+    assert "[::1]:*" in security.allowed_hosts
+
+
+@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch, wildcard) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _fmt_host, _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", wildcard)
+    security = _transport_security()
+    # The wildcard bind itself is never added as its own allowlist entry.
+    assert f"{_fmt_host(wildcard)}:*" not in security.allowed_hosts
+    assert "127.0.0.1:*" in security.allowed_hosts
+
+
 def test_handler_mounts_at_mcp_path() -> None:
     handler, _ = build_mcp_mount()
     assert MCP_MOUNT_PATH in handler.paths
@@ -47,9 +83,12 @@ def test_fresh_session_manager_per_build() -> None:
 @pytest.fixture
 def auth_token():
     previous = auth_mod.session_manager.token
+    previous_init = auth_mod.session_manager._initialized
     auth_mod.session_manager.token = "mcp-token-" + "x" * 40
+    auth_mod.session_manager._initialized = True
     yield auth_mod.session_manager.token
     auth_mod.session_manager.token = previous
+    auth_mod.session_manager._initialized = previous_init
 
 
 @pytest.fixture

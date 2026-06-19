@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import delete, get, patch, post
-from litestar.exceptions import NotFoundException
+from litestar.exceptions import ClientException, NotFoundException
 from litestar.params import Parameter
 
 from lilbee.app import services as svc_mod
@@ -105,6 +105,8 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
         diff = diff_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except ValueError as exc:
+        raise ClientException(detail="invalid draft slug") from exc
     return WikiDraftDiffResponse(slug=slug, diff=diff)
 
 
@@ -121,6 +123,8 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
         result = accept_draft(slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except ValueError as exc:
+        raise ClientException(detail="invalid draft slug") from exc
     return WikiDraftAcceptResponse(**result.to_dict())
 
 
@@ -133,6 +137,8 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
         reject_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except ValueError as exc:
+        raise ClientException(detail="invalid draft slug") from exc
     return WikiDraftRejectResponse(slug=slug)
 
 

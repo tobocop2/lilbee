@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.ingest import copy_files
 from lilbee.app.services import reset_services
 from lilbee.core.config import Config, cfg
-from lilbee.data.store import MemoryKind, MemoryRow, Store
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, Store
 from lilbee.providers.factory import create_provider
 from lilbee.retrieval.concepts import ConceptGraph
 from lilbee.retrieval.embedder import Embedder
@@ -212,13 +212,13 @@ class Lilbee:
             return self._store.add_memory(record)
 
     def recall(self, query: str, *, top_k: int | None = None) -> list[MemoryRow]:
-        """Recall facts relevant to *query* from long-term memory."""
-        from lilbee.data.store import local_owner_predicate
+        """Recall facts relevant to *query* (own memories plus agent-shared)."""
+        from lilbee.data.store import human_recall_predicate
 
         with _swap_config(self._config):
             return self._store.search_memories(
                 self._embedder.embed_query(query),
-                owner_predicate=local_owner_predicate(),
+                owner_predicate=human_recall_predicate(),
                 top_k=self._config.memory_top_k if top_k is None else top_k,
                 max_distance=self._config.memory_max_distance,
             )
@@ -230,7 +230,7 @@ class Lilbee:
         with _swap_config(self._config):
             return self._store.get_memories(owner_predicate=local_owner_predicate())
 
-    def forget(self, memory_id: str) -> None:
-        """Delete a memory by id."""
+    def forget(self, memory_id: str) -> bool:
+        """Delete a local memory by id; True when it existed and was removed."""
         with _swap_config(self._config):
-            self._store.delete_memory(memory_id)
+            return self._store.delete_memory(memory_id, owner=LOCAL_OWNER)

@@ -56,6 +56,10 @@ class SessionManager:
 
     def __init__(self) -> None:
         self.token: str | None = None
+        # False until load_or_generate() or disable() runs. validate() fails
+        # closed while unset so an app served without its lifespan (or after
+        # cleanup) never silently accepts unauthenticated mutating requests.
+        self._initialized: bool = False
 
     def load_or_generate(self) -> str:
         """Return the persisted token if shape-valid; generate a new one otherwise."""
@@ -63,13 +67,24 @@ class SessionManager:
         existing = self._read_persisted_token(path)
         if existing is not None:
             self.token = existing
+            self._initialized = True
             return existing
         self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}))
         if sys.platform != "win32":
             path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
+        self._initialized = True
         return self.token
+
+    def disable(self) -> None:
+        """Explicitly turn auth off (test harness / embedded read-only use).
+
+        Distinct from the uninitialized state: validate() accepts any request
+        once disabled, but denies until either this or load_or_generate() runs.
+        """
+        self.token = None
+        self._initialized = True
 
     @staticmethod
     def _read_persisted_token(path: Path) -> str | None:
@@ -90,17 +105,22 @@ class SessionManager:
         return token
 
     def cleanup(self) -> None:
-        """Remove server.json on shutdown and clear the in-memory token."""
+        """Remove server.json on shutdown and reset to the uninitialized state."""
         self.token = None
+        self._initialized = False
         path = server_json_path()
         path.unlink(missing_ok=True)
 
     def validate(self, auth_header: str) -> bool:
-        """Check whether *auth_header* carries a valid bearer token."""
+        """Check whether *auth_header* carries a valid bearer token.
+
+        Fails closed until initialized: a request reaching auth before the
+        lifespan ran (or after cleanup) is denied rather than allowed.
+        """
+        if not self._initialized:
+            raise NotAuthorizedException("Server authentication is not initialized")
         if self.token is None:
-            return True  # auth disabled (tests)
-        if not self.token:
-            raise NotAuthorizedException("Server token not initialized")
+            return True  # auth explicitly disabled via disable()
         return hmac.compare_digest(auth_header, f"Bearer {self.token}")
 
 
