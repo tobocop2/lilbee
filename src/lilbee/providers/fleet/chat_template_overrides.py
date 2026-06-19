@@ -30,11 +30,15 @@ _CHAT_TEMPLATES_DIR = Path(__file__).parent / "chat_templates"
 # guard in :func:`chat_template_override` keeps it from replacing a template
 # that is already tool-aware. Each vendored template is the model's own upstream
 # template (tool-aware, with any ``tojson`` guarded so the no-tools warmup call
-# does not crash llama-server's jinja engine). ``chatglm`` is the legacy GLM
-# arch that GLM-4-9B converts under (verified against the GGUF header); the
-# newer GLM-4.5 family converts under ``glm4moe`` and is not covered here.
+# does not crash llama-server's jinja engine).
+#
+# An arch belongs here only once it is verified end-to-end: the override must
+# make llama-server emit a *structured* tool call the agent can dispatch. An
+# arch whose template offers tools but whose tool-call output llama.cpp does not
+# parse (so the model emits the call as prose and the agent never dispatches)
+# must NOT be added -- offering tools we cannot parse is worse than declining
+# them, because the model then hallucinates instead of failing cleanly.
 _ARCH_TEMPLATE_OVERRIDES: dict[str, str] = {
-    "chatglm": "chatglm.jinja",
     "lfm2": "lfm2.jinja",
 }
 
