@@ -8364,6 +8364,68 @@ def test_wiki_drafts_go_back_guarded_against_empty_stack() -> None:
         fake_app.pop_screen.assert_called_once()
 
 
+class TestWikiDraftsTraversal:
+    """A traversal slug surfaces the generic message, not the absolute path."""
+
+    def test_display_diff_traversal_shows_generic(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+        from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
+
+        screen = WikiDraftsScreen()
+        with (
+            patch.object(WikiDraftsScreen, "_show_diff") as show,
+            patch(
+                "lilbee.cli.tui.screens.wiki_drafts.diff_draft",
+                side_effect=PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
+            ),
+        ):
+            screen._display_diff("../../secret")
+        show.assert_called_once_with(INVALID_DRAFT_SLUG_ERROR)
+
+    def test_do_accept_traversal_notifies_generic(self) -> None:
+        from tests.conftest import make_mock_services
+
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+
+        set_services(make_mock_services())
+        try:
+            screen = WikiDraftsScreen()
+            with (
+                patch.object(WikiDraftsScreen, "notify") as notify,
+                patch.object(WikiDraftsScreen, "_load_drafts"),
+                patch(
+                    "lilbee.cli.tui.screens.wiki_drafts.accept_draft",
+                    side_effect=PathTraversalError(
+                        "Path escapes allowed directory: /abs/secret.md"
+                    ),
+                ),
+            ):
+                screen._do_accept("../../secret")
+            assert "invalid draft slug" in str(notify.call_args)
+            assert "/abs/secret.md" not in str(notify.call_args)
+        finally:
+            set_services(None)
+
+    def test_do_reject_traversal_notifies_generic(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+
+        screen = WikiDraftsScreen()
+        with (
+            patch.object(WikiDraftsScreen, "notify") as notify,
+            patch.object(WikiDraftsScreen, "_load_drafts"),
+            patch(
+                "lilbee.cli.tui.screens.wiki_drafts.reject_draft",
+                side_effect=PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
+            ),
+        ):
+            screen._do_reject("../../secret")
+        assert "invalid draft slug" in str(notify.call_args)
+        assert "/abs/secret.md" not in str(notify.call_args)
+
+
 class TestWikiDraftsScreen:
     """Wiki drafts review screen: list, diff, accept, reject."""
 
