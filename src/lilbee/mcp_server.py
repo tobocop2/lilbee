@@ -10,9 +10,11 @@ import logging
 import os
 import re
 import textwrap
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar, cast
+from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
@@ -938,14 +940,41 @@ def _slug(value: str) -> str:
     return slug or "generic"
 
 
+# Per-connection fallback ids for agents that report no identity. Keyed by the
+# live MCP session so each connection gets a distinct, stable namespace instead
+# of every unidentified agent colliding on a shared one. WeakKeyDictionary drops
+# entries once the session is collected, so this does not grow unbounded.
+_ANON_OWNER_IDS: WeakKeyDictionary[object, str] = WeakKeyDictionary()
+
+
+def _anon_owner_id(ctx: Context | None) -> str:
+    """A stable per-connection id for an agent that reported no identity.
+
+    Without this, two unidentified agents would both slug to ``generic`` and
+    share a memory namespace; keying on the session keeps them isolated.
+    """
+    if ctx is None:
+        return "anonymous"
+    session = ctx.session
+    existing = _ANON_OWNER_IDS.get(session)
+    if existing is None:
+        existing = f"anon-{uuid.uuid4().hex[:12]}"
+        _ANON_OWNER_IDS[session] = existing
+    return existing
+
+
 def _derive_owner(agent_id: str, ctx: Context | None) -> str:
     """Resolve the calling agent's stable owner namespace.
 
     Precedence: explicit ``agent_id`` argument, then the ``LILBEE_AGENT_ID`` env var
-    (pinned in the client's MCP config), then the MCP client name, then ``generic``.
+    (pinned in the client's MCP config), then the MCP client name, then a stable
+    per-connection fallback so unidentified agents never share a namespace.
     """
     explicit = agent_id or os.environ.get("LILBEE_AGENT_ID", "")
-    return agent_owner(_slug(explicit or _client_name(ctx)))
+    resolved = explicit or _client_name(ctx)
+    if resolved:
+        return agent_owner(_slug(resolved))
+    return agent_owner(_slug(_anon_owner_id(ctx)))
 
 
 @_tool_if(memory_enabled())

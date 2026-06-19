@@ -75,8 +75,18 @@ def escape_sql_string(value: str) -> str:
 
 
 def local_owner_predicate() -> str:
-    """SQL predicate selecting the local human's memories."""
+    """SQL predicate selecting the local human's own memories."""
     return f"owner = '{LOCAL_OWNER}'"
+
+
+def human_recall_predicate() -> str:
+    """SQL predicate for the human: own memories plus any an agent has shared.
+
+    The mirror of :func:`agent_recall_predicate`: ``shared=True`` on an agent
+    memory means "expose to the human's TUI/CLI", so the human's view must
+    include those rather than only ``owner = 'local'``.
+    """
+    return f"owner = '{LOCAL_OWNER}' OR (shared = true AND owner != '{LOCAL_OWNER}')"
 
 
 def agent_recall_predicate(owner: str) -> str:

@@ -21,7 +21,7 @@ from lilbee.data.store import (
     MemorySource,
     agent_recall_predicate,
     escape_sql_string,
-    local_owner_predicate,
+    human_recall_predicate,
 )
 
 
@@ -87,7 +87,7 @@ def remember(
 def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) -> list[MemoryRow]:
     """Recall *owner*'s facts (plus human-shared facts for agents)."""
     services = get_services()
-    predicate = local_owner_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
+    predicate = human_recall_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
     return services.store.search_memories(
         services.embedder.embed_query(query),
         owner_predicate=predicate,
@@ -99,7 +99,7 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
 def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
     """List all of *owner*'s memories (any kind), newest first."""
     predicate = (
-        local_owner_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
+        human_recall_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
     )
     return get_services().store.get_memories(owner_predicate=predicate)
 

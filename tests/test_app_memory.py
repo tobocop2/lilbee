@@ -13,6 +13,7 @@ from lilbee.data.store import (
     MemorySource,
     agent_owner,
     agent_recall_predicate,
+    human_recall_predicate,
     local_owner_predicate,
 )
 from lilbee.providers.base import ChatResult, FinishReason
@@ -90,13 +91,14 @@ class TestRemember:
 
 
 class TestRecall:
-    def test_local_uses_local_predicate(self, svc):
+    def test_local_uses_human_recall_predicate(self, svc):
         cfg.memory_top_k = 7
         cfg.memory_max_distance = 0.4
         app_memory.recall("where is auth")
         svc.embedder.embed_query.assert_called_once_with("where is auth")
         kwargs = svc.store.search_memories.call_args.kwargs
-        assert kwargs["owner_predicate"] == local_owner_predicate()
+        # The human recalls their own memories plus any an agent shared.
+        assert kwargs["owner_predicate"] == human_recall_predicate()
         assert kwargs["top_k"] == 7
         assert kwargs["max_distance"] == 0.4
 
@@ -113,7 +115,10 @@ class TestRecall:
 class TestListForgetFlags:
     def test_list_local(self, svc):
         app_memory.list_memories()
-        assert svc.store.get_memories.call_args.kwargs["owner_predicate"] == local_owner_predicate()
+        assert (
+            svc.store.get_memories.call_args.kwargs["owner_predicate"]
+            == human_recall_predicate()
+        )
 
     def test_list_agent_owns_only(self, svc):
         app_memory.list_memories(agent_owner("x"))

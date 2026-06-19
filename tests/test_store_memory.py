@@ -13,6 +13,7 @@ from lilbee.data.store import (
     MemorySource,
     Store,
     agent_owner,
+    human_recall_predicate,
     is_agent_owner,
 )
 
@@ -199,6 +200,19 @@ class TestUpdateAndDelete:
         store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))
         assert store.delete_memory("d1", owner=LOCAL_OWNER) is True
         assert store.get_memories(owner_predicate=LOCAL_PREDICATE) == []
+
+
+class TestHumanRecallPredicate:
+    """The human's view includes local memories plus agent-shared ones."""
+
+    def test_human_sees_local_and_shared_agent_memories(self, store):
+        store.add_memory(_memory(store, text="mine", owner=LOCAL_OWNER, axis=0))
+        shared = _memory(store, text="shared by agent", owner=agent_owner("a"), axis=1)
+        shared.shared = True
+        store.add_memory(shared)
+        store.add_memory(_memory(store, text="agent private", owner=agent_owner("a"), axis=2))
+        rows = store.get_memories(owner_predicate=human_recall_predicate())
+        assert {r.text for r in rows} == {"mine", "shared by agent"}
 
 
 class TestOwnerScopedMutation:

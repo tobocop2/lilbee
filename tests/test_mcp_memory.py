@@ -64,9 +64,18 @@ class TestDeriveOwner:
         monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
         assert mcp_server._derive_owner("", _ctx("OpenCode")) == "agent:opencode"
 
-    def test_generic_when_nothing(self, monkeypatch):
+    def test_anonymous_when_no_ctx(self, monkeypatch):
         monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
-        assert mcp_server._derive_owner("", None) == "agent:generic"
+        assert mcp_server._derive_owner("", None) == "agent:anonymous"
+
+    def test_unidentified_sessions_get_distinct_owners(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
+        ctx_a, ctx_b = _ctx(None), _ctx(None)
+        owner_a = mcp_server._derive_owner("", ctx_a)
+        owner_b = mcp_server._derive_owner("", ctx_b)
+        assert owner_a != owner_b
+        # Stable within the same connection.
+        assert mcp_server._derive_owner("", ctx_a) == owner_a
 
 
 class TestMemoryRememberTool:
