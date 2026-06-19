@@ -21,10 +21,15 @@ MCP_MOUNT_PATH = "/mcp"
 
 _Lifespan = Callable[["Litestar"], AbstractAsyncContextManager[None]]
 
-_LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 # Wildcard binds cannot be enumerated for a Host allowlist. Sentinels for
 # comparison, not bind addresses.
 _WILDCARD_BINDS = ("0.0.0.0", "::")  # noqa: S104
+
+
+def _fmt_host(host: str) -> str:
+    """Bracket an IPv6 literal so it matches Host/Origin header syntax."""
+    return f"[{host}]" if ":" in host else host
 
 
 def _transport_security() -> TransportSecuritySettings:
@@ -32,15 +37,17 @@ def _transport_security() -> TransportSecuritySettings:
 
     Defaults to loopback (the usual bind). When the daemon is bound to a
     specific non-loopback host, that host is added so the mount does not
-    fail closed and reject every request. A wildcard bind (0.0.0.0) cannot
-    be enumerated, so only loopback is allowed there.
+    fail closed and reject every request. A wildcard bind (0.0.0.0 / ::)
+    cannot be enumerated, so only loopback is allowed there.
     """
-    hosts = [f"{h}:*" for h in _LOOPBACK_HOSTS]
-    origins = [f"{scheme}://{h}:*" for h in _LOOPBACK_HOSTS for scheme in ("http", "https")]
+    hosts = [f"{_fmt_host(h)}:*" for h in _LOOPBACK_HOSTS]
+    origins = [
+        f"{scheme}://{_fmt_host(h)}:*" for h in _LOOPBACK_HOSTS for scheme in ("http", "https")
+    ]
     bind = cfg.server_host
     if bind and bind not in _LOOPBACK_HOSTS and bind not in _WILDCARD_BINDS:
-        hosts.append(f"{bind}:*")
-        origins.extend(f"{scheme}://{bind}:*" for scheme in ("http", "https"))
+        hosts.append(f"{_fmt_host(bind)}:*")
+        origins.extend(f"{scheme}://{_fmt_host(bind)}:*" for scheme in ("http", "https"))
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=hosts,

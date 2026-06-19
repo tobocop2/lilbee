@@ -212,13 +212,13 @@ class Lilbee:
             return self._store.add_memory(record)
 
     def recall(self, query: str, *, top_k: int | None = None) -> list[MemoryRow]:
-        """Recall facts relevant to *query* from long-term memory."""
-        from lilbee.data.store import local_owner_predicate
+        """Recall facts relevant to *query* (own memories plus agent-shared)."""
+        from lilbee.data.store import human_recall_predicate
 
         with _swap_config(self._config):
             return self._store.search_memories(
                 self._embedder.embed_query(query),
-                owner_predicate=local_owner_predicate(),
+                owner_predicate=human_recall_predicate(),
                 top_k=self._config.memory_top_k if top_k is None else top_k,
                 max_distance=self._config.memory_max_distance,
             )

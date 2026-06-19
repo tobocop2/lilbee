@@ -1644,14 +1644,27 @@ class TestAuthRequiredRoutes:
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
+        previous_init = auth_mod.session_manager._initialized
         auth_mod.session_manager.token = "test-secret"
+        # Mark initialized so 401s come from the token comparison, not the
+        # uninitialized fail-closed gate (the app is built without its lifespan).
+        auth_mod.session_manager._initialized = True
         app = create_app()
         yield TestClient(app)
         auth_mod.session_manager.token = None
+        auth_mod.session_manager._initialized = previous_init
 
     def test_patch_config_requires_auth(self, auth_client):
         resp = auth_client.patch("/api/config", json={"temperature": 0.5})
         assert resp.status_code == 401
+
+    def test_patch_config_accepts_valid_bearer(self, auth_client):
+        resp = auth_client.patch(
+            "/api/config",
+            json={"temperature": 0.5},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code != 401
 
     def test_put_models_embedding_requires_auth(self, auth_client):
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
@@ -1757,11 +1770,14 @@ class TestImportRoute:
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
+        previous_init = auth_mod.session_manager._initialized
         auth_mod.session_manager.token = "test-secret"
+        auth_mod.session_manager._initialized = True
         try:
             resp = TestClient(create_app()).post(
                 "/api/import", params={"format": "jsonl"}, content=b""
             )
         finally:
             auth_mod.session_manager.token = None
+            auth_mod.session_manager._initialized = previous_init
         assert resp.status_code == 401

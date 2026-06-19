@@ -43,14 +43,27 @@ def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
-@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
-def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch, wildcard) -> None:
+def test_transport_security_brackets_ipv6_bind_host(monkeypatch) -> None:
     from lilbee.core.config import cfg
     from lilbee.server.mcp_mount import _transport_security
 
+    monkeypatch.setattr(cfg, "server_host", "fd00::1")
+    security = _transport_security()
+    assert "[fd00::1]:*" in security.allowed_hosts
+    assert "http://[fd00::1]:*" in security.allowed_origins
+    # IPv6 loopback is bracketed and allowed by default too.
+    assert "[::1]:*" in security.allowed_hosts
+
+
+@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch, wildcard) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _fmt_host, _transport_security
+
     monkeypatch.setattr(cfg, "server_host", wildcard)
     security = _transport_security()
-    assert not any(wildcard in h for h in security.allowed_hosts)
+    # The wildcard bind itself is never added as its own allowlist entry.
+    assert f"{_fmt_host(wildcard)}:*" not in security.allowed_hosts
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
