@@ -8,6 +8,7 @@ import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
@@ -530,7 +531,7 @@ class TestWikiDraftsEndpoints:
         # The traversal guard raises ValueError carrying the absolute candidate
         # path; the route must map it to a generic 400 that does not leak it.
         def _raise(slug: str, root: Path) -> str:
-            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
 
         monkeypatch.setattr(server_wiki_mod, "diff_draft", _raise)
         async with AsyncTestClient(_create_app()) as client:
@@ -542,7 +543,7 @@ class TestWikiDraftsEndpoints:
         from lilbee.server import wiki as server_wiki_mod
 
         def _raise(slug: str, root: Path, store: object) -> object:
-            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
 
         monkeypatch.setattr(server_wiki_mod, "accept_draft", _raise)
         async with AsyncTestClient(_create_app()) as client:
@@ -550,11 +551,25 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "invalid draft slug"
 
+    async def test_accept_indexing_valueerror_is_not_masked(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        # A non-traversal ValueError from re-indexing (e.g. embedding-dim drift)
+        # must NOT be mislabeled as a 400 "invalid draft slug"; it surfaces as 500.
+        def _raise(slug: str, root: Path, store: object) -> object:
+            raise ValueError("Vector dimension mismatch: expected 768, got 1024")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/real-slug", headers=_h())
+        assert resp.status_code == 500
+        assert resp.json().get("detail") != "invalid draft slug"
+
     async def test_reject_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
 
         def _raise(slug: str, root: Path) -> None:
-            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
 
         monkeypatch.setattr(server_wiki_mod, "reject_draft", _raise)
         async with AsyncTestClient(_create_app()) as client:

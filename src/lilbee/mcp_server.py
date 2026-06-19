@@ -51,6 +51,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
     WikiSubdir,
 )
@@ -836,6 +837,7 @@ def wiki_drafts_list() -> dict[str, Any]:
 @_tool_if(cfg.wiki)
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Unified diff of a draft against its published counterpart."""
+    from lilbee.core.security import PathTraversalError
     from lilbee.wiki.drafts import diff_draft
 
     wiki_root = cfg.data_root / cfg.wiki_dir
@@ -843,8 +845,8 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
         diff = diff_draft(slug, wiki_root)
     except FileNotFoundError as exc:
         return _error(str(exc))
-    except ValueError:
-        return _error("invalid draft slug")
+    except PathTraversalError:
+        return _error(INVALID_DRAFT_SLUG_ERROR)
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 
 
@@ -1041,13 +1043,7 @@ def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any
 
 @_tool_if(memory_enabled())
 def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
-    """Delete one of this agent's own memories by id.
-
-    Args:
-        memory_id: The id returned by memory_remember/memory_list.
-        agent_id: Stable id for this agent's namespace; otherwise derived from
-            LILBEE_AGENT_ID or the MCP client name.
-    """
+    """Delete one of this agent's own memories by id (agent_id scopes the namespace)."""
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)
     owner = _derive_owner(agent_id, ctx)

@@ -91,7 +91,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
 | `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
 | `lilbee_memory_list(agent_id)` | List your stored memories. No embedding. |
-| `lilbee_memory_forget(memory_id)` | Delete one of your memories by id. No embedding. |
+| `lilbee_memory_forget(memory_id, agent_id)` | Delete one of your memories by id (`agent_id` scopes the namespace). No embedding. |
 
 ### Long (must go through `lilbee-worker`)
 

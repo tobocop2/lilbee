@@ -205,10 +205,13 @@ class Store:
         table = self.open_table(META_TABLE)
         if table is None:
             return None
-        rows = table.search().limit(1).to_list()
+        rows = table.search().limit(None).to_list()
         if not rows:
             return None
-        row = rows[0]
+        # _meta is meant to hold one row, but a swallowed delete on rewrite could
+        # leave a stale one behind; take the newest so identity reads stay
+        # deterministic rather than returning an arbitrary row.
+        row = max(rows, key=lambda r: r["updated_at"])
         return StoreMeta(
             embedding_model=row["embedding_model"],
             embedding_dim=int(row["embedding_dim"]),
@@ -730,7 +733,10 @@ class Store:
         """
         table = self._sources_table()
         filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
-        _safe_delete_unlocked(table, f"filename IN ({filenames})")
+        # Skip the add when the delete failed: adding over a stale row would leave
+        # two _sources rows for one filename. The file replans on the next sync.
+        if not _safe_delete_unlocked(table, f"filename IN ({filenames})"):
+            return
         table.add(rows)
 
     def upsert_source(
@@ -1003,8 +1009,11 @@ class Store:
             db = self.get_db()
             table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
             duplicate_id = self._duplicate_memory_id_unlocked(table, record)
-            if duplicate_id is not None:
-                _safe_delete_unlocked(table, f"id = '{escape_sql_string(duplicate_id)}'")
+            if duplicate_id is not None and _safe_delete_unlocked(
+                table, f"id = '{escape_sql_string(duplicate_id)}'"
+            ):
+                # Only reuse the id once the old row is actually gone; a swallowed
+                # delete failure would otherwise leave two rows with the same id.
                 record.id = duplicate_id
             self._evict_overflow_unlocked(table, record.owner)
             table.add([record.model_dump(mode="json")])
@@ -1066,7 +1075,10 @@ class Store:
             record = MemoryRow(**rows[0])
             record.shared = shared
             record.updated_at = datetime.now(UTC).isoformat()
-            _safe_delete_unlocked(table, predicate)
+            # If the delete fails, do not add the modified copy: that would leave
+            # two rows for one id. Report not-updated instead.
+            if not _safe_delete_unlocked(table, predicate):
+                return False
             table.add([record.model_dump(mode="json")])
             return True
 
@@ -1083,8 +1095,9 @@ class Store:
             predicate = self._owned_memory_predicate(memory_id, owner)
             if not table.search().where(predicate).limit(1).to_list():
                 return False
-            _safe_delete_unlocked(table, predicate)
-            return True
+            # Report the real outcome: a swallowed delete failure must not be
+            # reported as a successful forget.
+            return _safe_delete_unlocked(table, predicate)
 
     @staticmethod
     def _owned_memory_predicate(memory_id: str, owner: str) -> str:

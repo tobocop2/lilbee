@@ -43,6 +43,11 @@ WIKI_CONTENT_SUBDIRS: tuple[WikiSubdir, ...] = (
 
 WIKI_DISABLED_ERROR = "wiki not enabled"
 
+# Generic, path-free error for a draft slug that fails traversal validation.
+# Shared across every transport (REST/CLI/MCP/TUI) so the absolute candidate
+# path from validate_path_within is never echoed to a caller.
+INVALID_DRAFT_SLUG_ERROR = "invalid draft slug"
+
 # PENDING-marker keyword phrases written into ``drafts/<slug>.md`` by the
 # batched generator and matched by the drafts-review surface. Centralized
 # here so the gen-side writer and the drafts-side reader agree on the

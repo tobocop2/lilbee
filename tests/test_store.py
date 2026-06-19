@@ -319,6 +319,16 @@ class TestWriteChunksBatch:
         assert store.write_chunks_batch([]) == 0
         assert store.get_sources() == []
 
+    def test_replace_source_skips_add_on_swallowed_delete(self, store, monkeypatch):
+        # A swallowed delete must not leave two _sources rows for one filename:
+        # the replace skips the add and the file replans next sync.
+        store.upsert_source("a.md", "h1", chunk_count=2)
+        assert len([s for s in store.get_sources() if s["filename"] == "a.md"]) == 1
+        monkeypatch.setattr("lilbee.data.store.core._safe_delete_unlocked", lambda *a, **k: False)
+        store.upsert_source("a.md", "h2", chunk_count=9)
+        rows = [s for s in store.get_sources() if s["filename"] == "a.md"]
+        assert len(rows) == 1
+
     def test_zero_chunk_item_persists_page_texts_and_source_row(self, store):
         # A processed file with no chunkable text (whitespace-only OCR) keeps
         # its pages and source row so it stops replanning every sync.

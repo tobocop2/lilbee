@@ -19,7 +19,9 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
 )
 
@@ -440,7 +442,7 @@ def wiki_drafts_list(
 
 def _draft_slug_error() -> None:
     """Report a rejected (traversal) draft slug generically, without leaking paths."""
-    message = "invalid draft slug"
+    message = INVALID_DRAFT_SLUG_ERROR
     if cfg.json_mode:
         json_output({"error": message})
     else:
@@ -467,7 +469,7 @@ def wiki_drafts_diff(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
-    except ValueError:
+    except PathTraversalError:
         _draft_slug_error()
 
     if cfg.json_mode:
@@ -495,7 +497,7 @@ def wiki_drafts_accept(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
-    except ValueError:
+    except PathTraversalError:
         _draft_slug_error()
 
     if cfg.json_mode:
@@ -526,7 +528,7 @@ def wiki_drafts_reject(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
-    except ValueError:
+    except PathTraversalError:
         _draft_slug_error()
 
     if cfg.json_mode:
