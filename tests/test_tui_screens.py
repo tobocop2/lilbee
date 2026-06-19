@@ -8384,10 +8384,9 @@ class TestWikiDraftsTraversal:
         show.assert_called_once_with(INVALID_DRAFT_SLUG_ERROR)
 
     def test_do_accept_traversal_notifies_generic(self) -> None:
-        from tests.conftest import make_mock_services
-
         from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
         from lilbee.core.security import PathTraversalError
+        from tests.conftest import make_mock_services
 
         set_services(make_mock_services())
         try:
