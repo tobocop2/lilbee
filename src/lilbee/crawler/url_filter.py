@@ -7,6 +7,7 @@ import socket
 from urllib.parse import urlparse
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -49,6 +50,11 @@ def validate_crawl_url(url: str) -> None:
 
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        # An IPv4-mapped IPv6 address (::ffff:169.254.169.254) reaches the same
+        # host as its IPv4 form but would slip past the IPv4 network checks, so
+        # unmap it before testing the blocklist.
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
         for network in get_blocked_networks():
             if ip in network:
                 raise ValueError(f"Crawling private/reserved IP {ip} is not allowed")
