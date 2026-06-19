@@ -538,6 +538,30 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "invalid draft slug"
 
+    async def test_accept_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _raise(slug: str, root: Path, store: object) -> object:
+            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
+    async def test_reject_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _raise(slug: str, root: Path) -> None:
+            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "reject_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
     async def test_accept_happy(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.server import wiki as server_wiki_mod
         from lilbee.wiki.drafts import AcceptResult

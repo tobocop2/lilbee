@@ -1156,6 +1156,23 @@ class TestAuth:
             _auth_mod.session_manager.token = previous
             _auth_mod.session_manager._initialized = previous_init
 
+    async def test_uninitialized_auth_returns_401_envelope(self, services_with_chat_model):
+        # Uninitialized (pre-lifespan) state fails closed: validate() raises
+        # NotAuthorizedException, which _auth_failure maps to the 401 OpenAI
+        # envelope rather than letting it escape as a 500.
+        previous = _auth_mod.session_manager.token
+        previous_init = _auth_mod.session_manager._initialized
+        _auth_mod.session_manager.token = None
+        _auth_mod.session_manager._initialized = False
+        try:
+            async with AsyncTestClient(_build_app()) as client:
+                resp = await client.get("/v1/models")
+            assert resp.status_code == 401
+            assert resp.json()["error"]["code"] == "invalid_api_key"
+        finally:
+            _auth_mod.session_manager.token = previous
+            _auth_mod.session_manager._initialized = previous_init
+
 
 class TestBusy:
     async def test_busy_backend_returns_429_only_after_wait_timeout(
