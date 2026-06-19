@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lilbee.core.security import validate_path_within
 from lilbee.data.store import Store
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
@@ -145,7 +146,16 @@ class AcceptResult:
 
 
 def _draft_path(wiki_root: Path, slug: str) -> Path:
-    return wiki_root / WikiSubdir.DRAFTS / f"{slug}.md"
+    """Resolve a draft slug to a path, rejecting traversal outside the drafts dir.
+
+    The slug reaches here straight from a ``{slug:path}`` HTTP route and the
+    MCP tool, so an unvalidated ``..`` would let accept/reject/diff read,
+    overwrite, or delete arbitrary ``.md`` files. Mirrors browse.find_page.
+    """
+    drafts_root = wiki_root / WikiSubdir.DRAFTS
+    candidate = drafts_root / f"{slug}.md"
+    validate_path_within(candidate, drafts_root)
+    return candidate
 
 
 def _find_published(wiki_root: Path, slug: str) -> Path | None:
@@ -154,10 +164,12 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
     Checks summaries, synthesis, concepts, and entities subdirs in
     priority order so a draft regenerated from an existing summary
     page pairs with its original rather than the same slug under a
-    different page type.
+    different page type. Rejects a traversal slug rather than reading
+    a matching file outside the wiki tree.
     """
     for subdir in _PUBLISHED_SUBDIRS:
         candidate = wiki_root / subdir / f"{slug}.md"
+        validate_path_within(candidate, wiki_root)
         if candidate.is_file():
             return candidate
     return None
