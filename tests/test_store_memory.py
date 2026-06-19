@@ -225,14 +225,18 @@ class TestOwnerScopedMutation:
         assert [m.text for m in store.get_memories(owner_predicate=LOCAL_PREDICATE)] == ["human"]
 
     def test_agent_cannot_delete_other_agents_memory(self, store):
-        store.add_memory(_memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0))
+        store.add_memory(
+            _memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0)
+        )
         deleted = store.delete_memory("m1", owner=agent_owner("bob"))
         assert deleted is False
         alice = store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'")
         assert [m.text for m in alice] == ["a"]
 
     def test_owner_can_delete_own_memory(self, store):
-        store.add_memory(_memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0))
+        store.add_memory(
+            _memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0)
+        )
         assert store.delete_memory("m1", owner=agent_owner("alice")) is True
         assert store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'") == []
 

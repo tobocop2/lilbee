@@ -99,7 +99,9 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
 def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
     """List all of *owner*'s memories (any kind), newest first."""
     predicate = (
-        human_recall_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
+        human_recall_predicate()
+        if owner == LOCAL_OWNER
+        else f"owner = '{escape_sql_string(owner)}'"
     )
     return get_services().store.get_memories(owner_predicate=predicate)
 

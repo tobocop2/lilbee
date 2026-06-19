@@ -22,6 +22,7 @@ MCP_MOUNT_PATH = "/mcp"
 _Lifespan = Callable[["Litestar"], AbstractAsyncContextManager[None]]
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+_WILDCARD_BIND = "0.0.0.0"  # noqa: S104 - sentinel for comparison, not a bind address
 
 
 def _transport_security() -> TransportSecuritySettings:
@@ -35,7 +36,7 @@ def _transport_security() -> TransportSecuritySettings:
     hosts = [f"{h}:*" for h in _LOOPBACK_HOSTS]
     origins = [f"{scheme}://{h}:*" for h in _LOOPBACK_HOSTS for scheme in ("http", "https")]
     bind = cfg.server_host
-    if bind and bind not in _LOOPBACK_HOSTS and bind != "0.0.0.0":
+    if bind and bind not in _LOOPBACK_HOSTS and bind != _WILDCARD_BIND:
         hosts.append(f"{bind}:*")
         origins.extend(f"{scheme}://{bind}:*" for scheme in ("http", "https"))
     return TransportSecuritySettings(
