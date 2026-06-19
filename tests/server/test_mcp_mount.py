@@ -31,6 +31,28 @@ def test_configures_localhost_transport_security() -> None:
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
+def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", "192.168.1.50")
+    security = _transport_security()
+    assert "192.168.1.50:*" in security.allowed_hosts
+    assert "http://192.168.1.50:*" in security.allowed_origins
+    # Loopback stays allowed as the default.
+    assert "127.0.0.1:*" in security.allowed_hosts
+
+
+def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch) -> None:
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", "0.0.0.0")
+    security = _transport_security()
+    assert not any("0.0.0.0" in h for h in security.allowed_hosts)
+    assert "127.0.0.1:*" in security.allowed_hosts
+
+
 def test_handler_mounts_at_mcp_path() -> None:
     handler, _ = build_mcp_mount()
     assert MCP_MOUNT_PATH in handler.paths
@@ -47,9 +69,12 @@ def test_fresh_session_manager_per_build() -> None:
 @pytest.fixture
 def auth_token():
     previous = auth_mod.session_manager.token
+    previous_init = auth_mod.session_manager._initialized
     auth_mod.session_manager.token = "mcp-token-" + "x" * 40
+    auth_mod.session_manager._initialized = True
     yield auth_mod.session_manager.token
     auth_mod.session_manager.token = previous
+    auth_mod.session_manager._initialized = previous_init
 
 
 @pytest.fixture

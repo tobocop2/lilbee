@@ -10,6 +10,7 @@ from litestar.handlers import asgi
 from litestar.types import ASGIApp, Receive, Scope, Send
 from mcp.server.transport_security import TransportSecuritySettings
 
+from lilbee.core.config import cfg
 from lilbee.mcp_server import mcp
 
 if TYPE_CHECKING:
@@ -20,13 +21,28 @@ MCP_MOUNT_PATH = "/mcp"
 
 _Lifespan = Callable[["Litestar"], AbstractAsyncContextManager[None]]
 
-# The daemon binds localhost; agents reach it on 127.0.0.1/localhost with a
-# dynamic port. DNS-rebinding protection stays on, scoped to those hosts.
-_TRANSPORT_SECURITY = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=["127.0.0.1:*", "localhost:*"],
-    allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
-)
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+
+
+def _transport_security() -> TransportSecuritySettings:
+    """DNS-rebinding allowlist scoped to the configured bind host.
+
+    Defaults to loopback (the usual bind). When the daemon is bound to a
+    specific non-loopback host, that host is added so the mount does not
+    fail closed and reject every request. A wildcard bind (0.0.0.0) cannot
+    be enumerated, so only loopback is allowed there.
+    """
+    hosts = [f"{h}:*" for h in _LOOPBACK_HOSTS]
+    origins = [f"{scheme}://{h}:*" for h in _LOOPBACK_HOSTS for scheme in ("http", "https")]
+    bind = cfg.server_host
+    if bind and bind not in _LOOPBACK_HOSTS and bind != "0.0.0.0":
+        hosts.append(f"{bind}:*")
+        origins.extend(f"{scheme}://{bind}:*" for scheme in ("http", "https"))
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
 
 
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
@@ -40,7 +56,7 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     # since run() is single-use per instance.
     mcp._session_manager = None
     mcp.settings.streamable_http_path = "/"
-    mcp.settings.transport_security = _TRANSPORT_SECURITY
+    mcp.settings.transport_security = _transport_security()
     asgi_app = cast("ASGIApp", mcp.streamable_http_app())
     manager = mcp.session_manager
 

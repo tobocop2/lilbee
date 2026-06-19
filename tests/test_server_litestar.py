@@ -1298,6 +1298,13 @@ class TestSetupCrawlerRoutes:
         assert resp.status_code == 200
         assert resp.json()["installed"] is False
 
+    def test_status_route_is_read_only(self):
+        """Parity with the other status GETs: no auth token required to poll."""
+        from lilbee.server.auth import is_read_only
+        from lilbee.server.routes.setup import setup_crawler_status_route
+
+        assert is_read_only(setup_crawler_status_route.fn)
+
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
         from lilbee.runtime.progress import EventType, SetupDoneEvent, SetupStartEvent
