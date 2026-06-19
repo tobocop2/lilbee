@@ -207,12 +207,12 @@ class MemoriesScreen(Screen[None]):
     def _do_delete(self, memory_id: str) -> None:
         """Execute the delete and refresh the list."""
         try:
-            forget(memory_id)
+            deleted = forget(memory_id)
         except Exception as exc:
             log.debug("Delete failed for %s", memory_id, exc_info=True)
             self.notify(msg.MEMORIES_DELETE_FAILED.format(error=exc), severity="error")
             return
-        self.notify(msg.MEMORIES_DELETED)
+        self.notify(msg.MEMORIES_DELETED if deleted else msg.MEMORIES_DELETE_NOT_FOUND)
         self._load_memories()
 
     def action_toggle_shared(self) -> None:

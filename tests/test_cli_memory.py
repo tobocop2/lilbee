@@ -36,6 +36,7 @@ def mock_svc():
     store.add_memory.return_value = "id123"
     store.get_memories.return_value = []
     store.search_memories.return_value = []
+    store.delete_memory.return_value = True
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     services = make_mock_services(store=store, embedder=embedder)
@@ -157,4 +158,10 @@ class TestRemove:
     def test_remove_json(self):
         cfg.memory_enabled = True
         result = runner.invoke(app, ["--json", "memory", "remove", "abc"])
-        assert json.loads(result.output) == {"removed": "abc"}
+        assert json.loads(result.output) == {"id": "abc", "deleted": True}
+
+    def test_remove_unknown_id_reports_not_found(self, mock_svc):
+        cfg.memory_enabled = True
+        mock_svc.store.delete_memory.return_value = False
+        result = runner.invoke(app, ["memory", "remove", "ghost"])
+        assert "No memory ghost found." in result.output

@@ -541,9 +541,10 @@ class MemoryFlagsResponse(BaseModel):
 
 
 class MemoryRemoveResponse(BaseModel):
-    """Outcome of deleting a memory."""
+    """Outcome of deleting a memory; ``deleted`` is False when the id was unknown."""
 
-    removed: str
+    id: str
+    deleted: bool
 
 
 class MemoryExtractedItem(BaseModel):
