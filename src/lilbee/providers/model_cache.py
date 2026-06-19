@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import platform
+import subprocess
+import sys
 from enum import StrEnum
 from pathlib import Path
 
@@ -164,42 +167,60 @@ def has_nvidia_gpu() -> bool:
     return _try_nvidia_memory() is not None
 
 
+# A pynvml probe that runs in its OWN process: prints the minimum device total in
+# bytes, or nothing. Run as a subprocess so NVML init never touches THIS process.
+_PYNVML_MIN_TOTAL_SNIPPET = (
+    "import pynvml; pynvml.nvmlInit();"
+    "t=[pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(i)).total"
+    " for i in range(pynvml.nvmlDeviceGetCount())];"
+    "pynvml.nvmlShutdown();"
+    "print(min(t)) if t else None"
+)
+_NVIDIA_PROBE_TIMEOUT_S = 10
+
+
+@functools.cache
 def _try_nvidia_memory() -> int | None:
-    """NVIDIA GPU total memory via pynvml, then nvidia-smi.
+    """Minimum NVIDIA GPU total memory (bytes), detected WITHOUT touching NVML/CUDA here.
 
-    Takes the MINIMUM total across visible devices: sizing against the smallest
-    card is conservative on a heterogeneous-GPU host.
+    Initializing NVML in this process (``pynvml.nvmlInit``) leaves NVIDIA driver state
+    that breaks a later ``llama-server --list-devices`` CUDA probe on newer drivers, so
+    detection runs only as subprocesses: ``nvidia-smi`` (ships with the driver), then an
+    isolated python+pynvml process. The minimum across visible devices is conservative on
+    a heterogeneous-GPU host. Cached: the subprocess runs once per process.
     """
+    return _nvidia_smi_min_total() or _pynvml_min_total_isolated()
+
+
+def _nvidia_smi_min_total() -> int | None:
+    """Minimum GPU total memory (bytes) via ``nvidia-smi``, or None."""
     try:
-        import pynvml  # type: ignore[import-untyped]
-
-        pynvml.nvmlInit()
-        totals = [
-            int(pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(i)).total)
-            for i in range(pynvml.nvmlDeviceGetCount())
-        ]
-        pynvml.nvmlShutdown()
-        if totals:
-            return min(totals)
-    except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
-        pass
-
-    try:
-        import subprocess
-
-        # nvidia-smi ships with the NVIDIA driver and is always on PATH when
-        # present; fully-qualifying it would break on every install layout.
+        # nvidia-smi ships with the NVIDIA driver and is always on PATH when present;
+        # fully-qualifying it would break on every install layout.
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
-            mibs = [int(line) for line in result.stdout.strip().splitlines() if line.strip()]
-            if mibs:
-                return min(mibs) * 1024 * 1024
-    except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
-        pass
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    mibs = [int(line) for line in result.stdout.strip().splitlines() if line.strip()]
+    return min(mibs) * 1024 * 1024 if mibs else None
 
-    return None
+
+def _pynvml_min_total_isolated() -> int | None:
+    """Minimum GPU total memory (bytes) via pynvml run in an isolated subprocess, or None."""
+    try:
+        proc = subprocess.run(  # noqa: S603 - this interpreter + a fixed in-repo snippet
+            [sys.executable, "-c", _PYNVML_MIN_TOTAL_SNIPPET],
+            capture_output=True,
+            text=True,
+            timeout=_NVIDIA_PROBE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = proc.stdout.strip()
+    return int(out) if out.isdigit() else None
