@@ -43,13 +43,14 @@ def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
-def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch) -> None:
+@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch, wildcard) -> None:
     from lilbee.core.config import cfg
     from lilbee.server.mcp_mount import _transport_security
 
-    monkeypatch.setattr(cfg, "server_host", "0.0.0.0")
+    monkeypatch.setattr(cfg, "server_host", wildcard)
     security = _transport_security()
-    assert not any("0.0.0.0" in h for h in security.allowed_hosts)
+    assert not any(wildcard in h for h in security.allowed_hosts)
     assert "127.0.0.1:*" in security.allowed_hosts
 
 

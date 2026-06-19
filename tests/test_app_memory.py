@@ -113,11 +113,11 @@ class TestRecall:
 
 
 class TestListForgetFlags:
-    def test_list_local(self, svc):
+    def test_list_local_is_owner_scoped(self, svc):
+        # The management list stays narrow (only rows the human can act on),
+        # unlike recall() which unions agent-shared memories.
         app_memory.list_memories()
-        assert (
-            svc.store.get_memories.call_args.kwargs["owner_predicate"] == human_recall_predicate()
-        )
+        assert svc.store.get_memories.call_args.kwargs["owner_predicate"] == local_owner_predicate()
 
     def test_list_agent_owns_only(self, svc):
         app_memory.list_memories(agent_owner("x"))

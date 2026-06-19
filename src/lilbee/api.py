@@ -230,7 +230,7 @@ class Lilbee:
         with _swap_config(self._config):
             return self._store.get_memories(owner_predicate=local_owner_predicate())
 
-    def forget(self, memory_id: str) -> None:
-        """Delete a local memory by id."""
+    def forget(self, memory_id: str) -> bool:
+        """Delete a local memory by id; True when it existed and was removed."""
         with _swap_config(self._config):
-            self._store.delete_memory(memory_id, owner=LOCAL_OWNER)
+            return self._store.delete_memory(memory_id, owner=LOCAL_OWNER)

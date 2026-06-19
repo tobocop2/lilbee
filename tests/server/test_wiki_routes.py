@@ -524,6 +524,20 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 404
         assert "draft not found" in resp.json()["detail"]
 
+    async def test_diff_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        # The traversal guard raises ValueError carrying the absolute candidate
+        # path; the route must map it to a generic 400 that does not leak it.
+        def _raise(slug: str, root: Path) -> str:
+            raise ValueError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "diff_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
     async def test_accept_happy(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.server import wiki as server_wiki_mod
         from lilbee.wiki.drafts import AcceptResult

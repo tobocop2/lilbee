@@ -12,7 +12,7 @@ from datetime import datetime
 
 from litestar import Request, Router, get, post
 from litestar.background_tasks import BackgroundTask
-from litestar.exceptions import ValidationException
+from litestar.exceptions import NotAuthorizedException, ValidationException
 from litestar.response import Response, Stream
 
 from lilbee.app.services import get_services
@@ -246,9 +246,17 @@ def _error_response(
 
 
 def _auth_failure(request: Request) -> Response | None:
-    """Return a 401 error response if the bearer token is missing/wrong, else None."""
+    """Return a 401 error response if the bearer token is missing/wrong, else None.
+
+    validate() fails closed by raising when auth is uninitialized; surface that
+    as the same OpenAI 401 envelope rather than letting it escape as a 500.
+    """
     auth_header = request.headers.get("authorization", "")
-    if session_manager.validate(auth_header):
+    try:
+        authorized = session_manager.validate(auth_header)
+    except NotAuthorizedException:
+        authorized = False
+    if authorized:
         return None
     return _error_response(401, CompletionsErrorCode.INVALID_API_KEY, "Missing or invalid API key.")
 

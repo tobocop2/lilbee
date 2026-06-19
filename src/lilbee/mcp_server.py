@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import textwrap
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -842,6 +843,8 @@ def wiki_drafts_diff(slug: str) -> dict[str, Any]:
         diff = diff_draft(slug, wiki_root)
     except FileNotFoundError as exc:
         return _error(str(exc))
+    except ValueError:
+        return _error("invalid draft slug")
     return {"command": "wiki_drafts_diff", "slug": slug, "diff": diff}
 
 
@@ -943,8 +946,12 @@ def _slug(value: str) -> str:
 # Per-connection fallback ids for agents that report no identity. Keyed by the
 # live MCP session so each connection gets a distinct, stable namespace instead
 # of every unidentified agent colliding on a shared one. WeakKeyDictionary drops
-# entries once the session is collected, so this does not grow unbounded.
+# entries once the session is collected, so this does not grow unbounded. The
+# lock guards the get-or-create because sync tool handlers run on the offload
+# threadpool, so concurrent connections (and weakref-removal callbacks) can
+# touch the mapping from different threads.
 _ANON_OWNER_IDS: WeakKeyDictionary[object, str] = WeakKeyDictionary()
+_ANON_OWNER_LOCK = threading.Lock()
 
 
 def _anon_owner_id(ctx: Context | None) -> str:
@@ -956,11 +963,12 @@ def _anon_owner_id(ctx: Context | None) -> str:
     if ctx is None:
         return "anonymous"
     session = ctx.session
-    existing = _ANON_OWNER_IDS.get(session)
-    if existing is None:
-        existing = f"anon-{uuid.uuid4().hex[:12]}"
-        _ANON_OWNER_IDS[session] = existing
-    return existing
+    with _ANON_OWNER_LOCK:
+        existing = _ANON_OWNER_IDS.get(session)
+        if existing is None:
+            existing = f"anon-{uuid.uuid4().hex[:12]}"
+            _ANON_OWNER_IDS[session] = existing
+        return existing
 
 
 def _derive_owner(agent_id: str, ctx: Context | None) -> str:

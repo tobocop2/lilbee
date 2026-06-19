@@ -22,6 +22,7 @@ from lilbee.data.store import (
     agent_recall_predicate,
     escape_sql_string,
     human_recall_predicate,
+    local_owner_predicate,
 )
 
 
@@ -85,7 +86,12 @@ def remember(
 
 
 def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) -> list[MemoryRow]:
-    """Recall *owner*'s facts (plus human-shared facts for agents)."""
+    """Recall facts for *owner*.
+
+    For the human this includes memories an agent shared (so shared agent
+    knowledge informs answers); for an agent it includes the human's shared
+    facts. The management list (:func:`list_memories`) stays narrower.
+    """
     services = get_services()
     predicate = human_recall_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
     return services.store.search_memories(
@@ -97,11 +103,14 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
 
 
 def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
-    """List all of *owner*'s memories (any kind), newest first."""
+    """List the memories *owner* owns and can manage (any kind), newest first.
+
+    Strictly owner-scoped (unlike :func:`recall`): the management surface shows
+    only rows the caller can delete or re-flag, so it never lists agent-shared
+    memories the human cannot act on.
+    """
     predicate = (
-        human_recall_predicate()
-        if owner == LOCAL_OWNER
-        else f"owner = '{escape_sql_string(owner)}'"
+        local_owner_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
     )
     return get_services().store.get_memories(owner_predicate=predicate)
 

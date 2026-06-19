@@ -225,10 +225,14 @@ class MemoriesScreen(Screen[None]):
             return
         new_shared = not memory.shared
         try:
-            set_memory_shared(memory_id, shared=new_shared)
+            updated = set_memory_shared(memory_id, shared=new_shared)
         except Exception as exc:
             log.debug("Toggle shared failed for %s", memory_id, exc_info=True)
             self.notify(msg.MEMORIES_FLAG_FAILED.format(error=exc), severity="error")
+            return
+        if not updated:
+            self.notify(msg.MEMORIES_FLAG_NOT_FOUND)
+            self._load_memories()
             return
         self.notify(msg.MEMORIES_SHARED_ON if new_shared else msg.MEMORIES_SHARED_OFF)
         self._load_memories()

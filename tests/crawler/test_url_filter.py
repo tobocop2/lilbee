@@ -101,6 +101,26 @@ class TestValidateCrawlUrl:
         with pytest.raises(ValueError, match="private/reserved"):
             validate_crawl_url("http://zero.example.com")
 
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "::",  # IPv6 unspecified
+            "100.64.0.1",  # RFC 6598 CGNAT
+            "64:ff9b::a9fe:a9fe",  # NAT64 embedding 169.254.169.254
+            "2002:a9fe:a9fe::",  # 6to4 embedding 169.254.169.254
+            "::169.254.169.254",  # IPv4-compatible embedding metadata
+        ],
+    )
+    def test_rejects_reserved_via_embedding_or_range(self, monkeypatch, addr):
+        family = 10 if ":" in addr else 2
+        sockaddr = (addr, 0, 0, 0) if family == 10 else (addr, 0)
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(family, 1, 6, "", sockaddr)],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://sneaky.example.com")
+
 
 class TestRequireValidCrawlUrl:
     def test_rejects_non_url(self):

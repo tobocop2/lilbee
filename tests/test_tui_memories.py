@@ -134,6 +134,18 @@ async def test_delete_confirmed_removes_memory(store, notes):
         assert msg.MEMORIES_DELETED in notes
 
 
+async def test_toggle_shared_missing_reports_not_found(store, notes):
+    store.get_memories.return_value = [_row("uses rust", shared=False)]
+    store.update_memory.return_value = False
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert msg.MEMORIES_FLAG_NOT_FOUND in notes
+        assert msg.MEMORIES_SHARED_ON not in notes
+
+
 async def test_delete_missing_memory_reports_not_found(store, notes):
     store.get_memories.return_value = [_row("uses rust")]
     store.delete_memory.return_value = False
