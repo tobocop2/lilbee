@@ -1003,11 +1003,19 @@ def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any
 
 
 @_tool_if(memory_enabled())
-def memory_forget(memory_id: str) -> dict[str, Any]:
-    """Delete a memory by id."""
+def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
+    """Delete one of this agent's own memories by id.
+
+    Args:
+        memory_id: The id returned by memory_remember/memory_list.
+        agent_id: Stable id for this agent's namespace; otherwise derived from
+            LILBEE_AGENT_ID or the MCP client name.
+    """
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)
-    forget(memory_id)
+    owner = _derive_owner(agent_id, ctx)
+    if not forget(memory_id, owner=owner):
+        return _error(f"No memory '{memory_id}' in this agent's namespace.")
     return {"ok": True, "id": memory_id}
 
 

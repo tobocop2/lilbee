@@ -121,11 +121,11 @@ class TestListForgetFlags:
 
     def test_forget(self, svc):
         app_memory.forget("d1")
-        svc.store.delete_memory.assert_called_once_with("d1")
+        svc.store.delete_memory.assert_called_once_with("d1", owner=LOCAL_OWNER)
 
     def test_set_shared(self, svc):
         assert app_memory.set_memory_shared("u1", shared=True) is True
-        svc.store.update_memory.assert_called_once_with("u1", shared=True)
+        svc.store.update_memory.assert_called_once_with("u1", shared=True, owner=LOCAL_OWNER)
 
 
 def _chat_result(text: str) -> ChatResult:

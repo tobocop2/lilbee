@@ -104,14 +104,18 @@ def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
     return get_services().store.get_memories(owner_predicate=predicate)
 
 
-def forget(memory_id: str) -> None:
-    """Delete a memory by id."""
-    get_services().store.delete_memory(memory_id)
+def forget(memory_id: str, *, owner: str = LOCAL_OWNER) -> bool:
+    """Delete *owner*'s memory by id; returns True when it existed and was owned.
+
+    Defaults to the local human's namespace (TUI/CLI/REST/Python API); MCP passes
+    the calling agent's owner so an agent can only delete its own memories.
+    """
+    return get_services().store.delete_memory(memory_id, owner=owner)
 
 
-def set_memory_shared(memory_id: str, *, shared: bool) -> bool:
-    """Set a memory's shared-with-agents flag; returns True when the id exists."""
-    return get_services().store.update_memory(memory_id, shared=shared)
+def set_memory_shared(memory_id: str, *, shared: bool, owner: str = LOCAL_OWNER) -> bool:
+    """Set *owner*'s memory shared-with-agents flag; returns True when found and owned."""
+    return get_services().store.update_memory(memory_id, shared=shared, owner=owner)
 
 
 def auto_extract_enabled() -> bool:

@@ -184,21 +184,49 @@ class TestSearchMemories:
 class TestUpdateAndDelete:
     def test_update_toggles_shared(self, store):
         store.add_memory(_memory(store, text="x", memory_id="u1", axis=0))
-        assert store.update_memory("u1", shared=True) is True
+        assert store.update_memory("u1", shared=True, owner=LOCAL_OWNER) is True
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.shared is True
 
     def test_update_missing_returns_false(self, store):
         store.add_memory(_memory(store, text="x", axis=0))
-        assert store.update_memory("nope", shared=True) is False
+        assert store.update_memory("nope", shared=True, owner=LOCAL_OWNER) is False
 
     def test_update_no_table_returns_false(self, store):
-        assert store.update_memory("nope", shared=True) is False
+        assert store.update_memory("nope", shared=True, owner=LOCAL_OWNER) is False
 
     def test_delete_removes(self, store):
         store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))
-        store.delete_memory("d1")
+        assert store.delete_memory("d1", owner=LOCAL_OWNER) is True
         assert store.get_memories(owner_predicate=LOCAL_PREDICATE) == []
+
+
+class TestOwnerScopedMutation:
+    """delete_memory/update_memory must reject ids the caller does not own."""
+
+    def test_agent_cannot_delete_local_memory(self, store):
+        store.add_memory(_memory(store, text="human", owner=LOCAL_OWNER, memory_id="m1", axis=0))
+        deleted = store.delete_memory("m1", owner=agent_owner("evil"))
+        assert deleted is False
+        assert [m.text for m in store.get_memories(owner_predicate=LOCAL_PREDICATE)] == ["human"]
+
+    def test_agent_cannot_delete_other_agents_memory(self, store):
+        store.add_memory(_memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0))
+        deleted = store.delete_memory("m1", owner=agent_owner("bob"))
+        assert deleted is False
+        alice = store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'")
+        assert [m.text for m in alice] == ["a"]
+
+    def test_owner_can_delete_own_memory(self, store):
+        store.add_memory(_memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0))
+        assert store.delete_memory("m1", owner=agent_owner("alice")) is True
+        assert store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'") == []
+
+    def test_agent_cannot_flip_shared_on_local_memory(self, store):
+        store.add_memory(_memory(store, text="human", owner=LOCAL_OWNER, memory_id="m1", axis=0))
+        updated = store.update_memory("m1", shared=True, owner=agent_owner("evil"))
+        assert updated is False
+        assert store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].shared is False
 
 
 class TestDropAllPreservesMemory:
@@ -231,7 +259,9 @@ class TestRebuildEmbeddings:
 
     def test_empty_table_returns_zero(self, store):
         store.add_memory(_memory(store, text="x", axis=0))
-        store.delete_memory(store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].id)
+        store.delete_memory(
+            store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].id, owner=LOCAL_OWNER
+        )
         assert store.rebuild_memory_embeddings(lambda texts: []) == 0
 
     def test_recreates_at_new_dim_preserving_text(self, store):

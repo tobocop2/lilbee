@@ -124,12 +124,19 @@ class TestMemoryListTool:
 
 
 class TestMemoryForgetTool:
-    def test_forgets(self, monkeypatch):
+    def test_forgets_within_own_namespace(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
-        forget = MagicMock()
+        forget = MagicMock(return_value=True)
         monkeypatch.setattr(mcp_server, "forget", forget)
-        assert mcp_server.memory_forget("d1") == {"ok": True, "id": "d1"}
-        forget.assert_called_once_with("d1")
+        assert mcp_server.memory_forget("d1", agent_id="opencode") == {"ok": True, "id": "d1"}
+        forget.assert_called_once_with("d1", owner="agent:opencode")
+
+    def test_unowned_id_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "forget", MagicMock(return_value=False))
+        result = mcp_server.memory_forget("other", agent_id="opencode")
+        assert "error" in result
+        assert "other" in result["error"]
 
     def test_disabled_returns_hint(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: False)

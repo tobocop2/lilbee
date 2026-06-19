@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.ingest import copy_files
 from lilbee.app.services import reset_services
 from lilbee.core.config import Config, cfg
-from lilbee.data.store import MemoryKind, MemoryRow, Store
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, Store
 from lilbee.providers.factory import create_provider
 from lilbee.retrieval.concepts import ConceptGraph
 from lilbee.retrieval.embedder import Embedder
@@ -231,6 +231,6 @@ class Lilbee:
             return self._store.get_memories(owner_predicate=local_owner_predicate())
 
     def forget(self, memory_id: str) -> None:
-        """Delete a memory by id."""
+        """Delete a local memory by id."""
         with _swap_config(self._config):
-            self._store.delete_memory(memory_id)
+            self._store.delete_memory(memory_id, owner=LOCAL_OWNER)

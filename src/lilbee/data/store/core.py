@@ -1049,26 +1049,50 @@ class Store:
         rows = table.search(query_vector).metric("cosine").where(predicate).limit(top_k).to_list()
         return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
 
-    def update_memory(self, memory_id: str, *, shared: bool) -> bool:
-        """Set the *shared* flag on a memory by id. Returns True when found."""
+    def update_memory(self, memory_id: str, *, shared: bool, owner: str) -> bool:
+        """Set the *shared* flag on *owner*'s memory. Returns True when found and owned.
+
+        The ``owner`` predicate scopes the mutation to the caller's namespace so an
+        agent cannot flip another owner's (or the human's) memory.
+        """
         with write_lock():
             table = self.open_table(MEMORIES_TABLE)
             if table is None:
                 return False
-            escaped = escape_sql_string(memory_id)
-            rows = table.search().where(f"id = '{escaped}'").limit(1).to_list()
+            predicate = self._owned_memory_predicate(memory_id, owner)
+            rows = table.search().where(predicate).limit(1).to_list()
             if not rows:
                 return False
             record = MemoryRow(**rows[0])
             record.shared = shared
             record.updated_at = datetime.now(UTC).isoformat()
-            _safe_delete_unlocked(table, f"id = '{escaped}'")
+            _safe_delete_unlocked(table, predicate)
             table.add([record.model_dump(mode="json")])
             return True
 
-    def delete_memory(self, memory_id: str) -> None:
-        """Delete a memory by id."""
-        self.clear_table(MEMORIES_TABLE, f"id = '{escape_sql_string(memory_id)}'")
+    def delete_memory(self, memory_id: str, *, owner: str) -> bool:
+        """Delete *owner*'s memory by id. Returns True when a matching row was deleted.
+
+        The ``owner`` predicate scopes the delete to the caller's namespace so an
+        agent cannot destroy another owner's (or the human's) memory.
+        """
+        with write_lock():
+            table = self.open_table(MEMORIES_TABLE)
+            if table is None:
+                return False
+            predicate = self._owned_memory_predicate(memory_id, owner)
+            if not table.search().where(predicate).limit(1).to_list():
+                return False
+            _safe_delete_unlocked(table, predicate)
+            return True
+
+    @staticmethod
+    def _owned_memory_predicate(memory_id: str, owner: str) -> str:
+        """SQL predicate matching a single memory id within *owner*'s namespace."""
+        return (
+            f"id = '{escape_sql_string(memory_id)}' "
+            f"AND owner = '{escape_sql_string(owner)}'"
+        )
 
     def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[list[float]]]) -> int:
         """Re-embed every memory under the current model, recreating the table.

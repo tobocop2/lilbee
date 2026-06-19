@@ -152,7 +152,7 @@ class TestRemove:
         cfg.memory_enabled = True
         result = runner.invoke(app, ["memory", "remove", "abc"])
         assert "Removed abc." in result.output
-        mock_svc.store.delete_memory.assert_called_once_with("abc")
+        mock_svc.store.delete_memory.assert_called_once_with("abc", owner=LOCAL_OWNER)
 
     def test_remove_json(self):
         cfg.memory_enabled = True

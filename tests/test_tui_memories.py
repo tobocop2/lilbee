@@ -129,7 +129,7 @@ async def test_delete_confirmed_removes_memory(store, notes):
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
-        store.delete_memory.assert_called_once_with("id0")
+        store.delete_memory.assert_called_once_with("id0", owner=LOCAL_OWNER)
         assert msg.MEMORIES_DELETED in notes
 
 
@@ -152,7 +152,7 @@ async def test_toggle_shared_flips_flag(store, notes):
         await pilot.pause()
         await pilot.press("s")
         await pilot.pause()
-        store.update_memory.assert_called_once_with("id0", shared=True)
+        store.update_memory.assert_called_once_with("id0", shared=True, owner=LOCAL_OWNER)
         assert msg.MEMORIES_SHARED_ON in notes
 
 

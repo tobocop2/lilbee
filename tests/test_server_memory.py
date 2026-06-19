@@ -109,7 +109,7 @@ class TestUpdateShared:
         resp = client.patch("/api/memories/abc123", json={"shared": True})
         assert resp.status_code == 200
         assert resp.json() == {"id": "abc123", "updated": True}
-        store.update_memory.assert_called_once_with("abc123", shared=True)
+        store.update_memory.assert_called_once_with("abc123", shared=True, owner=LOCAL_OWNER)
 
     def test_patch_unknown_id_reports_not_updated(self, client, store):
         store.update_memory.return_value = False
@@ -122,7 +122,7 @@ class TestRemove:
         resp = client.delete("/api/memories/abc123")
         assert resp.status_code == 200
         assert resp.json() == {"removed": "abc123"}
-        store.delete_memory.assert_called_once_with("abc123")
+        store.delete_memory.assert_called_once_with("abc123", owner=LOCAL_OWNER)
 
     def test_disabled_returns_404(self, client, store):
         cfg.memory_enabled = False
