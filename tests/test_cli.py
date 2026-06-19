@@ -3182,6 +3182,20 @@ class TestWikiDraftsCli:
         assert "invalid draft slug" in result.output
         assert str(isolated_env) not in result.output
 
+    def test_diff_traversal_slug_json_mode_generic_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.diff_draft",
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
+        ):
+            result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "anything"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": "invalid draft slug"}
+        assert str(isolated_env) not in result.output
+
     def test_accept_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
