@@ -57,9 +57,9 @@ def client(store):
     import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
-    auth_mod.session_manager.token = None
+    auth_mod.session_manager.disable()
     yield TestClient(create_app())
-    auth_mod.session_manager.token = None
+    auth_mod.session_manager.cleanup()
 
 
 class TestList:
