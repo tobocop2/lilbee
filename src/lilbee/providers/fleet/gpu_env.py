@@ -86,6 +86,24 @@ def _apply_gpu_devices_pin() -> bool:
     return True
 
 
+def _clear_empty_visible_device_vars() -> None:
+    """Drop an empty backend visible-devices var when a GPU is physically present.
+
+    An orchestrator (SkyPilot, some Docker/Kubernetes GPU setups) can export an empty
+    ``CUDA_VISIBLE_DEVICES`` while exposing the GPU via ``NVIDIA_VISIBLE_DEVICES``; the
+    empty value reads as "no devices" and hides a real GPU. A non-empty value is left
+    untouched, so an explicit pin and the conventional ``-1`` CPU opt-out both survive.
+    """
+    from lilbee.providers import model_cache
+
+    if not model_cache.has_nvidia_gpu():
+        return
+    for name in _GPU_VISIBLE_ENV_VARS:
+        if name in os.environ and not os.environ[name].strip():
+            del os.environ[name]
+            log.info("Cleared empty %s so the present GPU is visible to the engine", name)
+
+
 def apply_fleet_gpu_env() -> None:
     """Fleet engine bootstrap: loader safety plus the ``cfg.gpu_devices`` pin only.
 
@@ -93,6 +111,9 @@ def apply_fleet_gpu_env() -> None:
     its own placement, and autodetect would pin ``GGML_VK_VISIBLE_DEVICES`` to one
     adapter before ``probe_devices`` runs and hide every other GPU. A
     ``cfg.gpu_devices`` pin is still honored (the probe inherits this environment).
+    An empty backend visible-devices var from the orchestrator is cleared first so it
+    does not hide a present GPU, and so a pin can replace it rather than be blocked.
     """
     _apply_vulkan_loader_safety()
+    _clear_empty_visible_device_vars()
     _apply_gpu_devices_pin()
