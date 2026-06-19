@@ -20,6 +20,7 @@ from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
 )
 
@@ -440,7 +441,7 @@ def wiki_drafts_list(
 
 def _draft_slug_error() -> None:
     """Report a rejected (traversal) draft slug generically, without leaking paths."""
-    message = "invalid draft slug"
+    message = INVALID_DRAFT_SLUG_ERROR
     if cfg.json_mode:
         json_output({"error": message})
     else:

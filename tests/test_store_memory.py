@@ -234,13 +234,25 @@ class TestSwallowedDeleteFailOpen:
         assert len(ids) == len(set(ids))  # no id collision
 
     def test_get_meta_returns_newest_when_duplicate_rows_exist(self, store, monkeypatch):
+        import lilbee.data.store.core as core
+
         dim = store._config.embedding_dim
-        store._write_meta_unlocked(embedding_model="model-a", embedding_dim=dim)
-        self._fail_delete(monkeypatch)
-        store._write_meta_unlocked(embedding_model="model-b", embedding_dim=dim)
+        # Stamp explicit, far-apart timestamps (not wall-clock) so the assertion
+        # is deterministic: the stale row is written first, the current row last.
+        times = iter(["2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"])
+
+        class _FakeDatetime:
+            @staticmethod
+            def now(tz=None):
+                return datetime.fromisoformat(next(times))
+
+        monkeypatch.setattr(core, "datetime", _FakeDatetime)
+        store._write_meta_unlocked(embedding_model="model-stale", embedding_dim=dim)
+        self._fail_delete(monkeypatch)  # second write's delete is swallowed -> 2 rows
+        store._write_meta_unlocked(embedding_model="model-current", embedding_dim=dim)
         meta = store.get_meta()
         assert meta is not None
-        assert meta["embedding_model"] == "model-b"
+        assert meta["embedding_model"] == "model-current"
 
 
 class TestHumanRecallPredicate:

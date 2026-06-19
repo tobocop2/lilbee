@@ -733,7 +733,10 @@ class Store:
         """
         table = self._sources_table()
         filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
-        _safe_delete_unlocked(table, f"filename IN ({filenames})")
+        # Skip the add when the delete failed: adding over a stale row would leave
+        # two _sources rows for one filename. The file replans on the next sync.
+        if not _safe_delete_unlocked(table, f"filename IN ({filenames})"):
+            return
         table.add(rows)
 
     def upsert_source(

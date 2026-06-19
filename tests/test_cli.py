@@ -3179,6 +3179,30 @@ class TestWikiDraftsCli:
         assert "invalid draft slug" in result.output
         assert str(isolated_env) not in result.output
 
+    def test_accept_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=ValueError(f"Path escapes allowed directory: {isolated_env}/secret.md"),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "anything"])
+        assert result.exit_code == 1
+        assert "invalid draft slug" in result.output
+        assert str(isolated_env) not in result.output
+
+    def test_reject_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.reject_draft",
+            side_effect=ValueError(f"Path escapes allowed directory: {isolated_env}/secret.md"),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "reject", "anything"])
+        assert result.exit_code == 1
+        assert "invalid draft slug" in result.output
+        assert str(isolated_env) not in result.output
+
     def test_accept_moves_draft_into_published(self, mock_svc, isolated_env):
         self._seed(isolated_env)
         with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):

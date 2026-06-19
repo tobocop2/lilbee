@@ -44,7 +44,7 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import WIKI_DISABLED_ERROR, WikiSubdir
+from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR, WIKI_DISABLED_ERROR, WikiSubdir
 
 
 def _wiki_root() -> Path:
@@ -106,7 +106,7 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except ValueError as exc:
-        raise ClientException(detail="invalid draft slug") from exc
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftDiffResponse(slug=slug, diff=diff)
 
 
@@ -124,7 +124,7 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except ValueError as exc:
-        raise ClientException(detail="invalid draft slug") from exc
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftAcceptResponse(**result.to_dict())
 
 
@@ -138,7 +138,7 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except ValueError as exc:
-        raise ClientException(detail="invalid draft slug") from exc
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftRejectResponse(slug=slug)
 
 
