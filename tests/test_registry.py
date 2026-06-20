@@ -1132,3 +1132,13 @@ class TestShardAccounting:
         total, shard_blobs = _shard_accounting(tmp_path / names[0])
         assert total == 30  # all three shards summed
         assert len(shard_blobs) == 2  # shards 2 and 3 (primary tracked separately)
+
+    def test_multi_shard_skips_missing_shard(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import _shard_accounting
+
+        # Only shards 1 and 3 are on disk (2 is missing); the missing one is skipped.
+        for name in ("m-00001-of-00003.gguf", "m-00003-of-00003.gguf"):
+            (tmp_path / name).write_bytes(b"x" * 10)
+        total, shard_blobs = _shard_accounting(tmp_path / "m-00001-of-00003.gguf")
+        assert total == 20  # only the two present shards
+        assert len(shard_blobs) == 1  # only shard 3 (primary is shard 1)

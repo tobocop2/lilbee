@@ -76,7 +76,9 @@ def make_download_callback(
 
 
 class _CallbackProgressBar(_base_tqdm):
-    """tqdm subclass that forwards progress to a plain callback.
+    """tqdm subclass that suppresses terminal output and tracks cumulative bytes.
+
+    The _ProgressTracker subclass forwards that progress to a callback.
     Fully suppresses terminal output by disabling tqdm rendering and redirecting
     its file handle to a devnull sink: prevents ANSI escape sequences from leaking
     into Textual's managed terminal.
@@ -89,7 +91,6 @@ class _CallbackProgressBar(_base_tqdm):
     """
 
     _lock = threading.RLock()
-    _callback: Any = None
 
     @classmethod
     def get_lock(cls) -> threading.RLock:
@@ -102,10 +103,10 @@ class _CallbackProgressBar(_base_tqdm):
         self._cumulative = 0
 
     def update(self, n: float = 1) -> bool | None:
+        # The base only tracks cumulative bytes and suppresses output; forwarding
+        # to the callback (with split-shard aggregation) lives in the
+        # _ProgressTracker subclass below.
         self._cumulative += int(n)
-        if self._callback is not None:
-            total = self.total if self.total is not None else 0
-            self._callback(int(self._cumulative), int(total))
         return None
 
 

@@ -753,9 +753,11 @@ class TestBootstrapChromium:
             def __init__(self) -> None:
                 self.stdout = _Stream(stdout_lines)
                 self.stderr = _Stream([b""])
+                self.returncode: int | None = None
 
             async def wait(self) -> int:
-                return 0
+                self.returncode = 0
+                return self.returncode
 
         async def _fake_create_subprocess_exec(*_args, **_kwargs):
             return _Proc()
@@ -797,9 +799,11 @@ class TestBootstrapChromium:
                 self.stderr = _Stream(
                     [b"error: network unreachable\n", b"cannot bind socket\n", b""]
                 )
+                self.returncode: int | None = None
 
             async def wait(self) -> int:
-                return 42
+                self.returncode = 42
+                return self.returncode
 
         async def _fake_create_subprocess_exec(*_args, **_kwargs):
             return _Proc()
