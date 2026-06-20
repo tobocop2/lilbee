@@ -466,11 +466,16 @@ class TestAddIngestMutex:
 
         registry = IngestLockRegistry()
         held, _ = await registry.acquire(["doc.txt"])
+        held_lock = held[0][1]
         # A second acquire for the same name is rejected (busy), nothing to evict.
         also, busy = await registry.acquire(["doc.txt"])
         assert also == [] and busy == ["doc.txt"]
-        registry.release(also)  # no-op
-        assert "doc.txt" in registry._locks  # still held by the first batch
+        # Releasing a DIFFERENT batch (other.txt) must not evict doc.txt, and must
+        # not disturb doc.txt's lock identity.
+        other, _ = await registry.acquire(["other.txt"])
+        registry.release(other)
+        assert "other.txt" not in registry._locks  # the released name is evicted
+        assert registry._locks.get("doc.txt") is held_lock  # held entry untouched
         registry.release(held)
         assert registry._locks == {}
 

@@ -889,13 +889,15 @@ class TestModelRegistryRemove:
         registry.install(_REPO, _FILENAME, src, _make_manifest())
         blobs = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
         (blobs / "shared").write_bytes(b"x" * 10)
+        (blobs / "unique").write_bytes(b"y" * 10)
         manifest = registry._read_manifest(_REPO, _FILENAME)
         assert manifest is not None
-        manifest.shard_blobs = ["shared"]
+        manifest.shard_blobs = ["shared", "unique"]  # remove() must iterate both
         registry._write_manifest(manifest)
 
         registry.remove(_REF)
         assert (blobs / "shared").exists()  # still referenced by the sibling
+        assert not (blobs / "unique").exists()  # removed: proves remove() gc's shard_blobs
 
     def test_disk_size_bytes_uses_total_for_split(self, tmp_path: Path) -> None:
         manifest = _make_manifest()
