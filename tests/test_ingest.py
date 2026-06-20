@@ -399,12 +399,37 @@ class TestSync:
         updated: dict[str, None] = {}
         failed: dict[str, None] = {}
         flush_failed: set[str] = set()
-        pipeline._flush_writes(buffer, added, updated, failed, flush_failed)
+        pipeline._flush_writes(buffer, added, updated, failed, {}, flush_failed)
 
         assert added == {}
         assert list(failed) == ["a.txt"]
         assert flush_failed == {"a.txt"}
         assert buffer == []
+
+    def test_flush_failure_drops_page_text_only_file_from_skipped(self, _mock_extract_file):
+        # A page-text-only file is pre-marked skipped at classification but still
+        # buffered; if the flush fails it must end up in failed only, never both.
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.types import _IngestResult
+
+        get_services().store.write_chunks_batch.side_effect = RuntimeError("disk full")
+        result = _IngestResult(
+            name="blank.pdf",
+            path=Path("blank.pdf"),
+            chunk_count=0,
+            error=None,
+            file_hash="h",
+            records=[],
+            needs_cleanup=True,
+            page_texts=[{"source": "blank.pdf", "page": 1, "text": " ", "content_type": "pdf"}],
+        )
+        skipped: dict[str, None] = {"blank.pdf": None}
+        failed: dict[str, None] = {}
+        pipeline._flush_writes([result], {}, {}, failed, skipped, set())
+
+        assert list(failed) == ["blank.pdf"]
+        assert "blank.pdf" not in skipped  # not double-listed
 
     def test_flush_writes_retries_once_on_lock_timeout(self, _mock_extract_file, monkeypatch):
         # A LockTimeoutError on the first write is retried after a short backoff;
@@ -431,7 +456,7 @@ class TestSync:
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
         flush_failed: set[str] = set()
-        pipeline._flush_writes([result], added, {}, failed, flush_failed)
+        pipeline._flush_writes([result], added, {}, failed, {}, flush_failed)
 
         assert store.write_chunks_batch.call_count == 2
         assert sleeps == [pipeline._FLUSH_RETRY_DELAY_SECONDS]
@@ -464,7 +489,7 @@ class TestSync:
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
         flush_failed: set[str] = set()
-        pipeline._flush_writes([result], added, {}, failed, flush_failed)
+        pipeline._flush_writes([result], added, {}, failed, {}, flush_failed)
 
         assert list(failed) == ["a.txt"]
         assert flush_failed == {"a.txt"}
@@ -497,11 +522,11 @@ class TestSync:
 
         store = _install_real_store()
         result = _real_ingest_result("a.pdf", file_hash="h1")
-        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, set())
+        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, {}, set())
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one of a.pdf"]
 
         replanned = _real_ingest_result("a.pdf", file_hash="h2", page_text="page one, edited")
-        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, set())
+        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, {}, set())
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
         sources = {s["filename"]: s for s in store.get_sources()}
         assert sources["a.pdf"]["file_hash"] == "h2"
@@ -519,7 +544,7 @@ class TestSync:
         store = _install_real_store()
         old_stat = SourceStat(11, 22, 33)
         first = _real_ingest_result("a.pdf", file_hash="h1", stat=old_stat)
-        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, set())
+        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, {}, set())
 
         real_ensure = core_mod.ensure_table
 
@@ -535,7 +560,7 @@ class TestSync:
         failed: dict[str, None] = {}
         flush_failed: set[str] = set()
         with mock.patch.object(core_mod, "ensure_table", _failing_ensure):
-            pipeline._flush_writes([replanned], added, {}, failed, flush_failed)
+            pipeline._flush_writes([replanned], added, {}, failed, {}, flush_failed)
 
         assert added == {}
         assert list(failed) == ["a.pdf"]
@@ -1173,7 +1198,7 @@ class TestStatShortCircuit:
             needs_cleanup=True,
         )
         failed: dict[str, None] = {}
-        pipeline._flush_writes([result], {"a.txt": None}, {}, failed)
+        pipeline._flush_writes([result], {"a.txt": None}, {}, failed, {})
         assert list(failed) == ["a.txt"]
 
     def test_changed_content_reprocessed_with_stat(self, isolated_env):

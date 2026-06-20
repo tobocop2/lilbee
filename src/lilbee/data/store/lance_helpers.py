@@ -12,6 +12,8 @@ from lilbee.runtime.lock import write_lock
 from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import lancedb
     import lancedb.table
     import pyarrow as pa
@@ -70,9 +72,15 @@ def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> bool:
         return False
 
 
-def safe_delete(table: lancedb.table.Table, predicate: str) -> bool:
-    """Delete rows matching predicate, logging on failure. Returns success."""
-    with write_lock():
+def safe_delete(
+    table: lancedb.table.Table, predicate: str, lancedb_dir: Path | None = None
+) -> bool:
+    """Delete rows matching predicate, logging on failure. Returns success.
+
+    Pass the store's ``lancedb_dir`` so the write lock coordinates on that
+    instance's data dir; ``None`` falls back to the global config dir.
+    """
+    with write_lock(lancedb_dir):
         return _safe_delete_unlocked(table, predicate)
 
 

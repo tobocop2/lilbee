@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 
 # Default timeout (seconds) for acquiring the write lock
 LOCK_TIMEOUT = 30.0
+# Minimum blocking wait granted to the in-process mutex even when the file lock
+# consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
+_MUTEX_MIN_WAIT = 0.1
 
 
 class LockTimeoutError(TimeoutError):
@@ -62,7 +65,10 @@ def write_lock(
     except FileLockTimeout:
         raise LockTimeoutError("Timed out waiting for exclusive file lock") from None
     try:
-        remaining = max(0.0, deadline - time.monotonic())
+        # Floor the mutex budget so a file lock that wins right at the deadline
+        # still gets a brief blocking attempt instead of a zero-timeout poll that
+        # spuriously fails when another thread holds the mutex for an instant.
+        remaining = max(_MUTEX_MIN_WAIT, deadline - time.monotonic())
         acquired = _write_mutex.acquire(timeout=remaining)
         if not acquired:
             raise LockTimeoutError("Timed out waiting for write lock")
