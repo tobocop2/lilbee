@@ -25,6 +25,7 @@ from lilbee.mcp_server import (
     remove,
     reset,
     search,
+    set_http_mounted,
     settings_get,
     settings_list,
     settings_reset,
@@ -493,6 +494,36 @@ class TestInit:
 
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
+
+
+class TestHttpDaemonGate:
+    """init/reset refuse to run on the shared HTTP daemon (teardown-race guard)."""
+
+    def test_init_refused_on_http_daemon_without_mutating_cfg(self, tmp_path):
+        before = cfg.data_root
+        set_http_mounted(True)
+        try:
+            result = init(str(tmp_path / "proj"))
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert not (tmp_path / "proj" / ".lilbee").exists()  # no side effects
+        assert cfg.data_root == before  # cfg untouched
+
+    def test_reset_refused_on_http_daemon(self):
+        set_http_mounted(True)
+        try:
+            result = reset(confirm=True)
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+
+    def test_init_allowed_on_stdio(self, tmp_path):
+        set_http_mounted(False)  # stdio default
+        result = init(str(tmp_path / "proj"))
+        assert result.get("command") == "init"
 
 
 class TestAdd:

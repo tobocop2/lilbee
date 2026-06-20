@@ -67,6 +67,30 @@ mcp = FastMCP(
     "those cannot see the indexed corpus.",
 )
 
+
+class _TransportState:
+    """Process-level MCP transport facts.
+
+    ``http_mounted`` is True only when MCP is exposed over the shared
+    streamable-http daemon (set by build_mcp_mount). On that transport multiple
+    agents share one process and one global cfg/Services singleton, so
+    vault-switching (init) and factory reset are refused: switching or tearing
+    down the store under concurrent in-flight handlers is a use-after-close /
+    identity race. stdio (one agent per process) keeps both. Encapsulated on an
+    instance rather than a bare module global so it carries no reassigned global.
+    """
+
+    http_mounted: bool = False
+
+
+_transport = _TransportState()
+
+
+def set_http_mounted(value: bool) -> None:
+    """Mark whether this process serves MCP over the shared HTTP daemon."""
+    _transport.http_mounted = value
+
+
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -319,6 +343,11 @@ def init(path: str = "") -> dict[str, Any]:
 
     Switches the MCP session to use it for subsequent calls.
     """
+    if _transport.http_mounted:
+        return _error(
+            "init is unavailable on the HTTP server: it is bound to one vault and "
+            "shared by every connected client. Start a separate server for another vault."
+        )
     base = Path(path) if path else Path.cwd()
     root = base / LOCAL_ROOT_DIRNAME
 
@@ -413,6 +442,11 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 @_tool
 def reset(confirm: bool = False) -> dict[str, Any]:
     """Factory reset: delete all documents and indexed data. Requires ``confirm=true``."""
+    if _transport.http_mounted:
+        return _error(
+            "reset is unavailable on the HTTP server: it would wipe the shared index for "
+            "every connected client. Run it from the CLI or the stdio MCP server."
+        )
     if not confirm:
         return _error("pass confirm=true to confirm deletion")
     from lilbee.app.reset import perform_reset

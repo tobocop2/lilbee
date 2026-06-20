@@ -11,7 +11,7 @@ from litestar.types import ASGIApp, Receive, Scope, Send
 from mcp.server.transport_security import TransportSecuritySettings
 
 from lilbee.core.config import cfg
-from lilbee.mcp_server import mcp
+from lilbee.mcp_server import mcp, set_http_mounted
 
 if TYPE_CHECKING:
     from litestar import Litestar
@@ -62,6 +62,10 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     only be entered once per instance, and the app factory runs once per
     process in production but repeatedly across tests.
     """
+    # Mark MCP as served over the shared HTTP daemon so single-vault-only tools
+    # (init, reset) refuse runtime vault-switch / teardown that would race
+    # concurrent in-flight handlers on the process-global Services singleton.
+    set_http_mounted(True)
     # FastMCP caches the session manager; clear it so each app owns its own,
     # since run() is single-use per instance.
     mcp._session_manager = None

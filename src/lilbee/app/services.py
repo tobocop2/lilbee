@@ -207,12 +207,19 @@ def peek_services() -> Services | None:
 
 
 def reset_services() -> None:
-    """Shut down and discard all cached instances."""
+    """Shut down and discard all cached instances.
+
+    Swap the module reference to ``None`` *before* tearing the old instances
+    down, so a new caller never observes a half-closed container. Concurrent
+    runtime resets are confined to stdio (one serialized client); the shared
+    HTTP daemon refuses the tools (init/reset) that would call this mid-flight.
+    """
     global _svc
-    if _svc is not None:
-        _svc.provider.shutdown()
-        _svc.store.close()
+    old = _svc
     _svc = None
+    if old is not None:
+        old.provider.shutdown()
+        old.store.close()
 
 
 def reset_store() -> None:
@@ -233,7 +240,9 @@ def reset_store() -> None:
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 
-    _svc.store.close()
+    # Build the replacement, swap the reference, then close the old store last so
+    # a new caller never observes a closed handle mid-swap.
+    old_store = _svc.store
     store = Store(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
@@ -245,6 +254,7 @@ def reset_store() -> None:
         clusterer=clusterer,
         searcher=searcher,
     )
+    old_store.close()
 
 
 atexit.register(reset_services)
