@@ -103,9 +103,9 @@ def _effective_enable_ocr() -> bool | None:
     """``cfg.enable_ocr`` unless a per-request OCR override is active.
 
     The override is a ContextVar, not a global cfg mutation, so concurrent
-    ingests on the shared HTTP daemon each see their own setting. It reaches the
-    ``asyncio.to_thread`` extract workers because ``to_thread`` copies the
-    calling task's context into the worker thread.
+    ingests on the shared HTTP daemon each see their own setting. The override
+    also propagates into ``asyncio.to_thread`` workers (``to_thread`` copies the
+    calling task's context), which is how the timeout reaches the image-OCR call.
     """
     override = _ocr_enable_override.get()
     return cfg.enable_ocr if override is None else override

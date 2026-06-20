@@ -703,9 +703,8 @@ async def _collect_results(
                         result, buffer, buffered_chunks, added, updated, failed, flush_failed
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
-                    # An already-indexed file edited to yield zero chunks and zero
-                    # page texts is never buffered, so the flush's cleanup never
-                    # runs; purge its stale chunks/source row so it stops surfacing.
+                    # Zero-text result is never buffered; collect it for the
+                    # purge pass (see _purge_emptied_sources).
                     to_purge.append(result.name)
                 _report_file_progress(
                     result, status, completed_count, total, on_progress, progress, ptask

@@ -525,6 +525,30 @@ class TestHttpDaemonGate:
         result = init(str(tmp_path / "proj"))
         assert result.get("command") == "init"
 
+    def test_provider_switch_refused_on_http_daemon(self, isolated_env):
+        # settings_set('llm_provider') triggers reset_services(); refuse it on the
+        # daemon for the same teardown-race reason init/reset are refused.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_set({"llm_provider": "remote"})
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before  # no teardown, cfg untouched
+
+    def test_non_provider_settings_allowed_on_http_daemon(self, isolated_env):
+        cfg.data_root = isolated_env
+        set_http_mounted(True)
+        try:
+            result = settings_set({"top_k": 7})
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_set"
+        assert cfg.top_k == 7
+
 
 class TestAdd:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)

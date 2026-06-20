@@ -210,9 +210,10 @@ def reset_services() -> None:
     """Shut down and discard all cached instances.
 
     Swap the module reference to ``None`` *before* tearing the old instances
-    down, so a new caller never observes a half-closed container. Concurrent
-    runtime resets are confined to stdio (one serialized client); the shared
-    HTTP daemon refuses the tools (init/reset) that would call this mid-flight.
+    down, so a new caller never observes a half-closed container. On the shared
+    HTTP daemon every entry point that would call this mid-flight is refused: the
+    init/reset MCP tools, and a provider switch via MCP settings_set or the REST
+    config handler. Outside the daemon (CLI, TUI, stdio) it runs single-client.
     """
     global _svc
     old = _svc

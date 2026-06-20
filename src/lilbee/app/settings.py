@@ -273,6 +273,17 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
         services.provider.drop_loaded_models_async()
 
 
+def requires_services_reset(updates: dict[str, Any]) -> bool:
+    """True if applying *updates* would tear down and rebuild the Services singleton.
+
+    A provider switch reconstructs the provider via ``create_provider``, which
+    only runs at services init, so it forces a full ``reset_services()``. Callers
+    on the shared HTTP daemon use this to refuse the swap rather than tear the
+    singleton down under concurrent in-flight handlers.
+    """
+    return bool(set(updates) & PROVIDER_SWITCHING_KEYS)
+
+
 def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:

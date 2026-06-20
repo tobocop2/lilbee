@@ -2652,6 +2652,24 @@ class TestUpdateConfig:
         assert _as_int_setting(True) is None
         assert _as_int_setting(None) is None
 
+    async def test_provider_switch_refused_on_http_server(self):
+        """A provider switch rebuilds the shared singleton, so REST refuses it.
+
+        The REST handler only ever runs inside the always-concurrent HTTP server,
+        so a provider switch (which forces reset_services) is refused here.
+        """
+        before = cfg.llm_provider
+        with pytest.raises(ValueError, match="HTTP server"):
+            await handlers.update_config({"llm_provider": "remote"})
+        assert cfg.llm_provider == before  # no teardown triggered
+
+    def test_requires_services_reset_detects_provider_switch(self):
+        from lilbee.app.settings import requires_services_reset
+
+        assert requires_services_reset({"llm_provider": "remote"}) is True
+        assert requires_services_reset({"top_k": 5}) is False
+        assert requires_services_reset({}) is False
+
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
         result = await handlers.update_config({"llm_api_key": "sk-test123"})

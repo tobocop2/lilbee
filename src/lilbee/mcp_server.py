@@ -35,6 +35,7 @@ from lilbee.app.settings import (
     apply_settings_update,
     get_setting,
     list_settings,
+    requires_services_reset,
     reset_settings,
 )
 from lilbee.catalog.types import ModelSource
@@ -76,8 +77,7 @@ class _TransportState:
     agents share one process and one global cfg/Services singleton, so
     vault-switching (init) and factory reset are refused: switching or tearing
     down the store under concurrent in-flight handlers is a use-after-close /
-    identity race. stdio (one agent per process) keeps both. Encapsulated on an
-    instance rather than a bare module global so it carries no reassigned global.
+    identity race. stdio (one agent per process) keeps both.
     """
 
     http_mounted: bool = False
@@ -89,6 +89,16 @@ _transport = _TransportState()
 def set_http_mounted(value: bool) -> None:
     """Mark whether this process serves MCP over the shared HTTP daemon."""
     _transport.http_mounted = value
+
+
+def is_http_mounted() -> bool:
+    """True when this process serves over the shared HTTP daemon.
+
+    True only inside the running HTTP server (REST + MCP-over-http share one
+    process and one Services singleton); False under the CLI, the TUI, and the
+    stdio MCP server, which are single-client.
+    """
+    return _transport.http_mounted
 
 
 _F = TypeVar("_F", bound=Callable[..., Any])
@@ -649,7 +659,12 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     ``{updated, reindex_required}``; ``reindex_required=true`` means run
     ``sync(force_rebuild=true)`` to refresh the index.
     """
-
+    if _transport.http_mounted and requires_services_reset(updates):
+        return _error(
+            "Switching the model provider is unavailable on the HTTP server: it "
+            "rebuilds the shared engine for every connected client. Change it from "
+            "the CLI or the stdio MCP server."
+        )
     try:
         result = apply_settings_update(updates)
     except (ValueError, TypeError) as exc:
