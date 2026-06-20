@@ -278,7 +278,7 @@ class TestOrphanDetection:
         assert orphan_issues == []
 
     def test_link_only_from_draft_does_not_exempt_orphan(self, tmp_path: Path):
-        # bb-ziks.78: a [[slug]] living only in a draft must not keep the live
+        # A [[slug]] living only in a draft must not keep the live
         # concept page off the orphan list (no published page links it).
         write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
         write_wiki_page(tmp_path, "drafts", "wip", "Mentions [[braking]] but unpublished.\n")

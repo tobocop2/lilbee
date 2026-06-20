@@ -73,7 +73,7 @@ class ModelEntry(BaseModel):
             name=ref,
             source=ModelSource.NATIVE.value,
             task=manifest.task if manifest else None,
-            size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
 
@@ -146,8 +146,8 @@ class ManifestData(BaseModel):
             ref=manifest.ref,
             display_name=clean_display_name(manifest.hf_repo),
             task=manifest.task,
-            size_gb=_bytes_to_gb(manifest.size_bytes),
-            size_bytes=manifest.size_bytes,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes),
+            size_bytes=manifest.disk_size_bytes,
             hf_repo=manifest.hf_repo,
             gguf_filename=manifest.gguf_filename,
             downloaded_at=manifest.downloaded_at,
@@ -354,6 +354,17 @@ def pull_model_data(
     )
 
 
+def _legacy_disk_size(ref: str, *, fallback: int) -> int:
+    """Sum a split GGUF's shard sizes on disk; *fallback* on any failure/single file."""
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        shards = get_services().registry.shard_paths(ref)
+        if len(shards) > 1:
+            return sum(path.stat().st_size for path in shards)
+    return fallback
+
+
 def remove_model_data(
     ref: str,
     source: ModelSource | None = None,
@@ -361,7 +372,14 @@ def remove_model_data(
     """Remove *ref* and return a typed result with freed size."""
     manager = get_services().model_manager
     manifests = _native_manifest_index()
-    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
+    # disk_size_bytes is the full multi-shard total; size_bytes alone would report
+    # only the first shard for a split GGUF.
+    manifest = manifests.get(ref)
+    size_bytes = manifest.disk_size_bytes if manifest is not None else 0
+    if manifest is not None and manifest.total_size_bytes is None:
+        # Legacy manifest without shard accounting: removal still frees every
+        # shard, so recover the true on-disk total from the shards for the report.
+        size_bytes = _legacy_disk_size(ref, fallback=size_bytes)
     removed = manager.remove(ref, source=source)
     return RemoveResult(
         model=ref,

@@ -272,8 +272,13 @@ class SwapManager:
         self._fail("The local model engine did not start in time.")
 
     def _ready_models(self) -> set[str]:
-        """Model ids whose upstream is loaded and ready, per llama-swap's /running."""
-        with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError):
+        """Model ids whose upstream is loaded and ready, per llama-swap's /running.
+
+        A read-only probe: a concurrent shutdown can clear ``_port`` between the
+        caller's check and ``endpoint()``, raising ProviderError, so that is
+        suppressed too and the probe reports "nothing ready" rather than throwing.
+        """
+        with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError, ProviderError):
             payload = httpx.get(
                 f"{self.endpoint()}{_RUNNING_PATH}", timeout=_PROBE_TIMEOUT_S
             ).json()

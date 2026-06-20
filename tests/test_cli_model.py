@@ -185,6 +185,21 @@ class TestModelEntryFactories:
         assert entry.size_gb is None
         assert entry.display_name == ""
 
+    def test_from_native_reports_full_split_total(self):
+        # A split GGUF lists its total on-disk size, not the
+        # first-shard size, so list/show agree with the freed-on-remove total.
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3  # six-shard total
+        entry = ModelEntry.from_native(_CHAT_REF, manifest)
+        assert entry.size_gb == 6.0
+
+    def test_manifest_data_reports_full_split_total(self):
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3
+        data = ManifestData.from_manifest(manifest)
+        assert data.size_gb == 6.0
+        assert data.size_bytes == 6 * 1024**3
+
     def test_from_backend_with_remote(self):
         remote = _remote(_OLLAMA_REF, task="chat", parameter_size="8B")
         entry = ModelEntry.from_backend(_OLLAMA_REF, remote, ModelSource.OLLAMA)
@@ -203,6 +218,51 @@ class TestModelEntryFactories:
         assert entry.source == "ollama"
         assert entry.task is None
         assert entry.display_name == ""
+
+
+class TestRemoveModelDataFreedSize:
+    def test_legacy_split_manifest_reports_full_shard_total(self, tmp_path, monkeypatch):
+        # A pre-accounting split manifest
+        # (total_size_bytes None) still frees every shard, so the reported freed
+        # size must reflect the on-disk total, not just the first shard.
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")  # first shard only
+        shards = []
+        for n in (1, 2, 3):
+            path = tmp_path / f"shard{n}.gguf"
+            path.write_bytes(b"x" * 100)  # 100 bytes each -> 300 total
+            shards.append(path)
+        registry = MagicMock()
+        registry.shard_paths.return_value = shards
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(300)  # all 3 shards, not the 10-byte first
+
+    def test_modern_manifest_uses_recorded_total(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")
+        manifest.total_size_bytes = 600  # accounted at install; no shard re-stat needed
+        registry = MagicMock()
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(600)
+        registry.shard_paths.assert_not_called()  # recorded total used directly
 
 
 class TestListModelsData:

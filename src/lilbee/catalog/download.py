@@ -165,11 +165,25 @@ def download_model(
     ):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
-            size = dest.stat().st_size
-            on_progress(size, size)  # Report 100% immediately
+            size = sum((models_dir / shard).stat().st_size for shard in shards)
+            on_progress(size, size)  # Report 100% immediately (every shard)
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
-    tracker = _ProgressTracker(on_progress) if on_progress else None
+    # Sum the shard sizes up front so a multi-shard pull reports one monotonic
+    # 0->100% against the real total, not N separate per-shard cycles. Only use
+    # the sum when every shard size is known (0 = unresolved/offline); a partial
+    # sum would undercount the total and let progress run past 100%.
+    shard_sizes = (
+        [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+        if len(shards) > 1
+        else []
+    )
+    grand_total = (
+        sum(shard_sizes)
+        if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
+        else 0
+    )
+    tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
         log.info("Downloading %s/%s → %s", entry.hf_repo, shard, models_dir)
@@ -180,14 +194,17 @@ def download_model(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_paths.append(_hf_download_or_translate(entry, config))
+        shard_path = _hf_download_or_translate(entry, config)
+        shard_paths.append(shard_path)
+        if tracker is not None:
+            tracker.shard_done(shard_path.stat().st_size)
     first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
 
     if on_progress:
-        actual_size = first_shard_path.stat().st_size
+        total_size = sum(path.stat().st_size for path in shard_paths)
         if not tracker or not tracker.was_used:
             log.info("Model found in HuggingFace cache: %s", first_shard_path)
-        on_progress(actual_size, actual_size)
+        on_progress(total_size, total_size)
     return _finalize_download(
         entry, first_shard_path, on_progress=on_progress, on_complete=on_complete
     )

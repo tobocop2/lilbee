@@ -3141,6 +3141,29 @@ class TestSdkLLMProviderVisionOcr:
         ):
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
 
+    def test_timeout_frees_caller_without_waiting_for_hung_call(self) -> None:
+        # On timeout the caller must be freed at the deadline, not
+        # blocked by the pool's shutdown(wait=True) until the hung call returns.
+        import threading
+        import time
+
+        provider = self._make_provider()
+        release = threading.Event()
+
+        def hung_chat(*_args, **_kwargs):
+            release.wait(timeout=10)
+            return "too late"
+
+        start = time.monotonic()
+        with (
+            mock.patch.object(provider, "chat", side_effect=hung_chat),
+            pytest.raises(TimeoutError),
+        ):
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.1)
+        elapsed = time.monotonic() - start
+        release.set()  # let the orphaned worker finish
+        assert elapsed < 2.0  # freed at the deadline, not blocked on the 10s call
+
     def test_zero_timeout_returns_chat_result(self) -> None:
         """``timeout=0`` skips the thread pool and returns chat's result."""
         from lilbee.providers.base import ChatResult, FinishReason

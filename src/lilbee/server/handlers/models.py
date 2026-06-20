@@ -589,13 +589,18 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     """
     from litestar.exceptions import HTTPException
 
-    manager = get_services().model_manager
+    from lilbee.app.models import remove_model_data
+
     src = _parse_source(source)
     try:
-        deleted = manager.remove(model, src)
+        # Delegate to the shared remove path so REST reports the same freed size
+        # (full multi-shard total) as the CLI and MCP, not a hardcoded 0.
+        result = remove_model_data(model, src)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)
+    return ModelsDeleteResponse(
+        deleted=result.deleted, model=result.model, freed_gb=result.freed_gb
+    )
 
 
 _EXTERNAL_MODELS_TTL = 60

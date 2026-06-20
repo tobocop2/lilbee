@@ -159,6 +159,66 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
+def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
+    # Re-adopting (a reload) must not close old clients in place (a
+    # reader may still hold one); they are retired for deferred close.
+    launch = _fake_launch(WorkerRole.EMBED)
+    swap = _install_engine(monkeypatch, launches=[launch])
+    p = FleetProvider()
+    old = [_fake_client(), _fake_client()]
+    p._clients = {WorkerRole.EMBED: old}
+
+    with p._lock:
+        p._adopt_swap(swap, [launch])
+
+    assert p._retiring_clients == old  # retired, not closed yet
+    for client in old:
+        client.close.assert_not_called()
+    assert p._clients[WorkerRole.EMBED][0] not in old  # fresh client adopted
+
+
+def test_retire_closes_prior_idle_generation_at_next_reload() -> None:
+    # The prior reload's clients are closed at the
+    # next reload, by when their readers (in_flight==0) have finished.
+    p = FleetProvider()
+    prior = [_fake_client(in_flight=0), _fake_client(in_flight=0)]
+    p._retiring_clients = list(prior)
+    current_old = [_fake_client(in_flight=0)]
+
+    with p._lock:
+        p._retire_clients(current_old)
+
+    for client in prior:
+        client.close.assert_called_once_with()  # prior idle generation closed
+    assert p._retiring_clients == current_old  # this reload's clients now pending
+
+
+def test_retire_keeps_busy_prior_client_for_a_later_reload() -> None:
+    p = FleetProvider()
+    busy = _fake_client(in_flight=1)  # a reader is still mid-request on it
+    p._retiring_clients = [busy]
+
+    with p._lock:
+        p._retire_clients([])
+
+    busy.close.assert_not_called()  # not closed while in flight
+    assert busy in p._retiring_clients  # retained for the next reload
+
+
+def test_drop_swap_refs_closes_retiring_clients() -> None:
+    p = FleetProvider()
+    retiring = _fake_client(in_flight=1)  # even a busy one is closed at shutdown
+    live = _fake_client()
+    p._clients = {WorkerRole.EMBED: [live]}
+    p._retiring_clients = [retiring]
+
+    p._drop_swap_refs()
+
+    live.close.assert_called_once_with()
+    retiring.close.assert_called_once_with()
+    assert p._retiring_clients == []
+
+
 def test_adopt_swap_threads_rerank_mode(monkeypatch) -> None:
     launch = _fake_launch(WorkerRole.RERANK)
     launch.rerank_mode = RerankMode.LLM
@@ -321,7 +381,7 @@ def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
 
 
 def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
-    # bb-ziks.30: resizing the gate while a request is in flight would build a
+    # Resizing the gate while a request is in flight would build a
     # fresh full-capacity semaphore beside the old holders and momentarily double
     # the real cap. The resize must wait until the gate drains to idle.
     import threading

@@ -185,7 +185,7 @@ class TestImportDataset:
             await import_dataset(store, [_page("doc.pdf", 1, "body")])
 
     async def test_import_uses_single_atomic_batch_write(self, services, monkeypatch):
-        # bb-ziks.27: each source must be written via one locked write_chunks_batch
+        # Each source must be written via one locked write_chunks_batch
         # (cleanup + chunks + page texts + source row), not four separate unlocked
         # writes that could destroy the source if one fails mid-way.
         store = services

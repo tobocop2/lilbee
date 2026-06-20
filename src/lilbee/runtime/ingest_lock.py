@@ -69,10 +69,18 @@ class IngestLockRegistry:
                 acquired.append((name, lock))
         return acquired, busy
 
-    @staticmethod
-    def release(acquired: list[tuple[str, asyncio.Lock]]) -> None:
-        """Release every lock in ``acquired``. Safe to call multiple times."""
+    def release(self, acquired: list[tuple[str, asyncio.Lock]]) -> None:
+        """Release every lock in ``acquired`` and evict its registry entry.
+
+        Runs synchronously (no ``await``), so it is atomic with respect to
+        ``try_acquire`` on the event loop. ``try_acquire`` only ever acquires a
+        free lock, so these per-source locks never accrue waiters; dropping the
+        entry once released keeps the registry from growing one lock per distinct
+        filename for the whole process lifetime. Safe to call multiple times.
+        """
         while acquired:
-            _, lock = acquired.pop()
+            name, lock = acquired.pop()
             if lock.locked():
                 lock.release()
+            if self._locks.get(name) is lock:
+                del self._locks[name]

@@ -77,9 +77,12 @@ def cuda_runtime_env() -> dict[str, str]:
     if not dirs:
         return {}
     parts = [str(d) for d in dirs]
+    # Drop existing entries that are already wheel dirs so calling this on every
+    # reload pass (apply_cuda_runtime_env) is idempotent instead of accumulating
+    # duplicate copies that get baked into each spawned server's environment.
+    wheel_dirs = set(parts)
     existing = os.environ.get("LD_LIBRARY_PATH", "")
-    if existing:
-        parts.append(existing)
+    parts.extend(entry for entry in existing.split(os.pathsep) if entry and entry not in wheel_dirs)
     return {"LD_LIBRARY_PATH": os.pathsep.join(parts)}
 
 

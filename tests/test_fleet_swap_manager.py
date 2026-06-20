@@ -166,6 +166,12 @@ class TestRoleReady:
         mgr = self._started(tmp_path, monkeypatch, _refuse)
         assert mgr.role_ready(WorkerRole.CHAT) is False
 
+    def test_false_when_shutdown_clears_port_mid_probe(self, tmp_path: Path) -> None:
+        # A concurrent shutdown clears _port, so endpoint() raises
+        # ProviderError; the read-only probe must report False, not throw.
+        mgr = SwapManager(tmp_path)  # never started -> _port is None
+        assert mgr.role_ready(WorkerRole.CHAT) is False
+
 
 class TestLifecycle:
     def test_shutdown_is_noop_when_not_started(self, tmp_path: Path) -> None:
