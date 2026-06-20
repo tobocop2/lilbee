@@ -107,6 +107,9 @@ _LIST_PAGE_ROWS = 10
 _GRID_ID_PREFIX = "grid-"
 _LIST_ID_PREFIX = "list-"
 
+# Toggles the filter Input between revealed and `display: none` (catalog.tcss).
+_HIDDEN_CLASS = "-hidden"
+
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
 # Braille spinner frames for the catalog pagination/search loading
@@ -336,6 +339,11 @@ class CatalogScreen(Screen[None]):
         """
         return isinstance(self.focused, Input)
 
+    @property
+    def _filter_open(self) -> bool:
+        """True while the filter Input is revealed, independent of focus."""
+        return not self._search_input.has_class(_HIDDEN_CLASS)
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.grid_list_toggle import GridListToggle
 
@@ -344,7 +352,7 @@ class CatalogScreen(Screen[None]):
             yield Input(
                 placeholder=msg.CATALOG_FILTER_PLACEHOLDER,
                 id="catalog-search",
-                classes="-hidden",
+                classes=_HIDDEN_CLASS,
             )
         with Horizontal(id="catalog-toolbar"):
             yield GridListToggle()
@@ -588,7 +596,7 @@ class CatalogScreen(Screen[None]):
 
     def action_focus_search(self) -> None:
         """Reveal and focus the filter input. Bound to / key."""
-        self._search_input.remove_class("-hidden")
+        self._search_input.remove_class(_HIDDEN_CLASS)
         self._search_input.focus()
 
     _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.08
@@ -1855,12 +1863,11 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def action_go_back(self) -> None:
-        # Escape from a focused filter input collapses the input back to
-        # hidden and restores focus to the grid/list, so screen-level
-        # keys (s / v) reach the screen instead of the (now-hidden) input.
-        if self._search_focused:
+        # An open filter collapses to hidden (restoring grid/list focus);
+        # otherwise q leaves for Chat.
+        if self._filter_open:
             self._search_input.value = ""
-            self._search_input.add_class("-hidden")
+            self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
             return
         self.app.switch_view("Chat")
@@ -1874,9 +1881,9 @@ class CatalogScreen(Screen[None]):
         Input on the next screen. Esc now only handles the filter; the
         dismiss path is `q` (action_go_back) which still does both.
         """
-        if self._search_focused:
+        if self._filter_open:
             self._search_input.value = ""
-            self._search_input.add_class("-hidden")
+            self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
 
     def _focus_list_or_grid(self) -> None:
