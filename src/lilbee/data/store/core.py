@@ -922,6 +922,23 @@ class Store:
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
 
+    def clear_and_add(
+        self, name: str, schema: pa.Schema, rows: list[dict], predicate: str
+    ) -> None:
+        """Replace the rows matching *predicate* with *rows* in one locked write.
+
+        Delete and add run under a single write lock, so a reader never observes
+        the table emptied mid-rebuild. The add is skipped when the delete failed,
+        to avoid duplicating rows whose predecessors were not removed.
+        """
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, name, schema)
+            if not _safe_delete_unlocked(table, predicate):
+                return
+            if rows:
+                table.add(rows)
+
     def add_citations(self, records: list[CitationRecord]) -> int:
         """Add citation records to the store. Returns count added."""
         if not records:
@@ -1120,18 +1137,24 @@ class Store:
         The vector column dimension is immutable, so a different-dim model needs a
         fresh table; recreating unconditionally also covers the same-dim case. Memory
         text is human-authored and re-embeddable, so no data is lost. Returns the count.
+
+        The snapshot, embed, and table rebuild all run under the write lock so a
+        concurrent ``add_memory`` cannot commit into the read-then-drop window and
+        be erased; it either lands before the snapshot or blocks until the rebuild
+        finishes. (A memory added mid-window would carry the old-dimension vector,
+        so re-reading survivors instead of locking would still need re-embedding.)
         """
-        table = self.open_table(MEMORIES_TABLE)
-        if table is None:
-            return 0
-        rows = table.search().limit(None).to_list()
-        if not rows:
-            return 0
-        memories = [MemoryRow(**r) for r in rows]
-        vectors = embed([m.text for m in memories])
-        for memory, vector in zip(memories, vectors, strict=True):
-            memory.vector = vector
         with self._write_lock():
+            table = self.open_table(MEMORIES_TABLE)
+            if table is None:
+                return 0
+            rows = table.search().limit(None).to_list()
+            if not rows:
+                return 0
+            memories = [MemoryRow(**r) for r in rows]
+            vectors = embed([m.text for m in memories])
+            for memory, vector in zip(memories, vectors, strict=True):
+                memory.vector = vector
             db = self.get_db()
             db.drop_table(MEMORIES_TABLE)
             new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())

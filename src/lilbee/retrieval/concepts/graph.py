@@ -298,14 +298,12 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
-        if node_records:
-            with lock.write_lock(self._config.lancedb_dir):
-                db = self._store.get_db()
-                nodes_table = data_store.ensure_table(
-                    db, CONCEPT_NODES_TABLE, _concept_nodes_schema()
-                )
-                nodes_table.add(node_records)
+        # Delete the old nodes and add the new ones under one lock so a reader
+        # never sees the nodes table emptied while get_graph() still reports it
+        # present (which would blank top_communities / cluster labels).
+        self._store.clear_and_add(
+            CONCEPT_NODES_TABLE, _concept_nodes_schema(), node_records, "concept IS NOT NULL"
+        )
         self.compact_tables()
 
     def compact_tables(self) -> None:
