@@ -297,15 +297,27 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 32
 
-    def test_single_replica_does_not_scale_above_cpu_quota(self, monkeypatch) -> None:
-        # A single vision replica (default) must leave cpu_quota untouched so weaker
-        # single-GPU/CPU hosts and the macOS TUI see no regression.
+    def test_single_replica_caps_at_vision_slots(self, monkeypatch) -> None:
+        # A single vision server has vision_ocr_concurrency continuous-batching slots;
+        # file-concurrency tracks that capacity so all slots stay fed.
         from lilbee.data.ingest import pipeline
 
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
         monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
         monkeypatch.setattr(cfg, "vision_replicas", 1)
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 8)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 8
+
+    def test_single_vision_server_not_flooded_by_cpu_quota(self, monkeypatch) -> None:
+        # The 429-storm bug: a many-core box must NOT fan cpu_quota (dozens) of OCR
+        # requests at one vision server's few slots; the cap is the vision capacity.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 32)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 4
 
