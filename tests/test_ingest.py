@@ -2262,6 +2262,79 @@ class TestShouldRunOcrAutoDetect:
         assert _should_run_ocr() is False
 
 
+class TestOcrOverrideContextVar:
+    """Per-request OCR overrides use a ContextVar, never a global cfg mutation."""
+
+    def test_override_does_not_mutate_global_cfg(self, isolated_env):
+        from lilbee.data.ingest.extract import ocr_override
+
+        cfg.enable_ocr = False
+        cfg.ocr_timeout = 11.0
+        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
+            pass
+        assert cfg.enable_ocr is False
+        assert cfg.ocr_timeout == 11.0
+
+    def test_effective_values_reflect_override_then_revert(self, isolated_env):
+        from lilbee.data.ingest.extract import (
+            _effective_enable_ocr,
+            _effective_ocr_timeout,
+            ocr_override,
+        )
+
+        cfg.enable_ocr = False
+        cfg.ocr_timeout = 11.0
+        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
+            assert _effective_enable_ocr() is True
+            assert _effective_ocr_timeout() == 99.0
+        assert _effective_enable_ocr() is False
+        assert _effective_ocr_timeout() == 11.0
+
+    def test_none_arguments_keep_cfg_defaults(self, isolated_env):
+        from lilbee.data.ingest.extract import _effective_enable_ocr, ocr_override
+
+        cfg.enable_ocr = True
+        with ocr_override(enable_ocr=None, ocr_timeout=None):
+            assert _effective_enable_ocr() is True
+
+    def test_should_run_ocr_honors_override(self, isolated_env):
+        from lilbee.data.ingest.extract import _should_run_ocr, ocr_override
+
+        cfg.enable_ocr = True
+        cfg.vision_model = ""
+        with ocr_override(enable_ocr=False):
+            assert _should_run_ocr() is False
+
+    def test_overrides_isolated_across_contexts(self, isolated_env):
+        # Two copied contexts must each see only their own override; this is the
+        # concurrency guarantee that a global cfg mutation could not give.
+        import contextvars
+
+        from lilbee.data.ingest.extract import _effective_ocr_timeout, ocr_override
+
+        cfg.ocr_timeout = 5.0
+        seen: dict[str, float] = {}
+
+        def run_with(value: float, key: str) -> None:
+            with ocr_override(ocr_timeout=value):
+                seen[key] = _effective_ocr_timeout()
+
+        contextvars.copy_context().run(run_with, 30.0, "a")
+        contextvars.copy_context().run(run_with, 70.0, "b")
+        assert seen == {"a": 30.0, "b": 70.0}
+        assert _effective_ocr_timeout() == 5.0  # parent context untouched
+
+    def test_temporary_ocr_config_delegates_without_global_mutation(self, isolated_env):
+        from lilbee.app.ingest import temporary_ocr_config
+        from lilbee.data.ingest.extract import _effective_ocr_timeout
+
+        cfg.ocr_timeout = 8.0
+        with temporary_ocr_config(ocr_timeout=42.0):
+            assert _effective_ocr_timeout() == 42.0
+            assert cfg.ocr_timeout == 8.0
+        assert _effective_ocr_timeout() == 8.0
+
+
 class TestOcrFallbackBackendDispatch:
     """``_handle_scanned_pdf_fallback`` routes to the right backend on the pool."""
 
