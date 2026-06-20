@@ -29,6 +29,12 @@ uv sync --extra litellm    # hosted-provider bridge (Ollama, LM Studio, cloud)
 uv sync --extra graph      # concept-graph search
 ```
 
+Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
+
+```bash
+uv run pre-commit install
+```
+
 ## Project layout
 
 All source lives under `src/lilbee/`:
@@ -90,6 +96,14 @@ See [`AGENTS.md`](AGENTS.md) for the complete set of rules (DRY, layering, TUI c
 - Keep commits focused and descriptive. No "Phase N" numbering, no `Co-Authored-By` lines.
 - PR descriptions are short and human-readable: a `## Problem` and `## Solution` paragraph. No implementation dumps, internal names, or test-plan sections.
 - Run the full `make check` gate before every push.
+
+### Opening a pull request
+
+1. Fork the repo and create a branch off `main` (e.g. `fix/embedder-timeout`).
+2. Make your change with tests, and run `make check` until it's green.
+3. Push your branch and open a PR against `main`.
+4. CI runs lint, format-check, typecheck, and the test suite on macOS, Linux, and Windows. All checks must pass, and coverage must stay at 100%.
+5. A maintainer reviews and merges. Address review feedback by pushing follow-up commits to the same branch.
 
 ## License
 
