@@ -50,9 +50,9 @@ def write_lock(
     store's ``lancedb_dir`` (a per-instance ``Lilbee`` uses its own dir).
     ``None`` falls back to the global ``cfg.lancedb_dir``.
 
-    ``timeout`` is the total budget for both stages: the time spent waiting on
-    the file lock is deducted before waiting on the mutex, so a 30s request
-    cannot stall ~60s.
+    The two stages share one budget: the time spent waiting on the file lock is
+    deducted before waiting on the mutex (plus a small ``_MUTEX_MIN_WAIT`` floor),
+    so a 30s request cannot stall for roughly twice that.
     """
     deadline = time.monotonic() + timeout
     lock_path = _lock_path(lancedb_dir)

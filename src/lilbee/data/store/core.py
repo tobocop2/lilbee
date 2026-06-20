@@ -1141,8 +1141,7 @@ class Store:
         The snapshot, embed, and table rebuild all run under the write lock so a
         concurrent ``add_memory`` cannot commit into the read-then-drop window and
         be erased; it either lands before the snapshot or blocks until the rebuild
-        finishes. (A memory added mid-window would carry the old-dimension vector,
-        so re-reading survivors instead of locking would still need re-embedding.)
+        finishes.
         """
         with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
